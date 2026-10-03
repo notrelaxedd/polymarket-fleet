@@ -12,6 +12,15 @@ counts as a lease expiry (the job fails once expiries reaches max_expiries, defa
 3); set_kill() drives the kill flag in every reply, and batch claims keep flowing
 under kill. The heartbeat reply also carries cancel[] (the preempt[] ids whose job is
 cancel_requested) so the agent can name the right release reason.
+
+Step 3: GET /api/v1/data/games serves the rows given to set_games() with an ETag
+(304 on If-None-Match), GET /api/v1/models/{id} serves models seeded with add_model(),
+POST /api/v1/models creates a model (idempotent on family + params_hash +
+trained_through, 409 when job_id is not leased by the caller) and
+POST /api/v1/models/{id}/backtest stores metrics; models() and model_posts() expose
+the store and the recorded calls. hold_posts() parks matching POSTs until
+release_holds() (they then get a 503), which lets a test stop an agent between two
+posts of a sequence; fail_next(..., status=0) drops the connection without an answer.
 """
 
 from __future__ import annotations
@@ -21,6 +30,7 @@ import io
 import json
 import os
 import secrets
+import socket
 import tarfile
 import threading
 import time
@@ -32,6 +42,24 @@ import fleet
 
 BATCH_ROLES = ("backtest", "model_search", "train")
 KIND_TO_ROLE = {"sleep": "backtest"}
+MODEL_FIELDS = ("family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through")
+HOLD_TIMEOUT = 60.0
+
+
+def _canonical(value: Any) -> Any:
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, dict):
+        return {str(k): _canonical(v) for k, v in sorted(value.items())}
+    if isinstance(value, list):
+        return [_canonical(v) for v in value]
+    return value
+
+
+def params_hash(params: Any) -> str:
+    """sha256 of the canonical JSON (sorted keys, 6 decimals), first 16 hex (docs/MODELS.md)."""
+    text = json.dumps(_canonical(params), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _now_iso() -> str:
@@ -107,6 +135,12 @@ class FakeHost:
         self.requests: list[tuple[str, str, int]] = []
         self.code_version = code_version or fleet.__version__
         self.failures: list[dict[str, Any]] = []
+        self.holds: list[dict[str, Any]] = []
+        self._hold_event = threading.Event()
+        self.games_rows: list[Any] = []
+        self.games_etag = "0-0"
+        self.models_store: dict[str, dict[str, Any]] = {}
+        self.model_calls: list[dict[str, Any]] = []
         self._tarball: bytes | None = None
         self._sha_override: str | None = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
@@ -125,6 +159,7 @@ class FakeHost:
         return self
 
     def stop(self) -> None:
+        self.release_holds()
         self.server.shutdown()
         self.server.server_close()
 
@@ -165,9 +200,67 @@ class FakeHost:
             return w["token"]
 
     def fail_next(self, suffix: str, status: int = 503, count: int = 1) -> None:
-        """Answer the next `count` POSTs whose path ends with /<suffix> with `status`."""
+        """Answer the next `count` requests whose path ends with /<suffix> with `status`
+        (0 = drop the connection without an answer, like a network failure)."""
         with self.lock:
             self.failures.append({"suffix": "/" + suffix.strip("/"), "status": status, "count": count})
+
+    def hold_posts(self, suffix: str, skip: int = 0) -> None:
+        """After `skip` matching POSTs pass through, park every further POST whose path
+        ends with /<suffix> until release_holds(); a parked request then gets a 503 and
+        is never processed. The agent sees a timeout meanwhile."""
+        with self.lock:
+            self._hold_event.clear()
+            self.holds.append({"suffix": "/" + suffix.strip("/"), "skip": skip})
+
+    def release_holds(self) -> None:
+        with self.lock:
+            self.holds.clear()
+            self._hold_event.set()
+
+    def _should_hold(self, path: str) -> bool:
+        with self.lock:
+            for entry in self.holds:
+                if path.endswith(entry["suffix"]):
+                    if entry["skip"] > 0:
+                        entry["skip"] -= 1
+                        return False
+                    return True
+        return False
+
+    # ------------------------------------------------------- step 3 control
+
+    def set_games(self, rows: list[Any]) -> str:
+        """Replace the games rows served to workers; returns the new ETag."""
+        with self.lock:
+            self.games_rows = list(rows)
+            self.games_etag = "%d-%d" % (len(rows), int(time.time() * 1000))
+            return self.games_etag
+
+    def add_model(self, model: dict[str, Any] | None = None) -> str:
+        """Seed a model row (defaults filled in); returns its id."""
+        row = {"id": str(uuid.uuid4()), "family": "elo_blend", "params": {}, "artifact": None, "parent_model_id": None,
+               "trained_through": None, "status": "candidate", "backtest_metrics": None, "summary": None}
+        row.update(model or {})
+        row.setdefault("lineage_id", row["id"])
+        row["_key"] = (row["family"], params_hash(row["params"]), json.dumps(row.get("trained_through")))
+        with self.lock:
+            self.models_store[row["id"]] = row
+        return row["id"]
+
+    def models(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return [self._public_model(m) for m in self.models_store.values()]
+
+    @staticmethod
+    def _public_model(row: dict[str, Any]) -> dict[str, Any]:
+        return {k: v for k, v in row.items() if not k.startswith("_")}
+
+    def model_posts(self) -> list[dict[str, Any]]:
+        """Recorded POST /api/v1/models and /models/{id}/backtest calls, oldest first:
+        {"path", "body", "worker_id", "response"}."""
+        with self.lock:
+            return [dict(c) for c in self.model_calls]
 
     def _take_failure(self, path: str) -> int | None:
         with self.lock:
@@ -479,6 +572,64 @@ class FakeHost:
             self._event(job_id, "failed", w["id"], {"error": job["error"]})
             return {"status": "failed"}
 
+    def games(self, w: dict[str, Any], if_none_match: str | None) -> tuple[int, Any, str]:
+        """(status, body, etag): 304 with no body when the ETag matches."""
+        with self.lock:
+            if if_none_match and if_none_match.strip() == self.games_etag:
+                return 304, None, self.games_etag
+            return 200, list(self.games_rows), self.games_etag
+
+    def get_model(self, w: dict[str, Any], model_id: str) -> dict[str, Any]:
+        with self.lock:
+            model = self.models_store.get(model_id)
+            if model is None:
+                raise ApiError(404, "no such model")
+            return self._public_model(model)
+
+    def _job_leased_by(self, w: dict[str, Any], job_id: Any) -> dict[str, Any]:
+        job = self.jobs.get(str(job_id))
+        if job is None or job["lease_worker_id"] != w["id"] or job["status"] not in ("leased", "cancel_requested"):
+            raise ApiError(409, "job_id is not a job leased by this worker")
+        return job
+
+    def create_model(self, w: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            self._job_leased_by(w, body.get("job_id"))
+            if not isinstance(body.get("family"), str) or not isinstance(body.get("params"), dict):
+                raise ApiError(400, "family and params are required")
+            key = (body["family"], params_hash(body["params"]), json.dumps(body.get("trained_through")))
+            existing = next((m for m in self.models_store.values() if m["_key"] == key), None)
+            if existing is not None:
+                resp = {"id": existing["id"], "lineage_id": existing["lineage_id"], "created": False}
+            else:
+                row: dict[str, Any] = {"id": str(uuid.uuid4()), "_key": key, "job_id": body.get("job_id")}
+                for name in MODEL_FIELDS:
+                    row[name] = body.get(name)
+                parent = self.models_store.get(str(body.get("parent_model_id") or ""))
+                if parent is not None:
+                    row.update(lineage_id=parent["lineage_id"], status=parent["status"], backtest_metrics=parent.get("backtest_metrics"))
+                else:
+                    row.update(lineage_id=row["id"], status="candidate")
+                self.models_store[row["id"]] = row
+                resp = {"id": row["id"], "lineage_id": row["lineage_id"], "created": True}
+            self.model_calls.append({"path": "/api/v1/models", "body": body, "worker_id": w["id"], "response": resp})
+            return resp
+
+    def post_backtest(self, w: dict[str, Any], model_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            self._job_leased_by(w, body.get("job_id"))
+            model = self.models_store.get(model_id)
+            if model is None:
+                raise ApiError(404, "no such model")
+            if not isinstance(body.get("backtest_metrics"), dict):
+                raise ApiError(400, "backtest_metrics must be an object")
+            for row in self.models_store.values():
+                if row["lineage_id"] == model["lineage_id"]:
+                    row["backtest_metrics"] = body["backtest_metrics"]
+            resp = {"id": model_id, "lineage_id": model["lineage_id"], "status": model["status"]}
+            self.model_calls.append({"path": f"/api/v1/models/{model_id}/backtest", "body": body, "worker_id": w["id"], "response": resp})
+            return resp
+
     def _fenced_job(self, job_id: str, body: dict[str, Any]) -> dict[str, Any]:
         job = self.jobs.get(job_id)
         if job is None:
@@ -496,15 +647,47 @@ class _Handler(BaseHTTPRequestHandler):
     def host(self) -> FakeHost:
         return self.server.host  # type: ignore[attr-defined]
 
-    def _send(self, status: int, payload: Any, raw: bytes | None = None) -> None:
-        body = raw if raw is not None else json.dumps(payload).encode("utf-8")
+    def _send(self, status: int, payload: Any, raw: bytes | None = None, etag: str | None = None) -> None:
+        body = b"" if status == 304 else (raw if raw is not None else json.dumps(payload).encode("utf-8"))
         self.send_response(status)
-        self.send_header("Content-Type", "application/octet-stream" if raw is not None else "application/json")
+        if etag is not None:
+            self.send_header("ETag", etag)
+        if status != 304:
+            self.send_header("Content-Type", "application/octet-stream" if raw is not None else "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(body)
         with self.host.lock:
             self.host.requests.append((self.command, self.path, status))
+
+    def _drop_connection(self) -> None:
+        """Simulate a network failure: no answer at all."""
+        with self.host.lock:
+            self.host.requests.append((self.command, self.path, 0))
+        self.close_connection = True
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def _injected(self) -> bool:
+        """Apply fail_next / hold_posts; True when the request was answered here."""
+        injected = self.host._take_failure(self.path)
+        if injected is not None:
+            if self.command == "POST":
+                self._body()
+            if injected == 0:
+                self._drop_connection()
+            else:
+                self._send(injected, {"detail": "injected failure"})
+            return True
+        if self.command == "POST" and self.host._should_hold(self.path):
+            self._body()
+            self.host._hold_event.wait(HOLD_TIMEOUT)
+            self._send(503, {"detail": "held"})
+            return True
+        return False
 
     def _body(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length") or 0)
@@ -518,21 +701,32 @@ class _Handler(BaseHTTPRequestHandler):
         return data
 
     def do_GET(self) -> None:
-        if self.path == "/dl/version":
-            self._send(200, {"code_version": self.host.code_version, "sha256": self.host.tarball_sha256()})
-        elif self.path == "/dl/worker.tar.gz":
-            self._send(200, None, raw=self.host.tarball())
-        elif self.path == "/healthz":
-            self._send(200, {"ok": True, "db": True})
-        else:
-            self._send(404, {"detail": "not found"})
+        try:
+            if self._injected():
+                return
+            parts = self.path.strip("/").split("/")
+            if self.path == "/dl/version":
+                self._send(200, {"code_version": self.host.code_version, "sha256": self.host.tarball_sha256()})
+            elif self.path == "/dl/worker.tar.gz":
+                self._send(200, None, raw=self.host.tarball())
+            elif self.path == "/healthz":
+                self._send(200, {"ok": True, "db": True})
+            elif parts == ["api", "v1", "data", "games"]:
+                w = self.host.auth_any_worker(self.headers.get("Authorization"))
+                status, body, etag = self.host.games(w, self.headers.get("If-None-Match"))
+                self._send(status, body, etag=etag)
+            elif len(parts) == 4 and parts[:3] == ["api", "v1", "models"]:
+                w = self.host.auth_any_worker(self.headers.get("Authorization"))
+                self._send(200, self.host.get_model(w, parts[3]))
+            else:
+                self._send(404, {"detail": "not found"})
+        except ApiError as exc:
+            self._send(exc.status, {"detail": exc.detail})
 
     def do_POST(self) -> None:
         try:
-            injected = self.host._take_failure(self.path)
-            if injected is not None:
-                self._body()
-                raise ApiError(injected, "injected failure")
+            if self._injected():
+                return
             self._send(200, self._dispatch_post())
         except ApiError as exc:
             self._send(exc.status, {"detail": exc.detail})
@@ -549,4 +743,44 @@ class _Handler(BaseHTTPRequestHandler):
             w = self.host.auth_any_worker(auth)
             handler = {"checkpoint": self.host.checkpoint, "complete": self.host.complete, "fail": self.host.fail}[parts[4]]
             return handler(w, parts[3], self._body())
+        if parts == ["api", "v1", "models"]:
+            w = self.host.auth_any_worker(auth)
+            return self.host.create_model(w, self._body())
+        if len(parts) == 5 and parts[:3] == ["api", "v1", "models"] and parts[4] == "backtest":
+            w = self.host.auth_any_worker(auth)
+            return self.host.post_backtest(w, parts[3], self._body())
         raise ApiError(404, "not found")
+
+
+# ------------------------------------------------------------ test-only jobs
+# Registered in the runner child through env FLEET_TEST_JOBS="tests.fake_host:TEST_JOBS".
+# They shadow the real batch kinds so agent tests never run a backtest.
+
+
+def run_echo(params: dict[str, Any], checkpoint: dict[str, Any] | None, emit: Any, should_stop: Any) -> dict[str, Any]:
+    """Return params["result"] (if any) plus what the child handed the job: the params
+    without _context, the context keys, the model, the number of rows in games_path.
+    params["marker"] names a file to create (proves the job ran)."""
+    out = dict(params.get("result") or {})
+    context = params.get("_context")
+    out["params"] = {k: v for k, v in params.items() if k != "_context"}
+    out["has_context"] = isinstance(context, dict)
+    out["context_keys"] = sorted(context) if isinstance(context, dict) else None
+    out["model"] = context.get("model") if isinstance(context, dict) else None
+    out["games_rows"] = None
+    games_path = context.get("games_path") if isinstance(context, dict) else None
+    if games_path:
+        try:
+            with open(games_path, "r", encoding="utf-8") as fh:
+                out["games_rows"] = len(json.load(fh))
+        except (OSError, ValueError):
+            out["games_rows"] = None
+    if params.get("marker"):
+        with open(str(params["marker"]), "w", encoding="utf-8") as fh:
+            fh.write("ran\n")
+    emit({"echoed": True}, 1.0)
+    return out
+
+
+TEST_JOBS = {"echo": run_echo, "backtest": run_echo, "model_search": run_echo, "train": run_echo}
+TEST_JOBS_SPEC = "tests.fake_host:TEST_JOBS"

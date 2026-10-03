@@ -5,6 +5,7 @@ import hashlib
 import os
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import unquote
 
@@ -270,3 +271,89 @@ def insert_job(conn: psycopg.Connection, kind: str = "sleep", role: str | None =
     return conn.execute(
         f"INSERT INTO jobs ({', '.join(names)}) VALUES ({placeholders}) RETURNING *", values
     ).fetchone()
+
+
+# ------------------------------------------------------------------ step 3 helpers
+
+FIXTURE_GAMES = Path(__file__).resolve().parent / "fixtures" / "games_sample.csv"
+
+
+def ingest_fixture(conn: psycopg.Connection) -> dict[str, Any]:
+    """Load the nflverse fixture (2016-2025) into the games table."""
+    from host import nflverse
+
+    return nflverse.ingest(conn, str(FIXTURE_GAMES))
+
+
+def backtest_metrics(
+    n_bets: int = 300, roi: float = 0.03, log_loss: float = 0.660, market_log_loss: float = 0.659,
+    max_drawdown: float = 0.12, seasons: list[int] | None = None, **extra: Any,
+) -> dict[str, Any]:
+    """A metrics object of the docs/MODELS.md shape with chosen headline numbers."""
+    seasons = seasons if seasons is not None else [2016, 2017, 2018]
+    stake = n_bets * 1200
+    metrics = {
+        "n_games": max(n_bets, 1) * 3, "n_bets": n_bets, "total_stake_cents": stake,
+        "pnl_cents": int(round(stake * roi)), "roi": roi, "hit_rate": 0.52, "avg_edge": 0.034,
+        "avg_stake_cents": 1200.0, "log_loss": log_loss, "brier": 0.235, "market_log_loss": market_log_loss,
+        "calibration": [{"count": 10, "mean_p": (i + 0.5) / 10, "mean_outcome": (i + 0.5) / 10} for i in range(10)],
+        "max_drawdown_cents": int(round(max_drawdown * 60000)), "max_drawdown": max_drawdown, "seasons": seasons,
+    }
+    metrics.update(extra)
+    return metrics
+
+
+def insert_model(
+    conn: psycopg.Connection,
+    family: str = "elo_blend",
+    params: dict[str, Any] | None = None,
+    metrics: dict[str, Any] | None = None,
+    status: str = "candidate",
+    parent: dict[str, Any] | None = None,
+    summary: str | None = None,
+    trained_through: list[int] | None = None,
+    artifact: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Insert a model row directly (a root, or a child of `parent` in its lineage)."""
+    from psycopg.types.json import Jsonb
+
+    from fleet.models.base import params_hash
+
+    params = params if params is not None else {"k": 24.0, "hfa": 55.0, "mov_scale": 1}
+    model_id = uuid.uuid4()
+    lineage_id = parent["lineage_id"] if parent else model_id
+    if parent:
+        status = parent["status"]
+        metrics = parent["backtest_metrics"] if metrics is None else metrics
+    return conn.execute(
+        """
+        INSERT INTO models (id, lineage_id, family, params, params_hash, artifact, parent_model_id,
+                            trained_through, summary, status, backtest_metrics)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+        """,
+        (
+            model_id, lineage_id, family, Jsonb(params), params_hash(params),
+            Jsonb(artifact) if artifact is not None else None, parent["id"] if parent else None,
+            Jsonb(trained_through) if trained_through is not None else None, summary, status,
+            Jsonb(metrics) if metrics is not None else None,
+        ),
+    ).fetchone()
+
+
+def lease_job(conn: psycopg.Connection, worker: FakeWorker, kind: str = "backtest", params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Insert a job already leased by `worker` (the row carries its lease_token)."""
+    from psycopg.types.json import Jsonb
+
+    role = {"sleep": "backtest"}.get(kind, kind)
+    return conn.execute(
+        """
+        INSERT INTO jobs (kind, role, status, params, lease_worker_id, lease_token, lease_expires_at, started_at)
+        VALUES (%s, %s, 'leased', %s, %s, gen_random_uuid(), now() + interval '30 seconds', now()) RETURNING *
+        """,
+        (kind, role, Jsonb(params or {}), worker.id),
+    ).fetchone()
+
+
+def model_row(conn: psycopg.Connection, model_id: Any) -> dict[str, Any]:
+    """Fetch a model row by id."""
+    return conn.execute("SELECT * FROM models WHERE id = %s", (uuid.UUID(str(model_id)),)).fetchone()

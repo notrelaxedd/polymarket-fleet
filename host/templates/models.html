@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Models{% endblock %}
+{% block content %}
+<h1>Models</h1>
+<p class="muted small">One row per lineage, judged on the root model's walk-forward backtest against sportsbook closing lines; a lineage is ranked once it has 50 bets.</p>
+{% if ranked %}
+<section id="ranked">
+<div class="table-wrap">
+<table class="models stack">
+  <thead><tr><th>model</th><th>ROI</th><th>bets</th><th>log-loss vs market</th><th>drawdown</th><th>seasons</th><th>summary</th><th></th></tr></thead>
+  <tbody>
+  {% for m in ranked %}
+  {% include "_model_row.html" with context %}
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+{% else %}
+<p class="muted empty-models">{% if unranked %}No lineage has 50 backtest bets yet, so none is ranked.{% else %}No models yet. Send a model search from the <a href="/jobs#model_search">Jobs</a> page.{% endif %}</p>
+{% endif %}
+{% if unranked %}
+<section id="unranked">
+<h2>Unranked <span class="muted small">fewer than 50 bets, no backtest yet, or retired</span></h2>
+<div class="table-wrap">
+<table class="models stack">
+  <thead><tr><th>model</th><th>ROI</th><th>bets</th><th>log-loss vs market</th><th>drawdown</th><th>seasons</th><th>summary</th><th></th></tr></thead>
+  <tbody>
+  {% for m in unranked %}
+  {% include "_model_row.html" with context %}
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+</section>
+{% endif %}
+<p class="attribution muted small">{{ attribution }} <a href="https://github.com/nflverse/nflverse-data">nflverse-data</a> &middot; <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></p>
+{% endblock %}

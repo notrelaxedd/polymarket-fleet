@@ -6,20 +6,20 @@ flash message. Validation errors on the settings page re-render the form (400).
 """
 from __future__ import annotations
 
-from typing import Any
-
 import psycopg
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
 from host import auth, kill, queue, web
-from host.api.dashboard import page, settings_page
+from host.api.dashboard import jobs_page_response, page, settings_page
 from host.api.deps import DB, get_config, require_owner
+from host.api.job_forms import parse_job_form
 from host.api.owner import install_command
 from host.config import Config
+from host.eligibility import recompute_all
 from host.errors import BadRequest, QueueError
 from host.settings import set_settings
-from host.settings_forms import parse_group
+from host.settings_forms import GROUPS, parse_group
 
 router = APIRouter(tags=["dashboard-forms"], dependencies=[Depends(require_owner)])
 
@@ -56,26 +56,18 @@ def post_enabled(
     return web.redirect("/", f"{worker['name']} {state}")
 
 
-def _job_params(form: dict[str, str]) -> dict[str, Any]:
-    """Params for the send form; sleep takes seconds (default 60)."""
-    if (form.get("kind") or "") == "sleep":
-        text = (form.get("seconds") or "60").strip() or "60"
-        try:
-            seconds = int(text)
-        except ValueError:
-            raise BadRequest("seconds must be a whole number") from None
-        if seconds < 1 or seconds > 86400:
-            raise BadRequest("seconds must be between 1 and 86400")
-        return {"seconds": seconds}
-    return {}
-
-
 @router.post("/jobs")
-def post_job(form: dict[str, str] = FORM, actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> Response:
-    """Send a job to any idle worker or a chosen one."""
-    kind = (form.get("kind") or "").strip()
+def post_job(
+    request: Request, form: dict[str, str] = FORM, actor: str = Depends(require_owner), conn: psycopg.Connection = DB
+) -> Response:
+    """Send a job to any idle worker or a chosen one; bad params re-render the page (400)."""
     target = (form.get("target") or queue.ANY_IDLE).strip() or queue.ANY_IDLE
-    result = queue.create_job(conn, kind, _job_params(form), target, None, actor)
+    try:
+        kind, params = parse_job_form(form)
+        result = queue.create_job(conn, kind, params, target, None, actor)
+    except BadRequest as exc:
+        conn.rollback()
+        return jobs_page_response(request, conn, status=400, error=exc.message, submitted=form)
     job = result.job
     if result.waiting_for_idle_worker:
         note = "waiting for an idle worker"
@@ -105,12 +97,15 @@ def post_settings(
 ) -> Response:
     """Save one settings group; bad values re-render the page with the error (400)."""
     try:
-        set_settings(conn, parse_group(group, form), actor)
+        updates = parse_group(group, form)
+        set_settings(conn, updates, actor)
     except BadRequest as exc:
-        if group not in ("trading", "fleet", "tz"):
+        if group not in GROUPS:
             raise
         conn.rollback()
         return settings_page(request, conn, config, errors={group: exc.message}, overrides=form, status=400)
+    if "thresholds_backtest" in updates:
+        recompute_all(conn)
     return web.redirect("/settings", f"{group} settings saved")
 
 

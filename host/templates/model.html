@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% import "_metrics.html" as metrics_view %}
+{% block title %}Model {{ model.id | short }}{% endblock %}
+{% block content %}
+<p><a href="/models">&larr; Models</a></p>
+<h1>{{ model.family }} <span class="params">{{ model.short_params }}</span> <span class="badge st-{{ model.status }}">{{ model.status.replace('_', ' ') }}</span></h1>
+<div class="card">
+  <dl class="props">
+    <dt>id</dt><dd><code>{{ model.id }}</code></dd>
+    <dt>lineage</dt><dd><code>{{ model.lineage_id }}</code>{% if model.id == model.lineage_id %} <span class="chip">root</span>{% endif %}</dd>
+    {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
+    <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
+    <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
+    <dt>shrunk ROI</dt><dd>{{ model.score | signed_pct(2) }} <span class="muted small">ROI x bets / (bets + 100)</span></dd>
+  </dl>
+  <div class="actions">
+    <a class="btn" href="/jobs?train_model={{ model.id }}#train">Train</a>
+    <button type="button" class="btn soon" disabled title="comes with step 4">Assign <small>step 4</small></button>
+    {% if model.status != 'retired' %}
+    <form method="post" action="/models/{{ model.id }}/retire" class="inline" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
+      <input type="hidden" name="next" value="/models/{{ model.id }}">
+      <button type="submit" class="btn danger">Retire lineage</button>
+    </form>
+    {% endif %}
+  </div>
+  <h2>summary</h2>
+  <p class="summary">{{ model.summary or 'No summary yet.' }}</p>
+  <details class="edit">
+    <summary>Edit summary</summary>
+    <form method="post" action="/models/{{ model.id }}/summary" class="summary-form">
+      <input type="hidden" name="next" value="/models/{{ model.id }}">
+      <label><span class="visually-hidden">Summary</span><span class="muted small">at most 600 characters</span>
+        <textarea name="summary" rows="4" maxlength="600">{{ model.summary or '' }}</textarea>
+      </label>
+      <button type="submit" class="btn small">Save</button>
+    </form>
+  </details>
+  <h2>params</h2>
+  <pre>{{ model.params | pretty_json }}</pre>
+</div>
+
+<h2>backtest</h2>
+{% if metrics %}
+{{ metrics_view.pairs(metrics, detail=true) }}
+{% if per_season %}
+<h3>per season</h3>
+{{ metrics_view.per_season(per_season) }}
+{% endif %}
+{% if calibration %}
+<h3>calibration</h3>
+<div class="table-wrap">
+<table class="metrics calibration">
+  <thead><tr><th>p bucket</th><th>games</th><th>mean p</th><th>mean outcome</th></tr></thead>
+  <tbody>
+  {% for b in calibration %}
+  <tr><td>{{ b.bucket }}</td><td>{{ b.count }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% else %}
+<p class="muted">No backtest metrics yet. Send a backtest of this model from the <a href="/jobs">Jobs</a> page.</p>
+{% endif %}
+
+<h2>lineage</h2>
+<div class="table-wrap">
+<table class="lineage stack">
+  <thead><tr><th>model</th><th>trained through</th><th>status</th><th>created</th><th>job</th></tr></thead>
+  <tbody>
+  {% for r in model.lineage %}
+  <tr>
+    <td class="lead">{% if r.id == model.id %}<strong>{{ r.id | short }}</strong> (this){% else %}<a href="/models/{{ r.id }}">{{ r.id | short }}</a>{% endif %}{% if r.is_root %} <span class="chip">root</span>{% endif %}</td>
+    <td>{% if r.trained_through %}{{ r.trained_through[0] }} week {{ r.trained_through[1] }}{% else %}-{% endif %}</td>
+    <td><span class="badge st-{{ r.status }}">{{ r.status.replace('_', ' ') }}</span></td>
+    <td class="nowrap">{{ r.created_at | ts }}</td>
+    <td>{% if r.created_by_job_id %}<a href="/jobs/{{ r.created_by_job_id }}">{{ r.created_by_job_id | short }}</a>{% else %}-{% endif %}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<h2>jobs</h2>
+<div class="table-wrap">
+<table class="jobs stack">
+  <thead><tr><th>created</th><th>kind</th><th>status</th><th>role</th></tr></thead>
+  <tbody>
+  {% for j in model.jobs %}
+  <tr>
+    <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
+    <td>{{ j.kind }}</td>
+    <td><span class="badge st-{{ j.status }}">{{ j.status.replace('_', ' ') }}</span></td>
+    <td class="muted">{{ 'created this model' if j.created_model else 'ran against it' }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4" class="muted">No jobs yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="attribution muted small">{{ attribution }}</p>
+{% endblock %}

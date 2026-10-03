@@ -267,6 +267,11 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
   | `max_daily_loss_cents` | object | `{"live": int 0..10^11, "paper": int 0..10^11}` |
   | `min_edge`, `kelly_fraction` | number | 0..1 |
   | `trade_max_games` | int | 0..100 |
+  | `fee_model` | object | `{"taker_rate": 0..1, "half_spread": 0..1}` (step 3) |
+  | `thresholds_backtest` | object | `{"min_bets": int 0..10^6, "min_roi": -1..1, "max_drawdown": 0..1}` (step 3) |
+  | `backtest_seasons` | array | `[first, last]`, ints 1999..2100, `last` may be null, `last >= first` (step 3) |
+  | `nflverse_refresh_hours` | int | 1..168 (step 3) |
+  | `nflverse_url` | string | an `http(s)://` URL, at most 512 chars (step 3) |
 
   Readers treat only the JSON `true` as on (`value is True`).
   (changed: cross-field check) The fleet timing keys are also judged together, over the
@@ -505,20 +510,59 @@ typed text exactly like the API (no whitespace trimming).
 ### Data for workers
 - `GET /api/v1/data/games` (worker bearer): every `games` row as JSON (fields listed in
   docs/MODELS.md), sorted by kickoff. Supports `ETag` / `If-None-Match` (304 when unchanged;
-  the ETag is `<count>-<max updated_at epoch>`). The agent refreshes its cache file
+  the ETag is `<count>-<max updated_at epoch>`; writers are serialised and stamp
+  `updated_at` with the wall clock, so the tag only ever moves forward, even when a
+  request transaction that opened earlier commits later). The agent refreshes its cache file
   `<state>/cache/games.json` before starting any backtest, model_search or train runner and
   passes the path to the child in `job["context"]["games_path"]`.
+  (changed: precision and shape) The epoch carries microseconds (`2761-1791053870.123456`)
+  so two changes within one second still produce different tags; the header value is quoted
+  (`ETag: "2761-..."`) and `If-None-Match` is accepted bare, quoted, weak (`W/`), as a list
+  or `*`. The body is `{"games": [...], "count": n}`; `div_game` is `0`/`1`, `kickoff_at` an
+  ISO UTC string with a `Z` suffix, `game_type` `REG` or `POST` (every playoff round folds
+  into `POST`), scores and moneylines ints or null. Rows are served in `(kickoff_at,
+  game_id)` order.
 - `GET /api/v1/models/{id}` (worker bearer): `{id, lineage_id, family, params, artifact,
-  parent_model_id, trained_through, status, backtest_metrics}`.
+  parent_model_id, trained_through, status, backtest_metrics}`. 404 for an unknown or
+  non-uuid id.
 - `POST /api/v1/models` (worker bearer): body `{job_id, family, params, artifact | null,
   backtest_metrics | null, summary | null, parent_model_id | null, trained_through | null}`
-  -> `{"id": ..., "lineage_id": ..., "created": true|false}`. Idempotent on
-  `(family, params_hash, trained_through)`: an existing row is returned with `created: false`.
-  A child (`parent_model_id` set) inherits the parent's `lineage_id`, `status` and
-  `backtest_metrics`; a root gets `lineage_id = id` and status `candidate`, then
-  eligibility runs. `job_id` must be a job leased by the calling worker (409 otherwise).
-- `POST /api/v1/models/{id}/backtest` (worker bearer): `{job_id, backtest_metrics}` stores
-  the metrics on that model (and on every row of its lineage) and re-runs eligibility.
+  -> `{"id": ..., "lineage_id": ..., "created": true|false, "status": ...}` (changed: the
+  reply also carries the lineage status after eligibility ran). Idempotent on
+  `(family, params_hash, trained_through)`: an existing row is returned with `created: false`
+  and HTTP 200 (201 when created); `params_hash` is computed server side with the
+  docs/MODELS.md rule (`fleet.models.base.params_hash`), so `24.0` and `24.0000001` are the
+  same model. The lookup is serialised on an advisory lock, so two workers posting the same
+  model at once get the same row. (changed: review) When the existing row is a root and
+  the post carries `backtest_metrics`, those replace the lineage's stored metrics (the
+  latest evaluation wins, as with `POST /models/{id}/backtest`) and eligibility runs
+  again, so the first search to evaluate a params set no longer fixes its metrics for good;
+  the reply's `status` is the recomputed one. A child (`parent_model_id` set) inherits the
+  parent's `lineage_id`, `status` and `backtest_metrics` (changed: a child's own
+  `backtest_metrics` field is ignored, the lineage shares the root's; the parent row is
+  locked while the child is written, so a backtest committing on the lineage at the same
+  time cannot leave the child with the old metrics); a root gets `lineage_id = id` and
+  status `candidate`, then eligibility runs. `job_id` must be a job leased by the calling
+  worker (`leased` or `cancel_requested`, 409 otherwise) and bound to the write (changed:
+  review): a root needs a `model_search` job, a child a `train` job whose
+  `params.model_id` is the parent (409 otherwise), and a child must keep the parent's
+  `family` and params (same `params_hash`, 400 otherwise); the model records the job as
+  `created_by_job_id`. `params` values must be numbers, and NaN or Infinity anywhere in
+  `params`, `artifact` or `backtest_metrics` is 400 (Postgres jsonb refuses them; the
+  agent fails the job instead of retrying a 500). (changed: validation) Unknown `family` (not in
+  `fleet.models.registry.FAMILIES`), non-object `params`, `artifact` or `backtest_metrics`,
+  an unknown `parent_model_id` or a `trained_through` that is not `[season, week]` (an
+  object `{"season", "week"}` is accepted too) are 400; a worker summary is capped at 2000
+  characters; `artifact` and `backtest_metrics` are limited to 64 KiB each. `job_events`:
+  `model_created` (`{model_id, status}`) or `model_exists` (`{model_id, status}`).
+- `POST /api/v1/models/{id}/backtest` (worker bearer): `{job_id, backtest_metrics}` stores the metrics on that model (and on every row of its lineage) and re-runs eligibility.
+  Reply `{"id", "lineage_id", "status"}`; `job_id` is fenced like above and must be a
+  `backtest` job whose `params.model_id` is `{id}` (409 otherwise); a non-object
+  `backtest_metrics`, or one holding NaN or Infinity, is 400; `job_events` `model_backtest`.
+  Eligibility reads `thresholds_backtest` with a shared row lock before any model row is
+  touched, so a model write and a thresholds change never interleave: the write waits for
+  the new thresholds, and the thresholds change waits for in-flight writes before it
+  recomputes every lineage.
 
 ### Runner context and results
 The agent fills `job["context"]` before starting a runner: `{"games_path": "<cache file>",
@@ -539,21 +583,96 @@ is retried like any pending post; the job is not completed until every post succ
 - `train`: `{"model_id": uuid, "through": {"season": int, "week": int}}`. Result:
   `{"created_models": [...], "through": [season, week], "games_seen": n}`.
 - `sleep` stays for tests.
+- (changed: exact rules, `host/jobparams.py`) For the three batch kinds any key outside
+  the lists above is 400 (`unknown backtest params: ...`); `model_id` must be a uuid of an
+  existing model (`unknown model`, 400 even though the lookup is a miss); `backtest` takes
+  `model_id` or `family` + `params`, not both, and `params` defaults to `{}` (the family's
+  defaults) and must hold numbers only; `family` must be a registered family; `seasons` is
+  `[first, last]` with ints in 1999..2100, `last` may be null and must not precede `first`;
+  `seed` defaults to 0; `through.week` is 1..22. (changed: review) `params` keys must be
+  hyperparameters the family knows (`unknown elo_blend params: K, HFA`, 400), and a
+  `seasons` range that no backtest can score is 400 (`no testable season in [first,
+  last]`: a test season needs games and three earlier seasons with moneylines, judged on
+  the `games` table when it has rows). `sleep` keeps its test shape: `seconds`
+  (1..86400) is checked when present and other keys are tolerated. The host then copies
+  the limits in force into the stored params of every batch job: `fee_model`,
+  `default_bankroll_cents`, `max_bet_cents`, `trade_max_games` and `backtest_seasons`
+  (from settings, a null last season resolved to the newest season whose every game is
+  final; the null stays when `games` is empty), and resolves a null last season inside
+  the job's own `seasons` the same way. A later settings change never touches a job that
+  was already sent. Validation runs before the idempotency-key lookup.
 
 ### Owner API added in step 3
 - `GET /api/models` (leaderboard by lineage: ranked and unranked lists), `GET /api/models/{id}`
   (model, lineage members, jobs that created or updated it), `POST /api/models/{id}/summary`
   `{"summary": str}` (max 600 chars, audit row), `POST /api/models/{id}/status`
   `{"status": "retired"}` (only `retired` is allowed from the owner; audit row).
+  (changed: shapes, `host/leaderboard.py`) Each leaderboard entry is `{id, lineage_id,
+  family, params, short_params ("K 24 · HFA 55 · MOV on"), status, summary, metrics {roi,
+  n_bets, log_loss, market_log_loss, max_drawdown, seasons, hit_rate, avg_edge, pnl_cents},
+  score (shrunk ROI), members (rows in the lineage), created_at, updated_at}` plus `rank`
+  on ranked entries. Ranked: the root has `n_bets >= 50` and the lineage is not retired,
+  ordered by score desc, log-loss asc, created_at; unranked are newest first. The detail
+  adds `short_params`, `score`, `lineage: [{id, parent_model_id, trained_through, status,
+  created_at, created_by_job_id, is_root}]` (root first) and `jobs` (the job that created
+  the row plus every job whose `params.model_id` is it, newest first, `created_model`
+  flag). A summary is trimmed, an empty one stored as null, over 600 characters is 400;
+  the audit row is `model_summary` (entity = model id, before/after the text). Retiring
+  sets `retired` on every row of the lineage, which drops it from the ranked list for
+  good (eligibility never un-retires it); audit row `model_retired`. Both reply with the
+  detail document. A change of `thresholds_backtest` through `POST /api/settings` or the
+  settings form recomputes every lineage.
 - `POST /api/jobs` accepts the three real kinds with the params above; the dashboard jobs
   page gets one form per kind (backtest, model search, train) with the owner's defaults from
   settings.
 - `POST /api/data/refresh` (owner): fetch nflverse games.csv now; returns
   `{"rows": n, "updated": m, "fetched_at": ...}`. The host loop also refreshes every
   `nflverse_refresh_hours` (settings, default 6) and at startup when `games` is empty.
+  (changed: details, `host/nflverse.py` and `host/data_refresh.py`) The reply also carries
+  `inserted`, `changed` (`updated = inserted + changed`), `skipped` (records the parser
+  could not read: a non-numeric season or week, a bad date) and `source`; a download
+  failure or a body over 50 MB is 502 (`{"detail": "nflverse fetch failed: ..."}`), a file
+  that is not a games.csv is 400, a row Postgres refuses is 502 (`nflverse ingest failed:
+  ...`), the timeout is 60 s and the download runs outside the request's transaction.
+  One malformed or duplicated record never aborts the ingest: an optional field that is
+  not a finite number in range (`NA`, `nan`, `1e12`) becomes null, a `gametime` that is
+  not `HH:MM` (`TBD`) falls back to 13:00 local, and a duplicated `game_id` keeps the last
+  record. Rows are upserted by `game_id`; a row is rewritten (and its `updated_at` moved)
+  only when its raw CSV record differs, so a re-ingest of the same file changes nothing.
+  The last outcome of any refresh (time and counts, or the error) is shown in the Settings
+  page's "nflverse games" section.
+  The periodic refresh runs in its own thread (`DataRefreshThread`, checked every 60 s)
+  so a slow download never delays the reaper and dispatcher; a failure is logged and
+  retried after 15 minutes; a host that starts with games already loaded waits a full
+  interval before its first fetch.
 - Settings keys added: `fee_model {"taker_rate": 0.05, "half_spread": 0.01}`,
   `thresholds_backtest {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.30}`,
   `backtest_seasons [2010, null]` (null = last complete season), `nflverse_refresh_hours 6`,
-  `nflverse_url` (the games.csv URL). All editable on the Settings page.
+  `nflverse_url` (the games.csv URL). All editable on the Settings page (ranges in the
+  settings table above).
 - CLI: `ingest-games [--file PATH]`, `models` (table), `send-job` accepts `--params` for
-  the three kinds (unchanged syntax).
+  the three kinds (unchanged syntax). (changed: output) `ingest-games` prints
+  `ingested N rows from <source>: I inserted, C changed; last complete season S` (exit 1
+  with `cannot read <path>` for a missing file, or the fetch error); `models` prints
+  `rank id status family params roi bets log_loss market drawdown seasons rows`, ranked
+  rows first (`-` as rank for unranked).
+- Dashboard routes added (same owner auth, form posts redirect with a flash): `GET /models`,
+  `GET /models/{id}`, `POST /models/{id}/summary` (`summary`, `next`), `POST
+  /models/{id}/retire` (`next`), `POST /data/refresh` (the "Refresh now" button on the
+  settings page), `GET /jobs?train_model=<id>` (prefills the train form), settings groups
+  `fees` (`taker_rate`, `half_spread`), `thresholds` (`min_bets`, `min_roi`,
+  `max_drawdown`), `seasons` (`seasons_first`, `seasons_last`, blank = null) and
+  `nflverse` (`nflverse_refresh_hours`, `nflverse_url`). The `POST /jobs` form carries
+  `kind` plus, per kind: backtest `model_id` (blank = use `family` + `params` JSON),
+  `seasons_first`, `seasons_last`; model_search `family`, `n`, `seed`, `seasons_first`,
+  `seasons_last`, `top_k`; train `model_id`, `through_season`, `through_week`; sleep
+  `seconds`; always `target`. A rejected job form re-renders the jobs page with the error
+  inline in the posted form and status 400; nothing is stored.
+
+### Tables added in step 3 (`host/migrations/0003_models.sql`)
+`games` (one row per nflverse game, `game_id` primary key, `status` scheduled|final,
+`raw` the full CSV record, indexes on `(season, week)` and `kickoff_at`) and `models`
+(`id`, `lineage_id`, `family`, `params`, `params_hash`, `artifact`, `parent_model_id`,
+`trained_through`, `summary`, `status` candidate|paper_ok|live_eligible|retired,
+`backtest_metrics`, `created_by_job_id`, timestamps; unique on `(family, params_hash,
+COALESCE(trained_through::text, ''))`, index on `lineage_id`).

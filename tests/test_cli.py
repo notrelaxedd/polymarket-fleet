@@ -200,3 +200,28 @@ def test_roletest_fails_when_the_worker_never_acks(run, make_worker, conn) -> No
     assert conn.execute("SELECT status FROM jobs").fetchone()["status"] == "cancelled", "the sleep job is cleaned up on timeout"
     code, _, err = run("roletest", "w_nope")
     assert code == 1 and "worker not found" in err
+
+
+def test_ingest_games_from_a_file_and_models_table(run, conn) -> None:
+    from tests.conftest import FIXTURE_GAMES, backtest_metrics, insert_model
+
+    code, out, _ = run("ingest-games", "--file", str(FIXTURE_GAMES))
+    assert code == 0, out
+    assert out.startswith("ingested 2761 rows from ") and "2761 inserted, 0 changed; last complete season 2025" in out
+    assert conn.execute("SELECT count(*) AS n FROM games").fetchone()["n"] == 2761
+    code, out, _ = run("ingest-games", "--file", str(FIXTURE_GAMES))
+    assert code == 0 and "0 inserted, 0 changed" in out
+    code, _, err = run("ingest-games", "--file", "/nonexistent/games.csv")
+    assert code == 1 and "cannot read" in err
+    code, out, _ = run("models")
+    assert code == 0 and out.splitlines()[0].split() == [
+        "rank", "id", "status", "family", "params", "roi", "bets", "log_loss", "market", "drawdown", "seasons", "rows",
+    ]
+    assert len(out.splitlines()) == 1
+    top = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=300, roi=0.05), status="paper_ok")
+    insert_model(conn, params={"k": 21.0}, metrics=backtest_metrics(n_bets=10, roi=0.5))
+    code, out, _ = run("models")
+    lines = out.splitlines()
+    assert code == 0 and len(lines) == 3
+    assert lines[1].split()[:4] == ["1", str(top["id"])[:8], "paper_ok", "elo_blend"] and "K 20 · HFA 50 · MOV off" in lines[1]
+    assert lines[2].split()[0] == "-" and "candidate" in lines[2]

@@ -39,3 +39,9 @@ class Conflict(QueueError):
     """Lease token mismatch or wrong job status."""
 
     status = 409
+
+
+class Upstream(QueueError):
+    """An external source (nflverse) could not be fetched."""
+
+    status = 502

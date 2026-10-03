@@ -31,6 +31,7 @@ STATUS_TEXT = {
     409: "Conflict",
     413: "Too large",
     500: "Server error",
+    502: "Upstream unavailable",
 }
 FLASH_COOKIE = "flash"
 FLASH_MAX_AGE = 60
@@ -50,6 +51,16 @@ def pct(value: Any) -> str:
         return f"{int(round(float(value or 0) * 100))}%"
     except (TypeError, ValueError):
         return "0%"
+
+
+def pct1(value: Any) -> str:
+    """0.004 -> "0.4%"; "-" when missing (a null drawdown is not 0%)."""
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        return f"{100 * float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "-"
 
 
 def gb(value: Any) -> str:
@@ -118,12 +129,40 @@ def short(value: Any, length: int = 8) -> str:
     return str(value or "")[:length]
 
 
+def fixed(value: Any, digits: int = 3) -> str:
+    """A metric with a fixed number of decimals; "-" when missing."""
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        return f"{float(value):.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def signed_pct(value: Any, digits: int = 1) -> str:
+    """0.021 -> "+2.1%"; "-" when missing."""
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        return f"{100 * float(value):+.{digits}f}%"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def season_span(seasons: Any) -> str:
+    """[2010, ..., 2025] -> "2010-2025"; "-" when empty."""
+    if isinstance(seasons, (list, tuple)) and seasons:
+        return f"{seasons[0]}-{seasons[-1]}" if len(seasons) > 1 else str(seasons[0])
+    return "-"
+
+
 def make_env() -> Environment:
     """Autoescaping environment with the dashboard filters."""
     env = Environment(loader=FileSystemLoader(str(TEMPLATES_DIR)), autoescape=True, trim_blocks=True, lstrip_blocks=True)
     env.filters.update(
-        {"money": format_cents, "dollars": cents_to_dollars, "pct": pct, "gb": gb, "ago": ago,
-         "ts": ts, "pretty_json": pretty_json, "compact_json": compact_json, "short": short}
+        {"money": format_cents, "dollars": cents_to_dollars, "pct": pct, "pct1": pct1, "gb": gb, "ago": ago,
+         "ts": ts, "pretty_json": pretty_json, "compact_json": compact_json, "short": short,
+         "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span}
     )
     return env
 

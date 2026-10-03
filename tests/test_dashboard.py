@@ -9,7 +9,10 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from host.api.app import create_app
-from tests.conftest import flash_cookie, heartbeat_body, job_row, set_heartbeat_age, worker_row
+from tests.conftest import (
+    FIXTURE_GAMES, backtest_metrics, flash_cookie, heartbeat_body, ingest_fixture, insert_model, job_row, lease_job,
+    model_row, set_heartbeat_age, worker_row,
+)
 
 
 def test_every_page_renders(client, make_worker):
@@ -115,7 +118,7 @@ def test_send_job_form_and_cancel(client, conn, make_worker):
     html = client.get("/jobs").text
     assert '<option value="any_idle">Any idle worker</option>' in html
     assert f'<option value="{w.id}">box1</option>' in html
-    assert '<option value="backtest" disabled>backtest (step 3)</option>' in html
+    assert 'id="backtest"' in html and 'id="model_search"' in html and 'id="train"' in html and 'id="sleep"' in html
     assert 'name="seconds" value="60"' in html
     r = client.post("/jobs", data={"kind": "sleep", "seconds": "7", "target": "any_idle"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/jobs" and flash_cookie(r).startswith("sleep job ")
@@ -279,13 +282,16 @@ def test_timestamps_follow_the_owner_time_zone(client, conn):
 def test_settings_inputs_open_the_number_keyboard(client):
     """MEDIUM: every numeric field carries an inputmode; the tz field does not."""
     html = client.get("/settings").text
-    decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction")
-    numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries")
+    decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction",
+               "taker_rate", "half_spread", "min_roi", "max_drawdown")
+    numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries",
+               "min_bets", "seasons_first", "seasons_last", "nflverse_refresh_hours")
     for name in decimal:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="decimal"', html), name
     for name in numeric:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="numeric"', html), name
     assert re.search(r'<input type="text" name="tz" value="[^"]*" autocomplete="off">', html)
+    assert re.search(r'<input type="text" name="nflverse_url" value="https://[^"]*" autocomplete="off">', html)
     assert html.count("inputmode=") == len(decimal) + len(numeric)
 
 
@@ -371,3 +377,262 @@ def test_chunked_body_over_the_limit_is_refused(client):
     r = client.post("/api/kill/reset", content=b"x" * 300_000, headers={"Content-Type": "application/json"})
     assert r.status_code == 413 and r.json() == {"detail": "request body too large"}
     assert client.get("/api/settings").json()["kill_switch"] is True
+
+
+# ------------------------------------------------------------------ step 3: models and job forms
+
+
+def test_models_page_renders_ranked_rows_and_attribution(client, conn):
+    html = client.get("/models").text
+    assert "No models yet. Send a model search" in html and "CC BY 4.0" in html and "nflverse" in html
+    assert 'id="unranked"' not in html and 'id="ranked"' not in html and "<table" not in html
+    only_unranked = insert_model(conn, params={"k": 19.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
+    html = client.get("/models").text
+    assert "No lineage has 50 backtest bets yet, so none is ranked." in html and "No models yet" not in html
+    assert 'id="ranked"' not in html and 'id="unranked"' in html, "no empty ranked header above the unranked table"
+    conn.execute("DELETE FROM models WHERE id = %s", (only_unranked["id"],))
+    best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, log_loss=0.65, market_log_loss=0.659, max_drawdown=0.14, seasons=[2016, 2017, 2018, 2019]), status="paper_ok", summary="Best lineage.")
+    insert_model(conn, parent=best, trained_through=[2024, 10])
+    second = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=120, roi=0.03))
+    few = insert_model(conn, params={"k": 31.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
+    none = insert_model(conn, params={"k": 32.0}, summary="<b>bold</b>")
+    html = client.get("/models").text
+    rows = re.findall(r'<tr class="model-row" data-model="([^"]+)">', html)
+    assert rows == [str(best["id"]), str(second["id"]), str(none["id"]), str(few["id"])], "ranked first, then unranked newest first"
+    ranked = html.split('id="unranked"')[0]
+    assert str(few["id"]) not in ranked and 'id="unranked"' in html
+    assert "#1" in ranked and "#2" in ranked
+    assert '<span class="badge st-paper_ok">paper ok</span>' in ranked and '<span class="badge st-candidate">candidate</span>' in html
+    assert "K 20 · HFA 50 · MOV on" in ranked and "K 30 · HFA 60 · MOV off" in ranked
+    assert "+5.0%" in ranked and ">400<" not in ranked and "400" in ranked and "0.650" in ranked and "vs 0.659" in ranked
+    assert "14.0%" in ranked and "2016-2019" in ranked and "Best lineage." in ranked and '<span class="chip">2 rows</span>' in ranked
+    assert f'href="/jobs?train_model={best["id"]}#train"' in ranked and ">Train</a>" in ranked
+    assert 'disabled title="comes with step 4">Assign <small>step 4</small></button>' in ranked
+    assert f'action="/models/{best["id"]}/summary"' in ranked and 'maxlength="600"' in ranked
+    assert "&lt;b&gt;bold&lt;/b&gt;" in html and "<b>bold</b>" not in html
+    assert "No summary yet." in html
+    assert 'class="attribution' in html and "creativecommons.org/licenses/by/4.0" in html
+    assert '<a href="/models" class="active">Models</a>' in html and "step 3" not in html
+
+
+def test_model_detail_page(client, conn, make_worker):
+    root = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, per_season=[
+        {"season": 2016, "n_games": 200, "n_bets": 50, "roi": 0.02, "pnl_cents": 1200, "log_loss": 0.66, "market_log_loss": 0.655, "max_drawdown": 0.05},
+        {"season": 2017, "n_games": 210, "n_bets": 60, "roi": -0.01, "pnl_cents": -700, "log_loss": 0.67, "market_log_loss": 0.665, "max_drawdown": 0.08},
+    ]), status="paper_ok", summary="Root summary.")
+    w = make_worker("box1", role="train")
+    job = lease_job(conn, w, "train", {"model_id": str(root["id"]), "through": {"season": 2024, "week": 10}})
+    child = insert_model(conn, parent=root, trained_through=[2024, 10])
+    conn.execute("UPDATE models SET created_by_job_id = %s WHERE id = %s", (job["id"], child["id"]))
+    r = client.post("/api/jobs", json={"kind": "backtest", "params": {"model_id": str(root["id"])}})
+    assert r.status_code == 201, r.text
+    bt = r.json()
+    html = client.get(f"/models/{root['id']}").text
+    assert "<h1>elo_blend" in html and "K 20 · HFA 50 · MOV on" in html and 'badge st-paper_ok' in html
+    assert str(root["lineage_id"]) in html and '<span class="chip">root</span>' in html and "Root summary." in html
+    assert "&#34;hfa&#34;: 50.0" in html, "params are shown as JSON"
+    assert ">400<" in html and "+5.0%" in html and "2016-2018" in html
+    assert "per season" in html and ">2016<" in html and ">2017<" in html and "-1.0%" in html and "-$7.00" in html
+    assert "calibration" in html and "0.0-0.1" in html and "0.9-1.0" in html
+    assert f'href="/models/{child["id"]}"' in html and "2024 week 10" in html and f'href="/jobs/{job["id"]}"' in html
+    assert f'href="/jobs/{bt["id"]}"' in html and "ran against it" in html and "created this model" not in html
+    assert f'action="/models/{root["id"]}/retire"' in html and 'data-confirm="Retire this whole lineage?' in html
+    assert f'href="/jobs?train_model={root["id"]}#train"' in html and f'action="/models/{root["id"]}/summary"' in html
+    child_html = client.get(f"/models/{child['id']}").text
+    assert f'href="/models/{root["id"]}">{str(root["id"])[:8]}</a>' in child_html and "(this)" in child_html
+    assert "No backtest metrics yet" not in child_html, "a child shows the lineage metrics"
+    assert "created this model" in child_html and f'href="/jobs/{job["id"]}"' in child_html
+    empty = insert_model(conn, params={"k": 40.0})
+    assert "No backtest metrics yet" in client.get(f"/models/{empty['id']}").text
+    assert client.get("/models/not-a-model").status_code == 404
+    # The retire form retires the lineage and redirects back with a flash.
+    r = client.post(f"/models/{child['id']}/retire", data={"next": f"/models/{child['id']}"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/models/{child['id']}" and "retired" in flash_cookie(r)
+    assert model_row(conn, root["id"])["status"] == "retired"
+    assert "retire" not in client.get(f"/models/{root['id']}").text.split("<h2>summary</h2>")[0].split("</h1>")[1].lower().replace("retired", "")
+
+
+def test_summary_edit_form(client, conn):
+    root = insert_model(conn, summary="old")
+    r = client.post(f"/models/{root['id']}/summary", data={"summary": "A new summary.", "next": "/models"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/models" and flash_cookie(r) == f"summary of {str(root['id'])[:8]} saved"
+    assert model_row(conn, root["id"])["summary"] == "A new summary."
+    assert "A new summary." in client.get("/models").text
+    r = client.post(f"/models/{root['id']}/summary", data={"summary": "x" * 601, "next": f"/models/{root['id']}"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == f"/models/{root['id']}" and "not saved" in flash_cookie(r) and "600" in flash_cookie(r)
+    assert model_row(conn, root["id"])["summary"] == "A new summary."
+    r = client.post(f"/models/{root['id']}/summary", data={"summary": "x", "next": "//evil.example"}, follow_redirects=False)
+    assert r.headers["location"] == "/models"
+    assert client.post("/models/not-a-model/summary", data={"summary": "x"}, follow_redirects=False).status_code == 404
+    assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'model_summary'").fetchone()["n"] == 2
+
+
+def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
+    w = make_worker("box1")
+    ingest_fixture(conn)
+    model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1})
+    html = client.get("/jobs").text
+    assert html.count('action="/jobs"') == 4 and html.count('<option value="any_idle">Any idle worker</option>') == 4
+    assert 'name="seasons_first" value="2010"' in html and 'name="seasons_last" value=""' in html
+    assert 'name="n" value="200"' in html and 'name="top_k" value="5"' in html and 'name="through_season" value="2025"' in html
+    assert f'<option value="{model["id"]}">K 20 · HFA 50 · MOV on · untrained · {str(model["id"])[:8]}</option>' in html
+    assert '<option value="elo_blend" selected>elo_blend</option>' in html
+    # Backtest by family + params.
+    r = client.post("/jobs", data={"kind": "backtest", "model_id": "", "family": "elo_blend", "params": '{"k": 22}',
+                                   "seasons_first": "2018", "seasons_last": "", "target": "any_idle"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/jobs" and flash_cookie(r).startswith("backtest job ")
+    job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+    assert job["kind"] == "backtest" and job["params"]["family"] == "elo_blend" and job["params"]["params"] == {"k": 22}
+    assert job["params"]["seasons"] == [2018, 2025] and job["params"]["backtest_seasons"] == [2010, 2025]
+    assert job["target_worker_id"] == w.id and worker_row(conn, w.id)["desired_role"] == "backtest"
+    # Backtest by model.
+    r = client.post("/jobs", data={"kind": "backtest", "model_id": str(model["id"]), "family": "elo_blend", "params": "{}",
+                                   "seasons_first": "", "seasons_last": "", "target": w.id}, follow_redirects=False)
+    assert r.status_code == 303
+    job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+    assert job["params"]["model_id"] == str(model["id"]) and "family" not in job["params"] and "seasons" not in job["params"]
+    # Model search.
+    r = client.post("/jobs", data={"kind": "model_search", "family": "elo_blend", "n": "50", "seed": "7", "seasons_first": "2016",
+                                   "seasons_last": "2019", "top_k": "3", "target": "any_idle"}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r).startswith("model_search job ")
+    job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+    assert job["kind"] == "model_search" and job["role"] == "model_search"
+    assert job["params"]["n"] == 50 and job["params"]["seed"] == 7 and job["params"]["top_k"] == 3 and job["params"]["seasons"] == [2016, 2019]
+    # Train, prefilled from the models page link.
+    html = client.get(f"/jobs?train_model={model['id']}").text
+    assert f'<option value="{model["id"]} selected>' in html.replace('" selected>', ' selected>')
+    r = client.post("/jobs", data={"kind": "train", "model_id": str(model["id"]), "through_season": "2024", "through_week": "10",
+                                   "target": "any_idle"}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r).startswith("train job ")
+    job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+    assert job["kind"] == "train" and job["params"] == {
+        "model_id": str(model["id"]), "through": {"season": 2024, "week": 10}, "fee_model": {"taker_rate": 0.05, "half_spread": 0.01},
+        "default_bankroll_cents": 10000, "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2025],
+    }
+    listing = client.get("/jobs").text
+    assert "elo_blend n 50" in listing and listing.count('<tr>') == 5
+
+
+def test_invalid_job_params_rerender_with_an_inline_error(client, conn):
+    base = {"kind": "backtest", "model_id": "", "family": "elo_blend", "params": "{}", "seasons_first": "", "seasons_last": "", "target": "any_idle"}
+    for data, message in [
+        ({**base, "params": "not json"}, "Params must be a JSON object"),
+        ({**base, "params": "[1]"}, "Params must be a JSON object"),
+        ({**base, "params": '{"k": "x"}'}, "params.k must be a number"),
+        ({**base, "seasons_first": "abc"}, "First season must be a whole number"),
+        ({**base, "seasons_first": "2020", "seasons_last": "2010"}, "seasons last must not be before first"),
+        ({**base, "seasons_last": "2020"}, "First season is required"),
+        ({**base, "model_id": "00000000-0000-0000-0000-000000000000"}, "unknown model"),
+        ({"kind": "model_search", "family": "elo_blend", "n": "0", "target": "any_idle"}, "n must be between 1 and 5000"),
+        ({"kind": "model_search", "family": "elo_blend", "n": "1.5", "target": "any_idle"}, "Candidates must be a whole number"),
+        ({"kind": "train", "model_id": "", "through_season": "2024", "through_week": "", "target": "any_idle"}, "Through season and week are required"),
+        ({"kind": "train", "model_id": "garbage", "through_season": "2024", "through_week": "3", "target": "any_idle"}, "model_id must be a uuid"),
+        ({"kind": "sleep", "seconds": "0", "target": "any_idle"}, "seconds must be between 1 and 86400"),
+    ]:
+        r = client.post("/jobs", data=data, follow_redirects=False)
+        assert r.status_code == 400 and r.headers["content-type"].startswith("text/html"), data
+        assert f'<p class="error inline-error">{message}' in r.text, (data, message)
+        assert 'id="fleet-grid"' not in r.text and 'action="/jobs"' in r.text, "the jobs page is re-rendered"
+        if data["kind"] == "backtest":
+            assert f'name="params" rows="2">{data["params"]}</textarea>' in r.text.replace("&#34;", '"'), "submitted values are kept"
+            assert r.text.index('inline-error') < r.text.index('id="model_search"'), "the error sits in the posted form"
+        if data["kind"] == "sleep":
+            assert 'id="sleep" open>' in r.text
+    assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 0, "nothing was created"
+
+
+def test_job_detail_renders_result_tables_and_model_links(client, conn, make_worker):
+    w = make_worker("box1", role="backtest")
+    model = insert_model(conn)
+    metrics = backtest_metrics(n_bets=300, roi=0.04, per_season=[
+        {"season": 2016, "n_games": 100, "n_bets": 30, "roi": 0.1, "pnl_cents": 3000, "log_loss": 0.66, "market_log_loss": 0.66, "max_drawdown": 0.03},
+    ])
+    bt = client.post("/api/jobs", json={"kind": "backtest", "params": {"model_id": str(model["id"])}, "target": w.id}).json()
+    conn.execute("UPDATE jobs SET status = 'succeeded', result = %s, progress = 1 WHERE id = %s", (__import__("psycopg").types.json.Jsonb(metrics), bt["id"]))
+    html = client.get(f"/jobs/{bt['id']}").text
+    assert f'href="/models/{model["id"]}"' in html and ">300<" in html and "+4.0%" in html and ">2016<" in html and "+10.0%" in html
+    assert "raw result" in html and 'class="table-wrap"' in html
+    top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": 0.03, "metrics": backtest_metrics(n_bets=200, roi=0.045)},
+           {"index": 1, "params": {"k": 25.0, "hfa": 40.0, "mov_scale": 0}, "score": 0.01, "metrics": backtest_metrics(n_bets=100, roi=0.02)}]
+    created = [{"id": str(model["id"]), "lineage_id": str(model["id"]), "created": False}, {"id": "00000000-0000-0000-0000-0000000000aa", "lineage_id": "x", "created": True}]
+    ms = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 2}}).json()
+    conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (__import__("psycopg").types.json.Jsonb({"evaluated": 2, "seasons": [2016, 2017], "top": top, "created_models": created}), ms["id"]))
+    html = client.get(f"/jobs/{ms['id']}").text
+    assert "K 20 · HFA 50 · MOV on" in html and "K 25 · HFA 40 · MOV off" in html and "+4.5%" in html
+    assert f'href="/models/{model["id"]}">{str(model["id"])[:8]}</a>' in html and "0000000000aa" not in html.split("raw result")[0].replace('href="/models/00000000-0000-0000-0000-0000000000aa">00000000', "")
+    assert f'<a class="btn small" href="/models/{model["id"]}">{str(model["id"])[:8]} (existing)</a>' in html
+    assert "2 candidates evaluated over 2016-2017" in html
+
+
+def test_phone_layout_rules(client, conn):
+    """Tables stack on a phone (no horizontal scroll at 390 px) and tap targets stay 44 px."""
+    insert_model(conn, metrics=backtest_metrics())
+    css = client.get("/static/style.css").text
+    assert "--tap: 44px" in css and "@media (max-width: 700px)" in css
+    assert "table.models td.action .btn { flex: 1; min-height: var(--tap); }" in css
+    assert ".send-grid { grid-template-columns: 1fr; }" in css
+    for path in ("/models", "/jobs"):
+        html = client.get(path).text
+        tables = re.findall(r"<table class=\"([^\"]+)\"", html)
+        assert tables and all("stack" in t for t in tables), (path, tables)
+        assert html.count("<table") == html.count('<div class="table-wrap">'), path
+        assert 'width=device-width' in html
+    assert "min-height: var(--tap)" in css.split("@media (max-width: 700px)")[1]
+
+
+def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
+    """MEDIUM: the whole-backtest metrics are labelled pairs (no sideways scroll on a
+    phone) and the per-season and top-list tables stack like the leaderboard."""
+    w = make_worker("box1", role="backtest")
+    model = insert_model(conn, metrics=backtest_metrics(n_bets=0, roi=0.0, max_drawdown=0.004, per_season=[
+        {"season": 2016, "n_games": 100, "n_bets": 0, "roi": 0.0, "pnl_cents": 0, "log_loss": 0.66, "market_log_loss": 0.66, "max_drawdown": None},
+    ]))
+    html = client.get(f"/models/{model['id']}").text
+    assert '<dl class="kv metrics">' in html and '<dt>log-loss vs market</dt><dd>0.660 <span class="muted">vs 0.659</span></dd>' in html
+    assert '<table class="metrics per-season stack">' in html and '<span class="k">drawdown</span> -' in html
+    assert "<dt>ROI</dt><dd>-</dd>" in html and "<dt>hit rate</dt><dd>-</dd>" in html and "<dt>avg edge</dt><dd>-</dd>" in html, "no bets: no ROI, hit rate or edge"
+    assert "<dt>max drawdown</dt><dd>0.4%" in html, "a 0.4% drawdown is not rounded to 0%"
+    assert "+0.0%" not in html.split("<h2>lineage</h2>")[0]
+    assert 'class="btn soon" disabled title="comes with step 4">Assign' in html
+    assert '<details class="edit">' in html and html.count("No summary yet.") == 1, "the summary editor is folded"
+    assert "<dt>shrunk ROI</dt><dd>+0.00%" in html
+    tables = re.findall(r"<table class=\"([^\"]+)\"", html)
+    assert all("stack" in t for t in tables if "calibration" not in t), tables
+    # The leaderboard row: "-" for ROI without bets, one-decimal drawdown.
+    row = client.get("/models").text
+    assert '<span class="k">ROI</span> -' in row and '<span class="k">drawdown</span> 0.4%' in row
+    assert 'class="btn small soon" disabled' in row
+    # The search result page: a stacked top list with a shrunk ROI percentage.
+    top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": -0.0103, "metrics": backtest_metrics(n_bets=5, roi=-0.355, max_drawdown=0.5)}]
+    ms = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 1}, "target": w.id}).json()
+    conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (__import__("psycopg").types.json.Jsonb({"evaluated": 1, "seasons": [2016], "top": top, "created_models": []}), ms["id"]))
+    html = client.get(f"/jobs/{ms['id']}").text
+    assert '<table class="metrics top stack">' in html and "<th>shrunk ROI</th>" in html
+    assert '<span class="k">shrunk ROI</span> -1.03%' in html and '<span class="k">ROI</span> -35.5%' in html and '<span class="k">drawdown</span> 50.0%' in html
+    assert '<td class="lead"><span class="rank">#1</span> K 20 · HFA 50 · MOV on</td>' in html
+    bt = client.post("/api/jobs", json={"kind": "backtest", "params": {"model_id": str(model["id"])}, "target": w.id}).json()
+    conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (__import__("psycopg").types.json.Jsonb(backtest_metrics(n_bets=300, roi=0.04, per_season=[{"season": 2016, "n_games": 100, "n_bets": 30, "roi": 0.1, "pnl_cents": 3000, "log_loss": 0.66, "market_log_loss": 0.66, "max_drawdown": 0.03}])), bt["id"]))
+    html = client.get(f"/jobs/{bt['id']}").text
+    assert '<dl class="kv metrics">' in html and '<table class="metrics per-season stack">' in html and "<dt>hit rate</dt><dd>52.0%</dd>" in html
+    css = client.get("/static/style.css").text
+    assert "table.stack .k { display: inline; }" in css and "table.metrics.stack td { white-space: normal; }" in css
+    assert ".kv { display: grid;" in css and ".chip {" in css and "white-space: nowrap; }" in css.split(".chip {")[1].split("\n")[0]
+    assert ".btn.soon[disabled] { opacity: 1; color: var(--muted); border-style: dashed; }" in css
+
+
+def test_send_cards_fold_so_the_job_list_is_near_the_top(client, conn):
+    """MEDIUM: each send form is a details card; only the relevant one is open."""
+    model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, trained_through=[2024, 18])
+    html = client.get("/jobs").text
+    assert '<details class="card send" id="backtest" open>' in html
+    assert '<details class="card send" id="model_search">' in html and '<details class="card send" id="train">' in html
+    assert html.count("<summary><h2>") == 3 and "<summary>Sleep test job</summary>" in html
+    assert html.index('<table class="jobs stack">') > html.index('id="train"')
+    assert f'K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model["id"])[:8]}</option>' in html, "the select label fits a phone"
+    html = client.get(f"/jobs?train_model={model['id']}").text
+    assert '<details class="card send" id="train" open>' in html and '<details class="card send" id="backtest">' in html
+    r = client.post("/jobs", data={"kind": "model_search", "family": "elo_blend", "n": "0", "target": "any_idle"}, follow_redirects=False)
+    assert r.status_code == 400 and '<details class="card send" id="model_search" open>' in r.text
+    assert '<details class="card send" id="backtest">' in r.text
+    insert_model(conn, family="elo_blend", params={"k": 21.0})
+    assert "elo_blend · K 21" not in client.get("/jobs").text, "one family: no family prefix"

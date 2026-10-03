@@ -11,6 +11,9 @@ DEFAULT_STATE_DIR = "/var/lib/fleet"
 CONF_NAME = "worker.conf"
 STATUS_NAME = "status.json"
 PENDING_POSTS_NAME = "pending_posts.json"
+CACHE_DIR_NAME = "cache"
+GAMES_CACHE_NAME = "games.json"
+GAMES_ETAG_NAME = "games.etag"
 
 
 class ConfMissing(Exception):
@@ -36,6 +39,20 @@ def app_dir(directory: str) -> str:
 
 def pending_posts_path(directory: str) -> str:
     return os.path.join(directory, PENDING_POSTS_NAME)
+
+
+def cache_dir(directory: str) -> str:
+    return os.path.join(directory, CACHE_DIR_NAME)
+
+
+def games_cache_path(directory: str) -> str:
+    """<state>/cache/games.json: the games rows handed to runners as games_path."""
+    return os.path.join(cache_dir(directory), GAMES_CACHE_NAME)
+
+
+def games_etag_path(directory: str) -> str:
+    """<state>/cache/games.etag: the ETag of the cached games.json."""
+    return os.path.join(cache_dir(directory), GAMES_ETAG_NAME)
 
 
 def _write_private_json(path: str, data: Any, mode: int) -> None:
@@ -115,6 +132,11 @@ def save_pending_posts(directory: str, posts: list[dict[str, Any]]) -> None:
         _write_private_json(path, posts, 0o600)
     except OSError:
         pass
+
+
+def write_json_atomic(path: str, data: Any, mode: int = 0o644) -> None:
+    """Public atomic JSON writer (the games cache uses it)."""
+    _write_private_json(path, data, mode)
 
 
 def load_pending_posts(directory: str) -> list[dict[str, Any]]:

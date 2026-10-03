@@ -127,6 +127,30 @@ docker compose exec host python -m host.cli roletest <worker>
 6. Limits and audit. In Settings change a limit, for example max bet from 25 to 20 dollars, and save. The Audit log at the bottom of the Settings page gets a new row with the time, your login, the action and the entity. The kill presses and the reset from step 5 are in the same log.
 7. Enroll token. In Settings press "New enroll token". The page shows the token once with the two install one-liners and a Copy button.
 
+## How to test step 3
+
+Needs at least one idle worker, installed as in step 1. Commands run on the host.
+
+1. Ingest games. Either run the command, or press the "Refresh now" button in the nflverse games section of Settings:
+
+```powershell
+docker compose exec host python -m host.cli ingest-games
+```
+
+   It downloads the nflverse schedule file (games from 1999 on, with closing moneylines and spreads) and stores it in the host database (the `games` table). Workers fetch it from the host (`GET /api/v1/data/games`, cached on the worker with an ETag), never from the internet.
+2. Send a model search. On the Jobs page create a `model_search` job with family `elo_blend`, n 50, seed 1, seasons 2012 to the last completed season, target any idle worker. Go to the Fleet page: the chosen card flips to `model_search` and its progress bar climbs, one step per candidate and test season.
+3. When it finishes, open Models. Five new candidates appear, each with a three-sentence summary, ROI, bets, and log-loss against the market. The worker card returns to `idle` on its own.
+4. Click one candidate and read the per-season table (bets, ROI, log-loss, drawdown for each test season).
+5. Press Train and accept the default (through the last complete season, week 22). A child row appears in the same lineage, with the parent's backtest metrics and a trained-through label.
+6. Send a backtest for one model to a chosen box from the Jobs page (target: that worker). When it ends, open the job detail page and read the metrics in the result.
+7. Resume elsewhere. Start another model search, and while it runs move its worker to another role (Fleet page dropdown, or `python -m host.cli role <worker> train`). The job goes back to `queued` with its checkpoint, an idle or model_search-role worker picks it up, and it repeats at most one candidate-season of work.
+
+**Read the numbers honestly.** Backtests here use sportsbook closing lines from nflverse, which are sharp and already efficient. An ROI near zero or slightly negative is normal and expected, and a model that beats it by a wide margin is more likely overfit than good. These backtests measure calibration and discipline (does the model add anything to the market price, and does it bet sensibly), not true edge. The real test is paper trading on live Polymarket prices in step 4, where closing line value is measured. Only lineages whose backtest clears the thresholds in Settings become `paper_ok`, and nothing trades real money before step 5.
+
+## Data
+
+Game schedules, scores and closing lines come from [nflverse](https://github.com/nflverse/nflverse-data) (`games.csv`), licensed CC BY 4.0. Attribution: "Data: nflverse (https://nflverse.com), CC BY 4.0." It is also shown on the Models page.
+
 ## Development
 
 ```bash
@@ -143,7 +167,7 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
 
 1. [x] Step 1: fleet core (queue, leases, worker agent, installer, owner API, host in Docker)
 2. [x] Step 2: dashboard fleet cards, role handshake, drain and watchdog, settings page, kill flag
-3. [ ] Step 3: nflverse data, models, backtest / search / train jobs, leaderboard
+3. [x] Step 3: nflverse data, models, backtest / search / train jobs, leaderboard
 4. [ ] Step 4: fleet-exchange, paper trading, approval limits, ledger, scoring
 5. [ ] Step 5: Polymarket US live adapter, live switch, smoke order
 

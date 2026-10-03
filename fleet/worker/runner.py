@@ -6,7 +6,13 @@ and prints one JSON object per line on stdout:
   {"done": true, "result": {...}}            on success
   {"stopped": true, "checkpoint": {...}, "progress": 0.42}   after SIGTERM
   {"error": "..."}                           on failure
-Every line is flushed. The process exits 0 in all cases.
+Every line is flushed. The process exits 0 in all cases. The job's "context" (the
+agent's games cache path and model, step 3) is merged into the params the job function
+receives as params["_context"]; params are otherwise untouched.
+
+Test hook: env FLEET_TEST_JOBS="module:attr" names a dict of extra job functions that
+the child merges over the registry (tests inject kinds that echo their inputs instead
+of running the real backtest).
 
 Parent: Runner starts the child, keeps the last checkpoint/progress/result/error it
 printed and can stop (SIGTERM, grace, SIGKILL) or kill it.
@@ -14,6 +20,7 @@ printed and can stop (SIGTERM, grace, SIGKILL) or kill it.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
@@ -45,9 +52,30 @@ def _read_job() -> dict[str, Any]:
     return job
 
 
+def _registry() -> dict[str, Any]:
+    """The job registry, with the FLEET_TEST_JOBS extras merged over it."""
+    from fleet.worker.jobs import JOBS
+
+    jobs: dict[str, Any] = dict(JOBS)
+    spec = os.environ.get("FLEET_TEST_JOBS", "").strip()
+    if spec:
+        module_name, _, attr = spec.partition(":")
+        extra = getattr(importlib.import_module(module_name), attr or "TEST_JOBS")
+        jobs.update(extra)
+    return jobs
+
+
+def _params_with_context(job: dict[str, Any]) -> dict[str, Any]:
+    """A copy of the job's params with job["context"] merged in as params["_context"]."""
+    params = dict(job.get("params") or {})
+    if isinstance(job.get("context"), dict):
+        params["_context"] = job["context"]
+    return params
+
+
 def run_child() -> int:
     """Entry point of the child process. Returns the exit code (always 0)."""
-    from fleet.worker.jobs import JOBS, JobStopped
+    from fleet.worker.jobs import JobStopped
 
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda signum, frame: stop.set())
@@ -60,12 +88,16 @@ def run_child() -> int:
         return 0
 
     kind = job.get("kind")
-    func = JOBS.get(kind) if isinstance(kind, str) else None
+    try:
+        func = _registry().get(kind) if isinstance(kind, str) else None
+    except Exception as exc:
+        _print_line({"error": f"job registry unavailable: {exc}"})
+        return 0
     if func is None:
         _print_line({"error": f"unknown job kind: {kind!r}"})
         return 0
 
-    params = job.get("params") or {}
+    params = _params_with_context(job)
     checkpoint = job.get("checkpoint")
     if not isinstance(checkpoint, dict):
         checkpoint = None
@@ -169,6 +201,7 @@ class Runner:
             "kind": self.job.get("kind"),
             "params": self.job.get("params") or {},
             "checkpoint": self.job.get("checkpoint"),
+            "context": self.job.get("context"),
         }
         assert self._proc.stdin is not None
         try:

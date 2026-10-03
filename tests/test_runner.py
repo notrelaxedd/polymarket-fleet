@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from fleet.worker.runner import MODULE, Runner, child_env
+from tests.fake_host import TEST_JOBS_SPEC
 
 
 def _wait_finished(runner: Runner, timeout: float) -> None:
@@ -353,3 +354,56 @@ def test_process_mem_prefers_rollup_then_status(tmp_path) -> None:
     (d / "status").write_text("Name:\tx\nVmRSS:\t    5000 kB\n")
     assert sysinfo.process_mem_kb(str(d)) == 5000, "VmRSS as the last resort"
     assert sysinfo.process_mem_kb(str(tmp_path / "gone")) == 0
+
+
+# ------------------------------------------------- step 3: job context
+
+
+def _lines(proc: subprocess.CompletedProcess) -> list[dict]:
+    assert proc.returncode == 0, proc.stderr.decode()
+    return [json.loads(line) for line in proc.stdout.decode().splitlines() if line.strip()]
+
+
+def test_child_merges_context_into_params_and_leaves_the_rest_untouched(monkeypatch) -> None:
+    monkeypatch.setenv("FLEET_TEST_JOBS", TEST_JOBS_SPEC)
+    params = {"a": 1, "nested": {"b": [1, 2]}, "_context": "overwritten by the real context"}
+    job = {"id": "c1", "kind": "echo", "params": params, "checkpoint": None, "context": {"games_path": "/nope/games.json", "model": {"id": "m1"}}}
+    lines = _lines(_run_child(json.dumps(job).encode()))
+    assert lines[-1]["done"] is True
+    result = lines[-1]["result"]
+    assert result["params"] == {"a": 1, "nested": {"b": [1, 2]}}
+    assert result["has_context"] is True
+    assert result["context_keys"] == ["games_path", "model"]
+    assert result["model"] == {"id": "m1"}
+    assert result["games_rows"] is None, "a missing games file is reported, not fatal"
+
+
+def test_child_without_context_does_not_add_the_key(monkeypatch) -> None:
+    monkeypatch.setenv("FLEET_TEST_JOBS", TEST_JOBS_SPEC)
+    for job in ({"id": "c2", "kind": "echo", "params": {"x": 2}}, {"id": "c3", "kind": "echo", "params": {"x": 2}, "context": None}):
+        result = _lines(_run_child(json.dumps(job).encode()))[-1]["result"]
+        assert result["has_context"] is False
+        assert result["params"] == {"x": 2}
+
+
+def test_runner_passes_context_to_the_child(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("FLEET_TEST_JOBS", TEST_JOBS_SPEC)
+    games = tmp_path / "games.json"
+    games.write_text(json.dumps([{"game_id": "a"}, {"game_id": "b"}, {"game_id": "c"}]))
+    runner = Runner({"id": "c4", "kind": "backtest", "params": {"family": "elo_blend"}, "context": {"games_path": str(games), "model": None}})
+    runner.start()
+    _wait_finished(runner, 10.0)
+    assert runner.outcome == "done", runner.error
+    assert runner.result["games_rows"] == 3
+    assert runner.result["model"] is None
+    assert runner.result["params"] == {"family": "elo_blend"}
+    assert runner.snapshot()[0] == {"echoed": True}
+
+
+def test_test_jobs_hook_is_off_without_the_env(monkeypatch) -> None:
+    monkeypatch.delenv("FLEET_TEST_JOBS", raising=False)
+    lines = _lines(_run_child(json.dumps({"id": "c5", "kind": "echo", "params": {}}).encode()))
+    assert lines == [{"error": "unknown job kind: 'echo'"}]
+    monkeypatch.setenv("FLEET_TEST_JOBS", "tests.no_such_module:TEST_JOBS")
+    lines = _lines(_run_child(json.dumps({"id": "c6", "kind": "sleep", "params": {"seconds": 0}}).encode()))
+    assert len(lines) == 1 and "job registry unavailable" in lines[0]["error"]

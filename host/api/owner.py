@@ -12,6 +12,7 @@ from host.api.deps import DB, get_config, get_pool, require_owner
 from host.api.serialize import jsonable, public_worker
 from host.config import Config
 from host.errors import BadRequest
+from host.eligibility import recompute_all
 from host.settings import get_settings, set_settings
 
 router = APIRouter(prefix="/api", tags=["owner"], dependencies=[Depends(require_owner)])
@@ -142,7 +143,10 @@ def post_settings(
     body: dict[str, Any], actor: str = Depends(require_owner), conn: psycopg.Connection = DB
 ) -> dict[str, Any]:
     """Update settings; unknown keys, wrong types and out-of-range values are 400."""
-    return set_settings(conn, body, actor)
+    stored = set_settings(conn, body, actor)
+    if "thresholds_backtest" in body:
+        recompute_all(conn)
+    return stored
 
 
 @router.post("/kill")

@@ -23,6 +23,11 @@ with reason "oom" and the trip is counted in status.json.
 
 Kill flag: mirrors settings.kill_switch and only concerns the trade role. Batch
 roles keep claiming and running under kill; on_kill() is the step 4 hook.
+
+Step 3: before a backtest, model_search or train runner starts, fleet.worker.context
+refreshes the games cache and fetches the job's model into job["context"] (a failure
+fails the job); a result with create_models becomes a post sequence (fleet.worker.posts)
+that creates the models, posts backtest metrics and only then completes the job.
 """
 
 from __future__ import annotations
@@ -37,7 +42,8 @@ from typing import Any, Callable
 
 import fleet
 from fleet.common import http, sysinfo
-from fleet.worker import config, launch, update
+from fleet.worker import config, context, launch, posts, update
+from fleet.worker.posts import PendingPost
 from fleet.worker.runner import Runner
 from fleet.worker.watchdog import MemoryWatchdog
 
@@ -70,35 +76,6 @@ class RunningJob:
 
 
 @dataclass
-class PendingPost:
-    """A /complete or /fail call that has not been acknowledged yet."""
-
-    path: str
-    body: dict[str, Any]
-    job_id: str
-    progress: float = 0.0
-    attempts: int = 0
-
-    @property
-    def kind(self) -> str:
-        return self.path.rsplit("/", 1)[-1]
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"path": self.path, "body": self.body, "job_id": self.job_id, "progress": self.progress, "attempts": self.attempts}
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "PendingPost":
-        progress = data.get("progress")
-        return cls(
-            path=str(data["path"]),
-            body=dict(data["body"]),
-            job_id=str(data.get("job_id") or ""),
-            progress=float(progress) if isinstance(progress, (int, float)) else 0.0,
-            attempts=int(data.get("attempts") or 0),
-        )
-
-
-@dataclass
 class AgentOptions:
     """Knobs that tests override."""
 
@@ -112,6 +89,7 @@ class AgentOptions:
     watchdog_rss_fraction: float = 0.8
     ram_total_mb: int | None = None
     watchdog_interval: float = 1.0
+    data_timeout: float = 15.0
 
 
 def _utcnow_iso() -> str:
@@ -604,6 +582,13 @@ class Agent:
         lease = job.get("lease_seconds")
         if isinstance(lease, (int, float)) and lease > 0:
             self.lease_seconds = float(lease)
+        if context.needs_context(job.get("kind")):
+            try:
+                job = dict(job, context=self._build_context(job))
+            except context.ContextError as exc:
+                log.error("cannot build the context for job %s: %s", job_id, exc)
+                self._queue_post("fail", job_id, token, {"error": f"context unavailable: {exc}"}, 0.0)
+                return
         runner = Runner(job, python=self.options.python)
         try:
             runner.start()
@@ -613,6 +598,14 @@ class Agent:
             return
         self.running[job_id] = RunningJob(job=job, lease_token=token, runner=runner)
         log.info("started runner for %s job %s (pid %s, resume=%s)", job.get("kind"), job_id, runner.pid, job.get("checkpoint") is not None)
+
+    def _build_context(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Games cache path and model for a batch job (fleet.worker.context)."""
+        assert self.conf is not None
+        return context.build_context(
+            self.conf["host_url"], self.conf["worker_token"], self.state_dir, job,
+            timeout=self.options.http_timeout, data_timeout=max(self.options.http_timeout, self.options.data_timeout),
+        )
 
     def _rekey_finished(self, job_id: str, token: str) -> bool:
         """A job handed back that we already finished or released: carry the new lease
@@ -656,7 +649,7 @@ class Agent:
             del self.running[rj.job_id]
             checkpoint, progress, _ = rj.runner.snapshot()
             if outcome == "done":
-                self._queue_post("complete", rj.job_id, rj.lease_token, {"result": rj.runner.result}, 1.0)
+                self._queue_complete(rj)
                 queued += 1
             elif outcome == "error":
                 self._queue_post("fail", rj.job_id, rj.lease_token, {"error": rj.runner.error or "unknown error"}, progress)
@@ -682,6 +675,16 @@ class Agent:
             entry = self._release_entry(rj, "oom")
             log.warning("job %s released after the memory watchdog tripped (checkpoint kept: %s)", rj.job_id, entry["checkpoint"] is not None)
             self.pending_releases.append(entry)
+
+    def _queue_complete(self, rj: RunningJob) -> None:
+        """Queue the /complete of a finished runner behind its model posts, if any."""
+        post = posts.complete_post(rj.job, rj.lease_token, rj.runner.result)
+        if post.steps:
+            log.info("job %s -> %d model post(s), then complete", rj.job_id, len(post.steps))
+        else:
+            log.info("job %s -> complete", rj.job_id)
+        self.pending_posts.append(post)
+        self._save_pending_posts()
 
     def _queue_post(self, kind: str, job_id: str, lease_token: str, extra: dict[str, Any], progress: float) -> None:
         body = {"lease_token": lease_token}
@@ -711,21 +714,10 @@ class Agent:
 
     def _flush_posts_once(self) -> None:
         assert self.conf is not None
-        remaining: list[PendingPost] = []
-        for post in self.pending_posts:
-            post.attempts += 1
-            try:
-                http.post_json(self.conf["host_url"] + post.path, post.body, token=self.conf["worker_token"], timeout=self.options.http_timeout)
-            except http.HttpError as exc:
-                if exc.status >= 500:
-                    log.warning("%s for %s failed (%s, attempt %d); will retry", post.kind, post.job_id, exc.status, post.attempts)
-                    remaining.append(post)
-                else:
-                    log.warning("%s for %s refused (%s %s); dropping", post.kind, post.job_id, exc.status, exc.detail)
-            except http.HttpConnectionError as exc:
-                log.warning("%s for %s not delivered (attempt %d): %s", post.kind, post.job_id, post.attempts, exc)
-                remaining.append(post)
-        self.pending_posts = remaining
+        self.pending_posts = posts.flush_once(
+            self.pending_posts, self.conf["host_url"], self.conf["worker_token"],
+            self.options.http_timeout, self._save_pending_posts,
+        )
 
     def _save_pending_posts(self) -> None:
         config.save_pending_posts(self.state_dir, [p.to_dict() for p in self.pending_posts])

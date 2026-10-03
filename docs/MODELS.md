@@ -43,16 +43,18 @@ Elo: every team starts at 1500 (1999). Per game, expected home win probability
 `e = 1 / (1 + 10 ** (-(r_home + hfa + rest_adj - r_away) / 400))` where
 `rest_adj = rest_per_day * clamp(home_rest - away_rest, -3, 3)`. After the game, with
 `s = 1 (home win), 0.5 (tie), 0` and margin `m = |home_score - away_score|`:
-`mult = 1 if mov_scale == 0 else mov_scale * ln(m + 1) * 2.2 / (0.001 * d + 2.2)` where `d`
-is the winner's pre-game rating advantage including hfa (0 for ties);
+`mult = 1 if mov_scale == 0 else mov_scale * ln(max(m, 1) + 1) * 2.2 / (0.001 * d + 2.2)` where
+`d` is the winner's pre-game rating advantage including hfa (0 for ties); the margin is
+floored at 1 (as in the 538 reference) so a tie still moves the ratings by `k * ln 2 * (0.5 - e)`;
 `delta = k * mult * (s - e)`; `r_home += delta; r_away -= delta`. At each new season every
 rating regresses: `r = 1500 + (r - 1500) * (1 - regress)`.
 
 Blend: `logit(p) = a * logit(p_elo) + b * logit(p_market) + c`, with `a, b, c` fitted by
 Newton's method on the log-loss of the training games (L2 penalty 1e-3 on a and b, at most
 25 iterations, tolerance 1e-8; deterministic). `p_elo` for a training game is the Elo
-expectation before that game. The fit uses only games with moneylines strictly before the
-`through` point.
+expectation before that game. The fit uses the finished games with moneylines up to and
+including the `through` week (the same window the Elo replay sees), so a child trained
+through `(S, 22)` carries exactly the blend the backtest fold testing `S + 1` uses.
 
 Params and search space (uniform draws unless noted):
 `k [10, 40]`, `hfa [20, 90]`, `regress [0.1, 0.6]`, `rest_per_day [0, 4]`,
@@ -61,7 +63,11 @@ Params and search space (uniform draws unless noted):
 `params_hash` = sha256 of the canonical JSON (sorted keys, 6 decimals), first 16 hex.
 
 Artifact: `{"ratings": {team: float}, "blend": {"a", "b", "c"}, "through": [season, week],
-"games_seen": n}`.
+"season": s, "games_seen": n}`. `season` is the season the ratings sit in (the last one
+actually replayed, which is before `through[0]` when training through a season that has no
+games yet), so a reloaded model applies the between-season regression exactly once;
+`from_json` falls back to `through[0]` for an artifact without it. `games_seen` counts
+played games only (a schedule row without scores is not learned from).
 
 ## Backtest (`fleet/sim/backtest.py`)
 
@@ -95,7 +101,12 @@ roi = pnl / total_stake (0 if no bets), hit_rate, avg_edge, avg_stake_cents, log
 (same for `p_market`), `calibration` (10 buckets of `p`: count, mean p, mean outcome),
 `max_drawdown_cents` (largest peak-to-trough of cumulative pnl in game order),
 `max_drawdown = max_drawdown_cents / (default_bankroll_cents * trade_max_games)` (the
-capital one trade worker needs), `seasons` (list). Deterministic: no randomness anywhere.
+capital one trade worker needs; `null` when that capital is 0, for example while trading is
+paused with `trade_max_games 0`, so it never reads as a 0% drawdown and never passes the
+eligibility gate), `seasons` (list), `blend` (the fitted `{a, b, c}` of that
+season's fold; the whole-backtest value is the last fold's, so `summary` can state the
+closing-line weight from params and metrics alone). `n_games` counts scored games (both
+moneylines present). Deterministic: no randomness anywhere.
 
 ## Model search (`fleet/sim/search.py`)
 
@@ -114,17 +125,23 @@ PROTOCOL step 3) and replaces them with ids in the result it completes with.
 
 Params: `model_id, through {"season", "week"}`. The agent injects the parent model
 (params + lineage) into the job context. The job replays Elo through the `through` point
-with the parent's params, fits the blend on all moneyline games before it, and returns
-`create_models: [{"family", "params" (same), "artifact", "parent_model_id", "trained_through":
-[season, week]}]`. The host puts the child in the parent's lineage with the lineage's status
+with the parent's params, fits the blend on the finished moneyline games up to and
+including it, and returns `create_models: [{"family", "params" (the parent's, verbatim, so
+the child keeps the lineage's `params_hash`), "artifact", "parent_model_id",
+"trained_through": [season, week]}]`. The host puts the child in the parent's lineage with the lineage's status
 and backtest metrics. Unit = one season of Elo replay.
 
 ## Summary (three sentences, template per family)
 
 1. What it is: "Elo blend (K 24, home edge 55, 71% weight on the closing line, margin
-   scaling on)."
+   scaling on)." The weight is `b / (a + b)` of the fitted blend; when `a <= 0` it reads
+   "all weight on the closing line, Elo adds nothing" instead of a percentage.
 2. How it bet in the backtest: "Across 2010-2025 it placed 312 bets at an average edge of
-   3.4% and returned +2.1% on stake with a 14% max drawdown."
+   3.4% and returned +2.1% on stake with a 14% max drawdown." A single season reads
+   "Across 2019"; with no bets the sentence is "Across 2010-2025 it never found an edge
+   above its 3.0% minimum after fees, so it placed no bets." (never "+0.0% on stake"); with
+   fewer than 50 bets (the leaderboard gate) it ends "... max drawdown (too few bets to
+   judge)."; a null drawdown reads "an unknown max drawdown".
 3. Calibration: "Log-loss 0.662 against the market's 0.659; it leans on the market and adds
    little, so treat the edge as unproven until paper trading shows positive CLV."
 The owner can edit the text on the Models page.

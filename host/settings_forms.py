@@ -12,7 +12,7 @@ from typing import Any, Callable
 from host.errors import BadRequest
 from host.money import cents_to_dollars, dollars_to_cents
 
-GROUPS = ("trading", "fleet", "tz")
+GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse")
 
 LABELS = {
     "max_bet": "Max bet",
@@ -28,6 +28,15 @@ LABELS = {
     "online_after_seconds": "Online-after seconds",
     "max_expiries": "Max lease expiries",
     "tz": "Time zone",
+    "taker_rate": "Taker fee rate",
+    "half_spread": "Half spread",
+    "min_bets": "Min bets",
+    "min_roi": "Min ROI",
+    "max_drawdown": "Max drawdown",
+    "seasons_first": "First season",
+    "seasons_last": "Last season",
+    "nflverse_refresh_hours": "Refresh every (hours)",
+    "nflverse_url": "games.csv URL",
 }
 
 
@@ -85,10 +94,36 @@ def _parse_tz(form: dict[str, str]) -> dict[str, Any]:
     return {"tz": _text(form, "tz")}
 
 
+def _parse_fees(form: dict[str, str]) -> dict[str, Any]:
+    return {"fee_model": {"taker_rate": _number(form, "taker_rate"), "half_spread": _number(form, "half_spread")}}
+
+
+def _parse_thresholds(form: dict[str, str]) -> dict[str, Any]:
+    return {
+        "thresholds_backtest": {
+            "min_bets": _int(form, "min_bets"),
+            "min_roi": _number(form, "min_roi"),
+            "max_drawdown": _number(form, "max_drawdown"),
+        }
+    }
+
+
+def _parse_seasons(form: dict[str, str]) -> dict[str, Any]:
+    return {"backtest_seasons": [_int(form, "seasons_first"), _int(form, "seasons_last", nullable=True)]}
+
+
+def _parse_nflverse(form: dict[str, str]) -> dict[str, Any]:
+    return {"nflverse_refresh_hours": _int(form, "nflverse_refresh_hours"), "nflverse_url": _text(form, "nflverse_url")}
+
+
 PARSERS: dict[str, Callable[[dict[str, str]], dict[str, Any]]] = {
     "trading": _parse_trading,
     "fleet": _parse_fleet,
     "tz": _parse_tz,
+    "fees": _parse_fees,
+    "thresholds": _parse_thresholds,
+    "seasons": _parse_seasons,
+    "nflverse": _parse_nflverse,
 }
 
 
@@ -106,6 +141,10 @@ def form_values(settings: dict[str, Any]) -> dict[str, str]:
     if not isinstance(loss, dict):
         loss = {}
     max_expiries = settings.get("max_expiries")
+    fee = settings.get("fee_model") if isinstance(settings.get("fee_model"), dict) else {}
+    thresholds = settings.get("thresholds_backtest") if isinstance(settings.get("thresholds_backtest"), dict) else {}
+    seasons = settings.get("backtest_seasons") if isinstance(settings.get("backtest_seasons"), list) else [None, None]
+    seasons = (list(seasons) + [None, None])[:2]
     return {
         "max_bet": cents_to_dollars(settings.get("max_bet_cents")),
         "max_daily_loss_paper": cents_to_dollars(loss.get("paper")),
@@ -120,4 +159,18 @@ def form_values(settings: dict[str, Any]) -> dict[str, str]:
         "online_after_seconds": str(settings.get("online_after_seconds", "")),
         "max_expiries": "" if max_expiries is None else str(max_expiries),
         "tz": str(settings.get("tz", "")),
+        "taker_rate": _shown(fee.get("taker_rate")),
+        "half_spread": _shown(fee.get("half_spread")),
+        "min_bets": _shown(thresholds.get("min_bets")),
+        "min_roi": _shown(thresholds.get("min_roi")),
+        "max_drawdown": _shown(thresholds.get("max_drawdown")),
+        "seasons_first": _shown(seasons[0]),
+        "seasons_last": _shown(seasons[1]),
+        "nflverse_refresh_hours": _shown(settings.get("nflverse_refresh_hours")),
+        "nflverse_url": str(settings.get("nflverse_url", "")),
     }
+
+
+def _shown(value: Any) -> str:
+    """A stored number as the input shows it (blank for null)."""
+    return "" if value is None else str(value)

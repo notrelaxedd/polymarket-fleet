@@ -4,9 +4,10 @@ One worker enrols against a live host, runs sleep jobs through the real subproce
 runner, is preempted by a role change, resumes from its checkpoint, auto-returns to
 idle, gets a job cancelled, is driven through the dashboard forms (role select, KILL,
 RESUME; step 2), is handed the same lease again after a dropped heartbeat response
-(re-offer), and finally survives a simulated crash with a lost register reply (the
-retry with the previous token succeeds, held_jobs are re-adopted). Heartbeat 0.3 s,
-host loop 0.5 s, every wait bounded.
+(re-offer), runs the step 3 models phase (tests/e2e_models.py: fixture ingest, model
+search, train, backtest, a preempted search that resumes), and finally survives a
+simulated crash with a lost register reply (the retry with the previous token succeeds,
+held_jobs are re-adopted). Heartbeat 0.3 s, host loop 0.5 s, every wait bounded.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import pytest
 import uvicorn
 
 from fleet.common import http as worker_http
+from fleet.worker import agent as agent_module
 from fleet.worker import config as worker_config
 from fleet.worker.__main__ import enroll
 from fleet.worker.agent import Agent, AgentOptions
@@ -29,6 +31,7 @@ from host.api.app import create_app
 from host.config import Config
 from host.loop import LoopThread
 from tests.conftest import flash_cookie, heartbeat_body
+from tests.e2e_models import CountingRunner, phase_models
 
 HEARTBEAT = 0.3
 LOOP = 0.5
@@ -62,6 +65,7 @@ class LiveHost:
     url: str
     code_version: str
     client: httpx.Client
+    database_url: str = ""
 
     def get(self, path: str) -> Any:
         resp = self.client.get(path)
@@ -120,7 +124,7 @@ def live_host(test_db_url: str, tmp_path) -> Iterator[LiveHost]:
     try:
         wait_for(lambda: server.started and _healthy(client), "host to come up")
         loop.start()
-        yield LiveHost(url=url, code_version=app.state.bundle.code_version, client=client)
+        yield LiveHost(url=url, code_version=app.state.bundle.code_version, client=client, database_url=test_db_url)
     finally:
         loop.stop()
         loop.join(5.0)
@@ -504,6 +508,7 @@ def phase_crash(host: LiveHost, state_dir: str, worker_id: str, first: AgentThre
 def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: list[AgentThread], drop_box: DropBox) -> None:
     state_dir = str(tmp_path / "state")
     monkeypatch.setenv("FLEET_STATE_DIR", state_dir)
+    monkeypatch.setattr(agent_module, "Runner", CountingRunner)
     started = time.monotonic()
 
     worker_id, first = phase_enroll(live_host, state_dir, agents)
@@ -512,8 +517,9 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     phase_cancel(live_host, worker_id)
     phase_dashboard(live_host, state_dir, worker_id, first)
     phase_reoffer(live_host, worker_id, first, drop_box)
+    phase_models(live_host, state_dir, worker_id, monkeypatch, wait_for, settled)
     phase_crash(live_host, state_dir, worker_id, first, agents)
 
-    assert time.monotonic() - started < 90.0
+    assert time.monotonic() - started < 150.0
     statuses = {j["status"] for j in live_host.get("/api/jobs")}
     assert statuses == {"succeeded", "cancelled"}

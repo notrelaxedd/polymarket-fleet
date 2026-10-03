@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import logging
@@ -18,13 +19,15 @@ from typing import Any, Iterator
 
 import pytest
 
-from fleet.worker import config, launch, update
+from fleet.common import http
+from fleet.worker import config, context, launch, posts, update
 from fleet.worker.__main__ import main as cli_main
 from fleet.worker.agent import EXIT_CONF_MISSING, EXIT_UPDATED, Agent, AgentOptions, RunningJob
-from tests.fake_host import FakeHost, build_worker_tarball
+from tests.fake_host import TEST_JOBS_SPEC, FakeHost, build_worker_tarball
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INSTALLER = os.path.join(REPO, "deploy", "install_worker.sh")
+GAMES_FIXTURE = os.path.join(REPO, "tests", "fixtures", "games_sample.csv")
 
 HB = 0.2
 
@@ -141,7 +144,7 @@ def test_claims_and_completes_sleep_job(host: FakeHost, enrolled: str, running: 
     assert job["progress"] == 1.0
     assert host.job_events(job_id) == ["claimed", "succeeded"]
     assert running.agent.running == {}
-    assert running.agent.pending_posts == []
+    host.wait_for(lambda: running.agent.pending_posts == [], timeout=4.0)  # the agent pops the post just after the host records it
 
 
 def test_role_change_mid_job_drains_releases_and_acks_quickly(host: FakeHost, enrolled: str, running: AgentThread) -> None:
@@ -338,7 +341,7 @@ def test_pending_complete_keeps_lease_alive_and_is_retried(host: FakeHost, enrol
     host.wait_for(lambda: host.job(job_id)["status"] == "succeeded", timeout=8.0)
     assert host.job(job_id)["result"] == {"slept": 1}
     assert host.job_events(job_id) == ["claimed", "succeeded"], "job must not be re-offered or re-run"
-    assert running.agent.pending_posts == []
+    host.wait_for(lambda: running.agent.pending_posts == [], timeout=4.0)  # the agent pops the post just after the host records it
     assert not os.path.exists(config.pending_posts_path(running.agent.state_dir))
     failed = [s for m, p, s in host.requests if p.endswith(f"/jobs/{job_id}/complete")]
     assert failed.count(503) == 3 and failed[-1] == 200
@@ -393,7 +396,7 @@ def test_self_update_waits_for_pending_posts(host: FakeHost, state_dir: str, enr
     running.thread.join(10.0)
     assert running.result == [EXIT_UPDATED]
     assert host.job(job_id)["status"] == "succeeded"
-    assert running.agent.pending_posts == []
+    host.wait_for(lambda: running.agent.pending_posts == [], timeout=4.0)  # the agent pops the post just after the host records it
 
 
 # ---------------------------------------------------- review fixes: shutdown
@@ -566,11 +569,15 @@ def test_self_update_rolls_back_after_three_failed_starts(host: FakeHost, state_
         again.stop()
 
 
-def test_successful_register_clears_pending_version(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread) -> None:
+def test_successful_register_clears_pending_version(host: FakeHost, state_dir: str, enrolled: str) -> None:
     app = config.app_dir(state_dir)
-    launch.write_pending(app, "whatever", 2)
-    host.wait_for(lambda: running.agent.heartbeat_count >= 1)
-    assert launch.read_pending(app) is None
+    launch.write_pending(app, "whatever", 2)  # before the agent starts: its register clears the file
+    running = AgentThread(state_dir).start()
+    try:
+        host.wait_for(lambda: running.agent.heartbeat_count >= 1)
+        assert launch.read_pending(app) is None
+    finally:
+        running.stop()
 
 
 # ------------------------------------------------- review fixes: low findings
@@ -914,3 +921,281 @@ def test_kill_transition_calls_on_kill_once(state_dir: str, monkeypatch) -> None
     agent._apply_common_fields({"kill": False})
     agent._apply_common_fields({"kill": True})
     assert calls == ["kill", "kill"]
+
+
+# ------------------------------------------------- step 3: games cache and context
+
+
+def _games_rows(limit: int = 40) -> list[dict[str, str]]:
+    with open(GAMES_FIXTURE, newline="", encoding="utf-8") as fh:
+        return [row for _, row in zip(range(limit), csv.DictReader(fh))]
+
+
+@pytest.fixture
+def test_jobs(monkeypatch) -> None:
+    """Runner children use the echo jobs from tests/fake_host.py for the batch kinds."""
+    monkeypatch.setenv("FLEET_TEST_JOBS", TEST_JOBS_SPEC)
+
+
+def _run_batch_job(host: FakeHost, enrolled: str, kind: str, params: dict[str, Any], timeout: float = 15.0) -> dict[str, Any]:
+    """Send a job to the worker (flipping its role) and wait for it to finish."""
+    job_id = host.enqueue_job(kind, params, target=enrolled)
+    host.wait_for(lambda: host.job(job_id)["status"] in ("succeeded", "failed"), timeout=timeout)
+    return host.job(job_id)
+
+
+def _request_index(host: FakeHost, method: str, suffix: str, status: int | None = None) -> int:
+    for i, (m, p, s) in enumerate(host.requests):
+        if m == method and p.endswith(suffix) and (status is None or s == status):
+            return i
+    raise AssertionError(f"no {method} ...{suffix} in {host.requests}")
+
+
+def test_games_cache_is_fetched_before_the_backtest_runner(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread, test_jobs) -> None:
+    rows = _games_rows(40)
+    etag = host.set_games(rows)
+    job = _run_batch_job(host, enrolled, "backtest", {"family": "elo_blend", "params": {"k": 20}})
+    assert job["status"] == "succeeded", job["error"]
+    result = job["result"]
+    assert result["games_rows"] == 40, "the runner must see the fetched rows in games_path"
+    assert result["context_keys"] == ["games_path", "model"]
+    assert result["model"] is None
+    assert result["params"] == {"family": "elo_blend", "params": {"k": 20}}, "params are untouched apart from _context"
+    cache = config.games_cache_path(state_dir)
+    assert cache == os.path.join(state_dir, "cache", "games.json")
+    with open(cache, encoding="utf-8") as fh:
+        assert json.load(fh) == rows
+    with open(config.games_etag_path(state_dir), encoding="utf-8") as fh:
+        assert fh.read().strip() == etag
+    assert _request_index(host, "GET", "/api/v1/data/games", 200) < _request_index(host, "POST", f"/jobs/{job['id']}/complete", 200)
+    assert "created_models" not in result
+
+
+def test_games_cache_304_keeps_the_file_and_a_change_refreshes_it(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread, test_jobs) -> None:
+    rows = _games_rows(30)
+    host.set_games(rows)
+    first = _run_batch_job(host, enrolled, "model_search", {"family": "elo_blend", "n": 1, "seed": 1})
+    assert first["status"] == "succeeded", first["error"]
+    cache = config.games_cache_path(state_dir)
+    stat_before = os.stat(cache)
+    second = _run_batch_job(host, enrolled, "train", {"through": {"season": 2024, "week": 1}})
+    assert second["status"] == "succeeded", second["error"]
+    assert second["result"]["games_rows"] == 30
+    assert [s for m, p, s in host.requests if p == "/api/v1/data/games"] == [200, 304]
+    assert os.stat(cache).st_mtime_ns == stat_before.st_mtime_ns and os.stat(cache).st_ino == stat_before.st_ino, "304 must not rewrite the cache"
+    new_rows = _games_rows(55)
+    new_etag = host.set_games(new_rows)
+    third = _run_batch_job(host, enrolled, "backtest", {"family": "elo_blend", "params": {}})
+    assert third["status"] == "succeeded", third["error"]
+    assert third["result"]["games_rows"] == 55
+    assert [s for m, p, s in host.requests if p == "/api/v1/data/games"] == [200, 304, 200]
+    with open(config.games_etag_path(state_dir), encoding="utf-8") as fh:
+        assert fh.read().strip() == new_etag
+
+
+@pytest.mark.parametrize("status", [0, 503])
+def test_games_fetch_failure_uses_the_cached_file_with_a_warning(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread, test_jobs, caplog, status: int) -> None:
+    rows = _games_rows(25)
+    context.write_games_cache(state_dir, rows, "stale-etag")
+    host.fail_next("data/games", status=status, count=5)
+    with caplog.at_level(logging.WARNING, logger="fleet.context"):
+        job = _run_batch_job(host, enrolled, "backtest", {"family": "elo_blend", "params": {}})
+    assert job["status"] == "succeeded", job["error"]
+    assert job["result"]["games_rows"] == 25
+    assert any("games refresh failed" in r.getMessage() and "cached" in r.getMessage() for r in caplog.records), caplog.records
+    assert (("GET", "/api/v1/data/games", status) in host.requests)
+    with open(config.games_cache_path(state_dir), encoding="utf-8") as fh:
+        assert json.load(fh) == rows
+
+
+def test_games_fetch_failure_without_a_cache_fails_the_job_before_any_runner(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread, test_jobs, tmp_path) -> None:
+    host.fail_next("data/games", status=503, count=50)
+    marker = tmp_path / "ran"
+    job = _run_batch_job(host, enrolled, "backtest", {"family": "elo_blend", "params": {}, "marker": str(marker)})
+    assert job["status"] == "failed"
+    assert "games data unavailable" in job["error"] and "503" in job["error"], job["error"]
+    assert not marker.exists(), "no runner must start without games data"
+    assert host.job_events(job["id"]) == ["claimed", "failed"]
+    assert running.agent.running == {}
+    assert not os.path.exists(config.games_cache_path(state_dir))
+
+
+def test_model_is_fetched_into_the_runner_context(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    model_id = host.add_model({"family": "elo_blend", "params": {"k": 24.0, "hfa": 55.0}, "artifact": {"ratings": {"KC": 1600.0}, "through": [2024, 5]}})
+    job = _run_batch_job(host, enrolled, "train", {"model_id": model_id, "through": {"season": 2024, "week": 8}})
+    assert job["status"] == "succeeded", job["error"]
+    assert job["result"]["model"] == host.models()[0]
+    assert job["result"]["model"]["id"] == model_id and job["result"]["model"]["artifact"]["ratings"] == {"KC": 1600.0}
+    assert job["result"]["context_keys"] == ["games_path", "model"]
+    assert _request_index(host, "GET", f"/api/v1/models/{model_id}", 200) < _request_index(host, "POST", f"/jobs/{job['id']}/complete")
+
+
+def test_unknown_model_fails_the_job(host: FakeHost, enrolled: str, running: AgentThread, test_jobs, tmp_path) -> None:
+    host.set_games(_games_rows(10))
+    marker = tmp_path / "ran"
+    job = _run_batch_job(host, enrolled, "backtest", {"model_id": "00000000-0000-0000-0000-000000000000", "marker": str(marker)})
+    assert job["status"] == "failed"
+    assert "model 00000000-0000-0000-0000-000000000000 unavailable" in job["error"] and "404" in job["error"]
+    assert not marker.exists()
+
+
+def test_get_json_etag_round_trip(host: FakeHost, enrolled: str) -> None:
+    etag = host.set_games([{"game_id": "x"}])
+    token = host.worker(enrolled)["token"]
+    first = http.get_json_etag(host.url + "/api/v1/data/games", token=token)
+    assert (first.status, first.body, first.etag) == (200, [{"game_id": "x"}], etag)
+    second = http.get_json_etag(host.url + "/api/v1/data/games", token=token, etag=etag)
+    assert (second.status, second.body, second.etag) == (304, None, etag)
+    assert http.get_json(host.url + "/api/v1/data/games", token=token) == [{"game_id": "x"}], "the plain API still works"
+    with pytest.raises(http.HttpError) as exc:
+        http.get_json_etag(host.url + "/api/v1/data/games", token="wrong")
+    assert exc.value.status == 401
+
+
+# ------------------------------------------------- step 3: create_models posts
+
+
+def _candidate(k: float, **extra: Any) -> dict[str, Any]:
+    entry = {"family": "elo_blend", "params": {"k": k, "hfa": 55.0}, "artifact": None, "backtest_metrics": {"n_bets": 10, "roi": 0.03}, "summary": f"k {k}", "trained_through": None}
+    entry.update(extra)
+    return entry
+
+
+def test_create_models_are_posted_in_order_before_complete(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    search_result = {"evaluated": 2, "seasons": [2010, 2024], "top": [], "create_models": [_candidate(20.0), _candidate(30.0)]}
+    job = _run_batch_job(host, enrolled, "model_search", {"family": "elo_blend", "n": 2, "seed": 1, "result": search_result})
+    assert job["status"] == "succeeded", job["error"]
+    calls = host.model_posts()
+    assert [c["path"] for c in calls] == ["/api/v1/models", "/api/v1/models"]
+    assert [c["body"]["params"]["k"] for c in calls] == [20.0, 30.0], "posted in result order"
+    for call in calls:
+        assert call["body"]["job_id"] == job["id"]
+        assert set(call["body"]) == {"job_id", "family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through"}
+        assert call["body"]["parent_model_id"] is None
+    result = job["result"]
+    assert "create_models" not in result
+    assert result["created_models"] == [
+        {"id": calls[0]["response"]["id"], "lineage_id": calls[0]["response"]["id"], "created": True},
+        {"id": calls[1]["response"]["id"], "lineage_id": calls[1]["response"]["id"], "created": True},
+    ]
+    assert result["evaluated"] == 2 and result["seasons"] == [2010, 2024]
+    model_posts = [i for i, (m, p, s) in enumerate(host.requests) if m == "POST" and p == "/api/v1/models"]
+    assert len(model_posts) == 2 and max(model_posts) < _request_index(host, "POST", f"/jobs/{job['id']}/complete", 200)
+    assert len(host.models()) == 2
+    host.wait_for(lambda: running.agent.pending_posts == [], timeout=4.0)  # the agent pops the post just after the host records it
+    assert not os.path.exists(config.pending_posts_path(running.agent.state_dir))
+
+
+def test_create_models_resume_after_a_crash_between_posts_without_duplicates(host: FakeHost, state_dir: str, enrolled: str, test_jobs) -> None:
+    """The host parks the second model post, the agent is stopped while it is unsent
+    (a crash: shutdown cannot flush it), and the next start resumes the sequence from
+    the persisted index: the first model is not posted again."""
+    host.set_games(_games_rows(10))
+    host.hold_posts("models", skip=1)
+    first = AgentThread(state_dir, http_timeout=0.5).start()
+    try:
+        search_result = {"evaluated": 2, "create_models": [_candidate(20.0), _candidate(30.0)]}
+        job_id = host.enqueue_job("model_search", {"family": "elo_blend", "n": 2, "seed": 1, "result": search_result}, target=enrolled)
+        host.wait_for(lambda: len(host.model_posts()) == 1, timeout=15.0)
+        host.wait_for(lambda: (config.load_pending_posts(state_dir) or [{}])[0].get("index") == 1, timeout=10.0)
+    finally:
+        first.stop()
+    saved = config.load_pending_posts(state_dir)
+    assert len(saved) == 1 and saved[0]["index"] == 1 and len(saved[0]["steps"]) == 2
+    assert saved[0]["body"]["result"]["created_models"] == [{"id": host.models()[0]["id"], "lineage_id": host.models()[0]["id"], "created": True}]
+    assert len(host.model_posts()) == 1 and len(host.models()) == 1
+    assert host.job(job_id)["status"] == "leased", "the lease is kept alive while the sequence is unsent"
+    host.release_holds()
+
+    second = AgentThread(state_dir).start()
+    try:
+        host.wait_for(lambda: host.job(job_id)["status"] == "succeeded", timeout=15.0)
+        assert second.agent.running == {}, "the job must be resumed as posts, not re-run"
+    finally:
+        second.stop()
+    calls = host.model_posts()
+    assert [c["body"]["params"]["k"] for c in calls] == [20.0, 30.0]
+    assert [c["response"]["created"] for c in calls] == [True, True]
+    assert len(host.models()) == 2
+    assert host.job(job_id)["result"]["created_models"] == [
+        {"id": calls[0]["response"]["id"], "lineage_id": calls[0]["response"]["id"], "created": True},
+        {"id": calls[1]["response"]["id"], "lineage_id": calls[1]["response"]["id"], "created": True},
+    ]
+    assert host.job_events(job_id) == ["claimed", "re-leased", "succeeded"]
+    assert [s for m, p, s in host.requests if m == "POST" and p == "/api/v1/models" and s == 200] == [200, 200]
+    assert not os.path.exists(config.pending_posts_path(state_dir))
+
+
+def test_existing_model_is_returned_with_created_false(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    existing = host.add_model({"family": "elo_blend", "params": {"k": 20.0, "hfa": 55.0}})
+    job = _run_batch_job(host, enrolled, "model_search", {"family": "elo_blend", "result": {"create_models": [_candidate(20.0), _candidate(21.0)]}})
+    assert job["status"] == "succeeded", job["error"]
+    created = job["result"]["created_models"]
+    assert created[0] == {"id": existing, "lineage_id": existing, "created": False}
+    assert created[1]["created"] is True and created[1]["id"] != existing
+    assert len(host.models()) == 2
+
+
+def test_backtest_with_model_id_posts_metrics_before_complete(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    model_id = host.add_model({"family": "elo_blend", "params": {"k": 24.0}})
+    metrics = {"n_games": 100, "n_bets": 12, "roi": 0.05, "max_drawdown": 0.1, "log_loss": 0.66, "per_season": {"2020": {"n_bets": 12}}}
+    job = _run_batch_job(host, enrolled, "backtest", {"model_id": model_id, "result": metrics})
+    assert job["status"] == "succeeded", job["error"]
+    calls = host.model_posts()
+    assert len(calls) == 1 and calls[0]["path"] == f"/api/v1/models/{model_id}/backtest"
+    assert calls[0]["body"]["job_id"] == job["id"]
+    posted = calls[0]["body"]["backtest_metrics"]
+    assert {k: posted[k] for k in metrics} == metrics
+    assert host.models()[0]["backtest_metrics"]["roi"] == 0.05
+    assert _request_index(host, "POST", f"/models/{model_id}/backtest", 200) < _request_index(host, "POST", f"/jobs/{job['id']}/complete", 200)
+    assert "created_models" not in job["result"]
+    assert job["result"]["model"]["id"] == model_id
+
+
+def test_backtest_by_family_posts_nothing(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    job = _run_batch_job(host, enrolled, "backtest", {"family": "elo_blend", "params": {"k": 24.0}, "result": {"n_bets": 3, "roi": 0.0}})
+    assert job["status"] == "succeeded", job["error"]
+    assert host.model_posts() == []
+    assert job["result"]["n_bets"] == 3
+
+
+def test_model_post_refused_by_the_host_fails_the_job(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    bad = {"params": {"k": 1.0}, "artifact": None}  # no family -> 400 from the host
+    job = _run_batch_job(host, enrolled, "model_search", {"family": "elo_blend", "result": {"create_models": [bad, _candidate(2.0)]}})
+    assert job["status"] == "failed"
+    assert "/api/v1/models refused (400" in job["error"], job["error"]
+    assert host.model_posts() == [], "the sequence stops at the refused step"
+    host.wait_for(lambda: running.agent.pending_posts == [], timeout=4.0)  # the agent pops the post just after the host records it
+
+
+def test_model_post_5xx_is_retried_without_duplicating_models(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    host.fail_next("models", status=503, count=2)
+    job = _run_batch_job(host, enrolled, "model_search", {"family": "elo_blend", "result": {"create_models": [_candidate(5.0), _candidate(6.0)]}})
+    assert job["status"] == "succeeded", job["error"]
+    statuses = [s for m, p, s in host.requests if m == "POST" and p == "/api/v1/models"]
+    assert statuses == [503, 503, 200, 200]
+    assert len(host.models()) == 2
+    assert [c["created"] for c in job["result"]["created_models"]] == [True, True]
+
+
+def test_pending_post_sequence_round_trips_through_json() -> None:
+    job = {"id": "j9", "kind": "backtest", "params": {"model_id": "m1"}}
+    post = posts.complete_post(job, "tok", {"n_bets": 1, "create_models": [_candidate(1.0)]})
+    assert [s["kind"] for s in post.steps] == ["model", "backtest"]
+    assert post.steps[1]["path"] == "/api/v1/models/m1/backtest"
+    assert post.steps[1]["body"]["backtest_metrics"] == {"n_bets": 1}
+    assert post.body == {"lease_token": "tok", "result": {"n_bets": 1, "created_models": []}}
+    data = json.loads(json.dumps(post.to_dict()))
+    back = posts.PendingPost.from_dict(data)
+    assert back == post
+    data["index"] = 7
+    assert posts.PendingPost.from_dict(data).index == 2, "a stale index is clamped to the step count"
+    plain = posts.complete_post({"id": "j1", "kind": "sleep", "params": {"seconds": 1}}, "tok", {"slept": 1})
+    assert plain.steps == [] and plain.to_dict() == {"path": "/api/v1/jobs/j1/complete", "body": {"lease_token": "tok", "result": {"slept": 1}}, "job_id": "j1", "progress": 1.0, "attempts": 0}

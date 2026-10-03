@@ -1,0 +1,36 @@
+{# Backtest metrics as labelled pairs (phone friendly) and the per-season table.
+   `pairs(m, detail)` renders the whole-backtest metrics; detail adds brier and the
+   drawdown in cents. ROI, hit rate and average edge read "-" when nothing was bet. #}
+{% macro pairs(m, detail=false) -%}
+{% set bets = m.n_bets or 0 %}
+<dl class="kv metrics">
+  <div><dt>games</dt><dd>{{ m.n_games }}</dd></div>
+  <div><dt>bets</dt><dd>{{ m.n_bets }}</dd></div>
+  <div><dt>ROI</dt><dd>{{ m.roi | signed_pct if bets else '-' }}</dd></div>
+  <div><dt>hit rate</dt><dd>{{ m.hit_rate | pct1 if bets else '-' }}</dd></div>
+  <div><dt>avg edge</dt><dd>{{ m.avg_edge | signed_pct if bets else '-' }}</dd></div>
+  <div><dt>P&amp;L</dt><dd>{{ m.pnl_cents | money }}</dd></div>
+  <div><dt>log-loss vs market</dt><dd>{{ m.log_loss | fixed }} <span class="muted">vs {{ m.market_log_loss | fixed }}</span></dd></div>
+  {% if detail %}<div><dt>brier</dt><dd>{{ m.brier | fixed }}</dd></div>{% endif %}
+  <div><dt>max drawdown</dt><dd>{{ m.max_drawdown | pct1 }}{% if detail %} <span class="muted small">({{ m.max_drawdown_cents | money }})</span>{% endif %}</dd></div>
+  <div><dt>seasons</dt><dd>{{ m.seasons | season_span }}</dd></div>
+</dl>
+{%- endmacro %}
+{% macro per_season(rows) -%}
+<div class="table-wrap">
+<table class="metrics per-season stack">
+  <thead><tr><th>season</th><th>games</th><th>bets</th><th>ROI</th><th>P&amp;L</th><th>log-loss</th><th>market</th><th>drawdown</th></tr></thead>
+  <tbody>
+  {% for s in rows %}
+  <tr>
+    <td class="lead"><strong>{{ s.season }}</strong></td>
+    <td><span class="k">games</span> {{ s.n_games }}</td><td><span class="k">bets</span> {{ s.n_bets }}</td>
+    <td><span class="k">ROI</span> {{ s.roi | signed_pct if s.n_bets else '-' }}</td><td><span class="k">P&amp;L</span> {{ s.pnl_cents | money }}</td>
+    <td><span class="k">log-loss</span> {{ s.log_loss | fixed }}</td><td><span class="k">market</span> {{ s.market_log_loss | fixed }}</td>
+    <td><span class="k">drawdown</span> {{ s.max_drawdown | pct1 }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{%- endmacro %}

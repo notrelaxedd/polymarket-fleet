@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_metrics.html" as metrics %}
 {% block title %}Job {{ job.id | short }}{% endblock %}
 {% block content %}
 <p><a href="/jobs">&larr; Jobs</a></p>
@@ -23,15 +24,48 @@
     <dt>finished</dt><dd>{{ job.finished_at | ts or '-' }}</dd>
   </dl>
   <h2>params</h2>
+  {% if job.params.model_id %}<p>model <a href="/models/{{ job.params.model_id }}">{{ job.params.model_id | short }}</a></p>{% endif %}
   <pre>{{ job.params | pretty_json }}</pre>
   <h2>checkpoint</h2>
-  <pre>{{ job.checkpoint | pretty_json or 'none' }}</pre>
+  <p class="checkpoint">{{ checkpoint_digest }}</p>
+  {% if job.checkpoint %}<details class="raw"><summary>raw checkpoint</summary><pre>{{ job.checkpoint | pretty_json }}</pre></details>{% endif %}
   {% if job.error %}
   <h2>error</h2>
   <pre class="error">{{ job.error }}</pre>
   {% else %}
   <h2>result</h2>
-  <pre>{{ job.result | pretty_json or 'none' }}</pre>
+  {% if created_models %}
+  <p class="created">Created models:
+    {% for m in created_models %}<a class="btn small" href="/models/{{ m.id }}">{{ m.id | short }}{% if m.created is sameas false %} (existing){% endif %}</a> {% endfor %}
+  </p>
+  {% endif %}
+  {% if job.kind == 'backtest' and result.n_games is defined %}
+  {{ metrics.pairs(result) }}
+  {% if per_season %}{{ metrics.per_season(per_season) }}{% endif %}
+  {% elif job.kind == 'model_search' and top %}
+  <div class="table-wrap">
+  <table class="metrics top stack">
+    <thead><tr><th>candidate</th><th>shrunk ROI</th><th>ROI</th><th>bets</th><th>log-loss</th><th>market</th><th>drawdown</th><th>model</th></tr></thead>
+    <tbody>
+    {% for t in top %}
+    {% set created = created_models[loop.index0] if loop.index0 < created_models | length else none %}
+    <tr>
+      <td class="lead"><span class="rank">#{{ loop.index }}</span> {{ short_params(family, t.params) }}</td>
+      <td><span class="k">shrunk ROI</span> {{ t.score | signed_pct(2) }}</td>
+      <td><span class="k">ROI</span> {{ t.metrics.roi | signed_pct if t.metrics.n_bets else '-' }}</td>
+      <td><span class="k">bets</span> {{ t.metrics.n_bets }}</td>
+      <td><span class="k">log-loss</span> {{ t.metrics.log_loss | fixed }}</td>
+      <td><span class="k">market</span> {{ t.metrics.market_log_loss | fixed }}</td>
+      <td><span class="k">drawdown</span> {{ t.metrics.max_drawdown | pct1 }}</td>
+      <td class="action">{% if created %}<a href="/models/{{ created.id }}">{{ created.id | short }}</a>{% else %}-{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="muted small">{{ result.evaluated }} candidates evaluated over {{ result.seasons | season_span }}. Shrunk ROI is ROI x bets / (bets + 100), the search objective.</p>
+  {% endif %}
+  <details class="raw"><summary>raw result</summary><pre>{{ job.result | pretty_json or 'none' }}</pre></details>
   {% endif %}
 </div>
 <h2>events</h2>

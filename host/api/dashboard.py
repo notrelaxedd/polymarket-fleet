@@ -9,11 +9,13 @@ from datetime import datetime
 from typing import Any
 
 import psycopg
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 
-from host import kill, pnl, views, web
+from host import data_refresh, kill, nflverse, pnl, views, web
 from host.api.deps import DB, get_config, require_owner
+from host.api.job_forms import jobs_context
+from host.leaderboard import short_params
 from host.config import Config
 from host.scheduling import online_after
 from host.settings import ROLES, get_settings
@@ -22,12 +24,6 @@ from host.settings_forms import form_values
 router = APIRouter(tags=["dashboard"], dependencies=[Depends(require_owner)])
 
 STALE_AFTER_SECONDS = 60
-JOB_KINDS = (
-    ("sleep", "sleep", True),
-    ("backtest", "backtest (step 3)", False),
-    ("model_search", "model_search (step 3)", False),
-    ("train", "train (step 3)", False),
-)
 
 
 def _now(conn: psycopg.Connection) -> datetime:
@@ -79,7 +75,10 @@ def page(request: Request, conn: psycopg.Connection, template: str, status: int 
     """Render a full page: the topbar context and the owner's time zone (settings.tz,
     used by the ts filter) are added to every page."""
     settings = get_settings(conn)
-    return web.render(request, template, status=status, topbar=topbar_context(conn, settings), tz=settings.get("tz"), **ctx)
+    return web.render(
+        request, template, status=status, topbar=topbar_context(conn, settings), tz=settings.get("tz"),
+        short_params=short_params, **ctx,
+    )
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -100,20 +99,50 @@ def topbar_fragment(request: Request, conn: psycopg.Connection = DB) -> HTMLResp
     return web.render(request, "_topbar.html", topbar=topbar_context(conn))
 
 
+def jobs_page_response(
+    request: Request, conn: psycopg.Connection, status: int = 200, **ctx: Any
+) -> HTMLResponse:
+    """The jobs page: the send forms (context from job_forms) plus the newest 50 jobs."""
+    return page(request, conn, "jobs.html", status=status, jobs=views.list_jobs(conn, None, 50), **jobs_context(conn, **ctx))
+
+
 @router.get("/jobs", response_class=HTMLResponse)
-def jobs_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """Send form plus the newest 50 jobs."""
-    names = views.worker_names(conn)
-    return page(
-        request, conn, "jobs.html", jobs=views.list_jobs(conn, None, 50), names=names, kinds=JOB_KINDS,
-    )
+def jobs_page(
+    request: Request, train_model: str | None = Query(default=None, max_length=64), conn: psycopg.Connection = DB
+) -> HTMLResponse:
+    """Send forms plus the newest 50 jobs; ?train_model=<id> prefills the train form."""
+    return jobs_page_response(request, conn, train_model=train_model)
+
+
+def checkpoint_digest(kind: Any, checkpoint: Any) -> str:
+    """One line on where a job's checkpoint stands; the full JSON stays behind a details."""
+    if not isinstance(checkpoint, dict):
+        return "none"
+    nxt = checkpoint.get("next")
+    if kind == "sleep":
+        return f"elapsed {checkpoint.get('elapsed', 0)} s"
+    if kind == "model_search" and isinstance(nxt, list) and len(nxt) == 2:
+        return f"candidate {nxt[0]}, season index {nxt[1]}; {checkpoint.get('evaluated', 0)} evaluated, {len(checkpoint.get('top') or [])} in the top list"
+    if kind == "backtest":
+        return f"{len(checkpoint.get('per_season') or [])} seasons done"
+    if kind == "train":
+        return f"{nxt} of {len(checkpoint.get('seasons') or [])} seasons replayed"
+    return f"{len(checkpoint)} keys"
 
 
 @router.get("/jobs/{job_id}", response_class=HTMLResponse)
 def job_page(request: Request, job_id: str, conn: psycopg.Connection = DB) -> HTMLResponse:
     """One job with its events."""
     job = views.job_with_events(conn, job_id)
-    return page(request, conn, "job.html", job=job, names=views.worker_names(conn))
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    created = [m for m in (result.get("created_models") or []) if isinstance(m, dict) and m.get("id")]
+    top = [t for t in (result.get("top") or []) if isinstance(t, dict)]
+    per_season = [s for s in (result.get("per_season") or []) if isinstance(s, dict)]
+    return page(
+        request, conn, "job.html", job=job, names=views.worker_names(conn), result=result,
+        created_models=created, top=top, per_season=per_season, checkpoint_digest=checkpoint_digest(job["kind"], job.get("checkpoint")),
+        model_links={m.get("id") for m in created}, family=job["params"].get("family") if isinstance(job.get("params"), dict) else None,
+    )
 
 
 def settings_page(
@@ -131,7 +160,8 @@ def settings_page(
     return page(
         request, conn, "settings.html", status=status, settings=settings, values=values,
         errors=errors or {}, killed=kill.is_killed(conn), audit=views.audit_rows(conn, 20),
-        public_url=config.public_url,
+        public_url=config.public_url, games_count=nflverse.games_count(conn),
+        last_complete_season=nflverse.last_complete_season(conn), refresh=data_refresh.STATUS.snapshot(),
     )
 
 

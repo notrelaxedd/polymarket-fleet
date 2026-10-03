@@ -77,7 +77,7 @@ html:not(.js) .js-only { display: none; }
 .topbar.killed a, .topbar.killed .wordmark, .topbar.killed .nav .disabled, .topbar.killed .pnl, .topbar.killed #updated { color: var(--red-text); }
 .topbar.killed .nav a.active { background: rgba(0, 0, 0, 0.2); }
 .killed-text { font-weight: 700; text-decoration: none; }
-.chip { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: var(--badge); color: var(--chip-text); }
+.chip { font-size: 0.75rem; padding: 0.1rem 0.5rem; border-radius: 999px; background: var(--badge); color: var(--chip-text); white-space: nowrap; }
 .chip-killed { background: rgba(0, 0, 0, 0.3); color: var(--red-text); font-weight: 700; }
 /* the freshness line: always visible under the sticky bar, so a lost connection is never below the fold */
 .topbar-note { display: none; max-width: 1200px; margin: 0 auto; padding: 0 1rem 0.2rem; font-size: 0.8rem; text-align: right; }
@@ -176,4 +176,54 @@ th { color: var(--muted); font-weight: 600; font-size: 0.8rem; }
   table.stack td.wide { flex-basis: 100%; }
   table.stack td.nowrap { white-space: normal; }
   table.stack .badge.st-waiting { display: inline-block; margin-top: 0.15rem; }
+}
+
+/* step 3: models and the job forms */
+.send-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; }
+.send-grid .send { margin: 0; }
+.send textarea, .summary-form textarea { font: inherit; width: 100%; min-height: 36px; padding: 0.3rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); resize: vertical; }
+details.card.sleep { margin-bottom: 0.75rem; }
+details.card.send > summary, details.edit > summary, details.raw > summary { cursor: pointer; min-height: var(--tap); display: flex; align-items: center; color: var(--accent); }
+details.card.send > summary h2 { margin: 0; font-size: 1.05rem; color: var(--text); }
+details.card.send > summary::after { content: "+"; margin-left: auto; font-weight: 700; }
+details.card.send[open] > summary::after { content: "\2212"; }
+details.card.send form { margin-top: 0.5rem; }
+.rank { font-weight: 700; color: var(--muted); margin-right: 0.3rem; }
+.params { color: var(--muted); font-weight: 400; }
+h1 .params { font-size: 1rem; }
+.badge.st-paper_ok { background: var(--green-fill); color: #fff; }
+.badge.st-live_eligible { background: var(--leased-fill); color: #fff; }
+.badge.st-retired { background: var(--badge); color: var(--chip-text); }
+.badge.st-candidate { background: var(--badge); color: var(--text); }
+/* .k labels a value inside a stacked table row; shown only once the table stacks */
+.k { display: none; color: var(--muted); font-size: 0.75rem; margin-right: 0.2rem; }
+table.models .summary { margin: 0 0 0.25rem; }
+table.models .c-actions { white-space: nowrap; }
+.summary-form { display: flex; flex-direction: column; gap: 0.4rem; align-items: flex-start; }
+.summary-form label { width: 100%; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
+.btn.danger { border-color: var(--red); color: var(--red-fg); }
+.btn small { font-size: 0.65rem; margin-left: 0.25rem; }
+/* a button gated on a later step: readable (no half opacity), dashed to say "not yet" */
+.btn.soon[disabled] { opacity: 1; color: var(--muted); border-style: dashed; }
+.btn.soon small { font-size: 0.75rem; }
+table.metrics td, table.metrics th { white-space: nowrap; }
+/* whole-backtest metrics as labelled pairs: they wrap instead of scrolling sideways */
+.kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.3rem 0.8rem; margin: 0 0 0.75rem; }
+.kv dt { color: var(--muted); font-size: 0.75rem; }
+.kv dd { margin: 0; font-size: 1rem; }
+.empty-models { margin: 0.5rem 0 1rem; }
+.created .btn { margin: 0.15rem 0.25rem 0.15rem 0; }
+.attribution { margin-top: 1.5rem; }
+
+@media (max-width: 700px) {
+  .send-grid { grid-template-columns: 1fr; }
+  table.stack .k { display: inline; }
+  table.metrics.stack td { white-space: normal; }
+  table.metrics.stack td.lead { padding-right: 5rem; }
+  table.models td.lead { padding-right: 0; flex-wrap: wrap; gap: 0.3rem; }
+  table.models td.action { position: static; flex-basis: 100%; display: flex; gap: 0.5rem; }
+  table.models td.action .btn { flex: 1; min-height: var(--tap); }
+  table.models tr { gap: 0.3rem 0.6rem; }
+  textarea { min-height: var(--tap); }
 }

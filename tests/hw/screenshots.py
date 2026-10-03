@@ -3,12 +3,14 @@
     PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers .venv/bin/python tests/hw/screenshots.py [OUT_DIR]
 
 It creates a throwaway database, seeds three workers and a few jobs straight through
-SQL, serves the app with FLEET_DEV=1 on a free port, and captures the fleet, jobs,
-job detail and settings pages at phone (390x844) and laptop (1280x800) widths in the
-light and dark colour schemes, plus the fleet page after POST /kill. At phone width
+SQL plus the step 3 rows (the nflverse fixture, a real six-candidate search and its
+models, a trained child, a backtest; tests/hw/seed_step3.py), serves the app with
+FLEET_DEV=1 on a free port, and captures the fleet, jobs, job detail, settings, models,
+model detail and search result pages at phone (390x844) and laptop (1280x800) widths in
+the light and dark colour schemes, plus the fleet page after POST /kill. At phone width
 it also asserts: no horizontal scroll on any page, every visible button, select and
-link inside a worker card is at least 40 px tall, and the fragment refresh resets the
-"updated N s ago" counter. Needs the playwright package in the venv and the Chromium
+link inside a worker card and every visible form control is at least 40 px tall, and
+the fragment refresh resets the "updated N s ago" counter. Needs the playwright package in the venv and the Chromium
 build it expects under PLAYWRIGHT_BROWSERS_PATH; it never downloads a browser.
 """
 from __future__ import annotations
@@ -32,13 +34,15 @@ os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")
 from host import db  # noqa: E402
 from host.events import add_audit  # noqa: E402
 from tests.conftest import ADMIN_URL, db_url, insert_job, insert_worker, set_heartbeat_age  # noqa: E402
+from tests.hw.seed_step3 import seed_models  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 
-DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step2"))
+DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step3"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 SCHEMES = ("light", "dark")
 MIN_TAP_PX = 40
 CARD_TARGETS = ".card.worker button, .card.worker select, .card.worker a"
+FORM_TARGETS = "form button, form select, form input:not([type=hidden]), form textarea"
 
 
 # ---------------------------------------------------------------- database and seed
@@ -79,7 +83,14 @@ def _event(conn: psycopg.Connection, job_id: Any, event: str, worker_id: str | N
 
 
 def seed(url: str) -> dict[str, str]:
-    """Three workers (running, switching, offline), two finished jobs, one queued job."""
+    """Three workers (running, switching, offline), two finished jobs, one queued job,
+    then the step 3 rows (a finished search with models, a running search on box1)."""
+    ids = _seed_fleet(url)
+    ids.update(seed_models(url, ids["box2"], ids["box1"]))
+    return ids
+
+
+def _seed_fleet(url: str) -> dict[str, str]:
     with psycopg.connect(url, autocommit=True, row_factory=dict_row) as conn:
         box1 = insert_worker(conn, "box1", role="backtest")
         _machine(conn, box1.id, 37.5, 2611, 7936)
@@ -142,20 +153,24 @@ def touch(url: str, box1: str) -> None:
 
 
 def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
-    return [("fleet", "/"), ("jobs", "/jobs"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings")]
+    return [
+        ("fleet", "/"), ("jobs", "/jobs"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
+        ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("job-search", f"/jobs/{ids['search_job']}"),
+        ("job-backtest", f"/jobs/{ids['backtest_job']}"),
+    ]
 
 
 def check_phone_layout(page: Any, name: str, problems: list[str]) -> None:
-    """No horizontal scroll; tap targets inside worker cards are at least MIN_TAP_PX tall."""
+    """No horizontal scroll; tap targets inside worker cards and forms are at least MIN_TAP_PX tall."""
     scroll_w, inner_w = page.evaluate("[document.scrollingElement.scrollWidth, window.innerWidth]")
     if scroll_w > inner_w:
         problems.append(f"{name}: horizontal scroll, scrollWidth {scroll_w} > innerWidth {inner_w}")
     short = page.evaluate(
         """(sel) => Array.from(document.querySelectorAll(sel))
              .filter(el => el.getClientRects().length > 0)
-             .map(el => [el.tagName, (el.textContent || '').trim().slice(0, 30), el.getBoundingClientRect().height])
+             .map(el => [el.tagName, (el.getAttribute('name') || el.textContent || '').trim().slice(0, 30), el.getBoundingClientRect().height])
              .filter(([, , h]) => h < %d)""" % MIN_TAP_PX,
-        CARD_TARGETS,
+        f"{CARD_TARGETS}, {FORM_TARGETS}",
     )
     for tag, text, height in short:
         problems.append(f"{name}: {tag} '{text}' is {height:.0f} px tall (< {MIN_TAP_PX})")

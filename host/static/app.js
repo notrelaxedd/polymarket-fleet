@@ -1,4 +1,4 @@
-/* Fleet dashboard: role select auto-submit, KILL confirm, copy buttons, fragment refresh.
+/* Fleet dashboard: role select auto-submit, KILL and retire confirms, copy buttons, fragment refresh.
    Everything works without this file; it only removes clicks and keeps the page fresh. */
 (function () {
   "use strict";
@@ -8,7 +8,14 @@
   document.documentElement.classList.add("js");
   document.body.classList.add("js");
 
-  document.addEventListener("submit", function () { inflight = true; });
+  document.addEventListener("submit", function (e) {
+    var form = e.target;
+    if (form && form.getAttribute && form.getAttribute("data-confirm") && !window.confirm(form.getAttribute("data-confirm"))) {
+      e.preventDefault();
+      return;
+    }
+    inflight = true;
+  });
   document.addEventListener("focusin", function () { focusedAt = Date.now(); });
 
   document.addEventListener("change", function (e) {

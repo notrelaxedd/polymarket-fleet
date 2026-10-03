@@ -84,6 +84,57 @@ def _cents_by_mode(value: Any) -> str | None:
     return None
 
 
+def _object_of(fields: dict[str, Validator], label: str) -> Validator:
+    """A JSON object with exactly `fields`, each checked by its validator."""
+
+    def check(value: Any) -> str | None:
+        if not isinstance(value, dict) or set(value) != set(fields):
+            return f"must be an object with {label}"
+        for key, inner in fields.items():
+            error = inner(value[key])
+            if error:
+                return f"{key} {error}"
+        return None
+
+    return check
+
+
+def _number_range(low: float, high: float) -> Validator:
+    def check(value: Any) -> str | None:
+        if not _is_number(value):
+            return "must be a number"
+        if value < low or value > high:
+            return f"must be between {low} and {high}"
+        return None
+
+    return check
+
+
+FIRST_SEASON, LAST_SEASON = 1999, 2100
+
+
+def _seasons(value: Any) -> str | None:
+    """[first, last]: ints in 1999..2100, last may be null (= last complete season)."""
+    if not isinstance(value, list) or len(value) != 2:
+        return "must be [first, last]"
+    first, last = value
+    if not _is_int(first) or first < FIRST_SEASON or first > LAST_SEASON:
+        return f"first season must be an integer between {FIRST_SEASON} and {LAST_SEASON}"
+    if last is None:
+        return None
+    if not _is_int(last) or last < FIRST_SEASON or last > LAST_SEASON:
+        return f"last season must be null or an integer between {FIRST_SEASON} and {LAST_SEASON}"
+    if last < first:
+        return "last season must not be before the first"
+    return None
+
+
+def _url(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) > 512 or not re.match(r"^https?://[^\s]+$", value):
+        return "must be an http(s) URL"
+    return None
+
+
 def timing_problems(settings: dict[str, Any]) -> list[str]:
     """Cross-field rules over the merged fleet timing settings.
 
@@ -117,6 +168,14 @@ SCHEMA: dict[str, Validator] = {
     "min_edge": _fraction,
     "kelly_fraction": _fraction,
     "trade_max_games": _int_range(0, 100),
+    "fee_model": _object_of({"taker_rate": _fraction, "half_spread": _fraction}, "taker_rate and half_spread"),
+    "thresholds_backtest": _object_of(
+        {"min_bets": _int_range(0, 1_000_000), "min_roi": _number_range(-1, 1), "max_drawdown": _number_range(0, 1)},
+        "min_bets, min_roi and max_drawdown",
+    ),
+    "backtest_seasons": _seasons,
+    "nflverse_refresh_hours": _int_range(1, 168),
+    "nflverse_url": _url,
 }
 
 

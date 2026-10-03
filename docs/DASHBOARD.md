@@ -1,4 +1,4 @@
-# Dashboard spec (step 2)
+# Dashboard spec (step 2, step 3 additions marked)
 
 Very simple and clean. Phone first. No framework, no build step, no external assets
 (the dashboard is tailnet-only and phones may be offline from the public internet).
@@ -29,8 +29,8 @@ Very simple and clean. Phone first. No framework, no build step, no external ass
 - Timestamps are shown in the owner's `tz` setting with the zone abbreviation.
 
 ## Layout
-- Top bar (sticky): wordmark "Fleet"; nav: Fleet, Jobs, Models (disabled, labelled
-  "step 3"), Trading (disabled, labelled "step 4"), Settings; status cluster: mode pill
+- Top bar (sticky): wordmark "Fleet"; nav: Fleet, Jobs, Models (changed: step 3 enables
+  it), Trading (disabled, labelled "step 4"), Settings; status cluster: mode pill
   (`PAPER` grey or `LIVE` green from `settings.live_enabled`), P&L "today $0.00 · all
   $0.00" (from `/api/pnl`), red KILL button. When `kill_switch` is true the whole bar
   turns red, the pill and the P&L stay, the KILL button is replaced by a disabled
@@ -59,14 +59,63 @@ Empty state: "No workers yet. Mint an enroll token in Settings and run the insta
 a Debian box."
 
 ## Jobs page `/jobs`
-- Send form: kind (sleep now; backtest / model_search / train listed but disabled with
-  "step 3"), params (for sleep: seconds, default 60), target (Any idle worker, then each
-  worker by name), Send.
+- (changed: step 3) Three send cards, one per kind, each a `<details>` card holding its
+  own form with a target select (Any idle worker, then each worker by name) and a Send
+  button: Backtest (model select with a "(none: use family + params)" option, family
+  select, params JSON textarea, first and last season), Model search (family, candidates,
+  seed, first and last season, keep top), Train (model select, through season and week;
+  the button is disabled until a model exists). (changed: review) Only one card is open:
+  the backtest card by default, the train card behind `?train_model`, the card whose form
+  was just rejected; the others fold to their heading so the job list sits near the top
+  on a phone. The sleep test form is the same kind of card under them. Model select
+  labels are "K 24 · HFA 55 · MOV on · thru 2024 w18 · 8f173b7b" (or "untrained"), with
+  the family prefixed only when more than one family exists. Defaults come from settings
+  (`backtest_seasons`, last complete season for the train point) and `?train_model=<id>`
+  preselects that model in the train form (the Train buttons on the Models page link
+  there). A rejected form re-renders the page with the error inline in the posted form
+  (status 400) and keeps the submitted values.
 - Table (newest first, 50 rows): created, kind, status badge (queued / leased / cancel
   requested / succeeded / failed / cancelled, colours muted), worker, progress, Cancel
   button for queued and leased. "waiting for an idle worker" badge on untargeted queued jobs.
-- `/jobs/{id}`: params, status, worker, progress, checkpoint (pretty JSON), result or
-  error, events timeline (ts, event, worker, detail).
+- `/jobs/{id}`: params, status, worker, progress, checkpoint (a one-line digest such as "candidate 12, season index 3; 12 evaluated", the raw JSON behind a collapsed "raw checkpoint" element: a search checkpoint carries the whole top list), result or
+  error, events timeline (ts, event, worker, detail). (changed: step 3) A `params.model_id`
+  links to the model; a backtest result renders its whole-run metrics as labelled pairs
+  (games, bets, ROI, hit rate, avg edge, P&L, log-loss vs market, max drawdown with one
+  decimal, seasons; ROI, hit rate and avg edge read "-" when nothing was bet) and the
+  per-season table stacks on a phone like the leaderboard; a model search result renders
+  the top list as a stacked table (candidate params, shrunk ROI as a signed percent, ROI,
+  bets, log-loss, market, drawdown, the created model link); any `created_models` are
+  shown as buttons linking to `/models/{id}` ("(existing)" when the row was already
+  there); the raw JSON sits in a collapsed "raw result" element.
+
+## Models page `/models` (step 3)
+One row per lineage from `GET /api/models`, ranked list first (`#1`, `#2`, ...), then an
+"Unranked" section (fewer than 50 bets, no backtest yet, or retired). Each row: status
+badge (`candidate` grey, `paper_ok` green, `live_eligible` blue, `retired` muted), family
+in bold with the short params ("K 24 · HFA 55 · MOV on"), a "N rows" chip when the
+lineage has children, ROI (signed percent, "-" without bets), bets, log-loss "vs" the
+market's, max drawdown (one decimal, "-" when null), seasons span, the summary text with
+an "Edit summary" `<details>` holding a textarea (maxlength 600) and Save, a Train
+button (links to the jobs page with the train form prefilled) and a disabled Assign
+button labelled "step 4" (dashed, full-contrast muted text). When no lineage is ranked
+the page says so in one line instead of drawing an empty table: "No lineage has 50
+backtest bets yet, so none is ranked." above the unranked list, or "No models yet. Send
+a model search from the Jobs page." when there are none. On a phone the
+row stacks: the name line first, the metrics as labelled pairs, the summary on its own
+line and the two buttons side by side at 44 px. The page ends with the nflverse
+attribution line (CC BY 4.0, links to nflverse-data and the licence).
+
+`/models/{id}`: family, short params and status badge in the heading; id, lineage (root
+chip), parent link, trained-through point, created time with the creating job link,
+shrunk ROI (signed percent); Train / Assign (disabled) / "Retire lineage" (a form with a
+JavaScript confirm, hidden once retired); the summary with its edit form folded into an
+"Edit summary" `<details>` like the list; params as JSON; the backtest metrics as
+labelled pairs (games, bets, ROI, hit rate, average edge, P&L, log-loss vs market, brier,
+max drawdown with its cents, seasons), the stacked per-season table and the calibration
+table (ten `p`
+buckets: games, mean p, mean outcome); the lineage members (id, trained through, status,
+created, job) and the related jobs (created, kind, status, "created this model" or "ran
+against it").
 
 ## Settings page `/settings`
 Groups, each its own form with a Save button and inline validation errors. Every field is
@@ -79,6 +128,14 @@ validation keep working:
 - Fleet: lease seconds, heartbeat seconds, online-after seconds, max lease expiries.
   Checked together: lease >= 2 x heartbeat + 5 and online-after > heartbeat.
 - Time zone (IANA name).
+- (changed: step 3) Fee model (taker fee rate, half spread), Backtest thresholds (min bets,
+  min ROI, max drawdown; saving recomputes every lineage's status), Backtest seasons
+  (first season, last season blank = last complete), nflverse games (refresh hours, the
+  games.csv URL, the row count and last complete season in the heading, a line with the
+  last refresh outcome of this host process: time and counts including skipped records,
+  or "Last refresh failed <time>: <error>" in red, and a "Refresh now" button that
+  fetches immediately and reports the counts in the flash; a failed refresh is a flash
+  too, never an error page).
 - Enroll: "New enroll token" button; the response page shows the token once with the two
   install one-liners (argument form and `FLEET_ENROLL_TOKEN` form) and a Copy button.
 - Kill switch: state, and when killed a reset form with a text field that must contain

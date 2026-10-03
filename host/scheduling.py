@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from host.errors import BadRequest, Conflict, NotFound
 from host.events import add_audit, add_job_event, worker_snapshot
+from host.jobparams import prepare_params
 from host.leases import get_job
 from host.settings import BATCH_ROLES, ROLES, get_int_setting, get_setting, role_for_kind
 
@@ -166,6 +167,7 @@ def create_job(
     params = params if params is not None else {}
     if not isinstance(params, dict):
         raise BadRequest("params must be a JSON object")
+    params = prepare_params(conn, kind, params)
     if idempotency_key:
         existing = _existing_by_key(conn, idempotency_key)
         if existing is not None:

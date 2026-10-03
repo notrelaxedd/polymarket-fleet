@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from typing import Any
 
 import pytest
@@ -211,8 +212,11 @@ def test_any_idle_waits_when_nobody_is_idle(pool, make_worker):
 
 
 def test_chosen_worker_sets_role_and_preempts_other_role(pool, conn, make_worker):
+    from tests.conftest import insert_model
+
     w = make_worker("w", role="train")
-    train_job = create(pool, kind="train", params={}).job
+    model = insert_model(conn)
+    train_job = create(pool, kind="train", params={"model_id": str(model["id"]), "through": {"season": 2024, "week": 1}}).job
     claimed = claim_one(pool, w, role="train")
     assert claimed["id"] == str(train_job["id"])
     result = create(pool, target=w.id)
@@ -538,3 +542,108 @@ def test_auto_return_waits_for_untargeted_work_of_its_role(pool, conn, make_work
         queue.complete(c, second.job["id"], reply["claimed"][0]["lease_token"], {})
     reply = hb(pool, w, reported_role="backtest", acked_epoch=2, want_job=True)
     assert reply["desired_role"] == "idle" and reply["role_epoch"] == 3 and reply["claimed"] == []
+
+
+# ------------------------------------------------------------------ step 3: job params
+
+
+def test_backtest_params_are_validated_and_settings_copied(pool, conn):
+    from host.errors import BadRequest
+    from tests.conftest import backtest_metrics, ingest_fixture, insert_model
+
+    ingest_fixture(conn)
+    model = insert_model(conn, metrics=backtest_metrics())
+    job = create(pool, kind="backtest", params={"family": "elo_blend", "params": {"k": 20, "hfa": 60.5}}).job
+    assert job["params"] == {
+        "family": "elo_blend", "params": {"k": 20, "hfa": 60.5},
+        "fee_model": {"taker_rate": 0.05, "half_spread": 0.01}, "default_bankroll_cents": 10000,
+        "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2025],
+    }, "the limits in force are copied in and the null last season is resolved from the games table"
+    by_model = create(pool, kind="backtest", params={"model_id": str(model["id"]), "seasons": [2018, None]}).job
+    assert by_model["params"]["model_id"] == str(model["id"]) and by_model["params"]["seasons"] == [2018, 2025]
+    assert "family" not in by_model["params"] and by_model["role"] == "backtest"
+    with pool.connection() as c:
+        c.execute("UPDATE settings SET value = '{\"taker_rate\": 0.02, \"half_spread\": 0.0}' WHERE key = 'fee_model'")
+        c.execute("UPDATE settings SET value = '[2015, 2020]' WHERE key = 'backtest_seasons'")
+        c.execute("UPDATE settings SET value = '900' WHERE key = 'max_bet_cents'")
+    later = create(pool, kind="backtest", params={"family": "elo_blend", "params": {}}).job
+    assert later["params"]["fee_model"] == {"taker_rate": 0.02, "half_spread": 0.0}
+    assert later["params"]["backtest_seasons"] == [2015, 2020] and later["params"]["max_bet_cents"] == 900
+    assert job["params"]["max_bet_cents"] == 2500, "an earlier job keeps the limits it was sent with"
+    assert create(pool, kind="backtest", params={"family": "elo_blend"}).job["params"]["params"] == {}, "params default to the family defaults"
+    bad = [
+        {}, {"family": "nope", "params": {}}, {"family": "elo_blend", "params": []},
+        {"family": "elo_blend", "params": {"k": "fast"}}, {"family": "elo_blend", "params": {}, "extra": 1},
+        {"model_id": "garbage"}, {"model_id": str(uuid.uuid4())}, {"model_id": str(model["id"]), "family": "elo_blend"},
+        {"family": "elo_blend", "params": {}, "seasons": [2020]}, {"family": "elo_blend", "params": {}, "seasons": [2020, 2010]},
+        {"family": "elo_blend", "params": {}, "seasons": [1990, None]}, {"family": "elo_blend", "params": {}, "seasons": "2020"},
+    ]
+    for params in bad:
+        with pytest.raises(BadRequest) as info:
+            create(pool, kind="backtest", params=params)
+        if params.get("model_id") == str(uuid.uuid4()):
+            assert info.value.message == "unknown model"
+    with pytest.raises(BadRequest) as info:
+        create(pool, kind="backtest", params={"model_id": str(uuid.uuid4())})
+    assert info.value.message == "unknown model"
+
+
+def test_model_search_and_train_params(pool, conn):
+    from host.errors import BadRequest
+    from tests.conftest import insert_model
+
+    job = create(pool, kind="model_search", params={"family": "elo_blend"}).job
+    assert job["role"] == "model_search"
+    assert job["params"]["n"] == 200 and job["params"]["seed"] == 0 and job["params"]["top_k"] == 5
+    assert job["params"]["backtest_seasons"] == [2010, None], "no games yet: the null stays"
+    full = create(pool, kind="model_search", params={"family": "elo_blend", "n": 5000, "seed": -7, "top_k": 20, "seasons": [2016, 2019]}).job
+    assert full["params"]["n"] == 5000 and full["params"]["seed"] == -7 and full["params"]["seasons"] == [2016, 2019]
+    for params in [
+        {}, {"family": "elo_blend", "n": 0}, {"family": "elo_blend", "n": 5001}, {"family": "elo_blend", "n": 2.5},
+        {"family": "elo_blend", "top_k": 0}, {"family": "elo_blend", "top_k": 21}, {"family": "elo_blend", "seed": "x"},
+        {"family": "elo_blend", "model_id": "x"}, {"family": "elo_blend", "n": True},
+    ]:
+        with pytest.raises(BadRequest):
+            create(pool, kind="model_search", params=params)
+    model = insert_model(conn)
+    train = create(pool, kind="train", params={"model_id": str(model["id"]), "through": {"season": 2024, "week": 10}}).job
+    assert train["role"] == "train" and train["params"]["through"] == {"season": 2024, "week": 10}
+    assert train["params"]["model_id"] == str(model["id"]) and train["params"]["trade_max_games"] == 6
+    for params in [
+        {}, {"model_id": str(model["id"])}, {"model_id": str(uuid.uuid4()), "through": {"season": 2024, "week": 1}},
+        {"model_id": str(model["id"]), "through": [2024, 1]}, {"model_id": str(model["id"]), "through": {"season": 2024, "week": 0}},
+        {"model_id": str(model["id"]), "through": {"season": 2024, "week": 23}}, {"model_id": str(model["id"]), "through": {"season": 1990, "week": 1}},
+        {"model_id": str(model["id"]), "through": {"season": 2024, "week": 1}, "n": 3},
+    ]:
+        with pytest.raises(BadRequest):
+            create(pool, kind="train", params=params)
+    # sleep keeps its shape: seconds in range when present, other keys tolerated, nothing copied in.
+    assert create(pool, kind="sleep", params={"seconds": 3, "note": "x"}).job["params"] == {"seconds": 3, "note": "x"}
+    assert create(pool, kind="sleep", params={}).job["params"] == {}
+    for params in [{"seconds": 0}, {"seconds": 86401}, {"seconds": "7"}]:
+        with pytest.raises(BadRequest):
+            create(pool, kind="sleep", params=params)
+
+
+def test_batch_jobs_refuse_untestable_seasons_and_unknown_param_names(pool, conn):
+    """MEDIUM / LOW: a seasons range no backtest can score, and a hyperparameter the
+    family does not know, are refused at creation instead of producing empty or
+    default runs under the owner's chosen name."""
+    from host.errors import BadRequest
+    from tests.conftest import ingest_fixture
+
+    for params in ({"family": "elo_blend", "params": {"K": 30, "HFA": 80}}, {"family": "elo_blend", "params": {"k": 30, "hfa_": 1}}):
+        with pytest.raises(BadRequest) as info:
+            create(pool, kind="backtest", params=params)
+        assert info.value.message.startswith("unknown elo_blend params: ")
+    # Without games there is nothing to judge a range against.
+    assert create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2030, 2030]}).job["params"]["seasons"] == [2030, 2030]
+    ingest_fixture(conn)  # 2016-2025, every season with moneylines
+    for seasons in ([2030, 2030], [2016, 2018], [2017, 2018]):
+        for kind, params in (("backtest", {"family": "elo_blend", "params": {}}), ("model_search", {"family": "elo_blend"})):
+            with pytest.raises(BadRequest) as info:
+                create(pool, kind=kind, params={**params, "seasons": seasons})
+            assert info.value.message.startswith(f"no testable season in [{seasons[0]}, {seasons[1]}]"), (kind, seasons)
+    ok = create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2016, 2019]}).job
+    assert ok["params"]["seasons"] == [2016, 2019], "2019 has three earlier seasons with lines"
+    assert create(pool, kind="backtest", params={"family": "elo_blend", "params": {"k": 30}, "seasons": [2019, None]}).job["params"]["seasons"] == [2019, 2025]

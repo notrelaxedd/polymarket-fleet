@@ -7,11 +7,12 @@ import sys
 import time
 from typing import Any, Sequence
 
-from host import auth, db, kill, queue, views
+from host import auth, db, kill, leaderboard, nflverse, queue, views
 from host.api.owner import install_command
 from host.api.serialize import jsonable
 from host.config import Config
 from host.errors import QueueError
+from host.settings import get_setting
 
 ROLETEST_SLEEP_SECONDS = 120
 ROLETEST_LIMIT_SECONDS = 10.0
@@ -151,6 +152,33 @@ def cmd_roletest(config: Config, args: argparse.Namespace) -> None:
                 pass
 
 
+def cmd_ingest_games(config: Config, args: argparse.Namespace) -> None:
+    """Fetch nflverse games.csv (or read --file) and upsert it into games."""
+    with db.connect(config.database_url) as conn:
+        url = str(get_setting(conn, "nflverse_url", nflverse.DEFAULT_URL))
+        result = nflverse.ingest(conn, args.file, url)
+        last = nflverse.last_complete_season(conn)
+    print(f"ingested {result['rows']} rows from {result['source']}: {result['inserted']} inserted, "
+          f"{result['changed']} changed; last complete season {last}")
+
+
+def cmd_models(config: Config, _: argparse.Namespace) -> None:
+    """The leaderboard as a table (ranked rows first, then unranked)."""
+    with db.connect(config.database_url) as conn:
+        board = leaderboard.leaderboard(conn)
+    rows = []
+    for entry in board["ranked"] + board["unranked"]:
+        m = entry["metrics"]
+        rows.append({
+            "rank": entry.get("rank", "-"), "id": str(entry["id"])[:8], "status": entry["status"],
+            "family": entry["family"], "params": entry["short_params"], "roi": m.get("roi"),
+            "bets": m.get("n_bets"), "log_loss": m.get("log_loss"), "market": m.get("market_log_loss"),
+            "drawdown": m.get("max_drawdown"), "seasons": f"{m['seasons'][0]}-{m['seasons'][-1]}" if m.get("seasons") else "-",
+            "rows": entry["members"],
+        })
+    print_table(rows, ["rank", "id", "status", "family", "params", "roi", "bets", "log_loss", "market", "drawdown", "seasons", "rows"])
+
+
 def cmd_run_loop(config: Config, _: argparse.Namespace) -> None:
     pool = db.make_pool(config.database_url, max_size=2)
     try:
@@ -185,6 +213,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("job")
     p.set_defaults(func=cmd_cancel)
     sub.add_parser("run-loop", help="one reaper + dispatcher iteration").set_defaults(func=cmd_run_loop)
+    p = sub.add_parser("ingest-games", help="fetch nflverse games.csv (or read a file) into the games table")
+    p.add_argument("--file", default=None, help="a local games.csv instead of the download")
+    p.set_defaults(func=cmd_ingest_games)
+    sub.add_parser("models", help="the model leaderboard").set_defaults(func=cmd_models)
     sub.add_parser("kill", help="raise the kill switch (trade role stops)").set_defaults(func=cmd_kill)
     p = sub.add_parser("kill-reset", help="clear the kill switch (prompts for RESUME)")
     p.add_argument("--yes", action="store_true", help="skip the RESUME prompt")
