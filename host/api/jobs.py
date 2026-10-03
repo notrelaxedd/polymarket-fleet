@@ -21,6 +21,7 @@ class CheckpointBody(BaseModel):
     checkpoint: dict[str, Any] | None = None
     progress: float | None = Field(default=None, allow_inf_nan=False)
     release: bool = False
+    reason: str | None = Field(default=None, max_length=32)
 
     @field_validator("checkpoint")
     @classmethod
@@ -55,7 +56,8 @@ def checkpoint(
     """Store checkpoint/progress; release=true hands the job back."""
     worker = auth.worker_for_token(conn, token)
     status = queue.checkpoint(
-        conn, job_id, body.lease_token, body.checkpoint, body.progress, body.release, worker["id"]
+        conn, job_id, body.lease_token, body.checkpoint, body.progress, body.release, worker["id"],
+        body.reason,
     )
     return {"status": status}
 

@@ -1,0 +1,8 @@
+<span class="pill {{ 'live' if topbar.live else 'paper' }}">{{ 'LIVE' if topbar.live else 'PAPER' }}</span>
+<span class="pnl muted">today {{ topbar.pnl_today | money }} &middot; all {{ topbar.pnl_all | money }}</span>
+{% if topbar.killed %}
+<span class="chip chip-killed" data-killed="1" aria-disabled="true">KILLED</span>
+<a class="killed-text" href="/settings#kill">TRADING KILLED. Reset in Settings.</a>
+{% else %}
+<a class="btn btn-kill" href="/kill/confirm" data-kill="1">KILL</a>
+{% endif %}

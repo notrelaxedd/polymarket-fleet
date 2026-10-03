@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Fleet{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header id="topbar" class="topbar{% if topbar.killed %} killed{% endif %}">
+  <div class="topbar-row">
+    <a class="wordmark" href="/">Fleet</a>
+    <nav class="nav" aria-label="Sections">
+      <a href="/"{% if path == '/' %} class="active"{% endif %}>Fleet</a>
+      <a href="/jobs"{% if path.startswith('/jobs') %} class="active"{% endif %}>Jobs</a>
+      <span class="disabled" aria-disabled="true" title="comes with step 3">Models<small class="soon">step 3</small></span>
+      <span class="disabled" aria-disabled="true" title="comes with step 4">Trading<small class="soon">step 4</small></span>
+      <a href="/settings"{% if path.startswith('/settings') %} class="active"{% endif %}>Settings</a>
+    </nav>
+    <div id="topbar-status" class="status">
+{% include "_topbar.html" %}
+    </div>
+  </div>
+  <div class="topbar-note"><span id="updated" class="muted"></span></div>
+</header>
+<form id="kill-form" method="post" action="/kill" hidden></form>
+<main class="page">
+{% if flash %}
+  <div class="flash" role="status">{{ flash }}</div>
+{% endif %}
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>

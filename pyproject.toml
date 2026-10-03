@@ -27,7 +27,7 @@ dev = [
 include = ["fleet*", "host*"]
 
 [tool.setuptools.package-data]
-host = ["migrations/*.sql"]
+host = ["migrations/*.sql", "templates/*.html", "templates/**/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

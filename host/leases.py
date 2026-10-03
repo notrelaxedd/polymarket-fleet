@@ -1,4 +1,8 @@
-"""Lease lifecycle: claim, re-offer, renew, release, checkpoint, complete, fail, reaper."""
+"""Lease lifecycle: claim, renew, release, checkpoint, complete, fail.
+
+Recovery paths (orphaned leases, held jobs on register, the reaper) are in
+host.recovery.
+"""
 from __future__ import annotations
 
 import uuid
@@ -12,6 +16,7 @@ from host.events import add_job_event
 from host.settings import get_int_setting
 
 ACTIVE = ("leased", "cancel_requested")
+RELEASE_REASONS = ("drain", "preempt", "cancel", "oom", "shutdown", "stopped")
 
 
 def as_uuid(value: Any) -> uuid.UUID | None:
@@ -88,42 +93,6 @@ def claim(conn: psycopg.Connection, worker_id: str, role: str, lease: int) -> di
     return row
 
 
-def orphan_jobs(conn: psycopg.Connection, worker_id: str, reported_ids: list[str], lease: int) -> list[dict[str, Any]]:
-    """Leases this worker holds but did not mention in its heartbeat: the claim reply
-    was lost (or a stale heartbeat claimed on its behalf).
-
-    `leased` orphans are renewed and returned so the worker is handed the same lease
-    again instead of a second job. A `cancel_requested` orphan is cancelled outright:
-    the worker is not running it, so there is nothing to stop.
-    """
-    known = [jid for jid in (as_uuid(v) for v in reported_ids) if jid is not None]
-    cancelled = conn.execute(
-        """
-        UPDATE jobs SET status = 'cancelled', finished_at = now(),
-               lease_worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
-               preempt_requested = false, updated_at = now()
-         WHERE lease_worker_id = %(wid)s AND status = 'cancel_requested'
-           AND NOT (id = ANY(%(known)s::uuid[]))
-         RETURNING id
-        """,
-        {"wid": worker_id, "known": known},
-    ).fetchall()
-    for row in cancelled:
-        add_job_event(conn, row["id"], "cancelled", worker_id, {"reason": "orphaned lease"})
-    rows = conn.execute(
-        """
-        UPDATE jobs SET lease_expires_at = now() + make_interval(secs => %(lease)s), updated_at = now()
-         WHERE lease_worker_id = %(wid)s AND status = 'leased'
-           AND NOT (id = ANY(%(known)s::uuid[]))
-         RETURNING *
-        """,
-        {"lease": lease, "wid": worker_id, "known": known},
-    ).fetchall()
-    for row in rows:
-        add_job_event(conn, row["id"], "re-offered", worker_id)
-    return rows
-
-
 def renew(
     conn: psycopg.Connection,
     worker_id: str,
@@ -166,33 +135,53 @@ def release(
     progress: float | None = None,
     checkpoint: dict[str, Any] | None = None,
     worker_id: str | None = None,
+    reason: str | None = None,
 ) -> str | None:
     """Hand a leased job back: queued, or cancelled if cancel was requested.
 
     Returns the new status, or None when the token (or, when given, the worker)
-    did not match. `expiries` is left untouched. A system-chosen target
-    (`target_auto`) is cleared so the dispatcher can place the job elsewhere.
+    did not match. A system-chosen target (`target_auto`) is cleared so the
+    dispatcher can place the job elsewhere. `reason` (one of RELEASE_REASONS,
+    anything else is ignored) is stored in the `released` event. Reason `oom`
+    counts like a lease expiry: `expiries` grows and the job fails once it
+    reaches `max_expiries`, so a job that always runs out of memory does not
+    bounce around the fleet forever. Other reasons leave `expiries` alone. The
+    counter is shared with the reaper, so the failure text names the total and
+    the last cause ("failed after 3 expiries (last: out of memory)").
     """
     jid, tok = as_uuid(job_id), as_uuid(lease_token)
     if jid is None or tok is None:
         return None
+    reason = reason if reason in RELEASE_REASONS else None
     row = conn.execute(
         """
-        UPDATE jobs SET
-               status = CASE WHEN status = 'cancel_requested' THEN 'cancelled' ELSE 'queued' END,
-               finished_at = CASE WHEN status = 'cancel_requested' THEN now() ELSE finished_at END,
-               progress = COALESCE(%(progress)s, progress),
-               checkpoint = COALESCE(%(checkpoint)s, checkpoint),
-               target_worker_id = CASE WHEN target_auto THEN NULL ELSE target_worker_id END,
+        WITH j AS (
+          SELECT id, status, expiries + %(bump)s AS expiries,
+                 (%(bump)s = 1 AND max_expiries IS NOT NULL AND expiries + 1 >= max_expiries) AS exhausted
+            FROM jobs
+           WHERE id = %(id)s AND lease_token = %(tok)s
+             AND (%(wid)s::text IS NULL OR lease_worker_id = %(wid)s)
+             AND status IN ('leased', 'cancel_requested')
+           FOR UPDATE)
+        UPDATE jobs u SET
+               expiries = j.expiries,
+               status = CASE WHEN j.status = 'cancel_requested' THEN 'cancelled'
+                             WHEN j.exhausted THEN 'failed' ELSE 'queued' END,
+               error = CASE WHEN j.status <> 'cancel_requested' AND j.exhausted
+                            THEN 'failed after ' || j.expiries || ' expiries (last: out of memory)' ELSE u.error END,
+               finished_at = CASE WHEN j.status = 'cancel_requested' OR j.exhausted THEN now()
+                                  ELSE u.finished_at END,
+               progress = COALESCE(%(progress)s, u.progress),
+               checkpoint = COALESCE(%(checkpoint)s, u.checkpoint),
+               target_worker_id = CASE WHEN u.target_auto THEN NULL ELSE u.target_worker_id END,
                target_auto = false,
                lease_worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
                preempt_requested = false, updated_at = now()
-         WHERE id = %(id)s AND lease_token = %(tok)s
-           AND (%(wid)s::text IS NULL OR lease_worker_id = %(wid)s)
-           AND status IN ('leased', 'cancel_requested')
-         RETURNING id, status, lease_worker_id
+          FROM j WHERE u.id = j.id
+          RETURNING u.id, u.status, u.expiries
         """,
         {
+            "bump": 1 if reason == "oom" else 0,
             "progress": progress,
             "checkpoint": Jsonb(checkpoint) if checkpoint is not None else None,
             "id": jid,
@@ -202,7 +191,12 @@ def release(
     ).fetchone()
     if row is None:
         return None
-    add_job_event(conn, row["id"], "released", worker_id, {"status": row["status"]})
+    detail: dict[str, Any] = {"status": row["status"]}
+    if reason is not None:
+        detail["reason"] = reason
+    if reason == "oom":
+        detail["expiries"] = row["expiries"]
+    add_job_event(conn, row["id"], "released", worker_id, detail)
     return row["status"]
 
 
@@ -214,15 +208,17 @@ def checkpoint(
     progress: float | None,
     do_release: bool = False,
     worker_id: str | None = None,
+    reason: str | None = None,
 ) -> str:
     """POST /checkpoint: store progress under the fence; optionally release.
 
-    `worker_id` (the caller's identity) must own the lease when given.
+    `worker_id` (the caller's identity) must own the lease when given; `reason`
+    is passed to release() when do_release is set.
     """
     job = get_job(conn, job_id, for_update=True)
     tok = _fence(job, lease_token, worker_id)
     if do_release:
-        status = release(conn, job_id, tok, progress, checkpoint_data, job["lease_worker_id"])
+        status = release(conn, job_id, tok, progress, checkpoint_data, job["lease_worker_id"], reason)
         return status or job["status"]
     conn.execute(
         """
@@ -285,72 +281,3 @@ def fail(
     ).fetchone()
     add_job_event(conn, job["id"], "failed", job["lease_worker_id"], {"error": error})
     return row
-
-
-def _last_event(conn: psycopg.Connection, job_id: Any) -> dict[str, Any] | None:
-    """The newest job_events row for a job."""
-    return conn.execute(
-        "SELECT event, worker_id FROM job_events WHERE job_id = %s ORDER BY id DESC LIMIT 1", (job_id,)
-    ).fetchone()
-
-
-def held_jobs(conn: psycopg.Connection, worker_id: str, lease: int) -> list[dict[str, Any]]:
-    """Re-lease the worker's live leases with fresh tokens (register).
-
-    A `re-leased` event is written once per run of registers: when the job's newest
-    event is already `re-leased` by this worker (a register retry loop) no row is added,
-    so a looping agent cannot grow job_events without bound.
-    """
-    rows = conn.execute(
-        """
-        UPDATE jobs SET lease_token = gen_random_uuid(),
-               lease_expires_at = now() + make_interval(secs => %s), updated_at = now()
-         WHERE lease_worker_id = %s AND status IN ('leased', 'cancel_requested')
-           AND lease_expires_at > now()
-         RETURNING *
-        """,
-        (lease, worker_id),
-    ).fetchall()
-    for row in rows:
-        last = _last_event(conn, row["id"])
-        if last is None or last["event"] != "re-leased" or last["worker_id"] != worker_id:
-            add_job_event(conn, row["id"], "re-leased", worker_id)
-    return rows
-
-
-def reap(conn: psycopg.Connection) -> list[dict[str, Any]]:
-    """Expire overdue leases: requeue, cancel or fail per the contract."""
-    rows = conn.execute(
-        """
-        WITH e AS (
-          SELECT id, lease_worker_id AS old_worker FROM jobs
-           WHERE status IN ('leased', 'cancel_requested') AND lease_expires_at < now()
-           FOR UPDATE SKIP LOCKED)
-        UPDATE jobs j SET
-               expiries = j.expiries + 1,
-               status = CASE
-                 WHEN j.status = 'cancel_requested' THEN 'cancelled'
-                 WHEN j.max_expiries IS NULL OR j.expiries + 1 < j.max_expiries THEN 'queued'
-                 ELSE 'failed' END,
-               error = CASE
-                 WHEN j.status = 'cancel_requested' THEN j.error
-                 WHEN j.max_expiries IS NULL OR j.expiries + 1 < j.max_expiries THEN j.error
-                 ELSE 'lease expired ' || (j.expiries + 1) || ' times' END,
-               finished_at = CASE
-                 WHEN j.status = 'cancel_requested' THEN now()
-                 WHEN j.max_expiries IS NULL OR j.expiries + 1 < j.max_expiries THEN j.finished_at
-                 ELSE now() END,
-               target_worker_id = CASE WHEN j.target_auto THEN NULL ELSE j.target_worker_id END,
-               target_auto = false,
-               lease_worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
-               preempt_requested = false, updated_at = now()
-          FROM e WHERE j.id = e.id
-          RETURNING j.id, j.status, j.expiries, e.old_worker
-        """
-    ).fetchall()
-    for row in rows:
-        add_job_event(
-            conn, row["id"], "lease_expired", row["old_worker"],
-            {"status": row["status"], "expiries": row["expiries"]},
-        )
-    return rows

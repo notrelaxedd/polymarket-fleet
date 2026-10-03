@@ -9,7 +9,8 @@ import psycopg
 from host import auth
 from host.errors import Unauthorized
 from host.events import add_audit
-from host.leases import claim, held_jobs, job_payload, lease_seconds, orphan_jobs, release, renew
+from host.leases import claim, job_payload, lease_seconds, release, renew
+from host.recovery import held_jobs, orphan_jobs
 from host.scheduling import auto_return_to_idle
 from host.settings import BATCH_ROLES, get_int_setting, get_setting
 
@@ -142,29 +143,41 @@ def _update_worker(
     ).fetchone()
 
 
-def _preempt_ids(conn: psycopg.Connection, worker_id: str) -> list[str]:
-    """Step 4: jobs this worker must stop and hand back."""
+def _preempt_ids(conn: psycopg.Connection, worker_id: str) -> tuple[list[str], list[str]]:
+    """Step 4: jobs this worker must stop and hand back, as (preempt, cancel).
+
+    `preempt` holds every id (preempt_requested or cancel_requested); `cancel` the
+    subset whose job is cancel_requested, so the agent can name the release reason.
+    """
     rows = conn.execute(
         """
-        SELECT id FROM jobs
+        SELECT id, status FROM jobs
          WHERE lease_worker_id = %s AND status IN ('leased', 'cancel_requested')
            AND (preempt_requested OR status = 'cancel_requested')
          ORDER BY created_at
         """,
         (worker_id,),
     ).fetchall()
-    return [str(row["id"]) for row in rows]
+    preempt = [str(row["id"]) for row in rows]
+    cancel = [str(row["id"]) for row in rows if row["status"] == "cancel_requested"]
+    return preempt, cancel
 
 
 def _may_claim(worker: dict[str, Any], body: dict[str, Any], kill: bool) -> bool:
-    """Step 6 preconditions."""
+    """Step 6 preconditions.
+
+    The kill flag refuses trade claims only: batch roles (backtest, model_search,
+    train) keep claiming under kill, a stopped backtest hides research for no
+    safety gain. Trade claims arrive in step 4; the rule is already in place.
+    """
+    role = worker["desired_role"]
     return (
-        not kill
+        not (kill and role == "trade")
         and bool(worker["enabled"])
         and bool(body.get("want_job"))
         and worker["reported_role"] == worker["desired_role"]
         and worker["acked_epoch"] == worker["role_epoch"]
-        and worker["desired_role"] in BATCH_ROLES
+        and role in BATCH_ROLES
     )
 
 
@@ -198,8 +211,8 @@ def process_heartbeat(
             lost.append(str(entry.get("id")))
     for entry in body.get("released") or []:
         release(conn, entry.get("id"), entry.get("lease_token"), entry.get("progress"),
-                entry.get("checkpoint"), worker_id)
-    preempt = _preempt_ids(conn, worker_id)
+                entry.get("checkpoint"), worker_id, entry.get("reason"))
+    preempt, cancel = _preempt_ids(conn, worker_id)
     worker = auto_return_to_idle(conn, worker_id) or worker
     kill = kill_switch(conn)
     claimed: list[dict[str, Any]] = []
@@ -214,5 +227,5 @@ def process_heartbeat(
             if row is not None:
                 claimed.append(job_payload(row, lease))
     reply = _common_reply(conn, worker)
-    reply.update({"kill": kill, "preempt": preempt, "lost": lost, "claimed": claimed})
+    reply.update({"kill": kill, "preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed})
     return reply

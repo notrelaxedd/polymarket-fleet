@@ -7,7 +7,7 @@ import psycopg
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, ConfigDict
 
-from host import auth, queue, views
+from host import auth, kill, pnl, queue, views
 from host.api.deps import DB, get_config, get_pool, require_owner
 from host.api.serialize import jsonable, public_worker
 from host.config import Config
@@ -34,6 +34,11 @@ class JobBody(BaseModel):
     params: dict[str, Any] = {}
     target: str | None = None
     idempotency_key: str | None = None
+
+
+class KillResetBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    confirm: str | None = None
 
 
 def install_command(public_url: str, token: str) -> str:
@@ -138,6 +143,34 @@ def post_settings(
 ) -> dict[str, Any]:
     """Update settings; unknown keys, wrong types and out-of-range values are 400."""
     return set_settings(conn, body, actor)
+
+
+@router.post("/kill")
+def post_kill(actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> dict[str, Any]:
+    """Raise the kill switch (idempotent). Step 4 adds the cancel-all behind it."""
+    kill.set_kill(conn, actor)
+    return {"kill_switch": True}
+
+
+@router.post("/kill/reset")
+def post_kill_reset(
+    body: KillResetBody, actor: str = Depends(require_owner), conn: psycopg.Connection = DB
+) -> dict[str, Any]:
+    """Clear the kill switch; the body must be {"confirm": "RESUME"}."""
+    kill.reset_kill(conn, actor, body.confirm)
+    return {"kill_switch": False}
+
+
+@router.get("/pnl")
+def get_pnl(conn: psycopg.Connection = DB) -> dict[str, Any]:
+    """Today's and all-time P&L in cents, plus a per-worker breakdown."""
+    return pnl.pnl(conn)
+
+
+@router.get("/audit")
+def get_audit(limit: int = Query(default=20, ge=1, le=500), conn: psycopg.Connection = DB) -> list[dict[str, Any]]:
+    """Newest audit rows first."""
+    return jsonable(views.audit_rows(conn, limit))
 
 
 @health_router.get("/healthz")

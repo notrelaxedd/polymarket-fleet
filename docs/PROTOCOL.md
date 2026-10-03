@@ -118,7 +118,7 @@ most 64 KiB of JSON, floats must be finite (no NaN/Infinity), and any request bo
 Response:
 ```json
 {"desired_role": "backtest", "role_epoch": 4, "kill": false,
- "preempt": ["<job id>"], "lost": ["<job id>"],
+ "preempt": ["<job id>"], "cancel": ["<job id>"], "lost": ["<job id>"],
  "claimed": [{"id": "...", "kind": "sleep", "params": {...}, "checkpoint": null,
               "progress": 0.0, "lease_token": "...", "lease_seconds": 30}],
  "code_version": "a1b2c3d4e5f6", "server_time": "...", "heartbeat_seconds": 5}
@@ -136,12 +136,15 @@ Host-side processing, in ONE transaction, in this order:
 3. **Release** every `released[]` entry whose token matches and whose `lease_worker_id`
    is this worker (changed: fence on the caller too): `status='queued'`, store
    checkpoint + progress, clear lease fields, `preempt_requested=false`; `expiries` is NOT
-   incremented. `job_events` `released`. If the job was `cancel_requested` it becomes
+   incremented (changed: step 2, except for reason `oom`, see Release reasons). `job_events` `released`. If the job was `cancel_requested` it becomes
    `cancelled` instead. (changed: re-dispatch) If the job's target was chosen by the
    system (`jobs.target_auto`, set by the any_idle pick and the dispatcher) the target is
    cleared so the dispatcher can place it elsewhere; an owner-chosen target stays.
 4. `preempt[]` = ids of this worker's leased jobs where `preempt_requested` or status
-   `cancel_requested`.
+   `cancel_requested`. (changed: step 2, release reasons) `cancel[]` = the subset of
+   `preempt[]` whose status is `cancel_requested`, so the agent releases those with
+   reason `cancel` and the rest with `preempt`; an agent that ignores `cancel[]` still
+   behaves correctly.
 5. **Auto-return to idle**: if `workers.auto_role` and `desired_role != 'idle'` and
    `reported_role == desired_role` and `acked_epoch == role_epoch` and this worker has no
    `leased`/`cancel_requested` job, no `queued` job targeted at it, and (changed: avoid a
@@ -149,9 +152,10 @@ Host-side processing, in ONE transaction, in this order:
    `run_after <= now()` -> set `desired_role='idle'`, `role_epoch += 1`, `auto_role=false`.
    (A job sent to a chosen or idle machine flips it into the needed role and this flips
    it back; waiting work of the same role is claimed first.)
-6. **Claim**: only if `kill` is false, `workers.enabled`, `want_job`,
+6. **Claim**: only if `workers.enabled`, `want_job`,
    `reported_role == desired_role`, `acked_epoch == role_epoch`, and the role is a batch role
-   (`backtest|model_search|train`); claim at most 1 job:
+   (`backtest|model_search|train`); (changed: kill scope, step 2) the kill flag refuses
+   claims for the `trade` role only, batch roles keep claiming under kill; claim at most 1 job:
    ```sql
    WITH c AS (
      SELECT id FROM jobs
@@ -259,12 +263,17 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
   | `heartbeat_seconds` | int | 1..60 |
   | `online_after_seconds` | int | 5..3600 |
   | `max_expiries` | int or null | 1..100 (null = retry forever) |
-  | `liquidity_floor_cents`, `max_bet_cents`, `default_bankroll_cents` | int | >= 0 |
-  | `max_daily_loss_cents` | object | `{"live": int >= 0, "paper": int >= 0}` |
+  | `liquidity_floor_cents`, `max_bet_cents`, `default_bankroll_cents` | int | 0..10^11 (one billion dollars) |
+  | `max_daily_loss_cents` | object | `{"live": int 0..10^11, "paper": int 0..10^11}` |
   | `min_edge`, `kelly_fraction` | number | 0..1 |
   | `trade_max_games` | int | 0..100 |
 
   Readers treat only the JSON `true` as on (`value is True`).
+  (changed: cross-field check) The fleet timing keys are also judged together, over the
+  stored settings merged with the update: `lease_seconds >= 2 * heartbeat_seconds + 5`
+  (two renewals plus the agent's 4 s HTTP timeout, otherwise every lease expires between
+  heartbeats) and `online_after_seconds > heartbeat_seconds` (otherwise workers flicker
+  offline between beats). A violation is a 400 naming both keys and stores nothing.
 - `GET /healthz` -> `{"ok": true, "db": true}`.
 
 ## Background loop (host, every 5 s, single thread)
@@ -272,7 +281,9 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
 1. **Reaper**: every `leased`/`cancel_requested` job with `lease_expires_at < now()`:
    `expiries += 1`; `cancel_requested` -> `cancelled`; else if `max_expiries IS NULL OR
    expiries < max_expiries` -> `queued` (checkpoint kept) else `failed` with
-   `error='lease expired N times'`. Lease fields cleared, `preempt_requested=false`.
+   `error='failed after N expiries (last: lease expired)'` (changed: the counter is shared
+   with `oom` releases, so the text names the total and the last cause). Lease fields
+   cleared, `preempt_requested=false`.
    `job_events` `lease_expired`. (changed: re-dispatch) A system-chosen target
    (`target_auto`) is cleared so the job can go to another idle worker.
 2. **Dispatcher**: for each untargeted `queued` batch job, oldest first: run the any-idle
@@ -391,18 +402,32 @@ self-update candidate (`app/pending.json` is removed).
 
 ### Release reasons
 `released[]` entries (heartbeat) and `POST /checkpoint` with `release=true` may carry
-`"reason": "drain" | "preempt" | "cancel" | "oom" | "shutdown"`. The host stores it in the
-`released` job event's `detail` and ignores unknown values. A release with reason `oom`
+`"reason": "drain" | "preempt" | "cancel" | "oom" | "shutdown" | "stopped"`. The host stores it in the
+`released` job event's `detail` and ignores unknown values. (changed: one more value)
+`stopped` is a runner that an outside SIGTERM ended while the agent itself kept running
+(`shutdown` is the agent stopping); `cancel` is used for ids the heartbeat reply listed in
+`cancel[]`, `preempt` for the rest of `preempt[]`, `drain` for jobs stopped by a role change. A release with reason `oom`
 counts like a lease expiry: `expiries += 1`, and the job fails once `expiries` reaches
 `max_expiries`, so a job that always runs out of memory does not bounce around the fleet
 forever. All other reasons leave `expiries` alone.
+(changed: precise semantics) The `released` event detail is `{"status", "reason"}` (no
+`reason` key when none or an unknown one was sent) plus `"expiries"` for `oom`. A job that
+fails this way gets `status='failed'`, `error='failed after N expiries (last: out of
+memory)'`, `finished_at`, its checkpoint kept. A `cancel_requested` job released with `oom` becomes `cancelled` (the
+expiry is still counted). `/checkpoint` with `release=true` returns the new status
+(`queued`, `cancelled` or `failed`).
 
 ### Memory watchdog (agent)
-Every service-loop pass the agent sums `VmRSS` over the runner's process group (from
-`/proc/<pid>/status` of every process whose session id is the runner's). If the sum exceeds
-`watchdog_rss_fraction` (default 0.8) of `ram_total_mb`, the agent stops the runner
-(SIGTERM, grace, SIGKILL), releases the job with its last checkpoint and reason `oom`, and
-logs a warning with the measured RSS. Tests may lower the threshold through `AgentOptions`.
+Every service-loop pass (at most once per second per runner) the agent sums the memory of
+every process whose session id is the runner's. (changed: shared pages counted once) The
+per-process figure is `Pss_Anon + Pss_Shmem` from `/proc/<pid>/smaps_rollup`: proportional,
+so copy-on-write pages shared by forked children count once, and anonymous or shmem only,
+so file pages the kernel can drop (a mmapped data file, the interpreter's own text) do not
+count. Kernels without the split fall back to `Pss`, then to `RssAnon + RssShmem` and
+finally `VmRSS` from `/proc/<pid>/status`. If the sum exceeds `watchdog_rss_fraction`
+(default 0.8) of `ram_total_mb`, the agent stops the runner (SIGTERM, grace, SIGKILL),
+releases the job with its last checkpoint and reason `oom`, and logs a warning with the
+measured MB. Tests may lower the threshold through `AgentOptions`.
 
 ### Kill flag
 `kill` in register and heartbeat responses mirrors `settings.kill_switch`. It affects the
@@ -415,6 +440,15 @@ flag in `status.json` so `python3 -m fleet.worker status` shows it.
 Owner API: `POST /api/kill` sets `kill_switch=true` (idempotent, audit row `kill`). `POST
 /api/kill/reset` with body `{"confirm": "RESUME"}` clears it (audit row `kill_reset`); any
 other body is 400. Step 4 adds the cancel-all behind `/api/kill`.
+(changed: audit detail) Every press of kill writes a `kill` audit row (before/after carry
+the flag) so repeated presses are visible; `kill_reset` stores the typed text in
+`audit_log.confirmation_text` and the flag is unchanged on a 400. Both reply with
+`{"kill_switch": <bool>}`. `host/kill.py` (`set_kill`, `reset_kill`, `is_killed`) is the
+single implementation behind the API, the dashboard forms and the CLI. (changed: race)
+Both writers lock the `kill_switch` row (`SELECT ... FOR UPDATE`) before reading it, so a
+press that overlaps an uncommitted reset waits and then re-applies: the last action wins
+and the audit order matches the final flag. The dashboard form and the CLI compare the
+typed text exactly like the API (no whitespace trimming).
 
 ### Owner routes added in step 2
 - Dashboard pages (HTML, same owner auth as `/api`): `GET /` (fleet), `GET /jobs`,
@@ -424,10 +458,44 @@ other body is 400. Step 4 adds the cancel-all behind `/api/kill`.
   message): `POST /workers/{id}/role`, `POST /workers/{id}/enabled`, `POST /jobs` (send),
   `POST /jobs/{id}/cancel`, `POST /settings/{group}`, `POST /enroll-token`, `POST /kill`,
   `POST /kill/reset`. Each is a thin wrapper over the JSON route of the same name.
+  (changed: form details) The redirect is a 303 to the page the form lives on; the
+  message travels in a short-lived `flash` cookie (HttpOnly, SameSite=Lax, 60 s) that the
+  next page render shows once and clears, so a crafted link cannot put text into the
+  status line and a reload does not repeat it (changed: was the query string). Fields: `role`; `enabled`
+  (`true`/`false`); `kind`, `seconds` (sleep, 1..86400, default 60), `target` (`any_idle`
+  or a worker id); `next` (optional local path to return to after a cancel); `confirm`
+  (kill reset). Settings groups are `trading` (`max_bet`, `max_daily_loss_paper`,
+  `max_daily_loss_live`, `default_bankroll`, `liquidity_floor` in dollars, converted to
+  the `*_cents` keys server side, plus `min_edge`, `kelly_fraction`, `trade_max_games`),
+  `fleet` (`lease_seconds`, `heartbeat_seconds`, `online_after_seconds`, `max_expiries`,
+  blank = null) and `tz` (`tz`). A rejected settings or reset form re-renders the
+  settings page with the error inline and status 400; nothing is stored.
+  `POST /enroll-token` renders the token page directly (the token is shown once), it does
+  not redirect.
+- `GET /static/*` (stylesheet, script) needs no owner login; every other dashboard path
+  does. On dashboard paths (anything outside `/api/`) 400/401/403/404/405/409/413 render a
+  small HTML page instead of the JSON `{"detail"}` body, including the framework's own 404
+  for an unknown path or a missing static file (changed: was JSON).
+- (changed: hardening) Every response outside `/api/` carries `X-Frame-Options: DENY`,
+  `Content-Security-Policy: frame-ancestors 'none'`, `Referrer-Policy: same-origin` and
+  `X-Content-Type-Options: nosniff`: owner auth comes from the network, so a page that
+  framed the dashboard could otherwise click-jack KILL or a Disable link with a passing
+  Origin. Every HTML page and redirect is `Cache-Control: no-store` (the enroll token page
+  must not come back from the back-forward cache). The 256 KiB body limit also counts a
+  chunked body as it arrives, so a missing Content-Length is not a way around it.
+- Dashboard timestamps (jobs, job events, audit log, enroll expiry) are shown in
+  `settings.tz` with the zone abbreviation (`2026-10-02 23:20:34 EDT`); an unknown zone
+  name falls back to UTC.
 - `GET /api/pnl` -> `{"today_cents": 0, "all_time_cents": 0, "by_worker": {"<id>": 0}}`
   computed by `host/pnl.py` (zeros until step 4 adds bets and fills).
-- `GET /api/audit?limit=20` -> newest audit rows.
+- `GET /api/audit?limit=20` -> newest audit rows (`limit` 1..500; full rows including
+  `confirmation_text`).
 - CLI: `kill`, `kill-reset` (prompts for RESUME unless `--yes`), `roletest <worker>`
   (sends a 120 s sleep job to the worker, waits for the ack, flips the role to `train`,
   waits for the ack and prints `ack - request` in seconds from host timestamps; exit 1 if
-  over 10 s).
+  over 10 s). (changed: details) `request` is `audit_log.ts` of the `set_role` row and
+  `ack` is `workers.last_heartbeat_at` as written by the heartbeat that acked the epoch.
+  Each wait is bounded by `--timeout` (default 30 s); a worker that never acks is exit 1
+  too. The sleep job is cancelled on every exit path (success, timeout, limit exceeded,
+  Ctrl-C), so a worker that never acked does not run it when it comes back; the worker is
+  left in `train` (or in the role it was flipped to).

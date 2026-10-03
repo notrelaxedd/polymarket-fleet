@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Enroll token{% endblock %}
+{% block content %}
+<p><a href="/settings">&larr; Settings</a></p>
+<h1>New enroll token</h1>
+<div class="card">
+  <p>Shown once. Single use, expires {{ expires_at | ts }}.</p>
+  <p class="token-row"><code id="token" class="token">{{ token }}</code> <button type="button" class="btn small js-only" data-copy="token">Copy</button></p>
+  <h2>Install on a Debian box</h2>
+  <p class="muted small">Argument form:</p>
+  <pre id="cmd-arg" class="cmd">{{ arg_command }}</pre>
+  <p><button type="button" class="btn small js-only" data-copy="cmd-arg">Copy</button></p>
+  <p class="muted small">Environment form (keeps the token out of the sudo log and the process list):</p>
+  <pre id="cmd-env" class="cmd">{{ env_command }}</pre>
+  <p><button type="button" class="btn small js-only" data-copy="cmd-env">Copy</button></p>
+</div>
+{% endblock %}

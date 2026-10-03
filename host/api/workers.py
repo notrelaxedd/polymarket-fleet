@@ -40,6 +40,7 @@ class JobEntry(BaseModel):
     lease_token: str = Field(max_length=64)
     progress: float | None = Field(default=None, allow_inf_nan=False)
     checkpoint: dict[str, Any] | None = None
+    reason: str | None = Field(default=None, max_length=32)
 
     @field_validator("checkpoint")
     @classmethod

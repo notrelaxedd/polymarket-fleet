@@ -7,10 +7,12 @@ from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import Response
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from host import db
-from host.api import dl, jobs, owner, workers
+from host import db, web
+from host.api import dashboard, dashboard_forms, dl, jobs, owner, workers
 from host.bundle import build_bundle
 from host.config import Config
 from host.errors import QueueError
@@ -19,22 +21,91 @@ log = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 256 * 1024
 
+# The dashboard is authenticated by the network (tailscale serve adds the owner login),
+# so any page the owner visits could frame it and click-jack a form: refuse framing on
+# every non-API response. Static files and error pages get the headers too.
+DASHBOARD_HEADERS = (
+    (b"x-frame-options", b"DENY"),
+    (b"content-security-policy", b"frame-ancestors 'none'"),
+    (b"referrer-policy", b"same-origin"),
+    (b"x-content-type-options", b"nosniff"),
+)
+
+
+class BodyTooLarge(Exception):
+    """Raised from the wrapped receive once a body passes the limit."""
+
 
 class BodySizeLimit:
-    """Reject request bodies above MAX_BODY_BYTES with 413 (worker writes are small)."""
+    """Reject request bodies above MAX_BODY_BYTES with 413 (worker writes are small).
+
+    A declared Content-Length above the limit is refused before the body is read; a
+    chunked body is counted as it arrives and refused once it passes the limit, so a
+    missing Content-Length is not a way around it.
+    """
 
     def __init__(self, app: Any, limit: int = MAX_BODY_BYTES) -> None:
         self.app = app
         self.limit = limit
 
+    async def _reject(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        response = web.error_response(Request(scope), 413, "request body too large")
+        await response(scope, receive, send)
+
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
-        if scope["type"] == "http":
-            for name, value in scope.get("headers", []):
-                if name == b"content-length" and value.isdigit() and int(value) > self.limit:
-                    response = JSONResponse({"detail": "request body too large"}, status_code=413)
-                    await response(scope, receive, send)
-                    return
-        await self.app(scope, receive, send)
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        for name, value in scope.get("headers", []):
+            if name == b"content-length" and value.isdigit() and int(value) > self.limit:
+                await self._reject(scope, receive, send)
+                return
+        received = 0
+        started = False
+
+        async def counting_receive() -> dict[str, Any]:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.limit:
+                    raise BodyTooLarge()
+            return message
+
+        async def tracking_send(message: dict[str, Any]) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, tracking_send)
+        except BodyTooLarge:
+            if started:
+                raise
+            await self._reject(scope, receive, send)
+
+
+class DashboardHeaders:
+    """Add the anti-framing and referrer headers to every response outside /api/."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("path", "").startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_headers(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {name for name, _ in headers}
+                headers.extend((name, value) for name, value in DASHBOARD_HEADERS if name not in present)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
 def _validation_detail(exc: RequestValidationError) -> str:
@@ -64,17 +135,28 @@ def create_app(config: Config) -> FastAPI:
     log.info("worker bundle code_version=%s", app.state.bundle.code_version)
 
     @app.exception_handler(QueueError)
-    async def queue_error(_: Request, exc: QueueError) -> JSONResponse:
-        return JSONResponse({"detail": exc.message}, status_code=exc.status)
+    async def queue_error(request: Request, exc: QueueError) -> Response:
+        """JSON under /api, a small HTML page on the dashboard (401, 403, 404, ...)."""
+        return web.error_response(request, exc.status, exc.message)
 
     @app.exception_handler(RequestValidationError)
-    async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
-        return JSONResponse({"detail": _validation_detail(exc)}, status_code=400)
+    async def validation_error(request: Request, exc: RequestValidationError) -> Response:
+        return web.error_response(request, 400, _validation_detail(exc))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def http_error(request: Request, exc: StarletteHTTPException) -> Response:
+        """Starlette's own 404 (unknown path, missing static file) and 405 as HTML on the dashboard."""
+        return web.error_response(request, exc.status_code, str(exc.detail))
 
     app.include_router(workers.router)
     app.include_router(jobs.router)
     app.include_router(owner.router)
     app.include_router(owner.health_router)
     app.include_router(dl.router)
+    app.include_router(dashboard.router)
+    app.include_router(dashboard_forms.router)
+    # The stylesheet and script need no owner login; every other dashboard path does.
+    app.mount("/static", StaticFiles(directory=str(web.STATIC_DIR)), name="static")
     app.add_middleware(BodySizeLimit)
+    app.add_middleware(DashboardHeaders)
     return app

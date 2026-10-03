@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.id | short }}{% endblock %}
+{% block content %}
+<p><a href="/jobs">&larr; Jobs</a></p>
+<h1>{{ job.kind }} <span class="muted small">{{ job.id }}</span></h1>
+{% set worker = job.lease_worker_id or job.target_worker_id %}
+<div class="card">
+  <dl class="props">
+    <dt>status</dt><dd><span class="badge st-{{ job.status }}">{{ job.status.replace('_', ' ') }}</span>
+      {% if job.status in ('queued', 'leased') %}
+      <form class="inline" method="post" action="/jobs/{{ job.id }}/cancel">
+        <input type="hidden" name="next" value="/jobs/{{ job.id }}">
+        <button type="submit" class="btn small">Cancel</button>
+      </form>
+      {% endif %}
+    </dd>
+    <dt>role</dt><dd>{{ job.role }}</dd>
+    <dt>worker</dt><dd>{% if worker %}{{ names.get(worker, worker) }} <span class="muted small">{{ worker }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
+    <dt>progress</dt><dd><div class="bar" role="progressbar" aria-label="progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ ((job.progress or 0) * 100) | round | int }}"><span style="width: {{ job.progress | pct }}"></span></div> {{ job.progress | pct }}</dd>
+    <dt>expiries</dt><dd>{{ job.expiries }}{% if job.max_expiries is not none %} / {{ job.max_expiries }}{% endif %}</dd>
+    <dt>created</dt><dd>{{ job.created_at | ts }}</dd>
+    <dt>started</dt><dd>{{ job.started_at | ts or '-' }}</dd>
+    <dt>finished</dt><dd>{{ job.finished_at | ts or '-' }}</dd>
+  </dl>
+  <h2>params</h2>
+  <pre>{{ job.params | pretty_json }}</pre>
+  <h2>checkpoint</h2>
+  <pre>{{ job.checkpoint | pretty_json or 'none' }}</pre>
+  {% if job.error %}
+  <h2>error</h2>
+  <pre class="error">{{ job.error }}</pre>
+  {% else %}
+  <h2>result</h2>
+  <pre>{{ job.result | pretty_json or 'none' }}</pre>
+  {% endif %}
+</div>
+<h2>events</h2>
+<div class="table-wrap">
+<table class="events stack">
+  <thead><tr><th>ts</th><th>event</th><th>worker</th><th>detail</th></tr></thead>
+  <tbody>
+  {% for e in job.events %}
+  <tr>
+    <td class="nowrap lead">{{ e.ts | ts }}</td>
+    <td>{{ e.event }}</td>
+    <td>{% if e.worker_id %}{{ names.get(e.worker_id, e.worker_id) }}{% else %}<span class="muted">-</span>{% endif %}</td>
+    <td class="wide"><code>{{ e.detail | compact_json }}</code></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

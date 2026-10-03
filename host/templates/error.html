@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ status_code }} {{ title }}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<main class="page">
+  <div class="card confirm">
+    <h1>{{ status_code }} {{ title }}</h1>
+    <p>{{ detail }}</p>
+    {% if help %}<p class="muted">{{ help }}</p>{% endif %}
+    <p><a class="btn" href="/">Fleet</a></p>
+  </div>
+</main>
+</body>
+</html>

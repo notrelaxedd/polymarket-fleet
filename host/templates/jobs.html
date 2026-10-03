@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<h1>Jobs</h1>
+<form class="card send" method="post" action="/jobs">
+  <div class="fields">
+    <label>Kind
+      <select name="kind">
+        {% for value, label, enabled in kinds %}
+        <option value="{{ value }}"{% if not enabled %} disabled{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Seconds
+      <input type="number" name="seconds" value="60" min="1" max="86400" inputmode="numeric">
+    </label>
+    <label>Target
+      <select name="target">
+        <option value="any_idle">Any idle worker</option>
+        {% for id, name in names.items() %}
+        <option value="{{ id }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <button type="submit" class="btn primary">Send</button>
+</form>
+<div class="table-wrap">
+<table class="jobs stack">
+  <thead><tr><th>created</th><th>kind</th><th>status</th><th>worker</th><th>progress</th><th></th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+  {% set worker = j.lease_worker_id or j.target_worker_id %}
+  <tr>
+    <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
+    <td class="c-kind">{{ j.kind }}</td>
+    <td class="c-status">
+      <span class="badge st-{{ j.status }}">{{ j.status.replace('_', ' ') }}</span>
+      {% if j.status == 'queued' and not j.target_worker_id %}<span class="badge st-waiting">waiting for an idle worker</span>{% endif %}
+    </td>
+    <td class="c-worker">{% if worker %}{{ names.get(worker, worker) }}{% else %}<span class="muted">-</span>{% endif %}</td>
+    <td class="nowrap c-progress">{{ j.progress | pct }}</td>
+    <td class="action">
+      {% if j.status in ('queued', 'leased') %}
+      <form method="post" action="/jobs/{{ j.id }}/cancel"><button type="submit" class="btn small">Cancel</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6" class="muted">No jobs yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,48 @@
+{% if not workers %}
+<p class="empty">No workers yet. Mint an enroll token in <a href="/settings#enroll">Settings</a> and run the install line on a Debian box.</p>
+{% endif %}
+{% for w in workers %}
+{# The select is held only while an online worker is acking a change (a few seconds);
+   a stale or offline box keeps it enabled so a wrong pick can be undone before it returns. #}
+{% set locked = w.switching and w.dot == 'online' %}
+<article class="card worker{% if not w.enabled %} is-disabled{% endif %}{% if w.dot == 'offline' %} is-offline{% endif %}" data-worker="{{ w.id }}">
+  <header class="card-head">
+    <span class="dot {{ w.dot }}" role="img" aria-label="{{ w.dot }}"></span>
+    <span class="name">{{ w.name }}</span>
+    {% if w.dot != 'online' %}<span class="chip st-{{ w.dot }}">{{ w.dot }}</span>{% endif %}
+    {% if not w.enabled %}<span class="chip">disabled</span>{% endif %}
+    <span class="muted small">{{ w.id }}{% if w.hostname and w.hostname != w.name %} &middot; {{ w.hostname }}{% endif %}</span>
+  </header>
+  <div class="role-row">
+    <form class="role" method="post" action="/workers/{{ w.id }}/role">
+      <label class="visually-hidden" for="role-{{ w.id }}">Role</label>
+      <select id="role-{{ w.id }}" name="role" data-autosubmit="1"{% if locked %} disabled{% endif %}>
+        {% for r in roles %}
+        <option value="{{ r }}"{% if r == w.desired_role %} selected{% endif %}>{{ r }}</option>
+        {% endfor %}
+      </select>
+      <button type="submit" class="btn js-hide"{% if locked %} disabled{% endif %}>Set</button>
+    </form>
+    <form class="inline" method="post" action="/workers/{{ w.id }}/enabled">
+      <input type="hidden" name="enabled" value="{{ 'false' if w.enabled else 'true' }}">
+      <button type="submit" class="link">{{ 'Disable' if w.enabled else 'Enable' }}</button>
+    </form>
+  </div>
+  {% if w.switching %}
+  <p class="switching">switching to {{ w.desired_role }} (epoch {{ w.role_epoch }})&hellip;</p>
+  {% endif %}
+  <div class="job">
+    {% if w.current_jobs %}
+    {% for j in w.current_jobs %}
+    <a class="joblink" href="/jobs/{{ j.id }}">{{ j.kind }}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}</a>
+    <div class="bar" role="progressbar" aria-label="{{ j.kind }} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ ((j.progress or 0) * 100) | round | int }}"><span style="width: {{ j.progress | pct }}"></span></div>
+    <span class="small">{{ j.progress | pct }}</span>
+    {% endfor %}
+    {% else %}
+    <span class="muted">no job</span>
+    {% endif %}
+  </div>
+  <p class="stats muted small">CPU {{ (w.cpu_pct or 0) | round | int }}% &middot; RAM {{ w.ram_used_mb | gb }} / {{ w.ram_total_mb | gb }} GB &middot; {{ w.age | ago }} &middot; <span class="nowrap">v {{ w.code_version or '?' }}</span></p>
+  <p class="pnl-line muted small">today {{ w.pnl_cents | money }}</p>
+</article>
+{% endfor %}

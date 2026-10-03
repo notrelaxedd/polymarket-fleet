@@ -175,6 +175,10 @@ def test_settings_are_validated_and_audited(client, conn, make_worker):
         {"max_bet_cents": -1}, {"min_edge": 2}, {"kelly_fraction": "0.5"}, {"tz": "../etc/passwd"},
         {"max_daily_loss_cents": {"live": 1}}, {"max_daily_loss_cents": {"live": "1", "paper": 2}},
         {"max_expiries": 0}, {"kill_switch": "no", "lease_seconds": 60},
+        # MEDIUM: fleet timing is checked across fields over the merged settings
+        {"heartbeat_seconds": 60}, {"heartbeat_seconds": 13}, {"online_after_seconds": 5},
+        {"lease_seconds": 20, "heartbeat_seconds": 10, "online_after_seconds": 30},
+        {"max_bet_cents": 10**25}, {"max_daily_loss_cents": {"live": 10**25, "paper": 0}},
     ]
     for body in bad:
         r = client.post("/api/settings", json=body)
@@ -201,3 +205,22 @@ def test_settings_are_validated_and_audited(client, conn, make_worker):
     client.post("/api/jobs", json={"kind": "sleep"})
     hb = client.post(f"/api/v1/workers/{w.id}/heartbeat", json=heartbeat_body("backtest"), headers=w.headers).json()
     assert hb["kill"] is False and hb["claimed"][0]["lease_seconds"] == 45
+
+
+def test_pnl_and_audit_routes(client, make_worker):
+    """Step 2: /api/pnl is zeros keyed by worker until step 4; /api/audit is newest first."""
+    a = make_worker("a")
+    b = make_worker("b")
+    r = client.get("/api/pnl")
+    assert r.status_code == 200
+    assert r.json() == {"today_cents": 0, "all_time_cents": 0, "by_worker": {a.id: 0, b.id: 0}}
+    client.post(f"/api/workers/{a.id}/role", json={"role": "train"})
+    client.post("/api/settings", json={"lease_seconds": 40})
+    r = client.get("/api/audit")
+    assert r.status_code == 200
+    rows = r.json()
+    assert [x["action"] for x in rows] == ["settings_changed", "set_role"]
+    assert rows[0]["entity"] == "lease_seconds" and rows[0]["ts"].endswith("Z")
+    assert set(rows[1]) >= {"id", "ts", "actor", "action", "entity", "before", "after", "confirmation_text"}
+    assert len(client.get("/api/audit", params={"limit": 1}).json()) == 1
+    assert client.get("/api/audit", params={"limit": 0}).status_code == 400

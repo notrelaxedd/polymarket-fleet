@@ -4,13 +4,18 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from typing import Any, Sequence
 
-from host import auth, db, queue, views
+from host import auth, db, kill, queue, views
 from host.api.owner import install_command
 from host.api.serialize import jsonable
 from host.config import Config
 from host.errors import QueueError
+
+ROLETEST_SLEEP_SECONDS = 120
+ROLETEST_LIMIT_SECONDS = 10.0
+ROLETEST_POLL_SECONDS = 0.2
 
 
 def print_table(rows: list[dict[str, Any]], columns: Sequence[str]) -> None:
@@ -83,6 +88,69 @@ def cmd_cancel(config: Config, args: argparse.Namespace) -> None:
     print(f"job {job['id']} status={job['status']}")
 
 
+def cmd_kill(config: Config, _: argparse.Namespace) -> None:
+    with db.connect(config.database_url) as conn:
+        changed = kill.set_kill(conn, actor="cli")
+    print("kill_switch=true" + ("" if changed else " (already set)"))
+
+
+def cmd_kill_reset(config: Config, args: argparse.Namespace) -> None:
+    confirm = kill.RESET_CONFIRMATION if args.yes else input(f"Type {kill.RESET_CONFIRMATION} to clear the kill switch: ")
+    with db.connect(config.database_url) as conn:
+        kill.reset_kill(conn, "cli", confirm)
+    print("kill_switch=false")
+
+
+def _wait_for_ack(config: Config, worker_id: str, timeout: float) -> dict[str, Any] | None:
+    """Poll until the worker has acked its desired role; the row on ack, None on timeout."""
+    deadline = time.monotonic() + timeout
+    while True:
+        with db.connect(config.database_url, autocommit=True) as conn:
+            row = queue.get_worker(conn, worker_id)
+        if row["acked_epoch"] == row["role_epoch"] and row["reported_role"] == row["desired_role"]:
+            return row
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(ROLETEST_POLL_SECONDS)
+
+
+def cmd_roletest(config: Config, args: argparse.Namespace) -> None:
+    """Send a long sleep job to the worker, then flip it to train and time the ack.
+
+    Both timestamps are host side: audit_log.ts of the role change and the
+    workers.last_heartbeat_at written by the heartbeat that acked it. The sleep job
+    is cancelled on every exit path (timeout, limit, Ctrl-C) so a worker that comes
+    back later does not run a job nobody asked for.
+    """
+    with db.connect(config.database_url) as conn:
+        result = queue.create_job(conn, "sleep", {"seconds": ROLETEST_SLEEP_SECONDS}, args.worker, None, "roletest")
+    job_id = result.job["id"]
+    print(f"sent sleep job {job_id} to {args.worker}; waiting for the role ack")
+    try:
+        if _wait_for_ack(config, args.worker, args.timeout) is None:
+            raise QueueError(f"worker {args.worker} never acked the job's role within {args.timeout:g} s")
+        with db.connect(config.database_url) as conn:
+            worker = queue.set_role(conn, args.worker, "train", actor="roletest")
+            requested = conn.execute(
+                "SELECT ts FROM audit_log WHERE action = 'set_role' AND entity = %s ORDER BY id DESC LIMIT 1",
+                (args.worker,),
+            ).fetchone()["ts"]
+        print(f"set role train (epoch {worker['role_epoch']}); waiting for the ack")
+        acked = _wait_for_ack(config, args.worker, args.timeout)
+        if acked is None:
+            raise QueueError(f"worker {args.worker} never acked role train within {args.timeout:g} s")
+        seconds = (acked["last_heartbeat_at"] - requested).total_seconds()
+        print(f"role ack latency: {seconds:.2f} s")
+        if seconds > ROLETEST_LIMIT_SECONDS:
+            raise QueueError(f"role ack took {seconds:.2f} s, over the {ROLETEST_LIMIT_SECONDS:.0f} s limit")
+    finally:
+        with db.connect(config.database_url) as conn:
+            try:
+                queue.cancel_job(conn, job_id, actor="roletest")
+            except QueueError:
+                pass
+
+
 def cmd_run_loop(config: Config, _: argparse.Namespace) -> None:
     pool = db.make_pool(config.database_url, max_size=2)
     try:
@@ -117,6 +185,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("job")
     p.set_defaults(func=cmd_cancel)
     sub.add_parser("run-loop", help="one reaper + dispatcher iteration").set_defaults(func=cmd_run_loop)
+    sub.add_parser("kill", help="raise the kill switch (trade role stops)").set_defaults(func=cmd_kill)
+    p = sub.add_parser("kill-reset", help="clear the kill switch (prompts for RESUME)")
+    p.add_argument("--yes", action="store_true", help="skip the RESUME prompt")
+    p.set_defaults(func=cmd_kill_reset)
+    p = sub.add_parser("roletest", help="measure a worker's role-switch latency")
+    p.add_argument("worker")
+    p.add_argument("--timeout", type=float, default=30.0, help="seconds to wait for each ack")
+    p.set_defaults(func=cmd_roletest)
     return parser
 
 

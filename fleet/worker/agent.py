@@ -12,6 +12,17 @@ Lease deadline: last_ok_at is the send time of the last acknowledged heartbeat.
 Runners are killed once lease_seconds - heartbeat_seconds - http_timeout have passed
 without an answer (checked on every miss and in the 0.1 s service loop), so a runner
 never outlives its lease on the host.
+
+Release reasons: every released[] entry and every /checkpoint release carries a
+"reason" (drain, preempt, cancel, shutdown, oom; "stopped" for a runner that an
+external SIGTERM ended while the agent was not shutting down).
+
+Memory watchdog: the 0.1 s service loop asks fleet.worker.watchdog which runners
+exceed watchdog_rss_fraction of the machine's RAM; those are stopped and released
+with reason "oom" and the trip is counted in status.json.
+
+Kill flag: mirrors settings.kill_switch and only concerns the trade role. Batch
+roles keep claiming and running under kill; on_kill() is the step 4 hook.
 """
 
 from __future__ import annotations
@@ -28,6 +39,7 @@ import fleet
 from fleet.common import http, sysinfo
 from fleet.worker import config, launch, update
 from fleet.worker.runner import Runner
+from fleet.worker.watchdog import MemoryWatchdog
 
 log = logging.getLogger("fleet.agent")
 
@@ -97,6 +109,9 @@ class AgentOptions:
     register_backoff: tuple[float, ...] = REGISTER_BACKOFF
     code_version: str | None = None
     shutdown_flush_delay: float = SHUTDOWN_FLUSH_DELAY
+    watchdog_rss_fraction: float = 0.8
+    ram_total_mb: int | None = None
+    watchdog_interval: float = 1.0
 
 
 def _utcnow_iso() -> str:
@@ -164,6 +179,12 @@ class Agent:
         self.last_error: str | None = None
         self._update_failed_at: float | None = None
         self._cpu = sysinfo.CpuMeter()
+        self.watchdog = MemoryWatchdog(
+            fraction=self.options.watchdog_rss_fraction,
+            ram_total_mb=self.options.ram_total_mb,
+            interval=self.options.watchdog_interval,
+            clock=self._clock,
+        )
 
     # ------------------------------------------------------------ lifecycle
 
@@ -205,7 +226,7 @@ class Agent:
         if self.running:
             log.info("shutting down: draining %d runner(s)", len(self.running))
             for rj in self._stop_runners(list(self.running), self.options.drain_grace):
-                self.pending_releases.append(self._release_entry(rj))
+                self.pending_releases.append(self._release_entry(rj, "shutdown"))
         self.flush_posts(attempts=SHUTDOWN_FLUSH_ATTEMPTS, delay=self.options.shutdown_flush_delay)
         if self.pending_releases:
             try:
@@ -400,7 +421,13 @@ class Agent:
         }
 
     def wants_job(self) -> bool:
-        return self.role in BATCH_ROLES and not self.running and not self.kill and not self.stopping
+        """Batch roles claim regardless of the kill flag (it only concerns trade)."""
+        return self.role in BATCH_ROLES and not self.running and not self.stopping
+
+    def on_kill(self) -> None:
+        """Called when the kill flag turns on. A no-op for batch roles; step 4 makes
+        a trade worker stop proposing and cancel its open orders here."""
+        return None
 
     def _post_heartbeat(self, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         assert self.conf is not None
@@ -436,7 +463,13 @@ class Agent:
             self.desired_role = resp["desired_role"]
         if isinstance(resp.get("role_epoch"), int):
             self.role_epoch = resp["role_epoch"]
-        self.kill = bool(resp.get("kill", False))
+        kill = bool(resp.get("kill", False))
+        if kill and not self.kill:
+            log.warning("kill switch is on (trade only; batch jobs keep running)")
+            self.on_kill()
+        elif self.kill and not kill:
+            log.info("kill switch reset")
+        self.kill = kill
         if resp.get("code_version"):
             self.host_code_version = str(resp["code_version"])
         hb = resp.get("heartbeat_seconds")
@@ -452,13 +485,17 @@ class Agent:
             self._forget_lost(str(job_id))
         for job in resp.get("claimed") or []:
             self._start_job(job)
+        cancelled = {str(j) for j in (resp.get("cancel") or [])}
+        role_change = self.desired_role != self.role or self.role_epoch != self.acked_epoch
         preempt = [str(j) for j in (resp.get("preempt") or []) if str(j) in self.running]
-        if preempt:
+        if preempt and not role_change:
             log.info("preempt requested for %s", ", ".join(preempt))
             for rj in self._stop_runners(preempt, self.options.drain_grace):
-                self.pending_releases.append(self._release_entry(rj))
-        if self.desired_role != self.role or self.role_epoch != self.acked_epoch:
-            self.drain()
+                self.pending_releases.append(self._release_entry(rj, "cancel" if rj.job_id in cancelled else "preempt"))
+        if role_change:
+            # A role change arrives with preempt[] for the other-role jobs; the drain
+            # stops them all and the release reason names the cause (drain, or cancel).
+            self.drain(cancelled)
             if depth < MAX_CHAINED_RESPONSES:
                 self._out_of_cycle_heartbeat(depth + 1)
             return
@@ -485,12 +522,13 @@ class Agent:
 
     # ---------------------------------------------------------------- drain
 
-    def drain(self) -> None:
-        """Stop every runner, release the jobs, adopt the desired role and epoch."""
+    def drain(self, cancelled: set[str] | None = None) -> None:
+        """Stop every runner, release the jobs (reason drain, or cancel for the ids in
+        cancelled), adopt the desired role and epoch."""
         self.state = "DRAINING"
         log.info("role change %s/%s -> %s/%s: draining %d runner(s)", self.role, self.acked_epoch, self.desired_role, self.role_epoch, len(self.running))
         for rj in self._stop_runners(list(self.running), self.options.drain_grace):
-            entry = self._release_entry(rj)
+            entry = self._release_entry(rj, "cancel" if rj.job_id in (cancelled or ()) else "drain")
             if not self._release_now(entry):
                 self.pending_releases.append(entry)
         self.role = self.desired_role
@@ -508,6 +546,8 @@ class Agent:
             "progress": entry["progress"],
             "release": True,
         }
+        if isinstance(entry.get("reason"), str):
+            body["reason"] = entry["reason"]
         try:
             http.post_json(
                 f"{self.conf['host_url']}/api/v1/jobs/{entry['id']}/checkpoint",
@@ -542,9 +582,10 @@ class Agent:
             stopped.append(rj)
         return stopped
 
-    def _release_entry(self, rj: RunningJob) -> dict[str, Any]:
+    def _release_entry(self, rj: RunningJob, reason: str) -> dict[str, Any]:
+        """A released[] entry (also the /checkpoint release body) with its reason."""
         checkpoint, progress, _ = rj.runner.snapshot()
-        return {"id": rj.job_id, "lease_token": rj.lease_token, "progress": progress, "checkpoint": checkpoint}
+        return {"id": rj.job_id, "lease_token": rj.lease_token, "progress": progress, "checkpoint": checkpoint, "reason": reason}
 
     # --------------------------------------------------------------- runners
 
@@ -604,7 +645,8 @@ class Agent:
             self._forget_lost(job_id)
 
     def service_runners(self) -> int:
-        """Collect finished runners and queue their /complete or /fail call.
+        """Collect finished runners and queue their /complete or /fail call, then
+        let the memory watchdog stop runners that outgrew the machine.
         Returns how many posts were queued."""
         queued = 0
         for rj in list(self.running.values()):
@@ -621,12 +663,25 @@ class Agent:
                 queued += 1
             elif outcome == "stopped":
                 log.warning("runner %s stopped by an external SIGTERM; releasing", rj.job_id)
-                self.pending_releases.append(self._release_entry(rj))
+                self.pending_releases.append(self._release_entry(rj, "shutdown" if self.stopping else "stopped"))
             else:
                 code = rj.runner.poll()
                 self._queue_post("fail", rj.job_id, rj.lease_token, {"error": f"runner exited with code {code}"}, progress)
                 queued += 1
+        self._watchdog_pass()
         return queued
+
+    def _watchdog_pass(self) -> None:
+        """Stop every runner the memory watchdog flags and release its job (reason oom)
+        with the last checkpoint; the release rides the next heartbeat."""
+        offenders = self.watchdog.over_limit(self.running)
+        if not offenders:
+            return
+        for rj in self._stop_runners(offenders, self.options.drain_grace):
+            self.watchdog.forget(rj.job_id)
+            entry = self._release_entry(rj, "oom")
+            log.warning("job %s released after the memory watchdog tripped (checkpoint kept: %s)", rj.job_id, entry["checkpoint"] is not None)
+            self.pending_releases.append(entry)
 
     def _queue_post(self, kind: str, job_id: str, lease_token: str, extra: dict[str, Any], progress: float) -> None:
         body = {"lease_token": lease_token}
@@ -721,6 +776,8 @@ class Agent:
                 "host_code_version": self.host_code_version,
                 "heartbeat_seconds": self.heartbeat_seconds,
                 "running": sorted(self.running),
+                "kill": self.kill,
+                "watchdog_trips": self.watchdog.trips,
                 "pending_posts": [p.job_id for p in self.pending_posts],
                 "heartbeat_count": self.heartbeat_count,
                 "last_error": self.last_error,

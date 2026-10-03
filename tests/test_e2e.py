@@ -2,9 +2,10 @@
 
 One worker enrols against a live host, runs sleep jobs through the real subprocess
 runner, is preempted by a role change, resumes from its checkpoint, auto-returns to
-idle, gets a job cancelled, is handed the same lease again after a dropped heartbeat
-response (re-offer), and finally survives a simulated crash with a lost register reply
-(the retry with the previous token succeeds, held_jobs are re-adopted). Heartbeat 0.3 s,
+idle, gets a job cancelled, is driven through the dashboard forms (role select, KILL,
+RESUME; step 2), is handed the same lease again after a dropped heartbeat response
+(re-offer), and finally survives a simulated crash with a lost register reply (the
+retry with the previous token succeeds, held_jobs are re-adopted). Heartbeat 0.3 s,
 host loop 0.5 s, every wait bounded.
 """
 from __future__ import annotations
@@ -27,7 +28,7 @@ from host import db
 from host.api.app import create_app
 from host.config import Config
 from host.loop import LoopThread
-from tests.conftest import heartbeat_body
+from tests.conftest import flash_cookie, heartbeat_body
 
 HEARTBEAT = 0.3
 LOOP = 0.5
@@ -86,6 +87,18 @@ class LiveHost:
 
     def events(self, job_id: str) -> list[str]:
         return [e["event"] for e in self.job(job_id)["events"]]
+
+    def form(self, path: str, data: dict[str, str] | None = None, expect: int = 303) -> httpx.Response:
+        """A dashboard form post, form encoded, with the browser's Origin header."""
+        resp = self.client.post(path, data=data or {}, headers={"Origin": self.url}, follow_redirects=False)
+        assert resp.status_code == expect, f"FORM {path}: {resp.status_code} {resp.text[:300]}"
+        return resp
+
+    def fragment(self, name: str = "fleet") -> str:
+        """GET /fragments/<name>, the HTML the dashboard swaps in every few seconds."""
+        resp = self.client.get(f"/fragments/{name}")
+        assert resp.status_code == 200, f"fragment {name}: {resp.status_code}"
+        return resp.text
 
 
 @pytest.fixture
@@ -321,6 +334,102 @@ def phase_cancel(host: LiveHost, worker_id: str) -> None:
     assert host.worker(worker_id)["current_jobs"] == []
 
 
+def _card(fragment: str, worker_id: str) -> str:
+    """The worker's card out of the fleet fragment."""
+    start = fragment.index(f'data-worker="{worker_id}"')
+    end = fragment.find("</article>", start)
+    return fragment[start:end]
+
+
+def _card_settled(host: LiveHost, worker_id: str, role: str) -> Callable[[], Any]:
+    """Predicate: the card's select is enabled, shows `role` and the switching line is gone."""
+
+    def check() -> Any:
+        card = _card(host.fragment(), worker_id)
+        if f'<option value="{role}" selected>' in card and "switching to" not in card and " disabled>" not in card:
+            return card
+        return False
+
+    return check
+
+
+def phase_dashboard(host: LiveHost, state_dir: str, worker_id: str, agent: AgentThread) -> None:
+    """Step 2: the role form, the fleet fragment, KILL and RESUME through the HTML forms.
+
+    The role is changed while a job runs so the switching window (poll + drain) is
+    wide enough for the fragment to be seen in both states. Kill affects the trade
+    role only: the worker still claims and finishes a backtest job under it.
+    """
+    job = host.send_job(6, worker_id)
+    job_id = job["id"]
+    wait_for(settled(host, worker_id, "backtest"), "worker in backtest for the form test")
+    wait_for(job_in(host, job_id, "leased", min_elapsed=1), "job running before the role form")
+    epoch_before = host.worker(worker_id)["role_epoch"]
+
+    t_role = time.monotonic()
+    resp = host.form(f"/workers/{worker_id}/role", {"role": "train"})
+    assert resp.headers["location"] == "/" and flash_cookie(resp).startswith("e2e-box: switching to train")
+    card = _card(host.fragment(), worker_id)
+    assert f"switching to train (epoch {epoch_before + 1})" in card, card
+    assert f'id="role-{worker_id}" name="role" data-autosubmit="1" disabled>' in card
+    assert '<option value="train" selected>' in card
+    card = wait_for(_card_settled(host, worker_id, "train"), "fragment to show train", timeout=ROLE_CHANGE_BOUND)
+    role_wall = time.monotonic() - t_role
+    assert role_wall < ROLE_CHANGE_BOUND, f"fragment showed train after {role_wall:.2f} s"
+    assert "no job" in card, "the preempted job left the card"
+    wait_for(settled(host, worker_id, "train"), "worker settled in train")
+    assert host.job(job_id)["status"] == "queued", "the backtest job was handed back, not cancelled"
+    assert host.client.get("/?flash=x").status_code == 200
+    resp = host.form(f"/jobs/{job_id}/cancel", {"next": f"/jobs/{job_id}"})
+    assert resp.headers["location"] == f"/jobs/{job_id}" and flash_cookie(resp).startswith("job ")
+    assert host.job(job_id)["status"] == "cancelled"
+    assert "cancelled" in host.client.get(f"/jobs/{job_id}").text
+
+    # KILL through the form: the host flag, the next heartbeat reply and status.json agree.
+    assert host.client.get("/fragments/topbar").text.count('data-kill="1"') == 1
+    heartbeats = agent.agent.heartbeat_count
+    resp = host.form("/kill")
+    assert resp.headers["location"] == "/" and flash_cookie(resp) == "Trading killed. Reset in Settings."
+    assert host.get("/api/settings")["kill_switch"] is True
+    wait_for(lambda: agent.agent.heartbeat_count > heartbeats and agent.agent.last_response.get("kill") is True,
+             "heartbeat reply with kill=true")
+    wait_for(lambda: (worker_config.load_status(state_dir) or {}).get("kill") is True, "status.json shows kill")
+    assert agent.agent.kill is True
+    topbar = host.client.get("/fragments/topbar").text
+    assert 'data-killed="1"' in topbar and ">KILLED<" in topbar and 'data-kill="1"' not in topbar
+    assert "TRADING KILLED. Reset in" in host.client.get("/").text
+    assert host.client.get("/kill/confirm").text.count("already killed") == 1
+    audit = host.get("/api/audit?limit=5")
+    assert audit[0]["action"] == "kill" and audit[0]["actor"]
+
+    # A batch job still runs under kill: send one to the worker (flips it to backtest).
+    under_kill = host.send_job(2, worker_id)
+    done = wait_for(lambda: (j := host.job(under_kill["id"]))["status"] == "succeeded" and j, "backtest done under kill")
+    assert done["result"] == {"slept": 2}
+    assert host.get("/api/settings")["kill_switch"] is True, "finishing a job does not touch the flag"
+    assert (worker_config.load_status(state_dir) or {}).get("kill") is True
+    wait_for(settled(host, worker_id, "idle"), "worker idle after the job under kill")
+
+    # RESUME: the wrong word is a 400 that keeps the flag, the right one clears it.
+    resp = host.form("/kill/reset", {"confirm": "resume"}, expect=400)
+    assert "text/html" in resp.headers["content-type"] and "RESUME" in resp.text
+    assert host.get("/api/settings")["kill_switch"] is True
+    heartbeats = agent.agent.heartbeat_count
+    resp = host.form("/kill/reset", {"confirm": "RESUME"})
+    assert resp.headers["location"] == "/settings" and flash_cookie(resp) == "Kill switch reset. Trading may resume."
+    assert host.get("/api/settings")["kill_switch"] is False
+    wait_for(lambda: agent.agent.heartbeat_count > heartbeats and agent.agent.last_response.get("kill") is False,
+             "heartbeat reply with kill=false")
+    wait_for(lambda: (worker_config.load_status(state_dir) or {}).get("kill") is False, "status.json shows the reset")
+    assert 'data-kill="1"' in host.client.get("/fragments/topbar").text
+    audit = host.get("/api/audit?limit=10")
+    assert audit[0]["action"] == "kill_reset" and audit[0]["confirmation_text"] == "RESUME"
+    assert [a["action"] for a in audit if a["action"].startswith("kill")] == ["kill_reset", "kill"]
+    # The browser's Origin must match the public URL; a foreign one is refused.
+    foreign = host.client.post("/kill", data={}, headers={"Origin": "http://evil.example"}, follow_redirects=False)
+    assert foreign.status_code == 403 and host.get("/api/settings")["kill_switch"] is False
+
+
 def phase_reoffer(host: LiveHost, worker_id: str, agent: AgentThread, drop_box: DropBox) -> None:
     """The heartbeat answer that claims a job is lost; the next heartbeat gets the same lease back."""
     drop_box.armed = True
@@ -401,9 +510,10 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     phase_preempt_and_resume(live_host, worker_id)
     phase_auto_return(live_host, worker_id)
     phase_cancel(live_host, worker_id)
+    phase_dashboard(live_host, state_dir, worker_id, first)
     phase_reoffer(live_host, worker_id, first, drop_box)
     phase_crash(live_host, state_dir, worker_id, first, agents)
 
-    assert time.monotonic() - started < 60.0
+    assert time.monotonic() - started < 90.0
     statuses = {j["status"] for j in live_host.get("/api/jobs")}
     assert statuses == {"succeeded", "cancelled"}

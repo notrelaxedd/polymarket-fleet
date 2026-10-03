@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from host.errors import BadRequest
 from host.events import add_audit
+from host.money import MAX_CENTS
 
 ROLES = ("idle", "backtest", "model_search", "train", "trade")
 BATCH_ROLES = ("backtest", "model_search", "train")
@@ -78,9 +79,27 @@ def _cents_by_mode(value: Any) -> str | None:
     if not isinstance(value, dict) or set(value) != {"live", "paper"}:
         return "must be an object with integer cents for live and paper"
     for mode in ("live", "paper"):
-        if not _is_int(value[mode]) or value[mode] < 0:
-            return f"{mode} must be an integer of at least 0"
+        if not _is_int(value[mode]) or value[mode] < 0 or value[mode] > MAX_CENTS:
+            return f"{mode} must be an integer between 0 and {MAX_CENTS}"
     return None
+
+
+def timing_problems(settings: dict[str, Any]) -> list[str]:
+    """Cross-field rules over the merged fleet timing settings.
+
+    A lease must outlive two heartbeats plus the agent's HTTP timeout, otherwise every
+    running lease expires between renewals; and a worker must count as online for
+    longer than one heartbeat interval, otherwise it flickers offline between beats.
+    """
+    lease, beat, online = (settings.get(k) for k in ("lease_seconds", "heartbeat_seconds", "online_after_seconds"))
+    if not (_is_int(lease) and _is_int(beat) and _is_int(online)):
+        return []
+    problems = []
+    if lease < 2 * beat + 5:
+        problems.append(f"lease_seconds must be at least {2 * beat + 5} (2 x heartbeat_seconds + 5)")
+    if online <= beat:
+        problems.append(f"online_after_seconds must be greater than heartbeat_seconds ({beat})")
+    return problems
 
 
 SCHEMA: dict[str, Validator] = {
@@ -91,10 +110,10 @@ SCHEMA: dict[str, Validator] = {
     "heartbeat_seconds": _int_range(1, 60),
     "online_after_seconds": _int_range(5, 3600),
     "max_expiries": _int_range(1, 100, nullable=True),
-    "liquidity_floor_cents": _int_range(0),
-    "max_bet_cents": _int_range(0),
+    "liquidity_floor_cents": _int_range(0, MAX_CENTS),
+    "max_bet_cents": _int_range(0, MAX_CENTS),
     "max_daily_loss_cents": _cents_by_mode,
-    "default_bankroll_cents": _int_range(0),
+    "default_bankroll_cents": _int_range(0, MAX_CENTS),
     "min_edge": _fraction,
     "kelly_fraction": _fraction,
     "trade_max_games": _int_range(0, 100),
@@ -136,9 +155,11 @@ def get_int_setting(conn: psycopg.Connection, key: str, default: int) -> int:
         return default
 
 
-def validate_settings(updates: dict[str, Any], known: set[str]) -> None:
-    """Reject unknown keys and values of the wrong type or range (no coercion)."""
-    unknown = sorted(set(updates) - known)
+def validate_settings(updates: dict[str, Any], current: dict[str, Any]) -> None:
+    """Reject unknown keys, values of the wrong type or range (no coercion) and fleet
+    timing combinations that cannot work, judged over the stored settings merged with
+    the update."""
+    unknown = sorted(set(updates) - set(current))
     if unknown:
         raise BadRequest(f"unknown setting keys: {', '.join(unknown)}")
     problems = []
@@ -147,6 +168,8 @@ def validate_settings(updates: dict[str, Any], known: set[str]) -> None:
         error = check(value) if check is not None else None
         if error:
             problems.append(f"{key} {error}")
+    if not problems:
+        problems = timing_problems({**current, **updates})
     if problems:
         raise BadRequest("invalid settings: " + "; ".join(problems))
 
@@ -154,7 +177,7 @@ def validate_settings(updates: dict[str, Any], known: set[str]) -> None:
 def set_settings(conn: psycopg.Connection, updates: dict[str, Any], actor: str | None = None) -> dict[str, Any]:
     """Validate and store the given keys; one audit row per changed key."""
     before = get_settings(conn)
-    validate_settings(updates, set(before))
+    validate_settings(updates, before)
     for key, value in updates.items():
         if before[key] == value:
             continue

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -12,7 +14,7 @@ import pytest
 
 from host import queue
 from host.cli import main
-from tests.conftest import job_row, worker_row
+from tests.conftest import heartbeat_body, job_row, worker_row
 
 REPO = Path(__file__).resolve().parent.parent
 PUBLIC_URL = "http://127.0.0.1:8080"
@@ -140,3 +142,61 @@ def test_module_entry_point(cli_env, make_worker) -> None:
     assert w.id in proc.stdout
     proc = subprocess.run([sys.executable, "-m", "host.cli"], cwd=REPO, env=env, capture_output=True, text=True, timeout=60)
     assert proc.returncode == 2 and "usage:" in proc.stderr
+
+
+def _acking_agent(pool, conn, worker_id: str, stop: threading.Event) -> threading.Thread:
+    """A thread that heartbeats every 0.1 s echoing whatever role the host desires."""
+
+    def loop() -> None:
+        while not stop.is_set():
+            row = worker_row(conn, worker_id)
+            with pool.connection() as c:
+                queue.process_heartbeat(
+                    c, worker_id, heartbeat_body(row["desired_role"], row["role_epoch"], want_job=False)
+                )
+            stop.wait(0.1)
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_roletest_measures_the_role_ack(run, make_worker, pool, conn, monkeypatch) -> None:
+    w = make_worker("box1")
+    stop = threading.Event()
+    agent = _acking_agent(pool, conn, w.id, stop)
+    try:
+        code, out, err = run("roletest", w.id, "--timeout", "10")
+    finally:
+        stop.set()
+        agent.join(timeout=5)
+    assert code == 0, (out, err)
+    lines = out.splitlines()
+    assert lines[0].startswith("sent sleep job ") and lines[1] == "set role train (epoch 3); waiting for the ack"
+    match = re.fullmatch(r"role ack latency: (\d+\.\d\d) s", lines[2])
+    assert match and 0 <= float(match.group(1)) < 5
+    row = worker_row(conn, w.id)
+    assert row["desired_role"] == "train" and row["acked_epoch"] == 3
+    jobs = conn.execute("SELECT kind, params, status, target_worker_id FROM jobs").fetchall()
+    assert jobs == [{"kind": "sleep", "params": {"seconds": 120}, "status": "cancelled", "target_worker_id": w.id}]
+    actions = [a["action"] for a in conn.execute("SELECT action FROM audit_log ORDER BY id").fetchall()]
+    assert actions == ["auto_role", "set_role"]
+    # Over the limit: exit 1.
+    monkeypatch.setattr("host.cli.ROLETEST_LIMIT_SECONDS", -1.0)
+    stop = threading.Event()
+    agent = _acking_agent(pool, conn, w.id, stop)
+    try:
+        code, out, err = run("roletest", w.id, "--timeout", "10")
+    finally:
+        stop.set()
+        agent.join(timeout=5)
+    assert code == 1 and "over the -1 s limit" in err
+
+
+def test_roletest_fails_when_the_worker_never_acks(run, make_worker, conn) -> None:
+    w = make_worker("box1")
+    code, out, err = run("roletest", w.id, "--timeout", "0.5")
+    assert code == 1 and "never acked" in err and "within 0.5 s" in err and "sent sleep job" in out
+    assert conn.execute("SELECT status FROM jobs").fetchone()["status"] == "cancelled", "the sleep job is cleaned up on timeout"
+    code, _, err = run("roletest", "w_nope")
+    assert code == 1 and "worker not found" in err

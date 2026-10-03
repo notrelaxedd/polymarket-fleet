@@ -90,3 +90,15 @@ def job_with_events(conn: psycopg.Connection, job_id: Any, limit: int = 50) -> d
     ).fetchall()
     job["events"] = list(reversed(events))
     return job
+
+
+def audit_rows(conn: psycopg.Connection, limit: int = 20) -> list[dict[str, Any]]:
+    """Newest audit_log rows first."""
+    limit = max(1, min(int(limit), 500))
+    return conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT %s", (limit,)).fetchall()
+
+
+def worker_names(conn: psycopg.Connection) -> dict[str, str]:
+    """worker id -> name for every worker, sorted by name."""
+    rows = conn.execute("SELECT id, name FROM workers ORDER BY name, id").fetchall()
+    return {row["id"]: row["name"] for row in rows}

@@ -12,14 +12,12 @@ from host.leases import (
     complete,
     fail,
     get_job,
-    held_jobs,
     job_payload,
     lease_seconds,
-    orphan_jobs,
-    reap,
     release,
     renew,
 )
+from host.recovery import held_jobs, orphan_jobs, reap
 from host.scheduling import (
     ANY_IDLE,
     CreateResult,

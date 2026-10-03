@@ -6,6 +6,12 @@ Mirrors the host's review fixes: register accepts the previous worker token once
 does not report a lease this worker still holds gets that job re-offered in
 claimed[] (same lease token), renew keeps progress/checkpoint when they are null,
 and job payloads carry the stored progress. fail_next() injects error answers.
+
+Step 2: a release's "reason" is stored in the released event's detail; reason "oom"
+counts as a lease expiry (the job fails once expiries reaches max_expiries, default
+3); set_kill() drives the kill flag in every reply, and batch claims keep flowing
+under kill. The heartbeat reply also carries cancel[] (the preempt[] ids whose job is
+cancel_requested) so the agent can name the right release reason.
 """
 
 from __future__ import annotations
@@ -81,10 +87,18 @@ def _add_bytes(tar: tarfile.TarFile, name: str, data: bytes) -> None:
 class FakeHost:
     """Fake host: start() it, talk to it over HTTP, poke it through the control methods."""
 
-    def __init__(self, lease_seconds: float = 30.0, heartbeat_seconds: float = 5, code_version: str | None = None) -> None:
+    def __init__(
+        self,
+        lease_seconds: float = 30.0,
+        heartbeat_seconds: float = 5,
+        code_version: str | None = None,
+        max_expiries: int | None = 3,
+    ) -> None:
         self.lock = threading.RLock()
         self.lease_seconds = lease_seconds
         self.heartbeat_seconds = heartbeat_seconds
+        self.max_expiries = max_expiries
+        self.kill_switch = False
         self.workers: dict[str, dict[str, Any]] = {}
         self.enroll_tokens: dict[str, dict[str, Any]] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
@@ -135,6 +149,11 @@ class FakeHost:
     def set_enabled(self, worker_id: str, enabled: bool) -> None:
         with self.lock:
             self.workers[worker_id]["enabled"] = enabled
+
+    def set_kill(self, flag: bool) -> None:
+        """Mirror of settings.kill_switch: every register and heartbeat reply carries it."""
+        with self.lock:
+            self.kill_switch = bool(flag)
 
     def rotate_token(self, worker_id: str) -> str:
         """Rotate the worker token as a register elsewhere would, keeping the old one
@@ -205,11 +224,11 @@ class FakeHost:
                 job["status"] = "cancel_requested"
 
     def expire_lease(self, job_id: str) -> None:
-        """Act as the reaper: requeue the job and clear its lease."""
+        """Act as the reaper: requeue the job (or fail it past max_expiries) and clear its lease."""
         with self.lock:
             job = self.jobs[job_id]
-            job["expiries"] += 1
             job["status"] = "cancelled" if job["status"] == "cancel_requested" else "queued"
+            self._count_expiry(job)
             self._clear_lease(job)
             self._event(job_id, "lease_expired", None)
 
@@ -241,6 +260,11 @@ class FakeHost:
         with self.lock:
             return [e["event"] for e in self.events if e["job_id"] == job_id]
 
+    def releases(self, job_id: str) -> list[dict[str, Any]]:
+        """Detail dicts ({"checkpoint", "reason"}) of the job's released events, oldest first."""
+        with self.lock:
+            return [dict(e["detail"] or {}) for e in self.events if e["job_id"] == job_id and e["event"] == "released"]
+
     def wait_for(self, predicate: Callable[[], Any], timeout: float = 10.0, interval: float = 0.02) -> Any:
         """Poll predicate until it returns a truthy value; raise on timeout."""
         deadline = time.monotonic() + timeout
@@ -264,14 +288,26 @@ class FakeHost:
         job["lease_expires_at"] = None
         job["preempt_requested"] = False
 
-    def _release(self, job: dict[str, Any], worker_id: str, checkpoint: Any, progress: Any) -> None:
+    def _count_expiry(self, job: dict[str, Any]) -> None:
+        """expiries += 1; a queued job fails once expiries reaches max_expiries."""
+        job["expiries"] += 1
+        if job["status"] == "queued" and self.max_expiries is not None and job["expiries"] >= self.max_expiries:
+            job["status"] = "failed"
+            job["error"] = "failed after %d expiries (last: lease expired)" % job["expiries"]
+            job["finished_at"] = time.time()
+
+    def _release(self, job: dict[str, Any], worker_id: str, checkpoint: Any, progress: Any, reason: Any = None) -> None:
         job["status"] = "cancelled" if job["status"] == "cancel_requested" else "queued"
         if checkpoint is not None:
             job["checkpoint"] = checkpoint
         if progress is not None:
             job["progress"] = float(progress)
+        if reason not in ("drain", "preempt", "cancel", "oom", "shutdown", "stopped"):
+            reason = None
+        if reason == "oom":
+            self._count_expiry(job)
         self._clear_lease(job)
-        self._event(job["id"], "released", worker_id, {"checkpoint": checkpoint})
+        self._event(job["id"], "released", worker_id, {"checkpoint": checkpoint, "reason": reason})
 
     def _job_payload(self, job: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -281,7 +317,7 @@ class FakeHost:
 
     def _worker_fields(self, w: dict[str, Any]) -> dict[str, Any]:
         return {
-            "desired_role": w["desired_role"], "role_epoch": w["role_epoch"], "kill": False,
+            "desired_role": w["desired_role"], "role_epoch": w["role_epoch"], "kill": self.kill_switch,
             "code_version": self.code_version, "server_time": _now_iso(), "heartbeat_seconds": self.heartbeat_seconds,
         }
 
@@ -373,8 +409,9 @@ class FakeHost:
                 reported.add(str(entry.get("id")))
                 job = self.jobs.get(str(entry.get("id")))
                 if job and job["lease_token"] == entry.get("lease_token") and job["status"] in ("leased", "cancel_requested"):
-                    self._release(job, wid, entry.get("checkpoint"), entry.get("progress"))
+                    self._release(job, wid, entry.get("checkpoint"), entry.get("progress"), entry.get("reason"))
             preempt = [j["id"] for j in self.jobs.values() if j["lease_worker_id"] == wid and (j["preempt_requested"] or j["status"] == "cancel_requested")]
+            cancel = [j["id"] for j in self.jobs.values() if j["lease_worker_id"] == wid and j["status"] == "cancel_requested"]
             in_sync = w["reported_role"] == w["desired_role"] and w["acked_epoch"] == w["role_epoch"]
             if w["auto_role"] and w["desired_role"] != "idle" and in_sync:
                 busy = any(
@@ -407,7 +444,7 @@ class FakeHost:
                     job.update(status="leased", lease_worker_id=wid, lease_token=str(uuid.uuid4()), lease_expires_at=now + self.lease_seconds, preempt_requested=False)
                     self._event(job["id"], "claimed", wid)
                     claimed.append(self._job_payload(job))
-            resp = {"preempt": preempt, "lost": lost, "claimed": claimed}
+            resp = {"preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed}
             resp.update(self._worker_fields(w))
             self.heartbeats.append({"t": time.monotonic(), "worker_id": wid, "request": body, "response": resp})
             return resp
@@ -420,7 +457,7 @@ class FakeHost:
             if body.get("progress") is not None:
                 job["progress"] = float(body["progress"])
             if body.get("release"):
-                self._release(job, w["id"], body.get("checkpoint"), body.get("progress"))
+                self._release(job, w["id"], body.get("checkpoint"), body.get("progress"), body.get("reason"))
             return {"status": job["status"]}
 
     def complete(self, w: dict[str, Any], job_id: str, body: dict[str, Any]) -> dict[str, Any]:

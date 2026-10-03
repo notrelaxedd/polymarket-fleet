@@ -114,7 +114,7 @@ def test_reaper_requeues_with_checkpoint_then_fails_at_max_expiries(pool, conn, 
     row = job_row(conn, job["id"])
     assert row["status"] == "failed"
     assert row["expiries"] == 3
-    assert row["error"] == "lease expired 3 times"
+    assert row["error"] == "failed after 3 expiries (last: lease expired)"
     assert row["checkpoint"] == {"elapsed": 2}
     assert row["finished_at"] is not None
 
@@ -318,7 +318,9 @@ def test_claim_refused_until_epoch_acked(pool, conn, make_worker):
     assert len(hb(pool, w, reported_role="backtest", acked_epoch=2)["claimed"]) == 1
 
 
-def test_disabled_and_kill_switch_block_claims(pool, conn, make_worker):
+def test_disabled_blocks_claims_and_kill_only_blocks_trade(pool, conn, make_worker):
+    """Disabled workers never claim; the kill flag refuses trade claims only, batch
+    roles keep claiming under kill (a stopped backtest hides research for nothing)."""
     w = make_worker("w", role="backtest", enabled=False)
     create(pool)
     assert hb(pool, w, reported_role="backtest")["claimed"] == []
@@ -326,9 +328,63 @@ def test_disabled_and_kill_switch_block_claims(pool, conn, make_worker):
         queue.set_enabled(c, w.id, True)
     conn.execute("UPDATE settings SET value = 'true' WHERE key = 'kill_switch'")
     reply = hb(pool, w, reported_role="backtest")
-    assert reply["kill"] is True and reply["claimed"] == []
+    assert reply["kill"] is True and len(reply["claimed"]) == 1, "backtest still claims under kill"
+    trader = make_worker("t", role="trade")
+    conn.execute("INSERT INTO jobs (kind, role) VALUES ('trade', 'trade')")
+    reply = hb(pool, trader, reported_role="trade")
+    assert reply["kill"] is True and reply["claimed"] == [], "trade never claims under kill"
     conn.execute("UPDATE settings SET value = 'false' WHERE key = 'kill_switch'")
-    assert len(hb(pool, w, reported_role="backtest")["claimed"]) == 1
+    assert hb(pool, trader, reported_role="trade")["claimed"] == [], "trade claims arrive in step 4"
+
+
+def test_release_reason_is_stored_and_oom_counts_as_expiry(pool, conn, make_worker):
+    """A released[] entry may carry a reason; `oom` increments expiries like a lease
+    expiry and fails the job at max_expiries, the other reasons do not."""
+    w = make_worker("w", role="backtest")
+    job = create(pool).job
+    claimed = claim_one(pool, w)
+    hb(pool, w, reported_role="backtest", want_job=False,
+       released=[{"id": claimed["id"], "lease_token": claimed["lease_token"], "reason": "drain"}])
+    row = job_row(conn, job["id"])
+    assert row["status"] == "queued" and row["expiries"] == 0
+    claimed = claim_one(pool, w)
+    hb(pool, w, reported_role="backtest", want_job=False,
+       released=[{"id": claimed["id"], "lease_token": claimed["lease_token"], "reason": "bogus"}])
+    assert job_row(conn, job["id"])["expiries"] == 0, "unknown reasons are ignored"
+    for expected in (1, 2):
+        claimed = claim_one(pool, w)
+        hb(pool, w, reported_role="backtest", want_job=False,
+           released=[{"id": claimed["id"], "lease_token": claimed["lease_token"],
+                      "checkpoint": {"elapsed": expected}, "reason": "oom"}])
+        row = job_row(conn, job["id"])
+        assert row["status"] == "queued" and row["expiries"] == expected
+        assert row["checkpoint"] == {"elapsed": expected}
+    claimed = claim_one(pool, w)
+    with pool.connection() as c:
+        status = queue.checkpoint(c, job["id"], claimed["lease_token"], {"elapsed": 3}, 0.3, True, w.id, "oom")
+    assert status == "failed"
+    row = job_row(conn, job["id"])
+    assert row["status"] == "failed" and row["expiries"] == 3
+    assert row["error"] == "failed after 3 expiries (last: out of memory)" and row["finished_at"] is not None
+    assert row["lease_token"] is None and row["checkpoint"] == {"elapsed": 3}
+    details = [e["detail"] for e in conn.execute(
+        "SELECT detail FROM job_events WHERE job_id = %s AND event = 'released' ORDER BY id", (job["id"],)).fetchall()]
+    assert details == [
+        {"status": "queued", "reason": "drain"},
+        {"status": "queued"},
+        {"status": "queued", "reason": "oom", "expiries": 1},
+        {"status": "queued", "reason": "oom", "expiries": 2},
+        {"status": "failed", "reason": "oom", "expiries": 3},
+    ]
+    # cancel wins over oom, the expiry is still counted
+    job2 = create(pool).job
+    claimed = claim_one(pool, w)
+    with pool.connection() as c:
+        queue.cancel_job(c, job2["id"])
+    hb(pool, w, reported_role="backtest", want_job=False,
+       released=[{"id": claimed["id"], "lease_token": claimed["lease_token"], "reason": "oom"}])
+    row = job_row(conn, job2["id"])
+    assert row["status"] == "cancelled" and row["expiries"] == 1 and row["error"] is None
 
 
 def test_held_jobs_on_reregister_renew_with_new_tokens(pool, conn, make_worker):

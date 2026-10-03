@@ -6,6 +6,7 @@ import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
+from urllib.parse import unquote
 
 import psycopg
 import pytest
@@ -228,6 +229,12 @@ def heartbeat(client: TestClient, conn: psycopg.Connection) -> Callable[..., Any
     return _post
 
 
+def flash_cookie(response: Any) -> str:
+    """The flash message a form redirect left in its cookie ("" when none)."""
+    value = response.cookies.get("flash")
+    return unquote(value) if value else ""
+
+
 def job_row(conn: psycopg.Connection, job_id: Any) -> dict[str, Any]:
     """Fetch a job row by id."""
     return conn.execute("SELECT * FROM jobs WHERE id = %s", (uuid.UUID(str(job_id)),)).fetchone()
@@ -244,3 +251,22 @@ def expire_lease(conn: psycopg.Connection, job_id: Any) -> None:
         "UPDATE jobs SET lease_expires_at = now() - interval '1 second' WHERE id = %s",
         (uuid.UUID(str(job_id)),),
     )
+
+
+def set_heartbeat_age(conn: psycopg.Connection, worker_id: str, seconds: int) -> None:
+    """Make a worker's last heartbeat `seconds` old (dashboard status dots)."""
+    conn.execute(
+        "UPDATE workers SET last_heartbeat_at = now() - make_interval(secs => %s) WHERE id = %s",
+        (seconds, worker_id),
+    )
+
+
+def insert_job(conn: psycopg.Connection, kind: str = "sleep", role: str | None = None, **cols: Any) -> dict[str, Any]:
+    """Insert a job row directly (e.g. a trade job before step 4 can create one)."""
+    role = role or {"sleep": "backtest"}.get(kind, kind)
+    names = ["kind", "role"] + list(cols)
+    values = [kind, role] + list(cols.values())
+    placeholders = ", ".join(["%s"] * len(values))
+    return conn.execute(
+        f"INSERT INTO jobs ({', '.join(names)}) VALUES ({placeholders}) RETURNING *", values
+    ).fetchone()

@@ -228,7 +228,10 @@ def test_lost_job_kills_runner(host: FakeHost, enrolled: str, running: AgentThre
 def test_conf_missing_exits_78(state_dir: str) -> None:
     assert Agent(state_dir=state_dir, options=AgentOptions(heartbeat_seconds=HB)).run_forever() == EXIT_CONF_MISSING
     env = dict(os.environ, FLEET_STATE_DIR=state_dir)
-    proc = subprocess.run([sys.executable, "-m", "fleet.worker", "run"], env=env, capture_output=True, timeout=30)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    proc = subprocess.run(
+        [sys.executable, "-m", "fleet.worker", "run"], env=env, cwd=repo_root, capture_output=True, timeout=30
+    )
     assert proc.returncode == 78
     assert b"worker.conf" in proc.stderr
 
@@ -701,3 +704,213 @@ def test_installer_accepts_real_tarball_and_extracts_without_archive_permissions
     subprocess.run(["tar", "--no-same-owner", "--no-same-permissions", "--no-overwrite-dir", "-xzf", str(path), "-C", str(dest)], check=True)
     mode = stat.S_IMODE(os.stat(dest / "fleet" / "worker" / "__init__.py").st_mode)
     assert not mode & stat.S_ISUID
+
+
+# ------------------------------------------------- step 2: memory watchdog
+
+
+def _alive(pid: int) -> bool:
+    """True while the process exists and is not a zombie."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return False
+    return state not in ("Z", "X")
+
+
+def _status(state_dir: str) -> dict[str, Any]:
+    return config.load_status(state_dir) or {}
+
+
+def test_watchdog_trips_on_real_sleep_job_and_releases_with_reason_oom(host: FakeHost, state_dir: str, enrolled: str, caplog) -> None:
+    """ram_total_mb=4 puts the limit at 3.2 MB; a python child uses more than that."""
+    from fleet.common import sysinfo
+
+    running = AgentThread(state_dir, ram_total_mb=4).start()
+    try:
+        with caplog.at_level(logging.WARNING, logger="fleet.watchdog"):
+            host.set_desired_role(enrolled, "backtest")
+            job_id = host.enqueue_job("sleep", {"seconds": 30})
+            rj = host.wait_for(lambda: running.agent.running.get(job_id), timeout=8.0)
+            pid = rj.runner.pid
+            assert pid is not None
+            host.wait_for(lambda: host.releases(job_id), timeout=15.0)
+        release = host.releases(job_id)[0]
+        assert release["reason"] == "oom"
+        assert release["checkpoint"]["elapsed"] >= 1, "the unit in flight finishes before the stop; its checkpoint is released"
+        assert rj.runner.poll() is not None, "runner child must have exited"
+        assert not _alive(pid), "runner child left as a zombie"
+        assert sysinfo.session_pids(pid) == [], "runner session must be empty"
+        assert running.agent.running.get(job_id) is not rj, "a re-offered job gets a fresh runner, the tripped one is gone"
+        host.wait_for(lambda: _status(state_dir).get("watchdog_trips", 0) >= 1, timeout=8.0)
+        messages = [r.getMessage() for r in caplog.records if r.name == "fleet.watchdog"]
+        assert any("memory watchdog" in m and job_id in m and "MB" in m for m in messages), messages
+        assert any(re.search(r"over 3 MB \(80% of 4 MB\)", m) for m in messages), messages
+        # The host re-offers the job and it trips again: after max_expiries oom releases it fails.
+        host.wait_for(lambda: host.job(job_id)["status"] == "failed", timeout=25.0)
+        job = host.job(job_id)
+        assert job["expiries"] == 3
+        assert [r["reason"] for r in host.releases(job_id)] == ["oom", "oom", "oom"]
+        host.wait_for(lambda: _status(state_dir).get("watchdog_trips") == 3, timeout=8.0)
+    finally:
+        running.stop()
+    assert running.agent.running == {}
+    assert not _alive(pid)
+
+
+def test_watchdog_does_not_trip_with_realistic_ram_total(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread) -> None:
+    assert running.agent.watchdog.limit_mb() is not None and running.agent.watchdog.limit_mb() > 100
+    host.set_desired_role(enrolled, "backtest")
+    job_id = host.enqueue_job("sleep", {"seconds": 2})
+    host.wait_for(lambda: host.job(job_id)["status"] == "succeeded", timeout=10.0)
+    assert host.releases(job_id) == []
+    assert running.agent.watchdog.trips == 0
+    host.wait_for(lambda: "watchdog_trips" in _status(state_dir), timeout=5.0)
+    assert _status(state_dir)["watchdog_trips"] == 0
+
+
+def test_watchdog_patched_measurement_of_zero_never_trips(host: FakeHost, state_dir: str, enrolled: str, monkeypatch) -> None:
+    from fleet.common import sysinfo
+
+    calls: list[int] = []
+
+    def zero(sid: int, proc_root: str = sysinfo.PROC_ROOT) -> int:
+        calls.append(sid)
+        return 0
+
+    monkeypatch.setattr(sysinfo, "session_rss_kb", zero)
+    running = AgentThread(state_dir, ram_total_mb=4).start()
+    try:
+        host.set_desired_role(enrolled, "backtest")
+        job_id = host.enqueue_job("sleep", {"seconds": 2})
+        host.wait_for(lambda: host.job(job_id)["status"] == "succeeded", timeout=10.0)
+    finally:
+        running.stop()
+    assert calls, "the watchdog must have measured the runner"
+    assert host.releases(job_id) == []
+    assert running.agent.watchdog.trips == 0
+    assert host.job(job_id)["result"] == {"slept": 2}
+
+
+def test_watchdog_checks_each_runner_at_most_once_per_second(state_dir: str, monkeypatch) -> None:
+    from fleet.common import sysinfo
+    from fleet.worker.watchdog import MemoryWatchdog
+
+    clock = {"t": 50.0}
+    measured: list[float] = []
+    monkeypatch.setattr(sysinfo, "session_rss_kb", lambda sid, proc_root=None: measured.append(clock["t"]) or 0)
+
+    class FakeRunner:
+        pid = 4242
+
+    wd = MemoryWatchdog(fraction=0.8, ram_total_mb=4, clock=lambda: clock["t"])
+    running = {"j1": RunningJob(job={"id": "j1"}, lease_token="t", runner=FakeRunner())}  # type: ignore[arg-type]
+    for _ in range(12):
+        assert wd.over_limit(running) == []
+        clock["t"] += 0.25
+    assert measured == [51.0, 52.0], "first check one interval after the runner was seen, then every second"
+    monkeypatch.setattr(sysinfo, "session_rss_kb", lambda sid, proc_root=None: 4 * 1024)
+    clock["t"] = 53.5
+    assert wd.over_limit(running) == ["j1"]
+    assert wd.trips == 1
+    running.clear()
+    assert wd.over_limit(running) == []
+
+
+# ------------------------------------------------- step 2: release reasons
+
+
+def test_drain_release_carries_reason_drain(host: FakeHost, enrolled: str, running: AgentThread) -> None:
+    job_id = host.enqueue_job("sleep", {"seconds": 10}, target=enrolled)
+    host.wait_for(_leased(host, job_id, min_elapsed=1), timeout=8.0)
+    host.set_desired_role(enrolled, "idle")
+    host.wait_for(lambda: host.releases(job_id), timeout=8.0)
+    assert host.releases(job_id) == [{"checkpoint": {"elapsed": pytest.approx(1, abs=1)}, "reason": "drain"}]
+    assert host.releases(job_id)[0]["checkpoint"]["elapsed"] >= 1
+
+
+def test_preempt_release_carries_reason_preempt(host: FakeHost, enrolled: str, running: AgentThread) -> None:
+    host.set_desired_role(enrolled, "backtest")
+    job_id = host.enqueue_job("sleep", {"seconds": 10})
+    host.wait_for(_leased(host, job_id, min_elapsed=1), timeout=8.0)
+    host.request_preempt(job_id)
+    host.wait_for(lambda: host.releases(job_id), timeout=8.0)
+    assert host.releases(job_id)[0]["reason"] == "preempt"
+    hb = next(h for h in host.heartbeats if any(r["id"] == job_id for r in h["request"]["released"]))
+    assert [r["reason"] for r in hb["request"]["released"]] == ["preempt"]
+    assert host.job(job_id)["expiries"] == 0
+
+
+def test_cancel_release_carries_reason_cancel(host: FakeHost, enrolled: str, running: AgentThread) -> None:
+    host.set_desired_role(enrolled, "backtest")
+    job_id = host.enqueue_job("sleep", {"seconds": 10})
+    host.wait_for(_leased(host, job_id), timeout=8.0)
+    host.cancel_job(job_id)
+    host.wait_for(lambda: host.job(job_id)["status"] == "cancelled", timeout=8.0)
+    assert host.releases(job_id)[0]["reason"] == "cancel"
+
+
+def test_shutdown_release_carries_reason_shutdown(host: FakeHost, enrolled: str, running: AgentThread) -> None:
+    host.set_desired_role(enrolled, "backtest")
+    job_id = host.enqueue_job("sleep", {"seconds": 10})
+    host.wait_for(_leased(host, job_id, min_elapsed=1), timeout=8.0)
+    running.stop()
+    final = host.heartbeats[-1]["request"]
+    assert [(r["id"], r["reason"]) for r in final["released"]] == [(job_id, "shutdown")]
+    assert host.releases(job_id)[0]["reason"] == "shutdown"
+
+
+def test_release_now_body_and_heartbeat_entries_carry_reason(state_dir: str, monkeypatch) -> None:
+    from fleet.worker import agent as agent_mod
+
+    agent = Agent(state_dir=state_dir, options=AgentOptions(heartbeat_seconds=HB))
+    agent.conf = {"host_url": "http://127.0.0.1:1", "worker_id": "w_x", "worker_token": "t"}
+
+    class FakeRunner:
+        def snapshot(self):
+            return {"elapsed": 2}, 0.2, 2
+
+    rj = RunningJob(job={"id": "j1"}, lease_token="tok", runner=FakeRunner())  # type: ignore[arg-type]
+    entry = agent._release_entry(rj, "oom")
+    assert entry == {"id": "j1", "lease_token": "tok", "progress": 0.2, "checkpoint": {"elapsed": 2}, "reason": "oom"}
+    sent: list[dict[str, Any]] = []
+    monkeypatch.setattr(agent_mod.http, "post_json", lambda url, body, **kw: sent.append(body) or {"status": "queued"})
+    assert agent._release_now(entry) is True
+    assert sent == [{"lease_token": "tok", "checkpoint": {"elapsed": 2}, "progress": 0.2, "release": True, "reason": "oom"}]
+    agent.pending_releases.append(entry)
+    assert agent.build_heartbeat()["released"][0]["reason"] == "oom"
+
+
+# ------------------------------------------------- step 2: kill flag scope
+
+
+def test_kill_does_not_stop_batch_claims_and_is_recorded_in_status(host: FakeHost, state_dir: str, enrolled: str, running: AgentThread) -> None:
+    host.set_kill(True)
+    host.set_desired_role(enrolled, "backtest")
+    host.wait_for(lambda: running.agent.kill is True, timeout=8.0)
+    job_id = host.enqueue_job("sleep", {"seconds": 1})
+    host.wait_for(lambda: host.job(job_id)["status"] == "succeeded", timeout=10.0)
+    assert host.job(job_id)["result"] == {"slept": 1}
+    assert host.job_events(job_id) == ["claimed", "succeeded"]
+    claim_hb = next(h for h in host.heartbeats if any(j["id"] == job_id for j in h["response"]["claimed"]))
+    assert claim_hb["request"]["want_job"] is True
+    assert claim_hb["response"]["kill"] is True
+    host.wait_for(lambda: _status(state_dir).get("kill") is True, timeout=5.0)
+    assert running.agent.wants_job() is True
+    assert running.agent.on_kill() is None, "on_kill is a no-op for batch roles until step 4"
+    host.set_kill(False)
+    host.wait_for(lambda: _status(state_dir).get("kill") is False, timeout=5.0)
+    assert running.agent.kill is False
+
+
+def test_kill_transition_calls_on_kill_once(state_dir: str, monkeypatch) -> None:
+    agent = Agent(state_dir=state_dir, options=AgentOptions(heartbeat_seconds=HB))
+    calls: list[str] = []
+    monkeypatch.setattr(agent, "on_kill", lambda: calls.append("kill"))
+    agent._apply_common_fields({"kill": True})
+    agent._apply_common_fields({"kill": True})
+    assert calls == ["kill"] and agent.kill is True
+    agent._apply_common_fields({"kill": False})
+    agent._apply_common_fields({"kill": True})
+    assert calls == ["kill", "kill"]

@@ -6,6 +6,8 @@ A small fleet of machines that builds, tests and (much later) runs NFL predictio
 
 The host is a Windows 11 machine running a Docker Compose stack: `db` (postgres:16) and `host` (the FastAPI app that serves the worker API, the owner API and the dashboard). Both containers publish ports on `127.0.0.1` only. `tailscale serve` on the host OS puts HTTPS in front of port 8080 for your tailnet and injects a `Tailscale-User-Login` header, which the app compares with `FLEET_OWNER_LOGIN` to identify you. Workers are Debian 13 boxes: each runs the `fleet-worker` systemd service, which registers with an enroll token, sends a heartbeat every 5 seconds, claims leased jobs for its current role, checkpoints as it goes, and updates its own code from the host. The wire contract is in `docs/PROTOCOL.md`; the full design is in `docs/DESIGN.md`.
 
+The dashboard is server-rendered HTML (Jinja2, one stylesheet, a little vanilla JS) served by the same `host` container, so there is no separate frontend to build. Owner pages and routes authenticate through the `Tailscale-User-Login` header; a request with a different login gets a 401 page. A worker machine's IP is refused on owner routes even if it sends the header, so a compromised worker cannot act as you. The spec is in `docs/DASHBOARD.md`.
+
 ## Host setup (Windows 11)
 
 1. Install Docker Desktop (WSL 2 backend) and Tailscale for Windows. Sign both in; set Docker Desktop to start at login.
@@ -101,6 +103,30 @@ python -m host.cli role <worker> train
 
 On Windows PowerShell, quote the JSON for `--params` as `'{\"seconds\":60}'` if the shell strips quotes.
 
+## How to test step 2
+
+Everything here is done from your phone or the host, with workers installed as in step 1. Commands run on the host.
+
+1. Open the dashboard on the phone (on the tailnet):
+
+```
+https://<machine>.<tailnet>.ts.net/
+```
+
+   The Fleet page shows one card per worker: an online dot, a role dropdown, the current job with a progress bar, and CPU, RAM and clock skew. The top bar shows the PAPER pill, P&L and the red KILL button. P&L reads $0.00 until step 4, because there are no bets or fills yet.
+2. Change a role from the dropdown with a stopwatch in hand. The card says "switching to <role>" until the worker acknowledges. Expect under 10 seconds. If the card still says "switching" after 20 seconds it turns red; that is a failure, check `journalctl -u fleet-worker` on that box.
+3. Run the automated version of the same timing (it sends a sleep job, flips the role to `train`, and prints the seconds from the click to the ack):
+
+```powershell
+docker compose exec host python -m host.cli roletest <worker>
+```
+
+   Read the printed number. Under 10 means pass (exit 0); over 10, or no ack, is exit 1. The worker is left in `train`. From a shell with the repo checked out, `tests/hw/roletest.sh <worker>` does the same.
+4. Wrong user. On a tailnet device signed in as a different Tailscale user (a second account, or a shared-in device), open the dashboard URL. You should see a 401 page and no fleet data. The same goes for any worker machine: its IP is refused on owner routes.
+5. Kill switch. Press KILL and confirm. The whole top bar turns red with "TRADING KILLED. Reset in Settings." and the button becomes a disabled KILLED chip. Then open Settings, find the kill form, type `RESUME` exactly and submit; the bar returns to normal. Anything other than `RESUME` is rejected and the flag stays set. The kill switch only affects trading (the trade role); batch jobs such as backtests and training keep running. In step 4 KILL also cancels all open orders.
+6. Limits and audit. In Settings change a limit, for example max bet from 25 to 20 dollars, and save. The Audit log at the bottom of the Settings page gets a new row with the time, your login, the action and the entity. The kill presses and the reset from step 5 are in the same log.
+7. Enroll token. In Settings press "New enroll token". The page shows the token once with the two install one-liners and a Copy button.
+
 ## Development
 
 ```bash
@@ -116,7 +142,7 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
 ## Build order
 
 1. [x] Step 1: fleet core (queue, leases, worker agent, installer, owner API, host in Docker)
-2. [ ] Step 2: dashboard fleet cards, role handshake, drain and watchdog, settings page, kill flag
+2. [x] Step 2: dashboard fleet cards, role handshake, drain and watchdog, settings page, kill flag
 3. [ ] Step 3: nflverse data, models, backtest / search / train jobs, leaderboard
 4. [ ] Step 4: fleet-exchange, paper trading, approval limits, ledger, scoring
 5. [ ] Step 5: Polymarket US live adapter, live switch, smoke order

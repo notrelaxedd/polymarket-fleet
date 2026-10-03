@@ -29,11 +29,12 @@ def add_audit(
     before: dict[str, Any] | None = None,
     after: dict[str, Any] | None = None,
     ip: str | None = None,
+    confirmation_text: str | None = None,
 ) -> None:
-    """Append one audit_log row."""
+    """Append one audit_log row (`confirmation_text` is what the owner typed, e.g. RESUME)."""
     conn.execute(
-        "INSERT INTO audit_log (actor, ip, action, entity, before, after)"
-        " VALUES (%s, %s, %s, %s, %s, %s)",
+        "INSERT INTO audit_log (actor, ip, action, entity, before, after, confirmation_text)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s)",
         (
             actor,
             ip,
@@ -41,6 +42,7 @@ def add_audit(
             entity,
             Jsonb(before) if before is not None else None,
             Jsonb(after) if after is not None else None,
+            confirmation_text,
         ),
     )
 

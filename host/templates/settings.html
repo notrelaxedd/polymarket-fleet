@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{# Every field stays type=text so a blank value and the server-side validation still
+   work; `mode` sets inputmode so a phone opens the right keyboard. #}
+{% macro field(name, label, hint='', mode='') -%}
+<label><span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span>
+  <input type="text" name="{{ name }}" value="{{ values[name] }}"{% if mode %} inputmode="{{ mode }}"{% endif %} autocomplete="off">
+</label>
+{%- endmacro %}
+{% block content %}
+<h1>Settings</h1>
+
+<form class="card group" method="post" action="/settings/trading" id="trading">
+  <h2>Trading limits <span class="muted small">dollars</span></h2>
+  {% if errors.trading %}<p class="error inline-error">{{ errors.trading }}</p>{% endif %}
+  <div class="fields">
+    {{ field('max_bet', 'Max bet', '$', 'decimal') }}
+    {{ field('max_daily_loss_paper', 'Max daily loss, paper', '$', 'decimal') }}
+    {{ field('max_daily_loss_live', 'Max daily loss, live', '$', 'decimal') }}
+    {{ field('default_bankroll', 'Default bankroll per game', '$', 'decimal') }}
+    {{ field('liquidity_floor', 'Liquidity floor', '$', 'decimal') }}
+    {{ field('min_edge', 'Min edge', '0..1', 'decimal') }}
+    {{ field('kelly_fraction', 'Kelly fraction', '0..1', 'decimal') }}
+    {{ field('trade_max_games', 'Max games per trade worker', '0..100', 'numeric') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
+<form class="card group" method="post" action="/settings/fleet" id="fleet">
+  <h2>Fleet</h2>
+  {% if errors.fleet %}<p class="error inline-error">{{ errors.fleet }}</p>{% endif %}
+  <div class="fields">
+    {{ field('lease_seconds', 'Lease seconds', '10..3600', 'numeric') }}
+    {{ field('heartbeat_seconds', 'Heartbeat seconds', '1..60', 'numeric') }}
+    {{ field('online_after_seconds', 'Online-after seconds', '5..3600', 'numeric') }}
+    {{ field('max_expiries', 'Max lease expiries', 'blank = retry forever', 'numeric') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
+<form class="card group" method="post" action="/settings/tz" id="tz">
+  <h2>Time zone</h2>
+  {% if errors.tz %}<p class="error inline-error">{{ errors.tz }}</p>{% endif %}
+  <div class="fields">
+    {{ field('tz', 'IANA name', 'such as America/New_York') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
+<form class="card group" method="post" action="/enroll-token" id="enroll">
+  <h2>Enroll</h2>
+  <p class="muted">A token is single use and valid for one hour. The next page shows it once.</p>
+  <button type="submit" class="btn primary">New enroll token</button>
+</form>
+
+<section class="card group{% if killed %} killed{% endif %}" id="kill">
+  <h2>Kill switch</h2>
+  {% if killed %}
+  <p class="error">Trading is killed. Trade workers do not claim and (from step 4) no order is approved.</p>
+  {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
+  <form method="post" action="/kill/reset" class="reset">
+    <label>Type RESUME to clear it
+      <input type="text" name="confirm" autocomplete="off" autocapitalize="characters" placeholder="RESUME">
+    </label>
+    <button type="submit" class="btn primary">Reset kill switch</button>
+  </form>
+  {% else %}
+  <p>Trading is <strong>not</strong> killed. The red KILL button in the top bar (or <a href="/kill/confirm">this page</a>) stops trading immediately.</p>
+  {% endif %}
+</section>
+
+<section class="card group" id="audit">
+  <h2>Audit log <span class="muted small">last 20</span></h2>
+  <div class="table-wrap">
+  <table class="audit stack">
+    <thead><tr><th>time</th><th>actor</th><th>action</th><th>entity</th><th>confirmation</th></tr></thead>
+    <tbody>
+    {% for a in audit %}
+    <tr>
+      <td class="nowrap lead">{{ a.ts | ts }}</td>
+      <td>{{ a.actor or '-' }}</td>
+      <td>{{ a.action }}</td>
+      <td>{{ a.entity or '-' }}</td>
+      <td>{{ a.confirmation_text or '' }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5" class="muted">Nothing yet.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

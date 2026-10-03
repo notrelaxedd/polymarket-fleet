@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -212,3 +213,143 @@ def test_resumed_job_reports_stored_progress_before_first_unit() -> None:
     assert runner.snapshot()[1] == 0.75
     assert Runner({"id": "p2", "kind": "sleep", "params": {}, "progress": "bad"}).snapshot()[1] == 0.0
     assert Runner({"id": "p3", "kind": "sleep", "params": {}}).snapshot()[1] == 0.0
+
+
+# ------------------------------------------------- step 2: session RSS sum
+
+
+# The child forks a grandchild that holds ~30 MB resident (filled, not lazily zeroed)
+# and writes "ready" once the allocation is done; both then sleep.
+RSS_TREE = (
+    "import os, sys, time\n"
+    "if os.fork() == 0:\n"
+    "    block = b'x' * (30 * 1024 * 1024)\n"
+    "    open(sys.argv[1], 'w').write('ready')\n"
+    "    time.sleep(60)\n"
+    "time.sleep(60)\n"
+)
+
+
+def _wait_file(path, timeout: float = 10.0) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            text = path.read_text()
+            if text:
+                return text
+        except OSError:
+            pass
+        time.sleep(0.02)
+    raise AssertionError(f"{path} never appeared")
+
+
+def test_session_rss_sum_includes_grandchild_and_excludes_strangers(tmp_path) -> None:
+    from fleet.common import sysinfo
+
+    ready = tmp_path / "ready"
+    runner = Runner({"id": "m1", "kind": "sleep", "params": {}}, command=[sys.executable, "-c", RSS_TREE, str(ready)])
+    runner.start()
+    stranger_ready = tmp_path / "stranger"
+    stranger = subprocess.Popen(
+        [sys.executable, "-c", RSS_TREE.replace("30 * 1024", "100 * 1024"), str(stranger_ready)],
+        start_new_session=True,
+    )
+    try:
+        _wait_file(ready)
+        _wait_file(stranger_ready)
+        pids = sysinfo.session_pids(runner.pid)
+        assert runner.pid in pids and len(pids) == 2, pids
+        assert os.getpid() not in pids and stranger.pid not in pids
+        total_kb = sysinfo.session_rss_kb(runner.pid)
+        assert total_kb >= 30 * 1024, f"grandchild's 30 MB missing from {total_kb} kB"
+        assert total_kb < 100 * 1024, f"unrelated 100 MB process counted: {total_kb} kB"
+        assert sysinfo.session_rss_kb(stranger.pid) >= 100 * 1024
+    finally:
+        runner.stop(grace=0.5)
+        stranger.kill()
+        stranger.wait(5.0)
+    # The orphaned grandchild is reaped by PID 1 asynchronously; a zombie is not counted.
+    deadline = time.monotonic() + 3.0
+    while sysinfo.session_pids(runner.pid) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert sysinfo.session_pids(runner.pid) == []
+    assert sysinfo.session_rss_kb(runner.pid) == 0
+
+
+def test_session_rss_parses_stat_after_last_paren_and_skips_vanished(tmp_path) -> None:
+    from fleet.common import sysinfo
+
+    proc = tmp_path / "proc"
+    for pid, comm, sid, rss in ((10, "(a b) (c)", 10, 1000), (11, "python", 10, 500), (12, "python", 99, 7000)):
+        d = proc / str(pid)
+        d.mkdir(parents=True)
+        (d / "stat").write_text(f"{pid} ({comm}) S 1 {pid} {sid} 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 1 1 1 0\n")
+        (d / "status").write_text(f"Name:\t{comm}\nVmRSS:\t    {rss} kB\nThreads:\t1\n")
+    (proc / "13").mkdir()
+    (proc / "13" / "stat").write_text("13 (dead) S 1 13 10 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 1 1 0\n")
+    (proc / "14").mkdir()
+    (proc / "14" / "stat").write_text("14 (zombie) Z 1 14 10 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 1 1 1 0\n")
+    (proc / "14" / "status").write_text("Name:\tzombie\nVmRSS:\t    9999 kB\n")
+    (proc / "self").mkdir()
+    (proc / "meminfo").write_text("MemTotal: 1 kB\n")
+    assert sysinfo.session_pids(10, str(proc)) == [10, 11, 13], "13 has no status file (vanished), 14 is a zombie"
+    assert sysinfo.session_rss_kb(10, str(proc)) == 1500
+    assert sysinfo.session_rss_kb(99, str(proc)) == 7000
+    assert sysinfo.session_rss_kb(5, str(proc)) == 0
+    assert sysinfo.session_rss_kb(10, str(tmp_path / "missing")) == 0
+
+
+RSS_FORK_TREE = r"""
+import os, sys, time
+buf = bytearray(120 * 1024 * 1024)
+for i in range(0, len(buf), 4096):
+    buf[i] = 1
+for _ in range(3):
+    if os.fork() == 0:
+        time.sleep(60)
+        os._exit(0)
+open(sys.argv[1], "w").write("ready")
+time.sleep(60)
+"""
+
+
+def test_session_memory_counts_shared_pages_once(tmp_path) -> None:
+    """MEDIUM: forked children share their parent's buffer copy-on-write. The watchdog
+    must measure the session's real footprint (proportional, anonymous memory), not
+    VmRSS summed per process, which counts the buffer once per child."""
+    from fleet.common import sysinfo
+
+    if not Path("/proc/self/smaps_rollup").exists():
+        pytest.skip("no smaps_rollup on this kernel")
+    ready = tmp_path / "ready"
+    runner = Runner({"id": "m2", "kind": "sleep", "params": {}}, command=[sys.executable, "-c", RSS_FORK_TREE, str(ready)])
+    runner.start()
+    try:
+        _wait_file(ready)
+        pids = sysinfo.session_pids(runner.pid)
+        assert len(pids) == 4, pids
+        measured_kb = sysinfo.session_rss_kb(runner.pid)
+        vmrss_kb = sum(sysinfo._kb_fields(f"/proc/{pid}/status", ("VmRSS",)).get("VmRSS", 0) for pid in pids)
+    finally:
+        runner.stop(grace=0.5)
+    buffer_kb = 120 * 1024
+    assert measured_kb >= buffer_kb, f"the buffer itself is missing from {measured_kb} kB"
+    assert measured_kb < 2 * buffer_kb, f"shared pages counted more than once: {measured_kb} kB"
+    assert vmrss_kb > 3 * buffer_kb, f"VmRSS sum should overstate (sanity): {vmrss_kb} kB"
+
+
+def test_process_mem_prefers_rollup_then_status(tmp_path) -> None:
+    from fleet.common import sysinfo
+
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "status").write_text("Name:\tx\nVmRSS:\t    5000 kB\nRssAnon:\t    1200 kB\nRssFile:\t    3000 kB\nRssShmem:\t    300 kB\n")
+    assert sysinfo.process_mem_kb(str(d)) == 1500, "RssAnon + RssShmem when there is no smaps_rollup"
+    (d / "smaps_rollup").write_text("Rss:  5000 kB\nPss:  2000 kB\nPss_Anon:  700 kB\nPss_File:  1200 kB\nPss_Shmem:  100 kB\n")
+    assert sysinfo.process_mem_kb(str(d)) == 800, "Pss_Anon + Pss_Shmem from smaps_rollup"
+    (d / "smaps_rollup").write_text("Rss:  5000 kB\nPss:  2000 kB\n")
+    assert sysinfo.process_mem_kb(str(d)) == 2000, "plain Pss on kernels without the split"
+    (d / "smaps_rollup").write_text("")
+    (d / "status").write_text("Name:\tx\nVmRSS:\t    5000 kB\n")
+    assert sysinfo.process_mem_kb(str(d)) == 5000, "VmRSS as the last resort"
+    assert sysinfo.process_mem_kb(str(tmp_path / "gone")) == 0
