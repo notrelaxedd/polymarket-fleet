@@ -29,5 +29,19 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
 
+  exchange:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "host.exchange.main"]
+    env_file:
+      - .env
+      - path: exchange.env
+        required: false
+    environment:
+      DATABASE_URL: postgresql://fleet:fleet@db:5432/fleet
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   fleet-db:

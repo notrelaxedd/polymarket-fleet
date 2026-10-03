@@ -676,3 +676,58 @@ is retried like any pending post; the job is not completed until every post succ
 `trained_through`, `summary`, `status` candidate|paper_ok|live_eligible|retired,
 `backtest_metrics`, `created_by_job_id`, timestamps; unique on `(family, params_hash,
 COALESCE(trained_through::text, ''))`, index on `lineage_id`).
+
+## Step 4 additions
+
+### Trade role claims
+A `trade` worker sends `"want_jobs": <free slots>` (int, `trade_max_games` minus the trade
+jobs it holds; `want_job: true` still means 1 for batch roles). The host claims up to that
+many `trade` jobs (same claim CTE, `LIMIT $n`), refusing under `kill`. Trade jobs have
+`max_expiries NULL`; a crashed trade worker's job expires after `lease_seconds` and any
+trade worker reclaims it (all state is on the host).
+
+### `GET /api/v1/trade/state` (worker bearer)
+Returns `{"kill", "server_time", "settings": {"min_edge", "kelly_fraction", "participation",
+"trade_pregame_only", "fee_model", "trade_tick_s"}, "assignments": [...]}`, one entry per
+trade job this worker holds: `{"id", "job_id", "lease_token", "status", "mode",
+"max_bet_cents", "game": {game row fields incl. kickoff_at, status}, "model": {"id",
+"family", "params", "artifact"}, "bankroll": {"available_cents", "reserved_cents",
+"open_cost_cents", "realized_pnl_cents"}, "markets": [{"id", "side", "bid", "ask", "mid",
+"tick", "min_size", "snapshot_id", "snapshot_at", "liquidity_usd_cents", "ask_depth",
+"status"}], "open_orders": [{"id", "market_id", "price", "size", "filled_size", "status"}],
+"positions": [{"market_id", "side", "size", "avg_price"}]}`. Markets below the liquidity
+floor are included but flagged `"below_floor": true`.
+
+### `POST /api/v1/orders/request` (worker bearer)
+`{"client_request_id", "job_id", "lease_token", "assignment_id", "market_id", "snapshot_id",
+"price", "size", "my_p", "market_p", "edge", "rationale"}` ->
+`{"status": "approved"|"rejected", "order_id", "reason"}` (200 in both cases; 401/409 only
+for auth and fence failures). See docs/TRADING.md for the checks.
+
+### `POST /api/v1/orders/{id}/cancel` (worker bearer)
+Marks the worker's own open order `cancel_requested` (paper: cancelled at once with the
+ledger release). `{"status": ...}`.
+
+### `POST /api/v1/trade/release` (worker bearer)
+`{"jobs": [{"id", "lease_token"}]}`: cancels the worker's open orders for those assignments
+(paper at once; live `cancel_requested`, waiting up to 3 s), releases the jobs to `queued`
+(reason `drain`), answers `{"cancelled": n, "pending": m, "released": [ids]}`. The agent
+calls it before the ack heartbeat of any role change away from `trade`, and under kill it
+keeps running the tick (proposing nothing) until told otherwise.
+
+### Owner API added in step 4
+- `GET/POST /api/assignments`, `POST /api/assignments/{id}/halt|activate|settle`,
+  `POST /api/assignments/activate-paper` (after a kill reset).
+- `GET /api/orders?status=&limit=`, `POST /api/orders/{id}/cancel`, `GET /api/fills`,
+  `GET /api/markets?unmatched=1`, `POST /api/markets/{id}/link` `{"game_id", "side"}`.
+- `GET /api/exchange` (state), `POST /api/exchange/probe` (raw markets payload of the
+  configured source, truncated to 64 KiB, for pasting back), `GET /api/pnl` (real now).
+- `POST /api/kill` now cancels orders and halts assignments (docs/TRADING.md).
+- Settings keys added (all on the Settings page): `participation`, `book_max_age_s`,
+  `orphan_cancel_after_s`, `gtd_seconds`, `snapshot_retention_days`, `snapshot_active_s`,
+  `snapshot_idle_s`, `market_source`, `market_source_config`, `market_lookahead_days`,
+  `max_paper_models_per_game`, `thresholds_paper`, `trade_pregame_only`, `trade_tick_s`,
+  `rate_limits`, `max_exposure_cents`, `scores_url`.
+- CLI: `assign <game_id> <model_id> [--mode paper] [--bankroll DOLLARS]`, `assignments`,
+  `orders [--status]`, `cancel-all [--mode]`, `simulate-final <game_id> --home N --away M`,
+  `exchange-state`, `ledger-check`.

@@ -135,6 +135,24 @@ def _url(value: Any) -> str | None:
     return None
 
 
+def _one_of(*choices: str) -> Validator:
+    def check(value: Any) -> str | None:
+        return None if value in choices else "must be one of " + ", ".join(choices)
+
+    return check
+
+
+def _json_object(value: Any) -> str | None:
+    """Any JSON object (free-form config), at most 16 KiB when serialised."""
+    if not isinstance(value, dict):
+        return "must be an object"
+    import json
+
+    if len(json.dumps(value)) > 16 * 1024:
+        return "must be at most 16 KiB"
+    return None
+
+
 def timing_problems(settings: dict[str, Any]) -> list[str]:
     """Cross-field rules over the merged fleet timing settings.
 
@@ -176,6 +194,41 @@ SCHEMA: dict[str, Validator] = {
     "backtest_seasons": _seasons,
     "nflverse_refresh_hours": _int_range(1, 168),
     "nflverse_url": _url,
+    # step 4: trading
+    "participation": _fraction,
+    "book_max_age_s": _int_range(1, 3600),
+    "orphan_cancel_after_s": _int_range(5, 3600),
+    "gtd_seconds": _int_range(10, 86400),
+    "snapshot_retention_days": _int_range(1, 365),
+    "snapshot_active_s": _int_range(1, 300),
+    "snapshot_idle_s": _int_range(1, 3600),
+    "market_source": _one_of("sim", "polymarket_us", "polymarket_clob"),
+    "market_source_config": _json_object,
+    "market_lookahead_days": _int_range(1, 60),
+    "max_paper_models_per_game": _int_range(1, 20),
+    "thresholds_paper": _object_of(
+        {
+            "min_games": _int_range(0, 10_000),
+            "min_bets": _int_range(0, 1_000_000),
+            "min_days": _int_range(0, 3650),
+            "min_clv": _number_range(-1, 1),
+            "min_pnl_cents": _int_range(-MAX_CENTS, MAX_CENTS),
+        },
+        "min_games, min_bets, min_days, min_clv and min_pnl_cents",
+    ),
+    "trade_pregame_only": _bool,
+    "trade_tick_s": _int_range(1, 60),
+    "rate_limits": _object_of(
+        {
+            "orders_per_s": _number_range(0.1, 1000),
+            "cancels_per_s": _number_range(0.1, 1000),
+            "market_data_per_s": _number_range(0.1, 1000),
+            "account_per_s": _number_range(0.1, 1000),
+        },
+        "orders_per_s, cancels_per_s, market_data_per_s and account_per_s",
+    ),
+    "max_exposure_cents": _cents_by_mode,
+    "scores_url": _url,
 }
 
 
