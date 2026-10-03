@@ -386,3 +386,48 @@ integrity check only (same origin as the tarball), so serve `/install.sh` and `/
 over the tailnet only. A `HOST_URL` that differs from the stored `host_url` is written
 into `worker.conf` (identity and token kept). An installer-chosen version is not a
 self-update candidate (`app/pending.json` is removed).
+
+## Step 2 additions
+
+### Release reasons
+`released[]` entries (heartbeat) and `POST /checkpoint` with `release=true` may carry
+`"reason": "drain" | "preempt" | "cancel" | "oom" | "shutdown"`. The host stores it in the
+`released` job event's `detail` and ignores unknown values. A release with reason `oom`
+counts like a lease expiry: `expiries += 1`, and the job fails once `expiries` reaches
+`max_expiries`, so a job that always runs out of memory does not bounce around the fleet
+forever. All other reasons leave `expiries` alone.
+
+### Memory watchdog (agent)
+Every service-loop pass the agent sums `VmRSS` over the runner's process group (from
+`/proc/<pid>/status` of every process whose session id is the runner's). If the sum exceeds
+`watchdog_rss_fraction` (default 0.8) of `ram_total_mb`, the agent stops the runner
+(SIGTERM, grace, SIGKILL), releases the job with its last checkpoint and reason `oom`, and
+logs a warning with the measured RSS. Tests may lower the threshold through `AgentOptions`.
+
+### Kill flag
+`kill` in register and heartbeat responses mirrors `settings.kill_switch`. It affects the
+**trade** role only: under kill the host refuses trade claims and (step 4) every order
+approval, and a trade worker stops proposing and asks the host to cancel its open orders.
+Batch roles (`backtest`, `model_search`, `train`) keep claiming and running; a kill switch
+that also stopped backtests would hide research for no safety gain. The agent records the
+flag in `status.json` so `python3 -m fleet.worker status` shows it.
+
+Owner API: `POST /api/kill` sets `kill_switch=true` (idempotent, audit row `kill`). `POST
+/api/kill/reset` with body `{"confirm": "RESUME"}` clears it (audit row `kill_reset`); any
+other body is 400. Step 4 adds the cancel-all behind `/api/kill`.
+
+### Owner routes added in step 2
+- Dashboard pages (HTML, same owner auth as `/api`): `GET /` (fleet), `GET /jobs`,
+  `GET /jobs/{id}`, `GET /settings`, `GET /kill/confirm`.
+- Fragments for the 5 s refresh: `GET /fragments/fleet` (the card grid), `GET /fragments/topbar`.
+- Form posts (HTML forms, `application/x-www-form-urlencoded`, redirect back with a flash
+  message): `POST /workers/{id}/role`, `POST /workers/{id}/enabled`, `POST /jobs` (send),
+  `POST /jobs/{id}/cancel`, `POST /settings/{group}`, `POST /enroll-token`, `POST /kill`,
+  `POST /kill/reset`. Each is a thin wrapper over the JSON route of the same name.
+- `GET /api/pnl` -> `{"today_cents": 0, "all_time_cents": 0, "by_worker": {"<id>": 0}}`
+  computed by `host/pnl.py` (zeros until step 4 adds bets and fills).
+- `GET /api/audit?limit=20` -> newest audit rows.
+- CLI: `kill`, `kill-reset` (prompts for RESUME unless `--yes`), `roletest <worker>`
+  (sends a 120 s sleep job to the worker, waits for the ack, flips the role to `train`,
+  waits for the ack and prints `ack - request` in seconds from host timestamps; exit 1 if
+  over 10 s).
