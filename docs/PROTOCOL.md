@@ -499,3 +499,61 @@ typed text exactly like the API (no whitespace trimming).
   too. The sleep job is cancelled on every exit path (success, timeout, limit exceeded,
   Ctrl-C), so a worker that never acked does not run it when it comes back; the worker is
   left in `train` (or in the role it was flipped to).
+
+## Step 3 additions
+
+### Data for workers
+- `GET /api/v1/data/games` (worker bearer): every `games` row as JSON (fields listed in
+  docs/MODELS.md), sorted by kickoff. Supports `ETag` / `If-None-Match` (304 when unchanged;
+  the ETag is `<count>-<max updated_at epoch>`). The agent refreshes its cache file
+  `<state>/cache/games.json` before starting any backtest, model_search or train runner and
+  passes the path to the child in `job["context"]["games_path"]`.
+- `GET /api/v1/models/{id}` (worker bearer): `{id, lineage_id, family, params, artifact,
+  parent_model_id, trained_through, status, backtest_metrics}`.
+- `POST /api/v1/models` (worker bearer): body `{job_id, family, params, artifact | null,
+  backtest_metrics | null, summary | null, parent_model_id | null, trained_through | null}`
+  -> `{"id": ..., "lineage_id": ..., "created": true|false}`. Idempotent on
+  `(family, params_hash, trained_through)`: an existing row is returned with `created: false`.
+  A child (`parent_model_id` set) inherits the parent's `lineage_id`, `status` and
+  `backtest_metrics`; a root gets `lineage_id = id` and status `candidate`, then
+  eligibility runs. `job_id` must be a job leased by the calling worker (409 otherwise).
+- `POST /api/v1/models/{id}/backtest` (worker bearer): `{job_id, backtest_metrics}` stores
+  the metrics on that model (and on every row of its lineage) and re-runs eligibility.
+
+### Runner context and results
+The agent fills `job["context"]` before starting a runner: `{"games_path": "<cache file>",
+"model": <GET /api/v1/models/{id} body or null>}` (the model is fetched when
+`params.model_id` is set). When a runner finishes with a result containing
+`create_models: [...]`, the agent posts each entry to `POST /api/v1/models` (with the job
+id) in order, replaces the list with `created_models: [{"id", "lineage_id", "created"}]`,
+and only then calls `/complete`. For a `backtest` job with `params.model_id`, the agent
+also posts the metrics to `POST /api/v1/models/{id}/backtest` before completing. Posting
+is retried like any pending post; the job is not completed until every post succeeded.
+
+### Job kinds and params (validated by the host at creation, 400 on error)
+- `backtest`: `{"model_id": uuid}` or `{"family": str, "params": {...}}`, plus optional
+  `"seasons": [first, last]` (default settings `backtest_seasons`). Result: the metrics
+  object from docs/MODELS.md plus `per_season`.
+- `model_search`: `{"family": str, "n": int (1..5000, default 200), "seed": int,
+  "seasons": [first, last], "top_k": int (1..20, default 5)}`. Result: see docs/MODELS.md.
+- `train`: `{"model_id": uuid, "through": {"season": int, "week": int}}`. Result:
+  `{"created_models": [...], "through": [season, week], "games_seen": n}`.
+- `sleep` stays for tests.
+
+### Owner API added in step 3
+- `GET /api/models` (leaderboard by lineage: ranked and unranked lists), `GET /api/models/{id}`
+  (model, lineage members, jobs that created or updated it), `POST /api/models/{id}/summary`
+  `{"summary": str}` (max 600 chars, audit row), `POST /api/models/{id}/status`
+  `{"status": "retired"}` (only `retired` is allowed from the owner; audit row).
+- `POST /api/jobs` accepts the three real kinds with the params above; the dashboard jobs
+  page gets one form per kind (backtest, model search, train) with the owner's defaults from
+  settings.
+- `POST /api/data/refresh` (owner): fetch nflverse games.csv now; returns
+  `{"rows": n, "updated": m, "fetched_at": ...}`. The host loop also refreshes every
+  `nflverse_refresh_hours` (settings, default 6) and at startup when `games` is empty.
+- Settings keys added: `fee_model {"taker_rate": 0.05, "half_spread": 0.01}`,
+  `thresholds_backtest {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.30}`,
+  `backtest_seasons [2010, null]` (null = last complete season), `nflverse_refresh_hours 6`,
+  `nflverse_url` (the games.csv URL). All editable on the Settings page.
+- CLI: `ingest-games [--file PATH]`, `models` (table), `send-job` accepts `--params` for
+  the three kinds (unchanged syntax).
