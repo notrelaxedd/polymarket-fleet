@@ -55,11 +55,13 @@ Mint a single-use enroll token (valid 1 hour) on the host:
 docker compose exec host python -m host.cli enroll-token
 ```
 
-On each Debian box, as a user with sudo (needs root, python3 >= 3.11, curl and systemd, all present on Debian 13):
+On each Debian box, as a user with sudo (needs root, python3 >= 3.11 and systemd, all present on Debian 13):
 
 ```bash
 curl -fsSL https://<host>/install.sh | sudo bash -s -- https://<host> <token>
 ```
+
+If `curl` is missing (minimal installs ship `wget` only), use `wget -qO- https://<host>/install.sh | sudo bash -s -- https://<host> <token>` or `sudo apt install curl` first.
 
 Check it:
 
