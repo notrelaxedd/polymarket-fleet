@@ -1,0 +1,25 @@
+[Unit]
+Description=Fleet worker agent (polymarket-fleet)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=fleet
+Group=fleet
+Environment=PYTHONPATH=/var/lib/fleet/app/current
+Environment=FLEET_STATE_DIR=/var/lib/fleet
+ExecStart=/usr/bin/python3 -m fleet.worker run
+Restart=always
+RestartSec=3
+RestartPreventExitStatus=78
+TimeoutStopSec=15
+Nice=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fleet
+PrivateTmp=yes
+MemoryMax=85%
+
+[Install]
+WantedBy=multi-user.target

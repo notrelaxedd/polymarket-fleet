@@ -1,0 +1,316 @@
+"""Job runner: the child process entry point and the parent-side Runner handle.
+
+Child (python3 -m fleet.worker.runner): reads one job JSON object from stdin, runs it
+and prints one JSON object per line on stdout:
+  {"checkpoint": {...}, "progress": 0.42}   after every unit of work
+  {"done": true, "result": {...}}            on success
+  {"stopped": true, "checkpoint": {...}, "progress": 0.42}   after SIGTERM
+  {"error": "..."}                           on failure
+Every line is flushed. The process exits 0 in all cases.
+
+Parent: Runner starts the child, keeps the last checkpoint/progress/result/error it
+printed and can stop (SIGTERM, grace, SIGKILL) or kill it.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import signal
+import subprocess
+import sys
+import threading
+import traceback
+from typing import Any
+
+log = logging.getLogger("fleet.runner")
+
+MODULE = "fleet.worker.runner"
+
+
+# ---------------------------------------------------------------- child side
+
+
+def _print_line(obj: dict[str, Any]) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _read_job() -> dict[str, Any]:
+    raw = sys.stdin.read()
+    job = json.loads(raw)
+    if not isinstance(job, dict):
+        raise ValueError("job must be a JSON object")
+    return job
+
+
+def run_child() -> int:
+    """Entry point of the child process. Returns the exit code (always 0)."""
+    from fleet.worker.jobs import JOBS, JobStopped
+
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda signum, frame: stop.set())
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+    try:
+        job = _read_job()
+    except Exception as exc:
+        _print_line({"error": f"malformed job: {exc}"})
+        return 0
+
+    kind = job.get("kind")
+    func = JOBS.get(kind) if isinstance(kind, str) else None
+    if func is None:
+        _print_line({"error": f"unknown job kind: {kind!r}"})
+        return 0
+
+    params = job.get("params") or {}
+    checkpoint = job.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        checkpoint = None
+    last = {"checkpoint": checkpoint, "progress": 0.0}
+
+    def emit(cp: dict[str, Any], progress: float) -> None:
+        last["checkpoint"] = cp
+        last["progress"] = float(progress)
+        _print_line({"checkpoint": cp, "progress": float(progress)})
+
+    try:
+        result = func(params, checkpoint, emit, stop.is_set)
+    except JobStopped:
+        _print_line({"stopped": True, "checkpoint": last["checkpoint"], "progress": last["progress"]})
+        return 0
+    except Exception:
+        _print_line({"error": traceback.format_exc(limit=8)})
+        return 0
+    _print_line({"done": True, "result": result})
+    return 0
+
+
+# --------------------------------------------------------------- parent side
+
+
+def _package_root() -> str:
+    """Directory that contains the fleet package (what PYTHONPATH must include)."""
+    import fleet
+
+    return os.path.dirname(os.path.dirname(os.path.abspath(fleet.__file__)))
+
+
+def child_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for the child: parent env, OMP_NUM_THREADS=1, fleet on PYTHONPATH."""
+    env = dict(os.environ if base is None else base)
+    env["OMP_NUM_THREADS"] = "1"
+    root = _package_root()
+    parts = [p for p in env.get("PYTHONPATH", "").split(os.pathsep) if p]
+    if root not in parts:
+        parts.insert(0, root)
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
+
+
+def _seed_progress(value: Any) -> float:
+    """The job's stored progress (a resumed job reports it until its first unit finishes)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    return max(0.0, min(1.0, float(value)))
+
+
+class Runner:
+    """Parent-side handle on one runner child process.
+
+    The child starts in its own session (process group) so terminate() and kill()
+    reach grandchildren (multiprocessing pools, BLAS threads' helpers) as well.
+    """
+
+    def __init__(
+        self,
+        job: dict[str, Any],
+        python: str | None = None,
+        command: list[str] | None = None,
+        env: dict[str, str] | None = None,
+    ) -> None:
+        self.job = job
+        self.job_id = str(job.get("id", ""))
+        self._python = python or sys.executable
+        self._command = command
+        self._env = env
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._reader: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self.last_checkpoint: dict[str, Any] | None = job.get("checkpoint") if isinstance(job.get("checkpoint"), dict) else None
+        self.last_progress: float = _seed_progress(job.get("progress"))
+        self.checkpoint_seq: int = 0
+        self.result: Any = None
+        self.done: bool = False
+        self.error: str | None = None
+        self.stopped: bool = False
+        self.term_sent: bool = False
+        self.kill_sent: bool = False
+        self.group_killed: bool = False
+
+    # lifecycle -----------------------------------------------------------
+
+    def start(self) -> None:
+        """Spawn the child and feed it the job."""
+        command = self._command or [self._python, "-m", MODULE]
+        self._proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            env=child_env(self._env),
+            close_fds=True,
+            start_new_session=True,
+        )
+        payload = {
+            "id": self.job.get("id"),
+            "kind": self.job.get("kind"),
+            "params": self.job.get("params") or {},
+            "checkpoint": self.job.get("checkpoint"),
+        }
+        assert self._proc.stdin is not None
+        try:
+            self._proc.stdin.write(json.dumps(payload).encode("utf-8"))
+            self._proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        self._reader = threading.Thread(target=self._read_loop, name=f"runner-{self.job_id[:8]}", daemon=True)
+        self._reader.start()
+
+    @property
+    def pid(self) -> int | None:
+        return self._proc.pid if self._proc else None
+
+    def poll(self) -> int | None:
+        """Exit code of the child, or None while it runs."""
+        if self._proc is None:
+            return None
+        return self._proc.poll()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Wait up to timeout seconds; True when the child has exited."""
+        if self._proc is None:
+            return True
+        try:
+            self._proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
+    def _signal_group(self, sig: int) -> None:
+        """Signal the child's whole process group; fall back to the child alone."""
+        assert self._proc is not None
+        try:
+            os.killpg(self._proc.pid, sig)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            try:
+                self._proc.send_signal(sig)
+            except OSError:
+                pass
+
+    def terminate(self) -> None:
+        """Send SIGTERM to the process group (the child sets its stop flag)."""
+        if self._proc is None or self._proc.poll() is not None:
+            return
+        self.term_sent = True
+        self._signal_group(signal.SIGTERM)
+
+    def kill(self) -> None:
+        """Send SIGKILL to the process group."""
+        if self._proc is None:
+            return
+        self.kill_sent = True
+        self._signal_group(signal.SIGKILL)
+
+    def stop(self, grace: float = 3.0) -> None:
+        """SIGTERM, wait up to grace seconds, then SIGKILL survivors."""
+        self.terminate()
+        if not self.wait(grace):
+            log.warning("runner %s ignored SIGTERM for %.1fs, killing", self.job_id, grace)
+            self.kill()
+            self.wait(5.0)
+        self.reap_group()
+
+    def join_reader(self, timeout: float = 2.0) -> None:
+        if self._reader is not None:
+            self._reader.join(timeout)
+
+    def reap_group(self, timeout: float = 2.0) -> None:
+        """Call once the child exited: a grandchild still holding its stdout keeps the
+        reader alive, so SIGKILL the whole group and then wait for the reader."""
+        self.join_reader(0.2)
+        if self._reader is not None and self._reader.is_alive():
+            log.warning("runner %s left children behind; killing its process group", self.job_id)
+            self.group_killed = True
+            if self._proc is not None:
+                self._signal_group(signal.SIGKILL)
+            self.join_reader(timeout)
+
+    # state -----------------------------------------------------------------
+
+    @property
+    def finished(self) -> bool:
+        return self.poll() is not None
+
+    @property
+    def outcome(self) -> str | None:
+        """None while running, else one of done, error, stopped, crashed."""
+        if not self.finished:
+            return None
+        self.join_reader(1.0)
+        with self._lock:
+            if self.done:
+                return "done"
+            if self.error is not None:
+                return "error"
+            if self.stopped:
+                return "stopped"
+            return "crashed"
+
+    def snapshot(self) -> tuple[dict[str, Any] | None, float, int]:
+        """(last_checkpoint, last_progress, checkpoint_seq) under the lock."""
+        with self._lock:
+            return self.last_checkpoint, self.last_progress, self.checkpoint_seq
+
+    # reader thread ---------------------------------------------------------
+
+    def _read_loop(self) -> None:
+        assert self._proc is not None and self._proc.stdout is not None
+        for raw in self._proc.stdout:
+            line = raw.decode("utf-8", "replace").strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except ValueError:
+                log.warning("runner %s: unparseable line: %s", self.job_id, line[:200])
+                continue
+            if isinstance(msg, dict):
+                self._apply(msg)
+
+    def _apply(self, msg: dict[str, Any]) -> None:
+        with self._lock:
+            if "checkpoint" in msg and isinstance(msg["checkpoint"], dict):
+                self.last_checkpoint = msg["checkpoint"]
+                self.checkpoint_seq += 1
+            if "progress" in msg:
+                try:
+                    self.last_progress = float(msg["progress"])
+                except (TypeError, ValueError):
+                    pass
+            if msg.get("done"):
+                self.done = True
+                self.result = msg.get("result")
+                self.last_progress = 1.0
+            if msg.get("stopped"):
+                self.stopped = True
+            if "error" in msg:
+                self.error = str(msg["error"])
+
+
+if __name__ == "__main__":
+    sys.exit(run_child())
