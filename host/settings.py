@@ -17,6 +17,7 @@ JOB_ROLES = ("backtest", "model_search", "train", "trade")
 KIND_TO_ROLE = {
     "sleep": "backtest",
     "backtest": "backtest",
+    "validate": "backtest",
     "model_search": "model_search",
     "train": "train",
     "trade": "trade",
@@ -84,13 +85,17 @@ def _cents_by_mode(value: Any) -> str | None:
     return None
 
 
-def _object_of(fields: dict[str, Validator], label: str) -> Validator:
-    """A JSON object with exactly `fields`, each checked by its validator."""
+def _object_of(fields: dict[str, Validator], label: str, optional: dict[str, Validator] | None = None) -> Validator:
+    """A JSON object with exactly `fields` (plus any of `optional`, which readers
+    default when absent), each checked by its validator."""
+    optional = optional or {}
 
     def check(value: Any) -> str | None:
-        if not isinstance(value, dict) or set(value) != set(fields):
+        if not isinstance(value, dict) or not set(fields) <= set(value) or not set(value) <= set(fields) | set(optional):
             return f"must be an object with {label}"
-        for key, inner in fields.items():
+        for key, inner in {**fields, **optional}.items():
+            if key not in value:
+                continue
             error = inner(value[key])
             if error:
                 return f"{key} {error}"
@@ -126,6 +131,28 @@ def _seasons(value: Any) -> str | None:
         return f"last season must be null or an integer between {FIRST_SEASON} and {LAST_SEASON}"
     if last < first:
         return "last season must not be before the first"
+    return None
+
+
+def _workers(value: Any) -> str | None:
+    """`search_workers`: "auto" (cpu_count - 1, at least 1) or an integer 1..64."""
+    if value == "auto":
+        return None
+    return _int_range(1, 64)(value) and "must be \"auto\" or an integer between 1 and 64"
+
+
+FLAG_NAMES = ("overfit", "fragile", "regime_dependent")
+
+
+def _flag_list(value: Any) -> str | None:
+    """A list of distinct flag names out of FLAG_NAMES (may be empty)."""
+    if not isinstance(value, list) or any(not isinstance(v, str) for v in value):
+        return "must be a list of flag names"
+    unknown = sorted(set(value) - set(FLAG_NAMES))
+    if unknown:
+        return "holds unknown flags: " + ", ".join(unknown) + " (known: " + ", ".join(FLAG_NAMES) + ")"
+    if len(set(value)) != len(value):
+        return "must not repeat a flag"
     return None
 
 
@@ -184,6 +211,18 @@ def timing_problems(settings: dict[str, Any]) -> list[str]:
     return problems
 
 
+def season_problems(settings: dict[str, Any]) -> list[str]:
+    """Cross-field rule over the two eras: the validation era must start after the
+    search era ends (`backtest_seasons[1]`, when it is set; a null last season is
+    capped below the validation era when a job is created, host/jobparams.py)."""
+    search, validation = settings.get("backtest_seasons"), settings.get("validation_seasons")
+    if _seasons(search) or _seasons(validation):
+        return []
+    if search[1] is not None and validation[0] <= search[1]:
+        return [f"validation_seasons must start after the search era ends ({search[1]}): backtest_seasons is {search}"]
+    return []
+
+
 SCHEMA: dict[str, Validator] = {
     "live_enabled": _bool,
     "kill_switch": _bool,
@@ -202,9 +241,16 @@ SCHEMA: dict[str, Validator] = {
     "fee_model": _object_of({"taker_rate": _fraction, "half_spread": _fraction}, "taker_rate and half_spread"),
     "thresholds_backtest": _object_of(
         {"min_bets": _int_range(0, 1_000_000), "min_roi": _number_range(-1, 1), "max_drawdown": _number_range(0, 1)},
-        "min_bets, min_roi and max_drawdown",
+        "min_bets, min_roi, max_drawdown and optionally require_validation, min_roi_ci_low, max_market_p, forbid_flags",
+        optional={
+            "require_validation": _bool, "min_roi_ci_low": _number_range(-1, 1), "max_market_p": _number_range(0, 1),
+            "forbid_flags": _flag_list,
+        },
     ),
     "backtest_seasons": _seasons,
+    # step 6: the held-out era and the search pool
+    "validation_seasons": _seasons,
+    "search_workers": _workers,
     "nflverse_refresh_hours": _int_range(1, 168),
     "nflverse_url": _url,
     # step 4: trading
@@ -227,7 +273,8 @@ SCHEMA: dict[str, Validator] = {
             "min_clv": _number_range(-1, 1),
             "min_pnl_cents": _int_range(-MAX_CENTS, MAX_CENTS),
         },
-        "min_games, min_bets, min_days, min_clv and min_pnl_cents",
+        "min_games, min_bets, min_days, min_clv, min_pnl_cents and optionally clv_ci_excludes_zero",
+        optional={"clv_ci_excludes_zero": _bool},
     ),
     "trade_pregame_only": _bool,
     "trade_tick_s": _int_range(1, 60),
@@ -289,9 +336,9 @@ def get_int_setting(conn: psycopg.Connection, key: str, default: int) -> int:
 
 
 def validate_settings(updates: dict[str, Any], current: dict[str, Any]) -> None:
-    """Reject unknown keys, values of the wrong type or range (no coercion) and fleet
-    timing combinations that cannot work, judged over the stored settings merged with
-    the update."""
+    """Reject unknown keys, values of the wrong type or range (no coercion), fleet
+    timing combinations that cannot work and a validation era that overlaps the
+    search era, judged over the stored settings merged with the update."""
     unknown = sorted(set(updates) - set(current))
     if unknown:
         raise BadRequest(f"unknown setting keys: {', '.join(unknown)}")
@@ -302,7 +349,8 @@ def validate_settings(updates: dict[str, Any], current: dict[str, Any]) -> None:
         if error:
             problems.append(f"{key} {error}")
     if not problems:
-        problems = timing_problems({**current, **updates})
+        merged = {**current, **updates}
+        problems = timing_problems(merged) + season_problems(merged)
     if problems:
         raise BadRequest("invalid settings: " + "; ".join(problems))
 

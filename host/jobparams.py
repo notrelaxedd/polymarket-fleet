@@ -9,6 +9,12 @@ on the games table when it has rows), and copies the betting limits in force
 with null resolved to the last complete season) so the worker runs with the limits
 that held when the job was sent. `sleep` keeps its test-only shape (`seconds`, extra
 keys allowed).
+
+Step 6 (docs/ROBUSTNESS.md A1): `validate` takes `{model_id, seed}`; a model search
+and a validate also carry `validation_seasons` (settings, null resolved like the
+search era) and `workers` (settings `search_workers`). The search era never reaches
+into the validation era: a null last search season is capped at the season before
+the validation era, and an explicit search range that overlaps it is refused.
 """
 from __future__ import annotations
 
@@ -25,12 +31,15 @@ from host.settings import FIRST_SEASON, LAST_SEASON, get_setting
 
 COPIED_SETTINGS = ("fee_model", "default_bankroll_cents", "max_bet_cents", "trade_max_games")
 SEARCH_DEFAULTS = {"n": 200, "seed": 0, "top_k": 5}
+VALIDATE_DEFAULTS = {"seed": 1}
+ERA_KINDS = ("model_search", "validate")  # the kinds that carry the validation era
 MAX_WEEK = 22
 MIN_HISTORY_SEASONS = 3  # fleet.sim.backtest skips a test season with less history
 KEYS = {
     "backtest": {"model_id", "family", "params", "seasons"},
     "model_search": {"family", "n", "seed", "seasons", "top_k"},
     "train": {"model_id", "through"},
+    "validate": {"model_id", "seed"},
 }
 
 
@@ -164,6 +173,29 @@ def _backtest(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
     return out
 
 
+def validation_seasons(conn: psycopg.Connection) -> list[int | None] | None:
+    """Settings `validation_seasons` with a null last resolved to the last complete
+    season; None when the setting is missing or malformed."""
+    value = get_setting(conn, "validation_seasons")
+    if value is None:
+        return None
+    try:
+        return resolve_seasons(conn, value, "validation_seasons")
+    except BadRequest:
+        return None
+
+
+def check_before_validation(conn: psycopg.Connection, seasons: list[int | None], label: str = "seasons") -> None:
+    """400 when a search era reaches into the validation era (selection would see
+    the held-out seasons)."""
+    validation = validation_seasons(conn)
+    if validation is None:
+        return
+    last = seasons[1] if seasons[1] is not None else last_complete_season(conn)
+    if last is not None and last >= validation[0]:
+        raise BadRequest(f"{label} must end before the validation era (which starts in {validation[0]})")
+
+
 def _model_search(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any]:
     _reject_unknown("model_search", params)
     out: dict[str, Any] = {
@@ -175,7 +207,18 @@ def _model_search(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str,
     if "seasons" in params:
         out["seasons"] = resolve_seasons(conn, params["seasons"])
         check_testable(conn, out["seasons"])
+        check_before_validation(conn, out["seasons"])
     return out
+
+
+def _validate(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any]:
+    _reject_unknown("validate", params)
+    if "model_id" not in params:
+        raise BadRequest("validate needs model_id")
+    return {
+        "model_id": _model_id(conn, params["model_id"]),
+        "seed": _int_field(params, "seed", -(2**53), 2**53, VALIDATE_DEFAULTS["seed"]),
+    }
 
 
 def _train(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any]:
@@ -185,14 +228,28 @@ def _train(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any]:
     return {"model_id": _model_id(conn, params["model_id"]), "through": _through(params.get("through"))}
 
 
-def copied_settings(conn: psycopg.Connection) -> dict[str, Any]:
-    """The limits a batch job carries, read from settings at creation."""
+def copied_settings(conn: psycopg.Connection, kind: str = "backtest") -> dict[str, Any]:
+    """The limits a batch job carries, read from settings at creation. A null last
+    search season resolves to the last complete season, capped at the season before
+    the validation era; a model search and a validate also carry the validation era
+    and the search pool size."""
     out = {key: get_setting(conn, key) for key in COPIED_SETTINGS}
     seasons = get_setting(conn, "backtest_seasons", [2010, None])
+    validation = validation_seasons(conn)
     try:
-        out["backtest_seasons"] = resolve_seasons(conn, seasons, "backtest_seasons")
+        if not isinstance(seasons, list) or len(seasons) != 2:
+            raise BadRequest("backtest_seasons must be [first, last]")
+        last = seasons[1]
+        if last is None:
+            last = last_complete_season(conn)
+            if validation is not None and last is not None:
+                last = min(last, validation[0] - 1)
+        out["backtest_seasons"] = resolve_seasons(conn, [seasons[0], last], "backtest_seasons")
     except BadRequest:
         out["backtest_seasons"] = [2010, last_complete_season(conn)]
+    if kind in ERA_KINDS:
+        out["validation_seasons"] = validation if validation is not None else [2022, last_complete_season(conn)]
+        out["workers"] = get_setting(conn, "search_workers", "auto")
     return out
 
 
@@ -206,7 +263,9 @@ def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) 
         out = _model_search(conn, params)
     elif kind == "train":
         out = _train(conn, params)
+    elif kind == "validate":
+        out = _validate(conn, params)
     else:
         return dict(params)
-    out.update(copied_settings(conn))
+    out.update(copied_settings(conn, kind))
     return out

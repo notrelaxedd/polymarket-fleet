@@ -23,17 +23,18 @@ def empty_stats() -> dict[str, Any]:
     }
 
 
-def _log_loss(p: float, outcome: float) -> float:
+def log_loss(p: float, outcome: float) -> float:
     p = min(max(p, LOG_EPS), 1.0 - LOG_EPS)
     return -(outcome * math.log(p) + (1.0 - outcome) * math.log(1.0 - p))
+
 
 
 def record_game(stats: dict[str, Any], p: float, p_market: float, outcome: float,
                 bet: dict[str, Any] | None, pnl_cents: int) -> None:
     """Score one moneyline game (and its bet, if any) into stats, in game order."""
     stats["n_games"] += 1
-    stats["sum_log_loss"] += _log_loss(p, outcome)
-    stats["sum_market_log_loss"] += _log_loss(p_market, outcome)
+    stats["sum_log_loss"] += log_loss(p, outcome)
+    stats["sum_market_log_loss"] += log_loss(p_market, outcome)
     stats["sum_brier"] += (p - outcome) ** 2
     bucket = stats["calibration"][min(int(p * N_BUCKETS), N_BUCKETS - 1)]
     bucket[0] += 1

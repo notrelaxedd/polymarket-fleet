@@ -50,11 +50,9 @@ def stake_cents(edge: float, cost: float, rule: BetRule) -> int:
     return max(0, min(raw, rule.max_bet_cents, rule.bankroll_cents))
 
 
-def plan_bet(p_model: float, p_market: float, rule: BetRule) -> dict[str, Any] | None:
-    """The one bet (or None) for a game: the side with the larger edge when edge >= min_edge.
-
-    Returns {"side", "p_model", "price", "fee", "cost", "edge", "stake_cents", "contracts"}.
-    """
+def best_side(p_model: float, p_market: float, rule: BetRule) -> dict[str, Any]:
+    """The side with the larger edge after costs (home wins ties):
+    {"side", "p_model", "price", "fee", "cost", "edge"}, whether or not it is worth a bet."""
     best: dict[str, Any] | None = None
     for side, pm, pk in (("home", p_market, p_model), ("away", 1.0 - p_market, 1.0 - p_model)):
         price, fee, cost = side_cost(pm, rule)
@@ -62,6 +60,15 @@ def plan_bet(p_model: float, p_market: float, rule: BetRule) -> dict[str, Any] |
         if best is None or edge > best["edge"]:
             best = {"side": side, "p_model": pk, "price": price, "fee": fee, "cost": cost, "edge": edge}
     assert best is not None
+    return best
+
+
+def plan_bet(p_model: float, p_market: float, rule: BetRule) -> dict[str, Any] | None:
+    """The one bet (or None) for a game: the side with the larger edge when edge >= min_edge.
+
+    Returns {"side", "p_model", "price", "fee", "cost", "edge", "stake_cents", "contracts"}.
+    """
+    best = best_side(p_model, p_market, rule)
     if best["edge"] < rule.min_edge:
         return None
     stake = stake_cents(best["edge"], best["cost"], rule)
