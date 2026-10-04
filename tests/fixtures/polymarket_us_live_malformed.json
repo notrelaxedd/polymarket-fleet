@@ -1,0 +1,10 @@
+{
+  "place_without_an_id": {"order": {"status": "ACCEPTED", "message": "queued"}},
+  "place_id_is_an_object": {"order_id": {"nested": true}},
+  "open_orders_not_a_list": {"orders": "none"},
+  "open_orders_scalar": 42,
+  "fills_wrong_key": {"trades": {"count": 0}},
+  "balance_without_money": {"account": {"account_id": "acct-42", "currency": "USD"}},
+  "balance_is_a_list": [1, 2, 3],
+  "not_json": "<html><body>502 Bad Gateway</body></html>"
+}

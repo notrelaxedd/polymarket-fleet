@@ -4,19 +4,23 @@ from __future__ import annotations
 import dataclasses
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
+from host import kill
 from host.api.app import create_app
+from host.trading.positions import owner_tz
 from tests.conftest import (
-    FIXTURE_GAMES, GAME_ID, approve, approved_order, assignment_row, backtest_metrics, flash_cookie, heartbeat_body,
-    ingest_fixture, insert_game, insert_market, insert_model, insert_snapshot, insert_worker, job_row, lease_job,
-    make_assignment, model_row, order_row, set_heartbeat_age, set_setting, trade_setup, worker_row,
+    FIXTURE_GAMES, GAME_ID, approve, approved_order, assignment_row, auth_state, backtest_metrics, enable_live,
+    flash_cookie, heartbeat_body, ingest_fixture, insert_game, insert_market, insert_model, insert_snapshot,
+    insert_worker, job_row, lease_job, make_assignment, model_row, order_row, set_heartbeat_age, set_setting,
+    trade_setup, worker_row,
 )
+
 
 
 def test_every_page_renders(client, make_worker):
@@ -1125,3 +1129,275 @@ def test_trading_style_rules():
     assert "label.check { min-height: var(--tap); }" in phone
     js = (Path(__file__).resolve().parent.parent / "host" / "static" / "app.js").read_text()
     assert 'refresh("trading-live", "/fragments/trading")' in js and chr(0x2014) not in js
+
+
+# ------------------------------------------------------------------ step 5: the live switch on the dashboard
+
+
+def _phrase(conn, days: int = 0) -> str:
+    today = datetime.now(timezone.utc).astimezone(owner_tz(conn)).date() + timedelta(days=days)
+    return f"ENABLE LIVE TRADING {today.isoformat()}"
+
+
+def _ready(conn, **overrides) -> None:
+    """The exchange process has credentials, a fresh successful auth probe and a small skew."""
+    now = datetime.now(timezone.utc)
+    cols = {"credentials_present": True, "auth_ok": True, "auth_checked_at": now, "balance_cents": 50_000,
+            "buying_power_cents": 48_000, "balance_checked_at": now, "clock_skew_ms": 120, "auth_failures": 0,
+            "last_auth_error": None}
+    cols.update(overrides)
+    auth_state(conn, **cols)
+
+
+def _smoke_order(conn, market, status: str = "open"):
+    """A smoke order row as the CLI creates it: kind smoke, mode live, no assignment, no worker."""
+    return conn.execute(
+        """
+        INSERT INTO orders (client_request_id, kind, market_id, mode, price, size, cost_cents, fee_cents_est, status,
+                            exchange_order_id, submitted_at, rationale)
+        VALUES (%s, 'smoke', %s, 'live', 0.45, 1, 45, 0, %s, 'pm-smoke-1', now(), 'smoke order') RETURNING *
+        """,
+        ("smoke-" + uuid.uuid4().hex[:24], market["id"], status),
+    ).fetchone()
+
+
+def _live_flag(conn) -> object:
+    return conn.execute("SELECT value FROM settings WHERE key = 'live_enabled'").fetchone()["value"]
+
+
+def _live_section(html: str) -> str:
+    return html.split('id="live"')[1].split('id="kill"')[0]
+
+
+def test_settings_live_group_off_state(client, conn):
+    """Live off: the state, the typed enable form with today's phrase as the hint, no
+    Disable button, credentials no, auth not checked, blank balances, no auto-kill."""
+    html = client.get("/settings").text
+    live = _live_section(html)
+    assert '<section class="card group live" id="live">' in html and 'data-live-state="off"' in live and ">OFF<" in live
+    assert "Live trading is <strong>off</strong>" in live
+    assert 'action="/settings/live"' in live and 'name="confirm" value="" placeholder="' + _phrase(conn) + '"' in live
+    assert f'<code class="phrase">{_phrase(conn)}</code>' in live and "Enable live trading" in live
+    assert 'action="/settings/live/off"' not in live and "Disable live" not in live
+    assert "<dt>credentials</dt><dd>no " in live and '<span class="muted">not checked</span>' in live
+    assert '<dt>balance</dt><dd><span class="muted">-</span>' in live and '<dt>buying power</dt><dd><span class="muted">-</span>' in live
+    assert '<dt>clock skew</dt><dd><span class="muted">-</span>' in live and "<dt>last auth error</dt><dd><span class=\"muted\">none</span>" in live
+    assert "none since the last reset" in live and "auto-kill-reason" not in live
+    assert "the exchange process has no credentials loaded" in live, "the preconditions are listed before the owner types"
+    assert 'name="live_enabled"' not in html, "the switch has no generic settings field"
+    assert 'class="pill paper">PAPER</span>' in html and ">LIVE<" not in html
+
+
+def test_settings_live_group_on_state(client, conn):
+    """Live on: since when and by whom, the Disable button instead of the form, auth ok
+    with its age, balance and buying power in dollars, the skew, the LIVE pill."""
+    enable_live(conn, buying_power_cents=48_000)
+    conn.execute("UPDATE exchange_state SET balance_cents = 50_000, clock_skew_ms = 120, live_enabled_by = 'owner@example.com',"
+                 " live_enabled_at = now() - interval '26 minutes'")
+    set_setting(conn, "tz", "America/New_York")
+    html = client.get("/settings").text
+    live = _live_section(html)
+    assert '<section class="card group live is-live" id="live">' in html and 'data-live-state="on"' in live and ">ON<" in live
+    since = re.search(r"Live trading is <strong>on</strong> since (\S+ \S+ \S+) by owner@example.com", live)
+    assert since, live
+    assert since.group(1).endswith(("EDT", "EST")), "the since time is shown in the owner's zone"
+    assert 'action="/settings/live/off"' in live and "Disable live" in live and 'data-confirm="Disable live trading now?' in live
+    assert 'action="/settings/live"' not in live and 'name="confirm"' not in live
+    assert '<span class="chip chip-ok">ok</span>' in live and re.search(r"checked [0-9] s ago", live)
+    assert "<dt>balance</dt><dd>$500.00</dd>" in live and "<dt>buying power</dt><dd>$480.00</dd>" in live
+    assert "<dt>clock skew</dt><dd>120 ms</dd>" in live and "none since the last reset" in live
+    assert 'class="pill live">LIVE</span>' in html and "live today $0.00" in html
+    # a failed probe after live went on: the failure, its count and the last error show in red
+    auth_state(conn, auth_ok=False, auth_failures=2, last_auth_error="401 unauthorized <b>")
+    live = _live_section(client.get("/settings").text)
+    assert '<span class="chip chip-bad">failed</span>' in live and "2 failures in a row" in live
+    assert '<dt>last auth error</dt><dd><span class="error">401 unauthorized &lt;b&gt;</span>' in live
+
+
+def test_live_enable_form_posts_the_phrase(client, conn):
+    """The typed form enables live through host.trading.live.enable_live: redirect with a
+    flash, the flag on, the live_on audit row with the confirmation text, the page on."""
+    _ready(conn)
+    r = client.post("/settings/live", data={"confirm": _phrase(conn)}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings#live"
+    assert flash_cookie(r) == "Live trading enabled by dev. Exchange balance $500.00.", "the dev owner is the actor"
+    assert _live_flag(conn) is True
+    audit = conn.execute("SELECT actor, confirmation_text FROM audit_log WHERE action = 'live_on'").fetchall()
+    assert [dict(a) for a in audit] == [{"actor": "dev", "confirmation_text": _phrase(conn)}]
+    html = client.get("/settings").text
+    assert 'data-live-state="on"' in html and "by dev." in html and 'class="pill live">LIVE</span>' in html
+    assert ">LIVE<" in client.get("/fragments/topbar").text and ">LIVE<" in client.get("/").text
+
+
+def test_live_enable_wrong_phrase_shows_the_inline_error(client, conn):
+    """A wrong phrase re-renders the page (400) with the error inside the live group and
+    the typed text kept; a right phrase with a failed precondition is a 409 naming it."""
+    _ready(conn)
+    for bad in ("ENABLE LIVE TRADING", _phrase(conn, -1), _phrase(conn, 1), _phrase(conn).lower(), "RESUME", ""):
+        r = client.post("/settings/live", data={"confirm": bad}, follow_redirects=False)
+        assert r.status_code == 400, bad
+        live = _live_section(r.text)
+        assert '<p class="error inline-error">confirmation must be exactly &#34;' + _phrase(conn) + "&#34;</p>" in live, bad
+        assert f'name="confirm" value="{bad}"' in live, "the typed text is kept"
+        assert 'action="/settings/live"' in live and _live_flag(conn) is False
+        assert "flash" not in r.cookies
+    assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'live_on'").fetchone()["n"] == 0
+    assert _live_section(client.get("/settings").text).count("inline-error") == 0, "a plain GET carries no error"
+    auth_state(conn, credentials_present=False, auth_ok=False)
+    r = client.post("/settings/live", data={"confirm": _phrase(conn)}, follow_redirects=False)
+    assert r.status_code == 409 and _live_flag(conn) is False
+    live = _live_section(r.text)
+    assert "live trading cannot be enabled: the exchange process has no credentials loaded" in live
+    client.post("/kill", follow_redirects=False)
+    _ready(conn)
+    r = client.post("/settings/live", data={"confirm": _phrase(conn)}, follow_redirects=False)
+    assert r.status_code == 409 and "the kill switch is on; reset it first" in _live_section(r.text)
+    # a generic settings group never carries the switch
+    r = client.post("/settings/trading", data={"max_bet": "25", "max_daily_loss_paper": "100", "max_daily_loss_live": "100",
+                                                "default_bankroll": "100", "liquidity_floor": "100", "min_edge": "0.02",
+                                                "kelly_fraction": "0.25", "trade_max_games": "4", "live_enabled": "true"},
+                    follow_redirects=False)
+    assert r.status_code == 303 and _live_flag(conn) is False
+
+
+def test_live_disable_form_halts_live_assignments(client, conn):
+    """The Disable button is immediate: live off, the live assignment halted, its open
+    live order cancel_requested for the exchange, a live_off audit row, a flash."""
+    setup = trade_setup(conn, mode="live", model_status="live_eligible")
+    opened = _open_order(conn, setup)
+    conn.execute("UPDATE orders SET exchange_order_id = 'pm-7f3a' WHERE id = %s", (opened["id"],))
+    assert 'data-live-state="on"' in client.get("/settings").text
+    r = client.post("/settings/live/off", data={}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings#live"
+    assert flash_cookie(r) == "Live trading disabled: 1 live assignment halted, 1 orders cancel requested on the exchange."
+    assert _live_flag(conn) is False
+    assert assignment_row(conn, setup.assignment["id"])["status"] == "halted"
+    assert order_row(conn, opened["id"])["status"] == "cancel_requested"
+    audit = conn.execute("SELECT actor FROM audit_log WHERE action = 'live_off'").fetchall()
+    assert [a["actor"] for a in audit] == ["dev"]
+    html = client.get("/settings").text
+    assert 'data-live-state="off"' in html and 'class="pill paper">PAPER</span>' in html
+    assert "Live trading is <strong>off</strong>" in html and 'action="/settings/live"' in html
+    r = client.post("/settings/live/off", data={}, follow_redirects=False)
+    assert r.status_code == 303 and "0 live assignments halted" in flash_cookie(r), "idempotent"
+
+
+def test_topbar_pill_states(client, conn):
+    """PAPER grey until live is on, LIVE green while it is, PAPER again after a kill."""
+    for path in ("/", "/trading", "/settings", "/jobs", "/fragments/topbar"):
+        html = client.get(path).text
+        assert '<span class="pill paper">PAPER</span>' in html and ">LIVE<" not in html, path
+    set_setting(conn, "live_enabled", True)
+    for path in ("/", "/trading", "/settings", "/jobs", "/fragments/topbar"):
+        html = client.get(path).text
+        assert '<span class="pill live">LIVE</span>' in html and ">PAPER<" not in html, path
+        assert "live today $0.00 &middot; all $0.00" in html, path
+    assert ">ON<" in client.get("/settings").text
+    client.post("/kill", follow_redirects=False)
+    topbar = client.get("/fragments/topbar").text
+    assert '<span class="pill paper">PAPER</span>' in topbar and 'data-killed="1"' in topbar, "a kill turns live off"
+    css = client.get("/static/style.css").text
+    assert ".pill.live { background: var(--green-fill); color: #fff; }" in css
+
+
+def test_killed_bar_shows_the_auto_kill_reason(client, conn):
+    """A kill pulled by the exchange process names its reason in the red bar and in the
+    Settings kill section; a hand kill does not; a reset clears it."""
+    client.post("/kill", follow_redirects=False)
+    topbar = client.get("/fragments/topbar").text
+    assert "TRADING KILLED. Reset in Settings." in topbar and "data-auto-kill" not in topbar and "automatically" not in topbar
+    assert "Killed automatically" not in client.get("/settings").text
+    client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
+    kill.auto_kill(conn, "auth_failures", {"failures": 3, "error": "401 <b>"})
+    topbar = client.get("/fragments/topbar").text
+    assert 'data-killed="1"' in topbar and 'data-auto-kill="auth_failures"' in topbar
+    assert 'TRADING KILLED automatically: <span class="auto-reason">auth_failures</span>. Reset in Settings.' in topbar
+    assert 'href="/settings#kill"' in topbar
+    assert "TRADING KILLED automatically" in client.get("/").text and "TRADING KILLED automatically" in client.get("/trading").text
+    html = client.get("/settings").text
+    assert 'class="topbar killed"' in html
+    assert "Killed automatically by the exchange process: <strong>auth_failures</strong> at " in html
+    assert "401 &lt;b&gt;" in html and "&#34;failures&#34;: 3" in html
+    assert '<span class="chip chip-bad auto-kill-reason">auth_failures</span>' in _live_section(html)
+    # a later auto-kill is the one the bar names; the group lists both
+    kill.auto_kill(conn, "clock_skew", {"skew_ms": 48_000})
+    topbar = client.get("/fragments/topbar").text
+    assert 'data-auto-kill="clock_skew"' in topbar and "auth_failures" not in topbar
+    live = _live_section(client.get("/settings").text)
+    assert live.index("auto-kill-reason\">auth_failures") < live.index("auto-kill-reason\">clock_skew")
+    client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
+    topbar = client.get("/fragments/topbar").text
+    assert "KILLED" not in topbar and "data-auto-kill" not in topbar
+    html = client.get("/settings").text
+    assert "Killed automatically" not in html and "none since the last reset" in html and "auto-kill-reason" not in html
+
+
+def test_trading_exchange_box_live_rows_and_smoke_flag(client, conn):
+    """The exchange box carries auth, balance, buying power and the open live orders;
+    live assignments and orders get the tinted row; smoke orders are flagged."""
+    setup = trade_setup(conn, mode="live", model_status="live_eligible")
+    conn.execute("UPDATE exchange_state SET heartbeat_at = now() - interval '2 seconds', market_source = 'polymarket_us',"
+                 " balance_cents = 123456, buying_power_cents = 100000, clock_skew_ms = 140, last_error = NULL")
+    opened = _open_order(conn, setup)
+    conn.execute("UPDATE orders SET exchange_order_id = 'pm-7f3a' WHERE id = %s", (opened["id"],))
+    smoke = _smoke_order(conn, setup.market)
+    paper = make_assignment(conn, GAME_ID)
+    html = client.get("/trading").text
+    live = html.split('id="trading-live"')[1]
+    row = re.search(rf'<tr class="assignment-row is-live" data-assignment="{setup.assignment["id"]}">.*?</tr>', live, re.S).group(0)
+    assert '<span class="chip mode-live">live</span>' in row
+    assert f'<tr class="assignment-row" data-assignment="{paper["id"]}">' in live, "a paper row keeps its plain markup"
+    open_orders = live.split('id="open-orders"')[1].split('id="orders"')[0]
+    assert open_orders.count('class="is-live"') == 2 and open_orders.count('<span class="chip mode-live">live</span>') == 2
+    assert f'<tr data-order="{smoke["id"]}" data-kind="smoke" class="is-live">' in open_orders
+    assert open_orders.count('<span class="chip chip-smoke">smoke</span>') == 1 and "#pm-7f3a" in open_orders and "#pm-smoke-1" in open_orders
+    assert f'action="/orders/{smoke["id"]}/cancel"' in open_orders, "a smoke order can be cancelled by hand"
+    assert "1 @ 0.45" in open_orders and "$0.45" in open_orders
+    recent = live.split('id="orders"')[1].split('id="fills"')[0]
+    assert f'<tr data-order="{smoke["id"]}" data-kind="smoke" class="is-live">' in recent
+    assert recent.count('<span class="chip chip-smoke">smoke</span>') == 1 and "smoke order" in recent
+    exchange = live.split('id="exchange"')[1].split('id="ledger"')[0]
+    assert '<span class="chip chip-ok">up</span>' in exchange and ">polymarket_us<" in exchange
+    assert '<dd class="c-auth"><span class="chip chip-ok">ok</span> <span class="muted small">checked 0 s ago</span> &middot; credentials yes &middot; skew 140 ms</dd>' in exchange
+    assert "$1,234.56 &middot; buying power $1,000.00" in exchange
+    assert '<dd class="c-live-orders">2 open <span class="chip chip-smoke">1 smoke</span></dd>' in exchange
+    assert "last auth error" not in exchange
+    assert html.count("<section") == 8 and client.get("/fragments/trading").text.count("<section") == 8
+    # auth failing: the chip turns, the error shows; a cancelled smoke order leaves the count
+    auth_state(conn, auth_ok=False, auth_failures=2, last_auth_error="401 unauthorized <i>")
+    conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = %s", (smoke["id"],))
+    frag = client.get("/fragments/trading").text
+    exchange = frag.split('id="exchange"')[1].split('id="ledger"')[0]
+    assert '<span class="chip chip-bad">failed</span>' in exchange and "401 unauthorized &lt;i&gt;" in exchange
+    assert '<dd class="c-live-orders">1 open</dd>' in exchange
+    assert 'data-kind="smoke"' not in frag.split('id="open-orders"')[1].split('id="orders"')[0]
+    assert "chip-smoke" in frag.split('id="orders"')[1].split('id="fills"')[0], "still flagged in the recent list"
+    assert "No live orders" not in frag
+
+
+def test_live_phone_layout_and_colour_rules(client, conn):
+    """The live form stacks at phone width with 44 px buttons, the tinted live row keeps
+    AA contrast in both schemes, the Settings tables stack."""
+    from tests.test_style import _schemes, contrast
+
+    css = client.get("/static/style.css").text
+    assert ".chip.chip-smoke { background: var(--amber-fill); color: #fff; }" in css
+    assert "tr.is-live { background: var(--live-bg); }" in css and css.count("--live-bg:") == 2
+    assert ".live-form .btn, .live-off .btn { min-height: var(--tap); }" in css
+    phone = css.split("@media (max-width: 700px)")[-1]
+    assert ".live-form label { flex-basis: 100%; }" in phone and ".live-form .btn, .live-off .btn { flex: 1; width: 100%; }" in phone
+    for name, tokens in zip(("light", "dark"), _schemes()):
+        for fg in ("text", "muted", "accent", "red-fg"):
+            assert contrast(tokens[fg], tokens["live-bg"]) >= 4.5, (name, fg)
+    enable_live(conn)
+    for state in ("on", "off"):
+        html = client.get("/settings").text
+        assert 'width=device-width' in html and re.findall(r'<table class="([^"]+)"', html) == ["audit stack"]
+        if state == "on":
+            assert '<form method="post" action="/settings/live/off" class="live-off"' in html
+            set_setting(conn, "live_enabled", False)
+        else:
+            assert '<form method="post" action="/settings/live" class="live-form">' in html
+            assert 'autocapitalize="characters" spellcheck="false"' in html, "a phone keyboard must not mangle the phrase"
+    for path in ("/settings", "/trading"):
+        assert chr(0x2014) not in client.get(path).text

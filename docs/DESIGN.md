@@ -1,6 +1,6 @@
 # Design
 
-Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper, step 5 live) in `docs/TRADING.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md`, that file wins.
+Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
 
 ## Summary
 
@@ -8,8 +8,9 @@ Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is spe
 2. Worker: one zero-dependency Python agent, one installer, 5 s heartbeat, role switch within 10 s after checkpoint/cancel, automatic restart from host state.
 3. Trading: workers only propose; the host approves every order against per-game bankroll, max bet, max daily loss and the liquidity floor. Paper by default, live behind a typed switch, one kill button.
 4. Learning: per-game scoring (PnL, bets, CLV), all-games leaderboard by lineage, backtest AND paper gates before real money, no override.
-5. Five build steps, hard stop after each for the owner's test and OK.
-6. Every limit number (lease, online window, bankroll, max bet, daily loss, floor, edge, Kelly, games per worker, thresholds) is editable on the dashboard settings page. Values quoted in this file are test defaults, not policy.
+5. Five build steps, hard stop after each for the owner's test and OK. All five are done.
+6. Final state: a Windows 11 host (Docker Compose: `db`, `host`, `exchange`) behind Tailscale serve; Debian workers on roles (backtest, model_search, train, trade); nflverse data and elo_blend models searched, trained and scored by lineage; simulated and real Polymarket US market data snapshotted; paper trading by default; live trading behind the typed dated switch, a `live_eligible` lineage (no override) and an authenticated, clock-checked exchange session, with Ed25519-signed requests, GTD orders, restart reconciliation, open-order audit, auto-kill, `exchange-smoke` and `cancel-all --direct`. The Polymarket US request shapes remain unverified and configurable (see `docs/LIVE.md`).
+7. Every limit number (lease, online window, bankroll, max bet, daily loss, floor, edge, Kelly, games per worker, thresholds) is editable on the dashboard settings page. Values quoted in this file are test defaults, not policy.
 
 ## Assumptions and things to verify
 
@@ -190,11 +191,11 @@ The step 2 dashboard (pages, fragments, forms, auth, empty states) is specified 
 | 2 (done) | Delivered: fleet cards, role dropdown + epoch handshake, child-process drain + immediate ack, agent memory (RSS) watchdog, release reasons (`drain`, `preempt`, `cancel`, `oom`, `shutdown`), top bar, settings page with editable limits, enroll token page, audit log, kill flag + reset (flag only; cancel-all arrives in step 4 with the exchange), `roletest` (`host.cli roletest`, wrapper `tests/hw/roletest.sh`) | On phone: change role and see the new role within 10 s; `roletest.sh` passes; non-owner tailnet device gets 401; KILL turns the bar red, RESUME clears |
 | 3 (done) | Delivered: nflverse ingest (`host.cli ingest-games`, Settings Refresh, `GET /api/v1/data/games`), `fleet/models` (`Model` interface, registry, `elo_blend`), `fleet/sim` (walk-forward backtest, model search, train) with sub-3 s checkpointed units, jobs page and `/jobs/{id}`, Models page with per-season table and Train, leaderboard by lineage on the root model's backtest, eligibility candidate to paper_ok, three-sentence summaries; spec in `docs/MODELS.md` | Model search on any idle: box switches, 5 models with summaries appear, box returns to idle; role switch mid-search resumes elsewhere repeating at most one candidate-season; Train gives a child row in the same lineage |
 | 4 (done) | `fleet-exchange` container (heartbeat, watchdog), adapter interface, snapshots + partitions/bars, matching UI, approval with all three limits, ledger, executor outbox, `order_events`, `/api/trade/release`, paper simulator, trade tick, `/trading`, settlement/scoring, paper eligibility, kill end to end, orphan rule | Three paper models on one game: approvals/rejections with reasons, realistic fills; tiny paper daily loss gives `daily_loss`; KILL cancels all paper orders in under 2 s; stopping fleet-exchange with an open order shows the banner within 15 s; next day: bets rows, lineage paper line, ledger replay OK |
-| 5 | `polymarket_us.py` (Ed25519, place/cancel/open/fills/balance), restart reconciliation, rate buckets + 429 backoff, live switch, live halt, buying-power check, GTD, auto-kill triggers, `exchange-smoke`, `cancel-all --direct` | Keys in `exchange.env` give "auth OK"; typed dated phrase gives LIVE; `exchange-smoke` order visible in the exchange UI; KILL cancels it and live flips off; restart mid-order gives no duplicate |
+| 5 (done) | Delivered, spec in `docs/LIVE.md`: `polymarket_us.py` (Ed25519, place/cancel/open/fills/balance), restart reconciliation, rate buckets + 429 backoff, live switch, live halt, buying-power check, GTD, auto-kill triggers, `exchange-smoke`, `cancel-all --direct` | Keys in `exchange.env` give "auth OK"; typed dated phrase gives LIVE; `exchange-smoke` order visible in the exchange UI; KILL cancels it and live flips off; restart mid-order gives no duplicate. Steps 1 to 5 are complete |
 
 ## Risks
 
-- Polymarket US API unverified (A1 to A5); step 5 may need adapter rework; the paper fee model may be wrong until then. The owner has no keys yet.
+- Polymarket US API unverified (A1 to A5); the live adapter is built from assumptions kept in `market_source_config` and may need rework from the owner's probe output; the paper fee model may be wrong until then.
 - Paper fills are optimistic; expect live below paper. Backtest CLV is 0 until own snapshots accumulate.
 - Single host is a single point of failure, and a Windows desktop can sleep, update or reboot: with the host down, resting live orders depend on GTD expiry and the kill is unavailable. Disable sleep, keep Docker Desktop starting at login, back up the Postgres volume.
 - Docker Desktop port publishing and `tailscale serve` must both be healthy for workers to reach the host; the dashboard should show stale workers promptly.

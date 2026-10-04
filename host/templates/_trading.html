@@ -15,7 +15,7 @@
   <thead><tr><th>game</th><th>kickoff</th><th>model</th><th>mode</th><th>status</th><th>bankroll</th><th>open</th><th></th></tr></thead>
   <tbody>
   {% for a in assignments %}
-  <tr class="assignment-row" data-assignment="{{ a.id }}">
+  <tr class="assignment-row{% if a.mode == 'live' %} is-live{% endif %}" data-assignment="{{ a.id }}">
     <td class="lead"><strong>{{ a.game.away_team }} @ {{ a.game.home_team }}</strong> <span class="muted small">{{ a.game_id }}{% if a.game.status == 'final' %} &middot; final {{ a.game.away_score }}-{{ a.game.home_score }}{% endif %}</span></td>
     <td class="nowrap c-kickoff"><span class="k">kickoff</span> {{ a.game.kickoff_at | ts }}</td>
     <td class="c-model"><span class="k">model</span> <a href="/models/{{ a.model_id }}">{{ a.model.family }} {{ a.short_params }}</a></td>
@@ -54,9 +54,9 @@
   <thead><tr><th>created</th><th>market</th><th>model</th><th>order</th><th>status</th><th>worker</th><th></th></tr></thead>
   <tbody>
   {% for o in open_orders %}
-  <tr data-order="{{ o.id }}">
+  <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
     <td class="nowrap lead">{{ o.created_at | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span></td>
+    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}{% if o.exchange_order_id %} <span class="muted small">#{{ o.exchange_order_id }}</span>{% endif %}</td>
     <td class="c-model"><span class="k">model</span> {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}-{% endif %}</td>
     <td class="nowrap c-order"><span class="k">order</span> {{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled){% endif %} &middot; {{ o.cost_cents | money }}</td>
     <td class="c-status"><span class="badge st-{{ o.status }}">{{ o.status.replace('_', ' ') }}</span></td>
@@ -82,9 +82,9 @@
   <thead><tr><th>created</th><th>market</th><th>order</th><th>status</th><th>edge</th><th>rationale</th><th>worker</th></tr></thead>
   <tbody>
   {% for o in orders %}
-  <tr data-order="{{ o.id }}">
+  <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
     <td class="nowrap lead">{{ o.created_at | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span></td>
+    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}</td>
     <td class="nowrap c-order"><span class="k">order</span> {{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %} &middot; {{ o.cost_cents | money }}</td>
     <td class="c-status"><span class="badge st-{{ o.status }}">{{ o.status.replace('_', ' ') }}</span>{% if o.reject_reason %} <span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% elif o.last_reason %} <span class="muted small cause">{{ o.last_reason }}</span>{% endif %}</td>
     <td class="nowrap c-edge"><span class="k">edge</span> {{ o.edge | signed_pct }} <span class="muted small">my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}</span></td>
@@ -186,8 +186,13 @@
 <dl class="props">
   <dt>heartbeat</dt><dd>{{ exchange.heartbeat_age_s | ago }}{% if exchange.heartbeat_at %} <span class="muted small">{{ exchange.heartbeat_at | ts }}</span>{% endif %}</dd>
   <dt>source</dt><dd>{{ exchange.market_source or '-' }}</dd>
-  <dt>auth</dt><dd>{{ 'ok' if exchange.auth_ok else 'not checked' }}{% if exchange.balance_cents is not none %} &middot; balance {{ exchange.balance_cents | money }}{% endif %}</dd>
+  <dt>auth</dt><dd class="c-auth">{% if exchange.auth_ok %}<span class="chip chip-ok">ok</span>{% elif exchange.auth_checked_at %}<span class="chip chip-bad">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if exchange.auth_checked_at %} <span class="muted small">checked {{ exchange.auth_age_s | ago }}</span>{% endif %} &middot; credentials {{ 'yes' if exchange.credentials_present else 'no' }}{% if exchange.clock_skew_ms is not none %} &middot; skew {{ exchange.clock_skew_ms }} ms{% endif %}</dd>
+  <dt>balance</dt><dd class="c-balance">{% if exchange.balance_cents is not none %}{{ exchange.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %} &middot; buying power {% if exchange.buying_power_cents is not none %}{{ exchange.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}{% if exchange.balance_checked_at %} <span class="muted small">{{ exchange.balance_age_s | ago }}</span>{% endif %}</dd>
+  <dt>live orders</dt><dd class="c-live-orders">{{ live_orders }} open{% if smoke_orders %} <span class="chip chip-smoke">{{ smoke_orders }} smoke</span>{% endif %}</dd>
   <dt>last error</dt><dd>{% if exchange.last_error %}<span class="error">{{ exchange.last_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
+  {% if exchange.last_auth_error %}
+  <dt>last auth error</dt><dd><span class="error">{{ exchange.last_auth_error }}</span></dd>
+  {% endif %}
 </dl>
 <form method="post" action="/exchange/probe" class="inline"><button type="submit" class="btn small">Probe markets</button></form>
 </section>

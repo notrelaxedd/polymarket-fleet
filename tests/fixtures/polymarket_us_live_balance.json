@@ -1,0 +1,10 @@
+{
+  "account": {
+    "account_id": "acct-42",
+    "currency": "USD",
+    "balance": "1250.50",
+    "buying_power": "980.25",
+    "reserved": "270.25",
+    "server_time": "2026-10-03T15:00:02.500Z"
+  }
+}

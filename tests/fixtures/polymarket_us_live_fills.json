@@ -1,0 +1,29 @@
+{
+  "fills": [
+    {
+      "fill_id": "fill-0001",
+      "order_id": "ord-7f3a9c",
+      "client_order_id": "0b1d2e3f-4a5b-6c7d-8e9f-a0b1c2d3e4f5",
+      "market_id": "pmus-kc-lv-kc",
+      "side": "BUY",
+      "price": "0.5500",
+      "size": "1",
+      "fee": "0.0110",
+      "timestamp": "2026-10-03T15:00:30.250Z"
+    },
+    {
+      "tradeId": "fill-0002",
+      "orderId": "ord-0ther",
+      "clientOrderId": "unknown-client-id",
+      "price": 0.61,
+      "quantity": 2,
+      "fees": 0,
+      "createdAt": 1790000000
+    },
+    {
+      "order_id": "ord-7f3a9c",
+      "price": "0.55",
+      "size": "1"
+    }
+  ]
+}

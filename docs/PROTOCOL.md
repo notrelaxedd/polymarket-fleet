@@ -798,16 +798,56 @@ has been handed back.
 
 Workers are unchanged in step 5: they never learn whether an assignment is paper or live
 beyond the `mode` field, and they never see keys. Host-side additions (see docs/LIVE.md):
-- Owner routes: `POST /live` `{"confirm": "ENABLE LIVE TRADING YYYY-MM-DD"}`, `POST /live/off`,
-  `GET /api/live` (state, credentials_present, auth, balance, buying power, skew, auto-kill
-  reasons), `POST /api/exchange/probe-account` (balance call, raw payload, key redacted).
-- `/api/settings` refuses `live_enabled` (400, "use /live").
+- Owner routes (`host/api/owner_live.py`): `POST /live` with `{"confirm": "ENABLE LIVE
+  TRADING YYYY-MM-DD"}` (today in `settings.tz`; a form field `confirm` is accepted too):
+  400 unless the phrase matches exactly (the detail names the phrase to type), 409 when
+  the kill switch is on, the exchange reports no credentials, `auth_ok` is false or
+  `auth_checked_at` is older than 10 minutes, or `clock_skew_ms` is over
+  `auto_kill.clock_skew_ms`; 200 with the live state. `POST /live/off` (optional
+  `{"reason"}`): immediate, always 200, `live_enabled` false, live assignments halted,
+  live orders `cancel_requested` for the exchange. Both answer JSON errors to JSON
+  callers (a form post gets the dashboard error page). `GET /api/live`:
+  `{live_enabled, live_enabled_at, live_enabled_by, credentials_present, auth_ok,
+  auth_checked_at, auth_age_s, auth_failures, balance_cents, buying_power_cents,
+  balance_checked_at, clock_skew_ms, last_auth_error, open_orders_checked_at, killed,
+  auto_kill_reasons: [..] (since the last RESUME), expected_phrase, problems: [..]}`.
+  `POST /api/exchange/probe-account`: fleet-host holds no key, so it returns what the
+  exchange process recorded (`key_present`, `status`, auth and balance fields,
+  `last_auth_error`) with `payload: null` and `raw_payload_command`, the exchange
+  container's CLI command that returns the raw balance payload.
+- `/api/settings` refuses `live_enabled` (400, "use /live or /live/off"), on or off.
 - Exchange state columns: `auth_failures`, `credentials_present`, `last_auth_error`,
-  `open_orders_checked_at`, `live_enabled_at`, `live_enabled_by`.
+  `open_orders_checked_at`, `live_enabled_at`, `live_enabled_by` (the last two are
+  cleared whenever live goes off: the switch, the kill, the daily-loss trip).
 - Settings keys: `auth_probe_interval_s`, `buying_power_max_age_s`, `submitting_grace_s`,
   `auto_kill {"auth_failures", "clock_skew_ms"}`, `smoke_hold_seconds`, `live_fills_poll_s`,
   `open_orders_audit_s`, and `market_source_config.polymarket_us.auth` / `.live` blocks
   (defaults applied in code when absent).
+- Exchange loop tasks (`host/exchange/main.py`): `auth` (at start and every
+  `auth_probe_interval_s`), `open_orders_audit` (at start and every `open_orders_audit_s`),
+  `live_fills` (every `live_fills_poll_s`, only while a live order is active); the live
+  tasks run only when credentials loaded. At start: auth, then `startup_reconcile`
+  (submitting rows, then the audit) before the executor's first submission. A clock skew
+  over the limit pauses every live request except the auth probe until a probe sees the
+  skew back in range (`ExchangeLoop.live_paused`, `Executor.live_blocked`).
+- Auto-kill reasons (`kill.auto_kill`, actor `auto:<reason>`, audit `auto_kill`):
+  `auth_failures`, `clock_skew`, `unknown_order`, `unknown_fill`,
+  `ambiguous_reconciliation`. A trigger fires only while the kill switch is off; a
+  condition that persists after RESUME kills again on the next pass.
+- Executor live path: `Executor(paper_gateway, live_gateway)`; a live cancel counts as
+  confirmed only when `open_orders()` no longer lists the order (its last fills are
+  absorbed before the release); our rows missing on the exchange are closed from their
+  fills as `filled`, `cancelled` (cancel_requested, or dropped by the exchange) or
+  `expired` (past `gtd_at`).
+- Order approval check `buying_power` (live): `exchange_state.buying_power_cents` with
+  `balance_checked_at` within `buying_power_max_age_s`, and `cost + SUM(live
+  bankrolls.reserved_cents) <= buying_power_cents`; missing or stale rejects.
 - CLI (`python -m host.exchange.cli`): `exchange-smoke --confirm "SMOKE YYYY-MM-DD"
-  [--market ID]`, `cancel-all --direct`, `probe-account`, `auth-check`.
-- Audit actions: `live_on`, `live_off`, `auto_kill`, `smoke_order`.
+  [--market ID] [--hold S] [--drive]` (`--drive` submits and cancels from this process
+  when the exchange service is stopped; otherwise the running loop's outbox does it),
+  `cancel-all --direct`, `probe-account`, `auth-check`. The live commands need the
+  credentials in the environment (exit 1 otherwise) and never print them.
+- Audit actions: `live_on` (confirmation_text = the phrase), `live_off` (`reason`,
+  `assignments_halted`, `orders_cancelled`, `orders_cancel_requested`), `auto_kill`,
+  `smoke_order`, `cancel_all` with `direct: true`, and the step 4 `daily_loss_trip`
+  which now follows a `live_off` row.

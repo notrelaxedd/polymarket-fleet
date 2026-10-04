@@ -20,7 +20,7 @@ from host.errors import BadRequest, Conflict, NotFound
 from host.events import add_audit, add_job_event
 from host.kill import approval_lock, cancel_active_orders
 from host.money import MAX_CENTS
-from host.settings import get_int_setting, get_setting
+from host.settings import get_int_setting
 from host.trading import ledger
 from host.trading.orders import ACTIVE_STATUSES
 from host.trading.state import trade_state  # noqa: F401 - re-exported for the API
@@ -63,14 +63,17 @@ def lineage_retired(conn: psycopg.Connection, lineage_id: Any) -> bool:
 
 
 def live_gate(conn: psycopg.Connection, model: dict[str, Any]) -> None:
-    """The three live preconditions; 409 naming the first one that fails."""
-    if get_setting(conn, "live_enabled", False) is not True:
-        raise Conflict("live trading is disabled (live_enabled is false)")
-    if model["status"] != "live_eligible":
-        raise Conflict("the model's lineage is not live_eligible")
-    state = conn.execute("SELECT auth_ok FROM exchange_state WHERE id").fetchone()
-    if state is None or not state["auth_ok"]:
-        raise Conflict("the exchange has not confirmed its credentials (auth_ok is false)")
+    """The three live preconditions (host.trading.live); 409 naming the first that fails."""
+    from host.trading.live import live_gate as gate
+
+    gate(conn, model)
+
+
+def halt_live_assignments(conn: psycopg.Connection, actor: str | None, reason: str) -> list[str]:
+    """Halt every active live assignment (orders cancelled through the exchange);
+    the ids halted. What turning live off, the daily-loss trip and a demotion do."""
+    rows = conn.execute("SELECT id FROM assignments WHERE mode = 'live' AND status = 'active' ORDER BY created_at").fetchall()
+    return [str(halt_assignment(conn, r["id"], actor, reason)["id"]) for r in rows]
 
 
 def _insert_trade_job(conn: psycopg.Connection, assignment_id: Any, key: str | None) -> dict[str, Any]:

@@ -17,11 +17,11 @@ from host import kill
 from host.errors import BadRequest
 from host.events import add_audit
 from host.leases import as_uuid
-from host.settings import get_settings
+from host.settings import get_setting, get_settings
 from host.trading import ledger, orders
 from host.trading.positions import exposure_cents, losses_today, positions, server_now
 
-__all__ = ["approve_order", "losses_today", "positions", "order_cost_cents", "fee_per_contract", "REASONS"]
+__all__ = ["approve_order", "approve_smoke", "losses_today", "positions", "order_cost_cents", "fee_per_contract", "REASONS"]
 
 REASONS = (
     "duplicate", "killed", "lease", "assignment", "market", "kickoff", "mode", "stale_book", "liquidity",
@@ -252,17 +252,16 @@ def _check_bankroll(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
 
 
 def _trip_live(conn: psycopg.Connection, losses: int, limit: int) -> None:
-    """The live daily-loss trip: live_enabled off, live assignments halted (their orders
-    cancelled), one audit row. Runs once; a later request finds live_enabled false."""
-    from host.trading import assignments
-
-    if not kill.disable_live(conn):
+    """The live daily-loss trip: kill.live_off (live_enabled off, live assignments halted
+    with their orders cancelled, audit live_off) plus one daily_loss_trip audit row.
+    Runs once; a later request finds live_enabled false."""
+    if get_setting(conn, "live_enabled", False) is not True:
         return
-    rows = conn.execute("SELECT id FROM assignments WHERE mode = 'live' AND status = 'active' ORDER BY created_at").fetchall()
-    halted = [str(assignments.halt_assignment(conn, r["id"], "daily_loss", "daily loss limit")["id"]) for r in rows]
+    result = kill.live_off(conn, "host", "daily_loss")
     add_audit(
         conn, "daily_loss_trip", "live", "host", {"live_enabled": True},
-        {"live_enabled": False, "losses_cents": losses, "max_daily_loss_cents": limit, "assignments_halted": halted},
+        {"live_enabled": False, "losses_cents": losses, "max_daily_loss_cents": limit,
+         "assignments_halted": result["assignments_halted"]},
     )
 
 
@@ -286,12 +285,29 @@ def _check_exposure(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
     return exposure_cents(conn, ctx["mode"]) + ctx["cost"] > limit
 
 
+def reserved_live_cents(conn: psycopg.Connection) -> int:
+    """Cents reserved by live approvals not yet filled or released (all live bankrolls)."""
+    row = conn.execute("SELECT COALESCE(SUM(reserved_cents), 0) AS s FROM bankrolls WHERE mode = 'live'").fetchone()
+    return int(row["s"])
+
+
+def buying_power_short(conn: psycopg.Connection, cost: int, now: Any, settings: dict[str, Any]) -> bool:
+    """docs/LIVE.md "Live approvals": the exchange's buying power must be fresher than
+    buying_power_max_age_s and cover `cost` plus every live reservation; a missing or
+    stale figure rejects."""
+    state = conn.execute("SELECT buying_power_cents, balance_checked_at FROM exchange_state WHERE id").fetchone()
+    if state is None or state["buying_power_cents"] is None or state["balance_checked_at"] is None:
+        return True
+    max_age = float(settings.get("buying_power_max_age_s", 300) or 300)
+    if (now - state["balance_checked_at"]).total_seconds() > max_age:
+        return True
+    return cost + reserved_live_cents(conn) > int(state["buying_power_cents"])
+
+
 def _check_buying_power(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
     if ctx["mode"] != "live":
         return False
-    state = conn.execute("SELECT buying_power_cents FROM exchange_state WHERE id").fetchone()
-    power = None if state is None else state["buying_power_cents"]
-    return power is not None and ctx["cost"] > int(power)
+    return buying_power_short(conn, ctx["cost"], ctx["now"], ctx["settings"])
 
 
 CHECKS: tuple[tuple[str, Callable[[psycopg.Connection, dict[str, Any]], bool]], ...] = (
@@ -321,6 +337,49 @@ def _insert(conn: psycopg.Connection, ctx: dict[str, Any], status: str, reason: 
     detail = {"reason": reason} if reason else {"cost_cents": ctx["cost"], "fee_cents_est": ctx["fee"]}
     orders.add_order_event(conn, row["id"], None, status, ctx["worker"]["id"], detail)
     return dict(row)
+
+
+def _smoke_problem(conn: psycopg.Connection, ctx: dict[str, Any]) -> str | None:
+    """The smoke checks in order: kill, price band, max bet, auth (live switch and
+    auth_ok), buying power. None when all pass."""
+    settings = ctx["settings"]
+    state = conn.execute("SELECT auth_ok FROM exchange_state WHERE id").fetchone()
+    checks = (
+        ("killed", lambda: kill.is_killed(conn)),
+        ("price_band", lambda: _check_price_band(conn, ctx)),
+        ("max_bet", lambda: ctx["cost"] > int(settings.get("max_bet_cents", 0) or 0)),
+        ("mode", lambda: settings.get("live_enabled") is not True or state is None or not state["auth_ok"]),
+        ("buying_power", lambda: buying_power_short(conn, ctx["cost"], ctx["now"], settings)),
+    )
+    return next((name for name, check in checks if check()), None)
+
+
+def approve_smoke(conn: psycopg.Connection, market: dict[str, Any], price: float, size: int, actor: str) -> dict[str, Any]:
+    """Approve or reject the smoke order (docs/LIVE.md "Smoke order"): an `orders` row
+    `kind='smoke'`, `mode='live'`, no assignment, no worker, no reservation. Under the
+    live approval lock. Returns {"status", "order_id", "reason"} like approve_order."""
+    import uuid
+
+    kill.approval_lock(conn, "live")
+    settings = get_settings(conn)
+    latest = _one(conn, "SELECT * FROM price_snapshots WHERE market_id = %s ORDER BY ts DESC, id DESC LIMIT 1", market["id"])
+    if latest is None:
+        raise BadRequest("the market has no price snapshot yet")
+    cost, fee = order_cost_cents(price, size, settings.get("fee_model"))
+    ctx = {"settings": settings, "now": server_now(conn), "market": market, "cited": latest, "latest": latest,
+           "req": {"price": round(float(price), 4), "size": int(size)}, "mode": "live", "cost": cost, "fee": fee}
+    reason = _smoke_problem(conn, ctx)
+    status = "rejected" if reason else "approved"
+    row = conn.execute(
+        """
+        INSERT INTO orders (client_request_id, kind, market_id, mode, price, size, cost_cents, fee_cents_est,
+                            snapshot_id, status, reject_reason, rationale)
+        VALUES (%s, 'smoke', %s, 'live', %s, %s, %s, %s, %s, %s, %s, 'smoke order') RETURNING *
+        """,
+        ("smoke-" + uuid.uuid4().hex[:24], market["id"], ctx["req"]["price"], size, cost, fee, latest["id"], status, reason),
+    ).fetchone()
+    orders.add_order_event(conn, row["id"], None, status, actor, {"reason": reason} if reason else {"cost_cents": cost, "smoke": True})
+    return {"status": status, "order_id": str(row["id"]), "reason": reason}
 
 
 def approve_order(conn: psycopg.Connection, worker: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:

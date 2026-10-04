@@ -1,4 +1,4 @@
-# Dashboard spec (step 2, step 3 and step 4 additions marked)
+# Dashboard spec (step 2; step 3, step 4 and step 5 additions marked)
 
 Very simple and clean. Phone first. No framework, no build step, no external assets
 (the dashboard is tailnet-only and phones may be offline from the public internet).
@@ -43,6 +43,12 @@ Very simple and clean. Phone first. No framework, no build step, no external ass
   turns red, the pill and the P&L stay, the KILL button is replaced by a disabled
   "KILLED" chip and the text "TRADING KILLED. Reset in Settings." links to the reset
   form (on a phone it takes its own line under the status cluster).
+- (step 5) The pill is `LIVE` green only while `settings.live_enabled` is true, which
+  only the typed switch (below) sets; a kill or the live daily-loss trip turns it back to
+  `PAPER`. When the exchange process pulled the kill switch itself, the killed bar reads
+  "TRADING KILLED automatically: <reason>. Reset in Settings." (the reason of the newest
+  `auto_kill` audit row since the last `kill_reset`, also in `data-auto-kill`); a hand
+  kill keeps "TRADING KILLED. Reset in Settings.".
 - Width under 700 px: single column, nav collapses to a row of four icons/labels, tap
   targets at least 44 px, no horizontal scroll.
 
@@ -169,8 +175,30 @@ validation keep working:
   other groups.
 - Enroll: "New enroll token" button; the response page shows the token once with the two
   install one-liners (argument form and `FLEET_ENROLL_TOKEN` form) and a Copy button.
+- (step 5) Live trading (`#live`): a card with an ON/OFF pill that reads from
+  `host.trading.live.live_state`. Off: one line saying nothing reaches the exchange, the
+  preconditions that currently fail (kill on, no credentials, auth older than 10
+  minutes, skew over the limit) as a muted list, and the typed enable form `POST
+  /settings/live` whose single field `confirm` must be exactly `ENABLE LIVE TRADING
+  YYYY-MM-DD` (today in the owner's zone; the exact phrase is shown as a `<code>` hint and
+  as the placeholder; `autocapitalize="characters"`, no spellcheck). The handler calls
+  `host.trading.live.enable_live`; a wrong phrase (400) or a failed precondition (409)
+  re-renders the page with the error inline in the card and the typed text kept, nothing
+  stored; success redirects to `/settings#live` with a flash naming the actor and the
+  exchange balance. On: "Live trading is on since <time> by <actor>" (from
+  `exchange_state.live_enabled_at/by`) and a red "Disable live" button (`POST
+  /settings/live/off`, JavaScript confirm) that calls `disable_live`: immediate, live
+  assignments halted, live orders cancel-requested on the exchange, flash with the
+  counts. Under the form or button, a labelled list: credentials present (yes/no),
+  auth (`ok` chip, red `failed` chip with the failure streak, or "not checked", plus
+  "checked N ago"), balance and buying power in dollars ("-" when never fetched), clock
+  skew in ms, the last auth error in red, and the auto-kill reasons since the last reset
+  as red chips ("none since the last reset"). `live_enabled` has no field in any generic
+  group and `POST /settings/live` is never treated as a settings group.
 - Kill switch: state, and when killed a reset form with a text field that must contain
-  exactly `RESUME` (no surrounding whitespace, like the API).
+  exactly `RESUME` (no surrounding whitespace, like the API). (step 5) When the kill was
+  automatic the card adds "Killed automatically by the exchange process: <reason> at
+  <time>" with the detail JSON and a reminder that live stays off after the reset.
 - Audit log: last 20 rows (time, actor, action, entity, confirmation text).
 
 ## Trading page `/trading` (step 4)
@@ -216,8 +244,26 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
     liquidity, snapshot age (amber when older than 60 s or missing), status badge
     (`open`, `closed`, `resolved YES/NO` with the closing price).
   - Exchange (`#exchange`): an "up" or red "DOWN" chip (heartbeat older than 15 s or
-    never), heartbeat age and time, market source, auth and balance, last error in red,
-    and a "Probe markets" button (`POST /exchange/probe`) that renders the raw truncated
-    payload on its own page with a Copy button for pasting back.
+    never), heartbeat age and time, market source, (step 5) auth as an `ok` / red
+    `failed` chip or "not checked" with "checked N ago", credentials yes/no and the
+    clock skew, balance and buying power in dollars with the age of the figure, "N open"
+    live orders with an amber "M smoke" chip when smoke orders rest among them, the last
+    error in red and, when set, the last auth error in red, and a "Probe markets" button
+    (`POST /exchange/probe`) that renders the raw truncated payload on its own page with
+    a Copy button for pasting back.
+  - (step 5) Live rows: an assignment or order in mode `live` carries `is-live` (a
+    green-tinted row with a green left edge, AA contrast in both schemes) on top of the
+    green `live` mode chip, so it is told apart from paper at a glance; an open live order
+    shows its exchange id. A smoke order (`kind = smoke`, the CLI's `exchange-smoke`) is
+    flagged with an amber `smoke` chip in the open and recent order lists, has no model
+    and keeps its Cancel button.
   - Ledger (`#ledger`): "OK" with the number of bankrolls whose replay matches the cached
     columns, or a red "problems" chip with one line per disagreement.
+
+## Step 5 screenshots
+
+`tests/hw/screenshots.py` (see tests/hw/README.md) captures, after the paper pages:
+settings, trading and fleet with live on (`seed_step5.py`: the Live trading group on, a
+live assignment with its exchange order, a resting smoke order, the LIVE pill), then
+fleet, settings and trading after an auto-kill (the bar naming the reason), at 390 and
+1280 px in light and dark, with the phone layout checks on every capture.

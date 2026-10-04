@@ -14,6 +14,9 @@ from host.errors import BadRequest
 from host.money import cents_to_dollars, dollars_to_cents
 
 GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse", "trade")
+# Keys no settings group may write: the kill switch moves through /kill and RESUME, the
+# live switch through the typed phrase of the "Live trading" group (step 5).
+GUARDED_KEYS = ("kill_switch", "live_enabled")
 MARKET_SOURCES = ("sim", "polymarket_us", "polymarket_clob")
 RATE_KEYS = ("orders_per_s", "cancels_per_s", "market_data_per_s", "account_per_s")
 TRADE_INTS = (
@@ -197,10 +200,14 @@ PARSERS: dict[str, Callable[[dict[str, str]], dict[str, Any]]] = {
 
 def parse_group(group: str, form: dict[str, str]) -> dict[str, Any]:
     """The settings update a posted group form stands for; 400 on an unknown group or bad input."""
+    if group == "live":
+        raise BadRequest("live trading is switched with the typed phrase in the Live trading group, not saved as a setting")
     parser = PARSERS.get(group)
     if parser is None:
         raise BadRequest(f"unknown settings group: {group!r}")
-    return parser(form)
+    updates = parser(form)
+    assert not set(updates) & set(GUARDED_KEYS), "a settings group must never carry a guarded key"
+    return updates
 
 
 def form_values(settings: dict[str, Any]) -> dict[str, str]:

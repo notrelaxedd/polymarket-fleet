@@ -1,0 +1,15 @@
+{
+  "order": {
+    "order_id": "ord-7f3a9c",
+    "client_order_id": "0b1d2e3f-4a5b-6c7d-8e9f-a0b1c2d3e4f5",
+    "market_id": "pmus-kc-lv-kc",
+    "side": "BUY",
+    "price": "0.5500",
+    "size": "3",
+    "filled_size": "0",
+    "time_in_force": "GTD",
+    "expires_at": "2026-10-03T15:15:00.000Z",
+    "status": "OPEN",
+    "created_at": "2026-10-03T15:00:00.123Z"
+  }
+}

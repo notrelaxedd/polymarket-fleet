@@ -22,6 +22,7 @@
   --amber-fill: #b45309;
   --leased-fill: #2563eb;
   --badge: #e5e7eb;
+  --live-bg: #ecfdf5;
   --radius: 10px;
   --tap: 44px;
 }
@@ -38,6 +39,7 @@
     --red-fg: #f87171;
     --badge: #2a2f38;
     --grey: #6b7280;
+    --live-bg: #0f1f17;
   }
 }
 * { box-sizing: border-box; }
@@ -263,8 +265,29 @@ label.check input { width: 20px; height: 20px; margin: 0; }
 .fields textarea { font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.85rem; width: 100%; padding: 0.3rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); resize: vertical; }
 table.orders .c-rationale { max-width: 32rem; }
 
+/* step 5: the live switch, live rows and smoke orders */
+.chip.chip-smoke { background: var(--amber-fill); color: #fff; }
+/* a live assignment or order is told apart by its tinted row, not only by the green chip */
+tr.is-live { background: var(--live-bg); }
+tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 0.75rem; }
+.card.live.is-live { border-color: var(--green-fill); border-width: 2px; }
+.card.live h2 .pill { margin-left: 0.4rem; vertical-align: middle; }
+.live-form { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; margin: 0.5rem 0 0.75rem; }
+.live-form label { flex: 1 1 280px; min-width: 0; }
+.live-form input { width: 100%; }
+.live-form .btn, .live-off .btn { min-height: var(--tap); }
+.phrase { font-weight: 700; background: var(--bg); padding: 0.05rem 0.3rem; border-radius: 4px; }
+.live-problems { margin: 0 0 0.5rem; }
+.live-props { margin-top: 0.75rem; }
+.auto-kill strong { text-decoration: underline; }
+.killed-text .auto-reason { text-decoration: underline; }
+
 @media (max-width: 700px) {
   .banner { font-size: 0.85rem; }
+  /* step 5: the phrase input takes the full width and the live buttons are full-width tap targets */
+  .live-form label { flex-basis: 100%; }
+  .live-form .btn, .live-off .btn { flex: 1; width: 100%; }
+  tr.is-live td.lead { padding-left: 0.6rem; }
   table.assignments td.action { position: static; flex-basis: 100%; display: flex; gap: 0.5rem; }
   table.assignments td.action .btn, table.orders td.action .btn { min-height: var(--tap); }
   table.assignments td.lead { padding-right: 0; }

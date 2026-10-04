@@ -69,14 +69,29 @@ def fleet_context(conn: psycopg.Connection) -> dict[str, Any]:
     return {"workers": cards, "roles": ROLES}
 
 
+def live_context(conn: psycopg.Connection) -> dict[str, Any]:
+    """The Settings "Live trading" group (docs/LIVE.md "Dashboard additions"): the
+    switch state, credentials, auth, balances, skew, the auto-kill reasons and today's
+    phrase from host.trading.live, imported lazily so the dashboard still renders on a
+    host without the step 5 module."""
+    try:
+        from host.trading.live import live_state
+    except ImportError:
+        return views.live_state_fallback(conn)
+    return live_state(conn)
+
+
 def topbar_context(conn: psycopg.Connection, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Mode pill, P&L per mode, the kill state and the two banners (docs/TRADING.md
-    "Dashboard additions"): EXCHANGE DOWN and N assignments unattended."""
+    """Mode pill, P&L per mode, the kill state (with the auto-kill reason when the
+    exchange pulled the switch) and the two banners (docs/TRADING.md "Dashboard
+    additions"): EXCHANGE DOWN and N assignments unattended."""
     settings = get_settings(conn) if settings is None else settings
     totals = pnl.pnl(conn)
+    killed = settings.get("kill_switch") is True
     return {
         "live": settings.get("live_enabled") is True,
-        "killed": settings.get("kill_switch") is True,
+        "killed": killed,
+        "auto_kill": views.latest_auto_kill(conn) if killed else None,
         "pnl_today": totals["today_cents"],
         "pnl_all": totals["all_time_cents"],
         "pnl": totals["by_mode"],
@@ -170,10 +185,13 @@ def settings_page(
     """The settings page; `errors` and `overrides` re-render a rejected group form."""
     settings = get_settings(conn)
     values = form_values(settings)
+    values.setdefault("live_confirm", "")
     values.update(overrides or {})
+    killed = kill.is_killed(conn)
     return page(
         request, conn, "settings.html", status=status, settings=settings, values=values,
-        errors=errors or {}, killed=kill.is_killed(conn), audit=views.audit_rows(conn, 20), market_sources=MARKET_SOURCES,
+        errors=errors or {}, killed=killed, auto_kill=views.latest_auto_kill(conn) if killed else None,
+        live=live_context(conn), audit=views.audit_rows(conn, 20), market_sources=MARKET_SOURCES,
         public_url=config.public_url, games_count=nflverse.games_count(conn),
         last_complete_season=nflverse.last_complete_season(conn), refresh=data_refresh.STATUS.snapshot(),
     )

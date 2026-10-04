@@ -296,13 +296,13 @@ def validate_settings(updates: dict[str, Any], current: dict[str, Any]) -> None:
 
 def guarded_problems(updates: dict[str, Any], current: dict[str, Any]) -> list[str]:
     """Keys the generic settings write must not touch. `kill_switch` only moves through
-    the kill transaction (cancel-all, halts, audit) and the RESUME reset; and live
-    trading cannot be switched on while the fleet is killed."""
+    the kill transaction (cancel-all, halts, audit) and the RESUME reset; `live_enabled`
+    only through the typed live switch (`POST /live`, `POST /live/off`, step 5)."""
     problems = []
     if "kill_switch" in updates:
         problems.append("kill_switch is read-only here: use /api/kill or /api/kill/reset")
-    if updates.get("live_enabled") is True and current.get("kill_switch") is True:
-        problems.append("live_enabled cannot be turned on while kill_switch is on")
+    if "live_enabled" in updates:
+        problems.append("live_enabled is read-only here: use /live or /live/off")
     return problems
 
 

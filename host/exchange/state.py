@@ -1,4 +1,6 @@
-"""The single `exchange_state` row: heartbeat, market source and last error."""
+"""The single `exchange_state` row: heartbeat, market source, last error and (step 5)
+the authenticated session: auth result, balance and buying power, clock skew,
+credentials presence, the open-order audit stamp and the live switch stamp."""
 from __future__ import annotations
 
 from datetime import datetime
@@ -36,7 +38,7 @@ def read_state(conn: psycopg.Connection, now: datetime | None = None) -> dict[st
 
 
 def set_auth(conn: psycopg.Connection, ok: bool, balance_cents: int | None = None, buying_power_cents: int | None = None) -> None:
-    """Step 5 hook: the gateway's auth and balance check."""
+    """The gateway's auth and balance check (database clock)."""
     conn.execute(
         """
         UPDATE exchange_state SET auth_ok = %s, auth_checked_at = now(), balance_cents = %s,
@@ -44,4 +46,64 @@ def set_auth(conn: psycopg.Connection, ok: bool, balance_cents: int | None = Non
          WHERE id = true
         """,
         (ok, balance_cents, buying_power_cents),
+    )
+
+
+def record_auth_ok(
+    conn: psycopg.Connection, now: datetime, balance_cents: int | None, buying_power_cents: int | None,
+    skew_ms: int | None,
+) -> None:
+    """A successful auth probe: auth_ok, balances, skew, failures back to zero."""
+    conn.execute(
+        """
+        UPDATE exchange_state SET auth_ok = true, auth_checked_at = %s, balance_cents = %s, buying_power_cents = %s,
+               balance_checked_at = %s, clock_skew_ms = %s, auth_failures = 0, last_auth_error = NULL,
+               credentials_present = true, updated_at = now()
+         WHERE id = true
+        """,
+        (now, balance_cents, buying_power_cents, now, skew_ms),
+    )
+
+
+def record_auth_failure(conn: psycopg.Connection, now: datetime, error: str, creds_present: bool = True) -> int:
+    """A failed auth probe: auth_ok false, failures + 1, the error text. Returns the
+    new failure count."""
+    row = conn.execute(
+        """
+        UPDATE exchange_state SET auth_ok = false, auth_checked_at = %s, auth_failures = auth_failures + 1,
+               last_auth_error = %s, credentials_present = %s, updated_at = now()
+         WHERE id = true RETURNING auth_failures
+        """,
+        (now, str(error)[:500], creds_present),
+    ).fetchone()
+    return int(row["auth_failures"]) if row else 0
+
+
+def set_credentials_present(conn: psycopg.Connection, present: bool) -> None:
+    """Without credentials there is no session: auth_ok false and failures cleared."""
+    if present:
+        conn.execute("UPDATE exchange_state SET credentials_present = true, updated_at = now() WHERE id = true")
+        return
+    conn.execute(
+        """
+        UPDATE exchange_state SET credentials_present = false, auth_ok = false, auth_failures = 0,
+               last_auth_error = 'no credentials loaded', updated_at = now()
+         WHERE id = true
+        """
+    )
+
+
+def set_clock_skew(conn: psycopg.Connection, skew_ms: int | None) -> None:
+    conn.execute("UPDATE exchange_state SET clock_skew_ms = %s, updated_at = now() WHERE id = true", (skew_ms,))
+
+
+def set_open_orders_checked(conn: psycopg.Connection, now: datetime) -> None:
+    conn.execute("UPDATE exchange_state SET open_orders_checked_at = %s, updated_at = now() WHERE id = true", (now,))
+
+
+def set_live_enabled(conn: psycopg.Connection, at: datetime | None, by: str | None) -> None:
+    """The live switch stamp (both NULL when live is off)."""
+    conn.execute(
+        "UPDATE exchange_state SET live_enabled_at = %s, live_enabled_by = %s, updated_at = now() WHERE id = true",
+        (at, by),
     )

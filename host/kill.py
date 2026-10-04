@@ -59,11 +59,46 @@ def _write(conn: psycopg.Connection, key: str, value: bool) -> None:
 
 
 def disable_live(conn: psycopg.Connection) -> bool:
-    """live_enabled -> false; True when it was on."""
+    """live_enabled -> false (and the exchange_state stamp cleared); True when it was on."""
     was_on = get_setting(conn, "live_enabled", False) is True
     if was_on:
         _write(conn, "live_enabled", False)
+        conn.execute("UPDATE exchange_state SET live_enabled_at = NULL, live_enabled_by = NULL, updated_at = now() WHERE id = true")
     return was_on
+
+
+def live_off(conn: psycopg.Connection, actor: str, reason: str) -> dict[str, Any]:
+    """Turn live trading off at once (docs/LIVE.md "Live switch"): `live_enabled` false,
+    every active live assignment halted (its orders cancelled through
+    `halt_assignment`, so live rows become `cancel_requested` for the exchange), any
+    remaining live order (a smoke order, a row of a halted assignment) cancelled the
+    same way, one `live_off` audit row whose `orders_cancel_requested` counts every
+    live order now awaiting the exchange's confirmation. Runs under the live approval
+    lock, so no live approval can commit in between. Used by `POST /live/off`, the
+    daily-loss trip and the owner's Disable button."""
+    from host.trading import assignments
+
+    approval_lock(conn, "live")
+    was_on = disable_live(conn)
+    halted = assignments.halt_live_assignments(conn, actor, reason)
+    rest = cancel_active_orders(conn, actor, reason, mode="live")
+    result = {
+        "live_enabled": False, "was_on": was_on, "reason": reason, "assignments_halted": halted,
+        "orders_cancelled": rest["cancelled"], "orders_cancel_requested": len(rest["requested"]),
+    }
+    add_audit(conn, "live_off", "live_enabled", actor, {"live_enabled": was_on}, result)
+    return result
+
+
+def auto_kill(conn: psycopg.Connection, reason: str, detail: dict[str, Any]) -> bool:
+    """The exchange process pulls the kill switch itself (docs/LIVE.md "Authentication
+    probe and auto-kill"): `set_kill` with actor `auto:<reason>` plus an `auto_kill`
+    audit row carrying the reason and the detail. The top bar shows the reason until
+    the owner resets with RESUME. Returns True when the flag was off before."""
+    actor = f"auto:{reason}"
+    flipped = set_kill(conn, actor)
+    add_audit(conn, "auto_kill", reason, actor, {"kill_switch": not flipped}, {"reason": reason, **detail})
+    return flipped
 
 
 def _kill_orders(conn: psycopg.Connection, actor: str | None) -> tuple[list[Any], list[Any]]:

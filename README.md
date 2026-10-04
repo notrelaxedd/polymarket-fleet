@@ -34,7 +34,7 @@ docker compose up -d
 docker compose ps
 ```
 
-   `exchange.env` is optional until step 5 (compose starts without it). When you create it (it will hold the Polymarket US API keys), keep it out of git and make it readable by your Windows user only, for example `icacls exchange.env /inheritance:r /grant:r "$($env:USERNAME):(R,W)"`; on Debian use `chmod 600 exchange.env` as root. Only the `exchange` service loads it, never `host`.
+   `exchange.env` is optional (compose starts without it, and the system stays paper-only). It holds the Polymarket US API keys and is created in "Live trading (step 5)" below; keep it out of git. Only the `exchange` service loads it, never `host`.
 
 6. In an elevated PowerShell, expose port 8080 to the tailnet:
 
@@ -172,7 +172,112 @@ docker compose exec exchange python -m host.exchange.cli simulate-final <game_id
     The game id is on `/trading` (assignments table). Expect: open orders cancelled, positions settled, one `bets` row per filled order with entry price, closing price and CLV (`closing_price - entry_price`), `model_scores` filled in, the assignment `settled`, today's P&L updated on the Fleet card of the worker that traded and in the top bar, and a paper line (games, bets, P&L, ROI, CLV) for the model's lineage on the Models page. Once a lineage has enough paper games, bets, days and positive CLV and P&L (thresholds in Settings), it becomes `live_eligible`; nothing trades real money before step 5.
 11. Real market data. On the host (which has internet), set market source to `polymarket_us` or `polymarket_clob` in Settings. Press "Probe markets" on `/trading` (or run `docker compose exec exchange python -m host.exchange.cli probe`). If NFL markets do not appear under "unmatched markets" or in the assignment form, paste the probe output back so the field names can be fixed. Markets whose teams or date do not match exactly are never traded until you link them to a game by hand on `/trading`.
 
-**An honest note.** The Polymarket US and CLOB readers were written without access to the exchange docs (they were unreachable from the build sandbox), so endpoint paths and field names are best guesses kept in `market_source_config` and may need fixes from your probe output. The private order endpoints (place, cancel, fills, balance, signing) arrive in step 5; until then only paper orders exist, filled by a simulator against the real or simulated books. Paper fills are optimistic, so expect live results below paper.
+**An honest note.** The Polymarket US and CLOB readers were written without access to the exchange docs (they were unreachable from the build sandbox), so endpoint paths and field names are best guesses kept in `market_source_config` and may need fixes from your probe output. The private order endpoints (place, cancel, fills, balance, signing) are step 5 (below); paper orders are filled by a simulator against the real or simulated books. Paper fills are optimistic, so expect live results below paper.
+
+## Live trading (step 5)
+
+Real money sits behind three gates, all enforced on the host: the typed live switch, a lineage that is `live_eligible`, and the exchange process's authenticated session. Workers never see keys and never talk to the exchange. The full spec is `docs/LIVE.md`. Live is off after install and stays off until you turn it on.
+
+### Get API keys
+
+1. Open the Polymarket US app and complete identity verification (KYC). API keys are created in the app's account or developer settings once the account is verified.
+2. Read the API docs at https://docs.polymarket.us for the key format and signing rule. You need an API key, an API secret (the Ed25519 private key seed, base64 or hex) and, if the app issues one, a passphrase.
+
+### Create exchange.env on the host
+
+In the repository folder, create `exchange.env` with these lines (the passphrase line is optional):
+
+```
+POLYMARKET_US_API_KEY=<your key>
+POLYMARKET_US_API_SECRET=<your secret>
+POLYMARKET_US_PASSPHRASE=<only if you were given one>
+```
+
+Make the file readable by your user only. Windows (PowerShell):
+
+```powershell
+icacls exchange.env /inheritance:r /grant:r "$($env:USERNAME):(R,W)"
+```
+
+Debian, as root:
+
+```bash
+chown root:root exchange.env
+chmod 600 exchange.env
+```
+
+Restart only the exchange service so it loads the file (do not restart `host` or `db`):
+
+```powershell
+docker compose up -d --force-recreate exchange
+```
+
+Only the `exchange` service loads `exchange.env`. The keys are never logged, stored in the database or returned by any page or command.
+
+### Check the credentials
+
+Open Settings, "Live trading" group. It should show credentials present: yes, and auth OK within the last few minutes (the exchange re-checks every 5 minutes). Or run the checks directly:
+
+```powershell
+docker compose exec exchange python -m host.exchange.cli auth-check
+docker compose exec exchange python -m host.exchange.cli probe-account
+```
+
+If auth fails, paste the probe output back. The API was written without access to the docs, so the signing rule, header names and paths are assumptions kept in `market_source_config` (`polymarket_us.auth` and `.live`) and may need fixing from the raw payload. The probe shows the key's last 4 characters only, never the secret.
+
+### How to test step 5
+
+Needs the compose stack up, credentials present and auth OK as above. Start with a clean state: kill off, nothing open on `/trading`.
+
+1. Enable live. In Settings, "Live trading", type the phrase exactly, with the current date in your time zone. For example, on 2026-10-04 it is:
+
+```
+ENABLE LIVE TRADING 2026-10-04
+```
+
+   Yesterday's or tomorrow's date, other wording or extra whitespace is refused. It is also refused while the kill is on, without credentials, or if auth was not checked within the last 10 minutes. On success the top bar pill turns green and says LIVE, and the audit log gets a `live_on` row. The form shows the exact phrase to type.
+2. Smoke order. This places one real 1-share order far below the best bid so it rests and never fills, then cancels it. It proves keys, signing, placement and cancellation without giving any model money. Use today's date:
+
+```powershell
+docker compose exec exchange python -m host.exchange.cli exchange-smoke --confirm "SMOKE 2026-10-04"
+```
+
+   Add `--market <id>` to pick a market; otherwise the most liquid confirmed market is used. The command prints a timeline (approved, submitting, open with the exchange order id, cancel requested, cancelled). While it is open (10 seconds by default) it appears on `/trading` flagged `smoke`, and you should see the same order in the Polymarket US app's open orders. After the hold it is cancelled and disappears from the exchange. No bankroll is touched.
+3. KILL. Place another smoke order with a longer hold if needed, press KILL and confirm. The order is cancelled and live turns off (the pill returns to PAPER). Then type `RESUME` in Settings: the kill clears, but live stays off and assignments stay halted. Type the dated phrase again to re-enable live.
+4. Disable live without the kill: press "Disable live" in Settings. It is immediate: live assignments are halted and live orders are cancelled through the exchange.
+5. Cancel everything directly. If the exchange service is down with live orders resting, stop it and cancel straight on the exchange:
+
+```powershell
+docker compose stop exchange
+docker compose run --rm exchange python -m host.exchange.cli cancel-all --direct
+```
+
+   It loads the credentials, lists open orders on the exchange, cancels each with retry, marks the matching database rows cancelled (releasing reserved cash) and prints what it did. Restart the exchange afterwards with `docker compose up -d exchange`. Every live order also expires on its own at the exchange (GTD, 15 minutes by default) if the host is dead.
+6. Restart mid-order. Restart the exchange service while a smoke order is open: it runs auth, reconciliation and the open-order audit before submitting anything, and you should see no duplicate order.
+
+### Auto-kill reasons
+
+The system kills trading by itself (kill on, live off, open orders cancelled) and shows the reason in the top bar until you RESUME:
+
+- `auth_failures`: three authentication probes in a row failed (bad or revoked keys, wrong signing rule, exchange down).
+- `clock_skew`: the host clock and the exchange's `Date` header differ by more than 30 seconds. Signing stops too. Fix the host clock (Docker Desktop on Windows can drift after sleep).
+- `unknown_order`: the exchange shows an open order that this system did not create. Someone else is using the account or the keys, or the database lost an order. The stray order is cancelled. Check the Polymarket US app before resuming.
+- `unknown_fill`: a fill arrived for a client order id this system does not know. Same causes and same advice as `unknown_order`.
+- `ambiguous_reconciliation`: after a timeout, two remote orders matched one client order id, so the system cannot tell which is ours. Check the app and cancel by hand if needed.
+
+Reset is the normal `RESUME`; live then stays off until you re-enable it with the typed phrase.
+
+### When model orders go live
+
+Model-driven live orders only begin when a lineage is `live_eligible`. That requires the backtest and paper thresholds in Settings (backtest bets, ROI and drawdown, then paper games, bets, days, positive CLV and positive P&L) and there is no override and no typed bypass. Even then, an order is placed only if you created a live assignment for that model and game (which needs live on, the lineage `live_eligible` and auth OK), and every order still passes the host's limits: max bet, per-game bankroll, daily loss, liquidity floor, and buying power fresher than 5 minutes. One live model per game. A breach of the live daily-loss limit turns live off while paper keeps running. Start with small limits.
+
+### Risks
+
+- The Polymarket US API is unverified. Paths, headers, the signing rule and response fields are best guesses in `market_source_config` and may need fixes from your probe output. Expect to iterate on the smoke order before trusting anything else.
+- Single host. If the host machine or Docker is down, nothing can cancel or kill; resting live orders depend on GTD expiry. Keep Docker Desktop starting at login and back up the Postgres volume.
+- Paper fills are optimistic, so live results will be worse than paper.
+- A Windows host that sleeps, updates or reboots is an outage. Turn sleep off (Settings, System, Power) and set active hours so updates do not restart it mid-game.
+- Account terms (server-side API trading, geofencing, device binding) are unconfirmed. Check the Polymarket US terms before relying on this.
 
 ## Data
 
@@ -196,6 +301,6 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
 2. [x] Step 2: dashboard fleet cards, role handshake, drain and watchdog, settings page, kill flag
 3. [x] Step 3: nflverse data, models, backtest / search / train jobs, leaderboard
 4. [x] Step 4: fleet-exchange, paper trading, approval limits, ledger, scoring
-5. [ ] Step 5: Polymarket US live adapter, live switch, smoke order
+5. [x] Step 5: Polymarket US live adapter, live switch, smoke order
 
 Data is free-only for now; paid sources are considered once profit comes in.

@@ -718,3 +718,75 @@ def test_role_switch_away_from_trade_cancels_first(client, conn):
     r = client.post(f"/api/v1/workers/{s.worker.id}/heartbeat", json=heartbeat_body("backtest", acked_epoch=2), headers=s.worker.headers)
     assert r.json()["desired_role"] == "backtest" and r.json()["lost"] == []
     assert assignment_row(conn, s.assignment["id"])["status"] == "active", "another trade worker will pick the job up"
+
+
+# ------------------------------------------------------------------ step 5: auto-kill
+
+from host.trading.live import live_state  # noqa: E402
+from tests.conftest import audit_rows  # noqa: E402
+
+
+def test_auto_kill_sets_flag_with_auto_actor_and_audit(pool, conn):
+    """kill.auto_kill is the kill transaction pressed by the exchange process: actor
+    `auto:<reason>`, the normal kill sweep (live off, orders cancelled, assignments
+    halted) plus one `auto_kill` audit row carrying the detail."""
+    enable_live(conn)
+    live = trade_setup(conn, mode="live", model_status="live_eligible", game_id=LIVE_GAME)
+    row = approved_order(conn, live, size=2)
+    orders.set_status(conn, row["id"], "open", "executor", expected=("approved",), exchange_order_id="ex-9")
+    with pool.connection() as c:
+        assert kill.auto_kill(c, "auth_failures", {"failures": 3, "last_error": "401"}) is True
+    assert flag(conn) is True and setting(conn, "live_enabled") is False
+    assert assignment_row(conn, live.assignment["id"])["status"] == "halted"
+    assert order_row(conn, row["id"])["status"] == "cancel_requested", "live orders go to the exchange for cancelling"
+    actions = [r["action"] for r in conn.execute("SELECT action FROM audit_log ORDER BY id").fetchall()]
+    assert actions[-3:] == ["kill", "kill_cancel_all", "auto_kill"]
+    assert audit(conn, "kill")[-1]["actor"] == "auto:auth_failures"
+    auto = audit_rows(conn, "auto_kill")
+    assert auto[-1]["actor"] == "auto:auth_failures" and auto[-1]["entity"] == "auth_failures"
+    assert auto[-1]["before"] == {"kill_switch": False}
+    assert auto[-1]["after"] == {"reason": "auth_failures", "failures": 3, "last_error": "401"}
+    with pool.connection() as c:
+        assert kill.auto_kill(c, "unknown_order", {"count": 1}) is False, "already killed"
+    assert audit_rows(conn, "auto_kill")[-1]["before"] == {"kill_switch": True}
+    assert live_state(conn)["auto_kill_reasons"] == ["auth_failures", "unknown_order"]
+
+
+def test_auto_kill_reason_cleared_by_resume_and_live_stays_off(client, conn):
+    enable_live(conn)
+    kill.auto_kill(conn, "clock_skew", {"skew_ms": 50_000})
+    state = client.get("/api/live").json()
+    assert state["killed"] and state["auto_kill_reasons"] == ["clock_skew"] and state["live_enabled"] is False
+    for body in ({"confirm": "resume"}, {}):
+        assert client.post("/api/kill/reset", json=body).status_code == 400
+        assert client.get("/api/live").json()["auto_kill_reasons"] == ["clock_skew"]
+    assert client.post("/api/kill/reset", json={"confirm": "RESUME"}).status_code == 200
+    state = client.get("/api/live").json()
+    assert state["killed"] is False and state["auto_kill_reasons"] == [] and state["live_enabled"] is False
+    assert client.get("/fragments/topbar").text.count(">PAPER<") == 1
+
+
+def test_live_off_halts_live_and_cancels_through_exchange(pool, conn):
+    """kill.live_off: not a kill. live_enabled false, live assignments halted with
+    their orders cancel_requested, paper untouched, one live_off audit row."""
+    enable_live(conn)
+    paper = trade_setup(conn)
+    live = trade_setup(conn, mode="live", model_status="live_eligible", game_id=LIVE_GAME, worker=paper.worker)
+    p = approved_order(conn, paper, size=1)
+    lv = approved_order(conn, live, size=2)
+    orders.set_status(conn, lv["id"], "open", "executor", expected=("approved",), exchange_order_id="ex-10")
+    with pool.connection() as c:
+        result = kill.live_off(c, "owner", "owner")
+    assert result == {"live_enabled": False, "was_on": True, "reason": "owner", "assignments_halted": [str(live.assignment["id"])],
+                      "orders_cancelled": 0, "orders_cancel_requested": 1}
+    assert flag(conn) is False and setting(conn, "live_enabled") is False
+    assert order_row(conn, lv["id"])["status"] == "cancel_requested" and order_row(conn, p["id"])["status"] == "approved"
+    assert assignment_row(conn, paper.assignment["id"])["status"] == "active"
+    assert audit_rows(conn, "live_off")[-1]["after"]["assignments_halted"] == [str(live.assignment["id"])]
+    with pool.connection() as c:
+        assert kill.live_off(c, "owner", "again")["was_on"] is False, "idempotent"
+    gateway = SpyGateway()
+    with pool.connection() as c:
+        executor.Executor(gateway).tick(c)
+    assert gateway.cancels == 1 and order_row(conn, lv["id"])["status"] == "cancelled"
+    assert bankroll_of(conn, live.assignment)["reserved_cents"] == 0 and ledger.replay_problems(conn) == []

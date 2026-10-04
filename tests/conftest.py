@@ -544,10 +544,31 @@ def trade_setup(
     return TradeSetup(game, model, market, snapshot, assignment, worker, worker_row(conn, worker.id), job)
 
 
-def enable_live(conn: psycopg.Connection) -> None:
-    """Flip every live gate on: live_enabled and the exchange auth row."""
+def enable_live(conn: psycopg.Connection, buying_power_cents: int = 10_000_000) -> None:
+    """Flip every live gate on: live_enabled, the exchange auth row (credentials present,
+    auth_ok, fresh balance and buying power, no skew)."""
     conn.execute("UPDATE settings SET value = 'true' WHERE key = 'live_enabled'")
-    conn.execute("UPDATE exchange_state SET auth_ok = true, auth_checked_at = now(), heartbeat_at = now()")
+    conn.execute(
+        """
+        UPDATE exchange_state SET auth_ok = true, auth_checked_at = now(), heartbeat_at = now(), credentials_present = true,
+               balance_cents = %s, buying_power_cents = %s, balance_checked_at = now(), clock_skew_ms = 0,
+               auth_failures = 0, last_auth_error = NULL, live_enabled_at = now(), live_enabled_by = 'test'
+        """,
+        (buying_power_cents, buying_power_cents),
+    )
+
+
+def auth_state(conn: psycopg.Connection, **cols: Any) -> None:
+    """Set exchange_state columns directly (step 5 live tests)."""
+    sets = ", ".join(f"{name} = %s" for name in cols)
+    conn.execute(f"UPDATE exchange_state SET {sets}, updated_at = now() WHERE id = true", list(cols.values()))
+
+
+def audit_rows(conn: psycopg.Connection, action: str) -> list[dict[str, Any]]:
+    """Audit rows of one action, oldest first."""
+    return conn.execute(
+        "SELECT actor, entity, before, after, confirmation_text FROM audit_log WHERE action = %s ORDER BY id", (action,)
+    ).fetchall()
 
 
 def set_setting(conn: psycopg.Connection, key: str, value: Any) -> None:

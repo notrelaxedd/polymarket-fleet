@@ -7,7 +7,7 @@ import psycopg
 
 from host.leases import get_job
 from host.scheduling import online_after
-from host.settings import public_settings
+from host.settings import get_setting, public_settings
 
 JOB_STATUSES = ("queued", "leased", "cancel_requested", "succeeded", "failed", "cancelled")
 
@@ -187,3 +187,64 @@ def halted_paper_count(conn: psycopg.Connection) -> int:
         """
     ).fetchone()
     return int(row["n"])
+
+
+# ------------------------------------------------------------------ step 5: the live switch
+
+LIVE_STATE_KEYS = (
+    "live_enabled_at", "live_enabled_by", "credentials_present", "auth_ok", "auth_checked_at", "auth_failures",
+    "balance_cents", "buying_power_cents", "balance_checked_at", "clock_skew_ms", "last_auth_error",
+    "open_orders_checked_at",
+)
+
+
+def latest_auto_kill(conn: psycopg.Connection) -> dict[str, Any] | None:
+    """The newest `auto_kill` audit row since the last `kill_reset`: what the killed
+    top bar names as the reason. None when the kill was pressed by hand (or reset)."""
+    row = conn.execute(
+        """
+        SELECT ts, actor, after FROM audit_log
+         WHERE action = 'auto_kill'
+           AND id > COALESCE((SELECT max(id) FROM audit_log WHERE action = 'kill_reset'), 0)
+         ORDER BY id DESC LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    after = row["after"] if isinstance(row["after"], dict) else {}
+    reason = after.get("reason") or (row["actor"] or "").removeprefix("auto:") or "unknown"
+    return {"reason": str(reason), "ts": row["ts"], "actor": row["actor"], "detail": {k: v for k, v in after.items() if k != "reason"}}
+
+
+def live_order_counts(conn: psycopg.Connection) -> dict[str, int]:
+    """Active live orders and, among them, the smoke orders (the /trading exchange box)."""
+    row = conn.execute(
+        """
+        SELECT count(*) FILTER (WHERE mode = 'live') AS live, count(*) FILTER (WHERE mode = 'live' AND kind = 'smoke') AS smoke
+          FROM orders WHERE status = ANY(%s)
+        """,
+        (list(ACTIVE_ORDER_STATUSES),),
+    ).fetchone()
+    return {"live": int(row["live"]), "smoke": int(row["smoke"])}
+
+
+def live_state_fallback(conn: psycopg.Connection) -> dict[str, Any]:
+    """The Settings live group's state straight from the tables, for a host without
+    host.trading.live (no phrase, no precondition list); the page never 500s."""
+    row = conn.execute("SELECT * FROM exchange_state WHERE id").fetchone() or {}
+    now = conn.execute("SELECT now() AS t").fetchone()["t"]
+    state: dict[str, Any] = {key: row.get(key) for key in LIVE_STATE_KEYS}
+    checked = state.get("auth_checked_at")
+    state.update(
+        {
+            "live_enabled": get_setting(conn, "live_enabled", False) is True,
+            "credentials_present": bool(state.get("credentials_present")),
+            "auth_ok": bool(state.get("auth_ok")),
+            "auth_failures": int(state.get("auth_failures") or 0),
+            "auth_age_s": None if checked is None else max(0.0, (now - checked).total_seconds()),
+            "killed": get_setting(conn, "kill_switch", False) is True,
+            "auto_kill_reasons": [r["reason"] for r in [latest_auto_kill(conn)] if r],
+            "expected_phrase": "", "problems": ["the live switch module is not installed on this host"],
+        }
+    )
+    return state

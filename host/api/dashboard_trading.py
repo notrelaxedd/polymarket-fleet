@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse, Response
 
 from host import kill, views, web
-from host.api.dashboard import FORM, page
+from host.api.dashboard import FORM, _age_seconds, _now, page
 from host.api.deps import DB, require_owner
 from host.errors import BadRequest, Conflict
 from host.leaderboard import short_params
@@ -77,6 +77,16 @@ def _annotate_orders(rows: list[dict[str, Any]], settings: dict[str, Any]) -> li
     return rows
 
 
+def exchange_context(conn: psycopg.Connection) -> dict[str, Any]:
+    """The exchange box: the state row with `down`, plus (step 5) the age of the last
+    auth probe and of the balance figure for the auth and buying-power lines."""
+    exchange = trading_views.exchange_state(conn)
+    now = _now(conn)
+    exchange["auth_age_s"] = _age_seconds(now, exchange.get("auth_checked_at"))
+    exchange["balance_age_s"] = _age_seconds(now, exchange.get("balance_checked_at"))
+    return exchange
+
+
 def live_context(conn: psycopg.Connection) -> dict[str, Any]:
     """Everything inside #trading-live (refreshed every 5 s)."""
     rows = assignments.list_assignments(conn)
@@ -86,7 +96,10 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
     markets = trading_views.list_markets(conn)
     killed = kill.is_killed(conn)
     settings = get_settings(conn)
+    live_orders = views.live_order_counts(conn)
     return {
+        "live_orders": live_orders["live"],
+        "smoke_orders": live_orders["smoke"],
         "assignments": rows,
         "killed": killed,
         "halted_paper": 0 if killed else views.halted_paper_count(conn),
@@ -96,7 +109,7 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
         "unmatched": [m for m in markets if not m["mapping_confirmed"] or m["game_id"] is None],
         "markets": [m for m in markets if m["mapping_confirmed"] and m["game_id"] is not None],
         "link_games": [{**g, "label": _game_label(g, get_setting(conn, "tz"))} for g in views.upcoming_games(conn, with_markets=False)],
-        "exchange": trading_views.exchange_state(conn),
+        "exchange": exchange_context(conn),
         "ledger_problems": ledger.replay_problems(conn),
         "bankrolls": conn.execute("SELECT count(*) AS n FROM bankrolls").fetchone()["n"],
         "names": views.worker_names(conn),

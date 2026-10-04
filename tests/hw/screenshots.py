@@ -12,9 +12,12 @@ tests/hw/seed_step4.py), serves the app with FLEET_DEV=1 on a free port, and cap
 the fleet (with per-worker P&L), jobs, job detail, settings (with the Trading group),
 models (with the paper columns), model detail, search result and trading pages at
 phone (390x844) and laptop (1280x800) widths in the light and dark colour schemes,
-plus the trading page with the create form open, the fleet and trading pages after
-POST /kill and the trading page after the reset (the "Activate all paper" button). At
-phone width it also asserts: no horizontal scroll on any page, every visible button,
+plus the trading page with the create form open, then (step 5, tests/hw/seed_step5.py)
+the settings, trading and fleet pages with live on (the Live trading group on, a live
+assignment and its exchange order, a resting smoke order, the LIVE pill), the fleet,
+settings and trading pages after an auto-kill (the red bar naming the reason), then
+the fleet and trading pages after a hand POST /kill and the trading page after the
+reset (the "Activate all paper" button). At phone width it also asserts: no horizontal scroll on any page, every visible button,
 select and link inside a worker card and every visible form control (a checkbox counts
 through its label) is at least 40 px tall, and the fragment refresh resets the
 "updated N s ago" counter. Needs the playwright package in the venv and the Chromium
@@ -43,9 +46,10 @@ from host.events import add_audit  # noqa: E402
 from tests.conftest import ADMIN_URL, db_url, insert_job, insert_worker, set_heartbeat_age  # noqa: E402
 from tests.hw.seed_step3 import seed_models  # noqa: E402
 from tests.hw.seed_step4 import seed_trading, touch_trading  # noqa: E402
+from tests.hw.seed_step5 import auto_kill, seed_live, touch_live  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 
-DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step4"))
+DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step5"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 SCHEMES = ("light", "dark")
 MIN_TAP_PX = 40
@@ -158,6 +162,7 @@ def touch(url: str, box1: str) -> None:
         conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '1 second' WHERE name = 'box2'")
         conn.execute("UPDATE jobs SET lease_expires_at = now() + interval '30 seconds' WHERE status = 'leased'")
         touch_trading(conn)
+        touch_live(conn)
 
 
 # ---------------------------------------------------------------- captures and checks
@@ -223,10 +228,30 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
                     check_refresh_counter(page, problems)
             context.close()
 
-        for name, path in pages(ids):
-            for width in VIEWPORTS:
-                for scheme in SCHEMES:
-                    shoot(path, name, width, scheme, check=(width == "390" and scheme == "light"))
+        def shoot_all(captures: list[tuple[str, str]]) -> None:
+            for name, path in captures:
+                for width in VIEWPORTS:
+                    for scheme in SCHEMES:
+                        shoot(path, name, width, scheme, check=(width == "390" and scheme == "light"))
+
+        shoot_all(pages(ids))
+
+        # Step 5: live on (the settings group on, the live assignment, the smoke order, the
+        # LIVE pill), then the auto-kill the exchange process pulls, then the reset.
+        seed_live(database_url, ids["trader"])
+        with httpx.Client(base_url=server_url, trust_env=False) as client:
+            page_html = client.get("/settings").text
+            assert 'data-live-state="on"' in page_html and 'class="pill live">LIVE</span>' in page_html, "live is on"
+            assert 'chip-smoke' in client.get("/trading").text, "the smoke order is flagged"
+        shoot_all([("settings-live", "/settings"), ("trading-live", "/trading"), ("fleet-live", "/")])
+        auto_kill(database_url)
+        with httpx.Client(base_url=server_url, trust_env=False) as client:
+            assert 'data-auto-kill="clock_skew"' in client.get("/").text, "the bar names the auto-kill reason"
+        shoot_all([("fleet-autokill", "/"), ("settings-autokill", "/settings"), ("trading-autokill", "/trading")])
+        with httpx.Client(base_url=server_url, trust_env=False) as client:
+            resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
+            assert resp.status_code == 303, resp.text
+            assert "KILLED" not in client.get("/").text and 'data-live-state="off"' in client.get("/settings").text
 
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill", data={}, headers={"Origin": server_url}, follow_redirects=False)

@@ -2,7 +2,11 @@
 <span class="pnl muted">paper today {{ topbar.pnl.paper.today_cents | money }} &middot; all {{ topbar.pnl.paper.all_time_cents | money }}{% if topbar.live %} <span class="nowrap">&middot; live today {{ topbar.pnl.live.today_cents | money }} &middot; all {{ topbar.pnl.live.all_time_cents | money }}</span>{% endif %}</span>
 {% if topbar.killed %}
 <span class="chip chip-killed" data-killed="1" aria-disabled="true">KILLED</span>
+{% if topbar.auto_kill %}
+<a class="killed-text" href="/settings#kill" data-auto-kill="{{ topbar.auto_kill.reason }}">TRADING KILLED automatically: <span class="auto-reason">{{ topbar.auto_kill.reason }}</span>. Reset in Settings.</a>
+{% else %}
 <a class="killed-text" href="/settings#kill">TRADING KILLED. Reset in Settings.</a>
+{% endif %}
 {% else %}
 <a class="btn btn-kill" href="/kill/confirm" data-kill="1">KILL</a>
 {% endif %}

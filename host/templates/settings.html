@@ -152,10 +152,49 @@
   <button type="submit" class="btn primary">New enroll token</button>
 </form>
 
+{# Step 5: the typed live switch. live_enabled has no generic settings field; the only
+   way on is today's exact phrase, the only way off is the button (or a kill). #}
+<section class="card group live{% if live.live_enabled %} is-live{% endif %}" id="live">
+  <h2>Live trading <span class="pill {{ 'live' if live.live_enabled else 'paper' }}" data-live-state="{{ 'on' if live.live_enabled else 'off' }}">{{ 'ON' if live.live_enabled else 'OFF' }}</span></h2>
+  {% if live.live_enabled %}
+  <p class="live-since">Live trading is <strong>on</strong> since {{ live.live_enabled_at | ts if live.live_enabled_at else 'an unknown time' }} by {{ live.live_enabled_by or 'an unknown actor' }}. Real orders go to the exchange for live assignments of live-eligible lineages.</p>
+  {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
+  <form method="post" action="/settings/live/off" class="live-off" data-confirm="Disable live trading now? Live assignments are halted and their orders cancelled on the exchange.">
+    <button type="submit" class="btn danger">Disable live</button>
+  </form>
+  {% else %}
+  <p>Live trading is <strong>off</strong>: every assignment is paper and nothing reaches the exchange. Turning it on needs today's exact phrase, the kill switch off, credentials in the exchange process, a fresh successful auth probe and a clock within limits.</p>
+  {% if live.problems %}
+  <ul class="problems live-problems muted small">
+    {% for problem in live.problems %}<li>{{ problem }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
+  <form method="post" action="/settings/live" class="live-form">
+    <label><span>Type exactly <code class="phrase">{{ live.expected_phrase }}</code> <span class="muted small">today's date in your time zone</span></span>
+      <input type="text" name="confirm" value="{{ values.live_confirm }}" placeholder="{{ live.expected_phrase }}" autocomplete="off" autocapitalize="characters" spellcheck="false">
+    </label>
+    <button type="submit" class="btn danger">Enable live trading</button>
+  </form>
+  {% endif %}
+  <dl class="props live-props">
+    <dt>credentials</dt><dd>{{ 'yes' if live.credentials_present else 'no' }} <span class="muted small">{{ 'loaded by the exchange process' if live.credentials_present else 'exchange.env has no key, or the exchange process has not started' }}</span></dd>
+    <dt>auth</dt><dd>{% if live.auth_ok %}<span class="chip chip-ok">ok</span>{% elif live.auth_checked_at %}<span class="chip chip-bad">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if live.auth_checked_at %} <span class="muted small auth-age">checked {{ live.auth_age_s | ago }}</span>{% endif %}{% if live.auth_failures %} <span class="error small">{{ live.auth_failures }} failure{{ '' if live.auth_failures == 1 else 's' }} in a row</span>{% endif %}</dd>
+    <dt>balance</dt><dd>{% if live.balance_cents is not none %}{{ live.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
+    <dt>buying power</dt><dd>{% if live.buying_power_cents is not none %}{{ live.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
+    <dt>clock skew</dt><dd>{% if live.clock_skew_ms is not none %}{{ live.clock_skew_ms }} ms{% else %}<span class="muted">-</span>{% endif %}</dd>
+    <dt>last auth error</dt><dd>{% if live.last_auth_error %}<span class="error">{{ live.last_auth_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
+    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}<span class="chip chip-bad auto-kill-reason">{{ reason }}</span> {% endfor %}<span class="muted small">since the last reset</span>{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
+  </dl>
+</section>
+
 <section class="card group{% if killed %} killed{% endif %}" id="kill">
   <h2>Kill switch</h2>
   {% if killed %}
   <p class="error">Trading is killed. Trade workers do not claim, no order is approved and every assignment stays halted until you activate it again on the <a href="/trading">Trading</a> page.</p>
+  {% if auto_kill %}
+  <p class="error auto-kill">Killed automatically by the exchange process: <strong>{{ auto_kill.reason }}</strong> at {{ auto_kill.ts | ts }}{% if auto_kill.detail %} <span class="muted small">{{ auto_kill.detail | compact_json }}</span>{% endif %}. Live trading stays off after the reset until you enable it again.</p>
+  {% endif %}
   {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
   <form method="post" action="/kill/reset" class="reset">
     <label>Type RESUME to clear it

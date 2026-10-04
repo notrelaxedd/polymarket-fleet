@@ -56,6 +56,85 @@ def config_with_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
     return out
 
 
+# Step 5 (docs/LIVE.md): the authenticated endpoints. UNVERIFIED like the public ones:
+# every path, method, request field name and response field candidate list is
+# configurable under `market_source_config.polymarket_us.live`; the signing rules under
+# `.auth` (defaults in host/exchange/adapters/signing.py). An endpoint is
+# {"method", "path"} or the string "METHOD /path"; `cancel_all` null means
+# list-open-then-cancel-each. Money comes back in `money_unit` ("dollars" or "cents").
+LIVE_DEFAULTS: dict[str, Any] = {
+    "base_url": "https://api.polymarket.us",
+    "place": {"method": "POST", "path": "/v1/orders"},
+    "cancel": {"method": "DELETE", "path": "/v1/orders/{order_id}"},
+    "cancel_all": None,
+    "open": {"method": "GET", "path": "/v1/orders/open"},
+    "order": {"method": "GET", "path": "/v1/order/{order_id}"},
+    "fills": {"method": "GET", "path": "/v1/fills", "since_param": "since", "since_format": "iso"},
+    "balance": {"method": "GET", "path": "/v1/balance"},
+    "side_buy": "BUY",
+    "time_in_force": "GTD",
+    "client_id_field": "client_request_id",
+    "money_unit": "dollars",
+    "timeout_s": 10.0,
+    "limiter_wait_s": 2.0,
+    "request_fields": {
+        "client_order_id": "client_order_id",
+        "market_id": "market_id",
+        "side": "side",
+        "price": "price",
+        "size": "size",
+        "time_in_force": "time_in_force",
+        "expires_at": "expires_at",
+    },
+    "response_fields": {
+        "order_id": ["order_id", "orderId", "id"],
+        "client_order_id": ["client_order_id", "clientOrderId", "client_id", "clientId"],
+        "market_id": ["market_id", "marketId", "market"],
+        "price": ["price", "limit_price", "limitPrice"],
+        "size": ["size", "quantity", "original_size", "originalSize"],
+        "filled_size": ["filled_size", "filledSize", "filled", "size_matched", "sizeMatched"],
+        "status": ["status", "state"],
+        "fill_id": ["fill_id", "fillId", "trade_id", "tradeId", "id"],
+        "fee": ["fee", "fee_cents", "fees", "commission"],
+        "fill_time": ["timestamp", "ts", "time", "filled_at", "filledAt", "created_at", "createdAt", "match_time"],
+        "balance": ["balance", "cash", "cash_balance", "cashBalance", "available_balance"],
+        "buying_power": ["buying_power", "buyingPower", "available", "available_funds"],
+        "server_time": ["server_time", "serverTime", "timestamp", "time"],
+        "cancelled_count": ["cancelled", "canceled", "cancelled_count", "count"],
+    },
+    "list_keys": ["orders", "fills", "data", "results", "items"],
+    "wrapper_keys": ["order", "data", "result", "account"],
+}
+
+
+def _merge(defaults: dict[str, Any], overrides: Any) -> dict[str, Any]:
+    out = json.loads(json.dumps(defaults))
+    if not isinstance(overrides, dict):
+        return out
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict) and key != "request_fields":
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def live_config_with_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
+    """The whole polymarket_us block with the public defaults plus the `auth` and
+    `live` blocks filled in (a response field given as a string becomes a one-item
+    candidate list)."""
+    from host.exchange.adapters.signing import AUTH_DEFAULTS
+
+    cfg = dict(config or {})
+    out = config_with_defaults({k: v for k, v in cfg.items() if k not in ("auth", "live")})
+    out["auth"] = _merge(AUTH_DEFAULTS, cfg.get("auth"))
+    live = _merge(LIVE_DEFAULTS, cfg.get("live"))
+    for name, names in list(live["response_fields"].items()):
+        live["response_fields"][name] = [names] if isinstance(names, str) else list(names)
+    out["live"] = live
+    return out
+
+
 def pick(record: dict[str, Any], names: list[str]) -> Any:
     """The first present, non-null field among `names` (dotted paths allowed)."""
     for name in names:
