@@ -24,6 +24,9 @@ def phrase(conn) -> str:
 
 
 def live_market(conn, bid: float = 0.50, ask: float = 0.52, game_id: str = GAME_ID, liquidity: int = 300_000) -> dict:
+    """A polymarket_us market with a fresh snapshot, the market source set to match
+    (the smoke only picks markets of the current live source)."""
+    set_setting(conn, "market_source", "polymarket_us")
     insert_game(conn, game_id)
     market = insert_market(conn, game_id, platform="polymarket_us")
     insert_snapshot(conn, market["id"], bid=bid, ask=ask, liquidity_usd_cents=liquidity)
@@ -164,7 +167,9 @@ def test_cli_smoke_cancel_all_direct_probe_and_auth_check(xcli, conn):
     code, out, _ = xcli("exchange-smoke", "--confirm", phrase(conn), "--market", str(market["id"]), "--hold", "1", "--drive")
     assert code == 0 and "cancelled" in out and "exchange_order_id=ex-1" in out and "cancel_requested" in out
     assert gw.remote == {} and conn.execute("SELECT count(*) AS n FROM orders WHERE kind = 'smoke'").fetchone()["n"] == 1
-    # cancel-all --direct: a resting live order of ours and a stranger
+    # cancel-all --direct: a resting live order of ours and a stranger (the setup's
+    # markets are sim markets, so the live source is sim again)
+    set_setting(conn, "market_source", "sim")
     live = trade_setup(conn, mode="live", model_status="live_eligible", game_id="2026_05_BUF_MIA")
     from host.exchange.adapters.base import PaperGateway
     from host.exchange.executor import Executor
@@ -175,7 +180,9 @@ def test_cli_smoke_cancel_all_direct_probe_and_auth_check(xcli, conn):
     gw.add_remote_order(client_id="stranger", exchange_order_id="ex-s")
     code, out, _ = xcli("cancel-all", "--direct")
     assert code == 0 and "ex-s" in out and "remote=2 cancelled=2 rows_closed=1 still_open=0" in out
+    assert "live off (was on): assignments halted=1" in out, "the direct cancel-all turns live off first"
     assert order_row(conn, row["id"])["status"] == "cancelled" and gw.remote == {}
+    assert conn.execute("SELECT value FROM settings WHERE key = 'live_enabled'").fetchone()["value"] is False
     assert bankroll_of(conn, live.assignment)["reserved_cents"] == 0 and ledger.replay_problems(conn) == []
     code, out, _ = xcli("cancel-all")
     assert code == 0 and out.strip() == "cancelled=0 requested=0", "without --direct: the database cancel-all"

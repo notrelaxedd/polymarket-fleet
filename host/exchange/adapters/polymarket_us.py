@@ -61,7 +61,9 @@ def config_with_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
 # configurable under `market_source_config.polymarket_us.live`; the signing rules under
 # `.auth` (defaults in host/exchange/adapters/signing.py). An endpoint is
 # {"method", "path"} or the string "METHOD /path"; `cancel_all` null means
-# list-open-then-cancel-each. Money comes back in `money_unit` ("dollars" or "cents").
+# list-open-then-cancel-each. Money comes back in `money_unit` ("dollars" or "cents");
+# a fill's `fee` is in that unit, `fee_cents` is always cents. Server time is read from
+# the body only when `auth.server_time_field` names the field (the Date header otherwise).
 LIVE_DEFAULTS: dict[str, Any] = {
     "base_url": "https://api.polymarket.us",
     "place": {"method": "POST", "path": "/v1/orders"},
@@ -95,11 +97,11 @@ LIVE_DEFAULTS: dict[str, Any] = {
         "filled_size": ["filled_size", "filledSize", "filled", "size_matched", "sizeMatched"],
         "status": ["status", "state"],
         "fill_id": ["fill_id", "fillId", "trade_id", "tradeId", "id"],
-        "fee": ["fee", "fee_cents", "fees", "commission"],
+        "fee": ["fee", "fees", "commission"],
+        "fee_cents": ["fee_cents", "feeCents"],
         "fill_time": ["timestamp", "ts", "time", "filled_at", "filledAt", "created_at", "createdAt", "match_time"],
         "balance": ["balance", "cash", "cash_balance", "cashBalance", "available_balance"],
         "buying_power": ["buying_power", "buyingPower", "available", "available_funds"],
-        "server_time": ["server_time", "serverTime", "timestamp", "time"],
         "cancelled_count": ["cancelled", "canceled", "cancelled_count", "count"],
     },
     "list_keys": ["orders", "fills", "data", "results", "items"],
@@ -112,7 +114,7 @@ def _merge(defaults: dict[str, Any], overrides: Any) -> dict[str, Any]:
     if not isinstance(overrides, dict):
         return out
     for key, value in overrides.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict) and key != "request_fields":
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = _merge(out[key], value)
         else:
             out[key] = value
@@ -121,8 +123,9 @@ def _merge(defaults: dict[str, Any], overrides: Any) -> dict[str, Any]:
 
 def live_config_with_defaults(config: dict[str, Any] | None) -> dict[str, Any]:
     """The whole polymarket_us block with the public defaults plus the `auth` and
-    `live` blocks filled in (a response field given as a string becomes a one-item
-    candidate list)."""
+    `live` blocks filled in, every nested block deep-merged so one renamed request
+    field keeps the others (null drops an optional one such as `expires_at`); a
+    response field given as a string becomes a one-item candidate list."""
     from host.exchange.adapters.signing import AUTH_DEFAULTS
 
     cfg = dict(config or {})

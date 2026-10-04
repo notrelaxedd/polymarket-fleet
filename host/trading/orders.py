@@ -113,11 +113,16 @@ def cancel_order(conn: psycopg.Connection, order_id: Any, actor: str | None, rea
     return "cancel_requested"
 
 
-def confirm_cancelled(conn: psycopg.Connection, order_id: Any, actor: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The exchange confirmed a cancel: release the unfilled part and close the order."""
+def confirm_cancelled(
+    conn: psycopg.Connection, order_id: Any, actor: str, detail: dict[str, Any] | None = None, to_status: str = "cancelled",
+) -> dict[str, Any]:
+    """The exchange confirmed a cancel: release the unfilled part and close the order
+    (`to_status` is `expired` when the cancel was the order's own GTD expiry)."""
+    if to_status not in ("cancelled", "expired"):
+        raise ValueError(f"a confirmed cancel closes as cancelled or expired, not {to_status!r}")
     order = get_order(conn, order_id, for_update=True)
     release_unfilled(conn, order, note="cancel confirmed")
-    return set_status(conn, order_id, "cancelled", actor, detail, expected=("cancel_requested", "submitting", "open", "partial"))
+    return set_status(conn, order_id, to_status, actor, detail, expected=("cancel_requested", "submitting", "open", "partial"))
 
 
 def record_fill(

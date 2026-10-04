@@ -169,13 +169,19 @@ def _check_kickoff(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
 
 
 def _check_mode(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
+    """Live needs the switch, a live_eligible lineage, auth_ok and a market on the
+    live platform (the current market source; never the price-only CLOB source)."""
     if ctx["mode"] != "live":
         return False
+    from host.trading.live import market_platform_problem
+
     state = conn.execute("SELECT auth_ok FROM exchange_state WHERE id").fetchone()
     model = ctx["model"]
+    market = ctx["market"]
     return (
         ctx["settings"].get("live_enabled") is not True or model is None or model["status"] != "live_eligible"
         or state is None or not state["auth_ok"]
+        or market is None or market_platform_problem(conn, market["platform"]) is not None
     )
 
 
@@ -291,17 +297,27 @@ def reserved_live_cents(conn: psycopg.Connection) -> int:
     return int(row["s"])
 
 
+def live_spent_since(conn: psycopg.Connection, since: Any) -> int:
+    """Cents live fills took out of reservations (cost plus fees) after `since`: cash
+    the exchange already debited that the last probed buying power does not show."""
+    row = conn.execute(
+        "SELECT COALESCE(SUM(-d_reserved), 0) AS s FROM ledger WHERE mode = 'live' AND kind = 'fill' AND ts > %s", (since,)
+    ).fetchone()
+    return int(row["s"])
+
+
 def buying_power_short(conn: psycopg.Connection, cost: int, now: Any, settings: dict[str, Any]) -> bool:
     """docs/LIVE.md "Live approvals": the exchange's buying power must be fresher than
-    buying_power_max_age_s and cover `cost` plus every live reservation; a missing or
-    stale figure rejects."""
+    buying_power_max_age_s and cover `cost` plus every live reservation plus what
+    live fills spent since the probe; a missing or stale figure rejects."""
     state = conn.execute("SELECT buying_power_cents, balance_checked_at FROM exchange_state WHERE id").fetchone()
     if state is None or state["buying_power_cents"] is None or state["balance_checked_at"] is None:
         return True
     max_age = float(settings.get("buying_power_max_age_s", 300) or 300)
     if (now - state["balance_checked_at"]).total_seconds() > max_age:
         return True
-    return cost + reserved_live_cents(conn) > int(state["buying_power_cents"])
+    spent = live_spent_since(conn, state["balance_checked_at"])
+    return cost + reserved_live_cents(conn) + spent > int(state["buying_power_cents"])
 
 
 def _check_buying_power(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
@@ -340,15 +356,18 @@ def _insert(conn: psycopg.Connection, ctx: dict[str, Any], status: str, reason: 
 
 
 def _smoke_problem(conn: psycopg.Connection, ctx: dict[str, Any]) -> str | None:
-    """The smoke checks in order: kill, price band, max bet, auth (live switch and
-    auth_ok), buying power. None when all pass."""
+    """The smoke checks in order: kill, price band, max bet, auth (live switch,
+    auth_ok and a market on the live platform), buying power. None when all pass."""
+    from host.trading.live import market_platform_problem
+
     settings = ctx["settings"]
     state = conn.execute("SELECT auth_ok FROM exchange_state WHERE id").fetchone()
     checks = (
         ("killed", lambda: kill.is_killed(conn)),
         ("price_band", lambda: _check_price_band(conn, ctx)),
         ("max_bet", lambda: ctx["cost"] > int(settings.get("max_bet_cents", 0) or 0)),
-        ("mode", lambda: settings.get("live_enabled") is not True or state is None or not state["auth_ok"]),
+        ("mode", lambda: settings.get("live_enabled") is not True or state is None or not state["auth_ok"]
+         or market_platform_problem(conn, ctx["market"].get("platform")) is not None),
         ("buying_power", lambda: buying_power_short(conn, ctx["cost"], ctx["now"], settings)),
     )
     return next((name for name, check in checks if check()), None)

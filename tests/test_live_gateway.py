@@ -148,7 +148,7 @@ def test_body_bytes_are_what_is_signed():
 def test_request_building_for_every_call_uses_config_paths():
     config = {
         "live": {
-            "base_url": "https://sandbox.example/",
+            "base_url": "https://sandbox.polymarket.us/",
             "place": "POST /api/orders/new",
             "cancel": {"method": "POST", "path": "/api/orders/{order_id}/cancel"},
             "open": {"path": "/api/orders?status=open"},
@@ -163,7 +163,7 @@ def test_request_building_for_every_call_uses_config_paths():
     gw = gateway(http, config)
     assert gw.place(order()) == "ord-7f3a9c"
     call = http.last
-    assert (call["method"], call["url"], call["timeout"]) == ("POST", "https://sandbox.example/api/orders/new", 10.0)
+    assert (call["method"], call["url"], call["timeout"]) == ("POST", "https://sandbox.polymarket.us/api/orders/new", 10.0)
     assert json.loads(call["body"]) == {
         "clientId": ORDER_ID, "market": "pmus-kc-lv-kc", "side": "buy", "limitPrice": 0.55, "qty": 3, "tif": "GTD", "goodTil": "2026-10-03T15:15:00.000Z",
     }
@@ -173,21 +173,21 @@ def test_request_building_for_every_call_uses_config_paths():
 
     http.answers = [(200, "{}")]
     assert gw.cancel(order(exchange_order_id="ord-7f3a9c")) is True
-    assert (http.last["method"], http.last["url"], http.last["body"]) == ("POST", "https://sandbox.example/api/orders/ord-7f3a9c/cancel", None)
+    assert (http.last["method"], http.last["url"], http.last["body"]) == ("POST", "https://sandbox.polymarket.us/api/orders/ord-7f3a9c/cancel", None)
 
     http.answers = [(200, fixture("open_orders"))]
     gw.open_orders()
-    assert (http.last["method"], http.last["url"]) == ("GET", "https://sandbox.example/api/orders?status=open")
+    assert (http.last["method"], http.last["url"]) == ("GET", "https://sandbox.polymarket.us/api/orders?status=open")
 
     http.answers = [(200, fixture("fills"))]
     gw.fills(NOW)
-    assert http.last["url"] == f"https://sandbox.example/api/trades?from={int(NOW.timestamp() * 1000)}"
+    assert http.last["url"] == f"https://sandbox.polymarket.us/api/trades?from={int(NOW.timestamp() * 1000)}"
     gw.fills(None)
-    assert http.last["url"] == "https://sandbox.example/api/trades", "no since, no query"
+    assert http.last["url"] == "https://sandbox.polymarket.us/api/trades", "no since, no query"
 
     http.answers = [(200, fixture("balance"))]
     gw.balance()
-    assert (http.last["method"], http.last["url"]) == ("GET", "https://sandbox.example/api/account")
+    assert (http.last["method"], http.last["url"]) == ("GET", "https://sandbox.polymarket.us/api/account")
     for call in http.calls:
         assert "X-PM-Passphrase" not in call["headers"], "no passphrase, no header"
 
@@ -251,8 +251,10 @@ def test_responses_parsed_from_fixtures_and_malformed_payloads_raise_source_erro
     ], "fees in dollars become cents; a fill without an id is skipped"
 
     gw = gateway(FakeHttp((200, fixture("balance"))))
-    assert gw.balance() == {"balance_cents": 125050, "buying_power_cents": 98025, "server_time": "2026-10-03T15:00:02.500Z"}
-    assert gw.last_skew_ms == 2500, "the server_time field wins over the Date header"
+    assert gw.balance() == {"balance_cents": 125050, "buying_power_cents": 98025, "server_time": None}
+    assert gw.last_skew_ms == 1000, "without auth.server_time_field only the Date header measures the skew"
+    gw = gateway(FakeHttp((200, fixture("balance"))), {"auth": {"server_time_field": "server_time"}})
+    assert gw.balance()["server_time"] == "2026-10-03T15:00:02.500Z" and gw.last_skew_ms == 2500, "the named field wins over the Date header"
     cents = gateway(FakeHttp((200, '{"balance": 1250, "buying_power": 980}')), {"live": {"money_unit": "cents"}}).balance()
     assert (cents["balance_cents"], cents["buying_power_cents"]) == (1250, 980)
     only = gateway(FakeHttp((200, '{"available": "12.34"}'))).balance()
@@ -301,8 +303,10 @@ def test_401_raises_auth_error_429_raises_rate_limited():
     assert gw.last_skew_ms == -30_000, "the Date header (any case) sets the skew when no server-time field is present"
     gw.max_skew_ms = 20_000
     with pytest.raises(AuthError, match="skew"):
-        gw.balance()
-    assert len(http.calls) == 1, "over the skew limit nothing is signed or sent"
+        gw.place(order())
+    assert len(http.calls) == 1, "over the skew limit no place is signed or sent"
+    gw.balance()
+    assert len(http.calls) == 2, "cancels, listings and the probe keep going, so a kill can still reach the exchange"
 
 
 def test_cancel_paths_and_cancel_all():

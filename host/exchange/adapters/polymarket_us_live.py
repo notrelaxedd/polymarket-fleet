@@ -9,8 +9,12 @@ truncated payload in the message (and at DEBUG in the log), 401/403 raise AuthEr
 SourceError, a timeout raises GatewayTimeout (a SourceError and a TimeoutError). Every
 call takes a token from the fleet-wide limiter by category when one is given: `orders`
 for place, `cancels` for cancel, `account` for open_orders, fills and balance. The
-`Date` header of every answer (or a server-time field) updates `last_skew_ms`. Keys
-are never logged or returned; `probe_account` redacts them from the payload.
+`Date` header of every answer (or the body field named by `auth.server_time_field`)
+updates `last_skew_ms`; with `max_skew_ms` set, a skew over it refuses to sign a place
+(cancels, listings and fills keep going so a kill can still reach the exchange). The
+destination is pinned by live_policy: https and a polymarket.us host, or the
+`POLYMARKET_US_LIVE_BASE_URL` override from exchange.env. Keys are never logged or
+returned: every message built from a response body goes through `_redact`.
 """
 from __future__ import annotations
 
@@ -24,8 +28,9 @@ from typing import Any, Callable
 from urllib.parse import urlencode
 
 from host.exchange.adapters import live_parse as lp
-from host.exchange.adapters.base import OrderGateway, RateLimited, SourceError, parse_time, truncate, utcnow
+from host.exchange.adapters.base import NotConfigured, OrderGateway, RateLimited, SourceError, parse_time, truncate, utcnow
 from host.exchange.adapters.live_http import GatewayTimeout, Http, header, urllib_http
+from host.exchange.adapters.live_policy import base_url_problem, env_base_url, env_override_host
 from host.exchange.adapters.polymarket_us import LIVE_DEFAULTS, live_config_with_defaults, pick
 from host.exchange.adapters.signing import sign_headers, timestamp_now
 from host.exchange.credentials import Credentials
@@ -36,6 +41,13 @@ log = logging.getLogger(__name__)
 
 NAME = "polymarket_us"
 PAYLOAD_LIMIT = 64 * 1024
+REQUIRED_REQUEST_FIELDS = ("client_order_id", "market_id", "side", "price", "size", "time_in_force")
+
+
+def urlsplit_host(url: str) -> str | None:
+    from urllib.parse import urlsplit
+
+    return urlsplit(url).hostname
 
 
 class AuthError(SourceError):
@@ -53,6 +65,8 @@ class LiveGateway(OrderGateway):
         http: Http | None = None,
         clock: Callable[[], datetime] | None = None,
         sleep: Callable[[float], None] = time.sleep,
+        max_skew_ms: int | None = None,
+        base_url: str | None = None,
     ) -> None:
         self.creds = creds
         self.config = live_config_with_defaults(config)
@@ -64,9 +78,13 @@ class LiveGateway(OrderGateway):
         self.sleep = sleep
         self.last_skew_ms: int | None = None
         self.last_server_time: datetime | None = None
-        self.max_skew_ms: int | None = None
+        self.max_skew_ms: int | None = max_skew_ms
         self.last_status: int | None = None
         self.last_payload: str | None = None
+        # The env override (exchange.env) wins over the database; both are checked.
+        override = base_url if base_url is not None else env_base_url()
+        self.base_url = str(override or self.live["base_url"]).rstrip("/")
+        self.base_url_problem = base_url_problem(self.base_url, env_override_host() if base_url is None else urlsplit_host(base_url))
 
     # --------------------------------------------------------------- plumbing
 
@@ -112,9 +130,13 @@ class LiveGateway(OrderGateway):
         body: dict[str, Any] | None = None, tolerate: tuple[int, ...] = (),
     ) -> tuple[int, Any]:
         """One signed call: (status, parsed JSON or None). Raises on 401/403 (AuthError),
-        429 (RateLimited), any other status >= 400 not in `tolerate` (SourceError)."""
-        if self.max_skew_ms is not None and self.last_skew_ms is not None and abs(self.last_skew_ms) > self.max_skew_ms:
-            raise AuthError(f"clock skew {self.last_skew_ms} ms is over the limit of {self.max_skew_ms} ms; signing stopped")
+        429 (RateLimited), any other status >= 400 not in `tolerate` (SourceError).
+        Nothing is signed for a destination live_policy refuses, and no place is
+        signed while the measured clock skew is over `max_skew_ms`."""
+        if self.base_url_problem:
+            raise SourceError(f"live base_url {self.base_url!r} refused: {self.base_url_problem}")
+        if category == "orders" and self.max_skew_ms is not None and self.last_skew_ms is not None and abs(self.last_skew_ms) > self.max_skew_ms:
+            raise AuthError(f"clock skew {self.last_skew_ms} ms is over the limit of {self.max_skew_ms} ms; placing refused")
         self._take(category)
         method, path, _ = self.endpoint(name)
         for key, value in (path_params or {}).items():
@@ -126,7 +148,7 @@ class LiveGateway(OrderGateway):
         if body is not None:
             headers["Content-Type"] = "application/json"
         headers.update(sign_headers(self.creds, method, path, payload, timestamp_now(self.auth, self.clock), self.auth))
-        url = str(self.live["base_url"]).rstrip("/") + path
+        url = self.base_url + path
         try:
             status, response_headers, text = self.http(method, url, headers, payload if body is not None else None, float(self.live.get("timeout_s") or 10.0))
         except SourceError:
@@ -147,20 +169,22 @@ class LiveGateway(OrderGateway):
         if status == 429:
             if self.limiter is not None and hasattr(self.limiter, "on_429"):
                 self.limiter.on_429(category, now=self.clock())
-            raise RateLimited(f"{method} {path} answered 429 (rate limited): {truncate(text, 256)}")
+            raise RateLimited(f"{method} {path} answered 429 (rate limited): {truncate(self._redact(text), 256)}")
         if status >= 400 and status not in tolerate:
             raise SourceError(f"{method} {path} answered {status}: {truncate(self._redact(text), 512)}")
+        if not text or not text.strip():
+            return int(status), None  # an empty body: nothing listed (records() reads None as [])
         try:
-            return int(status), json.loads(text) if text and text.strip() else None
+            return int(status), json.loads(text)
         except ValueError:
-            return int(status), None
+            raise self._unknown(name, None) from None
 
     def _unknown(self, what: str, payload: Any) -> SourceError:
         """SourceError for a payload we cannot read; the raw text (truncated) when it
         was not JSON at all."""
         if payload is None:
             payload = self.last_payload or ""
-        text = truncate(json.dumps(payload, default=str) if not isinstance(payload, str) else payload, 512)
+        text = truncate(self._redact(json.dumps(payload, default=str) if not isinstance(payload, str) else payload), 512)
         log.debug("polymarket_us %s payload has an unknown shape: %s", what, text)
         return SourceError(f"{what} payload has an unknown shape: {text}")
 
@@ -178,6 +202,9 @@ class LiveGateway(OrderGateway):
         if not order.get("market_ref"):
             raise SourceError(f"order {order.get('id')} has no market_ref to place against")
         fields = self.live["request_fields"]
+        missing = [n for n in REQUIRED_REQUEST_FIELDS if not isinstance(fields.get(n), str) or not fields.get(n)]
+        if missing:
+            raise NotConfigured(f"live.request_fields {', '.join(missing)} not configured (null or missing)")
         price = lp.number(order.get("price"))
         body: dict[str, Any] = {
             fields["client_order_id"]: self.client_id(order),
@@ -258,8 +285,10 @@ class LiveGateway(OrderGateway):
         buying_power = lp.cents(lp.field(record, self.live, "buying_power"), self.live)
         if balance is None and buying_power is None:
             raise self._unknown("balance", payload)
+        # Only a field the owner named carries server time; an ordinary "timestamp"
+        # or "time" field in the payload must not overwrite the Date header's skew.
         time_field = self.auth.get("server_time_field")
-        server_time = parse_time(pick(record, [time_field]) if time_field else lp.field(record, self.live, "server_time"))
+        server_time = parse_time(pick(record, [str(time_field)])) if time_field else None
         self._note_skew(server_time)
         return {
             "balance_cents": balance if balance is not None else buying_power,

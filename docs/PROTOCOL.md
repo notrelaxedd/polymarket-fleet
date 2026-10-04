@@ -815,10 +815,17 @@ beyond the `mode` field, and they never see keys. Host-side additions (see docs/
   exchange process recorded (`key_present`, `status`, auth and balance fields,
   `last_auth_error`) with `payload: null` and `raw_payload_command`, the exchange
   container's CLI command that returns the raw balance payload.
-- `/api/settings` refuses `live_enabled` (400, "use /live or /live/off"), on or off.
-- Exchange state columns: `auth_failures`, `credentials_present`, `last_auth_error`,
-  `open_orders_checked_at`, `live_enabled_at`, `live_enabled_by` (the last two are
-  cleared whenever live goes off: the switch, the kill, the daily-loss trip).
+- `/api/settings` refuses `live_enabled` (400, "use /live or /live/off"), on or off, and
+  refuses a `market_source_config.polymarket_us` block whose `live.base_url` is not
+  https on `polymarket.us` (or a subdomain) or whose `auth.template` does not hold each
+  of `{timestamp}`, `{method}`, `{path}`, `{body}` exactly once with nothing else but a
+  few separator characters (400 naming the key): no settings write can redirect the
+  signed requests or choose the signed bytes (`host/exchange/adapters/live_policy.py`).
+- Exchange state columns: `auth_failures`, `credentials_present`, `last_auth_error`
+  (also "credentials malformed: <secret-free message>" when exchange.env holds an
+  unusable secret), `open_orders_checked_at`, `live_enabled_at`, `live_enabled_by`
+  (the last two are cleared whenever live goes off: the switch, the kill, the
+  daily-loss trip, cancel-all --direct).
 - Settings keys: `auth_probe_interval_s`, `buying_power_max_age_s`, `submitting_grace_s`,
   `auto_kill {"auth_failures", "clock_skew_ms"}`, `smoke_hold_seconds`, `live_fills_poll_s`,
   `open_orders_audit_s`, and `market_source_config.polymarket_us.auth` / `.live` blocks
@@ -828,26 +835,45 @@ beyond the `mode` field, and they never see keys. Host-side additions (see docs/
   `live_fills` (every `live_fills_poll_s`, only while a live order is active); the live
   tasks run only when credentials loaded. At start: auth, then `startup_reconcile`
   (submitting rows, then the audit) before the executor's first submission. A clock skew
-  over the limit pauses every live request except the auth probe until a probe sees the
-  skew back in range (`ExchangeLoop.live_paused`, `Executor.live_blocked`).
+  over the limit, measured by the auth probe or on any other live answer, pauses live
+  placements only (`ExchangeLoop.live_paused`, `Executor.live_blocked`; the gateway
+  refuses to sign a place over `max_skew_ms`) and auto-kills `clock_skew`; cancels, the
+  open-order audit and the fills poll keep running so the kill's cancels reach the
+  exchange, and the first live answer with the skew back in range clears the pause.
 - Auto-kill reasons (`kill.auto_kill`, actor `auto:<reason>`, audit `auto_kill`):
   `auth_failures`, `clock_skew`, `unknown_order`, `unknown_fill`,
-  `ambiguous_reconciliation`. A trigger fires only while the kill switch is off; a
-  condition that persists after RESUME kills again on the next pass.
-- Executor live path: `Executor(paper_gateway, live_gateway)`; a live cancel counts as
-  confirmed only when `open_orders()` no longer lists the order (its last fills are
-  absorbed before the release); our rows missing on the exchange are closed from their
-  fills as `filled`, `cancelled` (cancel_requested, or dropped by the exchange) or
-  `expired` (past `gtd_at`).
-- Order approval check `buying_power` (live): `exchange_state.buying_power_cents` with
-  `balance_checked_at` within `buying_power_max_age_s`, and `cost + SUM(live
-  bankrolls.reserved_cents) <= buying_power_cents`; missing or stale rejects.
+  `ambiguous_reconciliation`, `late_fill` (a fill the ledger cannot book: its order is
+  already closed here, or it exceeds the open size). A trigger fires only while the kill
+  switch is off; a condition that persists after RESUME kills again on the next pass.
+- Executor live path: `Executor(paper_gateway, live_gateway)`; a live row is closed only
+  after its fills were read: when the fills call fails nothing closes that pass and the
+  task reports `fills unavailable`. A live cancel counts as confirmed only when
+  `open_orders()` no longer lists the order (its last fills are absorbed before the
+  release), closing as `expired` past `gtd_at`, else `cancelled`; a live expiry goes
+  through that same path (`cancel_requested`, reason `gtd`); our rows missing on the
+  exchange are closed from their fills as `filled`, `cancelled` (cancel_requested, or
+  dropped by the exchange) or `expired` (past `gtd_at`). The fills poll runs while a
+  live order is active and for 120 s after the last one closed.
+- Order approval check `mode` (live) also requires the market to be on the live
+  platform: the current `market_source`, never `polymarket_clob`. Check `buying_power`
+  (live): `exchange_state.buying_power_cents` with `balance_checked_at` within
+  `buying_power_max_age_s`, and `cost + SUM(live bankrolls.reserved_cents) + SUM(live
+  ledger fill cents since balance_checked_at) <= buying_power_cents`; missing or stale
+  rejects. A live assignment's creation and activation need a confirmed open market of
+  the game on that platform and take the live approval lock before the gate.
 - CLI (`python -m host.exchange.cli`): `exchange-smoke --confirm "SMOKE YYYY-MM-DD"
   [--market ID] [--hold S] [--drive]` (`--drive` submits and cancels from this process
-  when the exchange service is stopped; otherwise the running loop's outbox does it),
-  `cancel-all --direct`, `probe-account`, `auth-check`. The live commands need the
-  credentials in the environment (exit 1 otherwise) and never print them.
+  when the exchange service is stopped; otherwise the running loop's outbox does it; a
+  row not `open` within 30 s is cancelled before the command exits 1), `cancel-all
+  --direct` (live off first, then the exchange; exit 1 when the fills call failed and
+  rows were left `cancel_requested`), `probe-account`, `auth-check`. The live commands
+  need the credentials in the environment (exit 1 otherwise, "secret malformed: ..."
+  for a present but unusable secret) and never print them.
 - Audit actions: `live_on` (confirmation_text = the phrase), `live_off` (`reason`,
   `assignments_halted`, `orders_cancelled`, `orders_cancel_requested`), `auto_kill`,
-  `smoke_order`, `cancel_all` with `direct: true`, and the step 4 `daily_loss_trip`
-  which now follows a `live_off` row.
+  `smoke_order`, `cancel_all` with `direct: true` (`remote`, `cancelled`, `rows_closed`,
+  `live_was_on`, `assignments_halted`, `approved_cancelled`, `left_for_exchange`,
+  `error`, after a `live_off` row with reason `cancel-all --direct`),
+  `eligibility_changed` for every demotion out of `live_eligible` (followed by the
+  `assignment_halted` rows), `model_retired` with `assignments_halted`, and the step 4
+  `daily_loss_trip` which now follows a `live_off` row.

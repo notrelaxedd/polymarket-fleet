@@ -15,8 +15,10 @@ from psycopg.rows import dict_row
 
 from host import kill
 from host.events import add_audit
+from host.exchange.smoke import expected_phrase as smoke_phrase
 from host.trading import orders
 from host.trading.limits import approve_order
+from host.trading.live import expected_phrase as live_phrase
 from tests.conftest import FakeWorker, enable_live, insert_snapshot, lease_trade_job, make_assignment, order_body, worker_row
 
 OWNER = "owner@example.com"
@@ -49,7 +51,7 @@ def seed_live(url: str, trader_id: str) -> dict[str, str]:
             """,
             (OWNER,),
         )
-        phrase = "ENABLE LIVE TRADING " + datetime.now(timezone.utc).date().isoformat()
+        phrase = live_phrase(conn)  # the date in the Settings time zone, what the form really asks for
         add_audit(conn, "live_on", "live_enabled", OWNER, {"live_enabled": False},
                   {"live_enabled": True, "balance_cents": 312_550, "clock_skew_ms": 140}, confirmation_text=phrase)
         conn.execute("UPDATE audit_log SET ts = now() - interval '26 minutes' WHERE action = 'live_on'")
@@ -87,15 +89,20 @@ def seed_live(url: str, trader_id: str) -> dict[str, str]:
         orders.add_order_event(conn, smoke["id"], "approved", "submitting", "exchange", None)
         orders.add_order_event(conn, smoke["id"], "submitting", "open", "exchange", {"exchange_order_id": "pm-smoke-4e1b"})
         add_audit(conn, "smoke_order", str(smoke["id"]), OWNER, None, {"market_id": str(home["id"]), "price": 0.51, "size": 1},
-                  confirmation_text="SMOKE " + datetime.now(timezone.utc).date().isoformat())
+                  confirmation_text=smoke_phrase(conn))
         return {"live_assignment": str(live["id"]), "live_order": str(decision["order_id"]), "smoke_order": str(smoke["id"])}
 
 
 def auto_kill(url: str, reason: str = "clock_skew", detail: dict[str, Any] | None = None) -> None:
     """The exchange process pulls the switch (host.kill.auto_kill): live off, orders
-    cancelled or cancel requested, assignments halted, the reason in the audit log."""
+    cancelled or cancel requested, assignments halted, the reason in the audit log.
+    A clock_skew kill also records the measured skew, as the loop does, so the
+    pages show one figure."""
+    detail = detail or {"skew_ms": 48_213, "limit_ms": 30_000}
     with _connect(url) as conn:
-        kill.auto_kill(conn, reason, detail or {"skew_ms": 48_213, "limit_ms": 30_000})
+        kill.auto_kill(conn, reason, detail)
+        if reason == "clock_skew" and detail.get("skew_ms") is not None:
+            conn.execute("UPDATE exchange_state SET clock_skew_ms = %s, updated_at = now()", (int(detail["skew_ms"]),))
 
 
 def touch_live(conn: psycopg.Connection) -> None:

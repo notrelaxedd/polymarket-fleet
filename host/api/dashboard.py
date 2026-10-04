@@ -77,8 +77,11 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
     try:
         from host.trading.live import live_state
     except ImportError:
-        return views.live_state_fallback(conn)
-    return live_state(conn)
+        state = views.live_state_fallback(conn)
+    else:
+        state = live_state(conn)
+    state["remedies"] = {reason: views.auto_kill_remedy(reason) for reason in state.get("auto_kill_reasons") or []}
+    return state
 
 
 def topbar_context(conn: psycopg.Connection, settings: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -88,8 +91,10 @@ def topbar_context(conn: psycopg.Connection, settings: dict[str, Any] | None = N
     settings = get_settings(conn) if settings is None else settings
     totals = pnl.pnl(conn)
     killed = settings.get("kill_switch") is True
+    live = settings.get("live_enabled") is True
     return {
-        "live": settings.get("live_enabled") is True,
+        "live": live,
+        "live_activity": live or views.live_activity(conn),
         "killed": killed,
         "auto_kill": views.latest_auto_kill(conn) if killed else None,
         "pnl_today": totals["today_cents"],

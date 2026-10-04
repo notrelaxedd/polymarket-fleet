@@ -10,8 +10,12 @@ scores poll (60 s), settlement (30 s) and retention (nightly). Every task runs i
 own transaction and an exception, or a soft error a task reports, is logged and
 remembered as `last_error` without stopping the loop. With credentials the loop runs
 the auth probe, the reconciliation of `submitting` rows and the open-order audit
-before anything is submitted. `run_once(pool)` runs every task once for tests and
-the CLI.
+before anything is submitted. A clock skew over `auto_kill.clock_skew_ms`, seen by
+the auth probe or on any other live answer, pauses live placements (`live_paused`,
+`Executor.live_blocked`) and auto-kills `clock_skew`; cancels, the open-order audit
+and the fills poll keep running so the kill's cancels reach the exchange, and the
+first live answer with the skew back in range clears the pause. `run_once(pool)`
+runs every task once for tests and the CLI.
 """
 from __future__ import annotations
 
@@ -30,6 +34,7 @@ from host.exchange import live_sync, mapping, paper, retention, scores, settle, 
 from host.exchange.adapters import make_source
 from host.exchange.adapters.base import MarketSource, OrderGateway, PaperGateway, utcnow
 from host.exchange.adapters.sim import SimSource
+from host.exchange.credentials import CredentialsError
 from host.exchange.executor import Executor
 from host.exchange.ratelimit import RateLimiter
 from host.settings import get_int_setting, get_setting
@@ -61,11 +66,13 @@ class ExchangeLoop:
         self.live_gateway: OrderGateway = OrderGateway()
         self.executor = Executor(PaperGateway(), self.live_gateway, self.limiter)
         self.credentials_present = False
+        self.credentials_error: str | None = None
         self.live_paused: str | None = None
         self.started = False
         self.source: MarketSource | None = None
         self.source_name: str | None = None
         self.intervals: dict[str, float] = dict(INTERVALS)
+        self.skew_limit_ms = live_sync.DEFAULT_SKEW_LIMIT_MS
         self.last_run: dict[str, float] = {}
         self.errors: dict[str, str] = {}
         self.retention_day: Any = None
@@ -82,24 +89,29 @@ class ExchangeLoop:
         return load_credentials()
 
     def build_live_gateway(self, config: dict[str, Any], creds: Any) -> OrderGateway:
-        """The default factory, sharing the loop's rate limiter."""
-        return build_live_gateway(config, creds, self.limiter)
+        """The default factory, sharing the loop's rate limiter and the skew limit."""
+        return build_live_gateway(config, creds, self.limiter, self.skew_limit_ms)
 
     def start(self, conn: Any, now: datetime) -> None:
         """Build the live gateway once and, with credentials, run the auth probe, the
-        reconciliation and the open-order audit before the first submission."""
+        reconciliation and the open-order audit before the first submission. A
+        malformed secret is recorded (its secret-free message) as the last auth error."""
         self.started = True
         self.refresh_source(conn, now)
-        creds = self.load_credentials()
+        self.skew_limit_ms = live_sync.skew_limit_ms(conn)
+        try:
+            creds = self.load_credentials()
+        except CredentialsError as exc:
+            creds, self.credentials_error = None, f"credentials malformed: {exc}"
         self.credentials_present = creds is not None
         self.live_gateway = self.gateway_factory(polymarket_us_config(conn), creds)
         self.executor = Executor(PaperGateway(), self.live_gateway, self.limiter)
-        state.set_credentials_present(conn, self.credentials_present)
+        state.set_credentials_present(conn, self.credentials_present, self.credentials_error)
         log.info("live gateway: %s (credentials %s)", self.live_gateway.name, "present" if creds else "absent")
 
     def startup_sequence(self, now: datetime) -> dict[str, Any]:
         results = {"auth": self.run_task("auth", now)}
-        if self.credentials_present and not self.live_paused:
+        if self.credentials_present:
             results["startup_reconcile"] = self.run_task("startup_reconcile", now)
             self.last_run["open_orders_audit"] = now.timestamp()
         return results
@@ -121,6 +133,9 @@ class ExchangeLoop:
         self.limiter.update_limits(limits if isinstance(limits, dict) else None, now)
         for task, key in SETTING_INTERVALS.items():
             self.intervals[task] = float(get_int_setting(conn, key, int(INTERVALS[task])))
+        self.skew_limit_ms = live_sync.skew_limit_ms(conn)
+        if getattr(self.live_gateway, "max_skew_ms", None) is not None:
+            self.live_gateway.max_skew_ms = self.skew_limit_ms  # type: ignore[attr-defined]
         return self.source
 
     # ------------------------------------------------------------------ tasks
@@ -129,11 +144,32 @@ class ExchangeLoop:
         state.heartbeat(conn, self.source_name or str(get_setting(conn, "market_source", "sim")), self.last_error, now)
 
     def task_auth(self, conn: Any, now: datetime) -> Any:
-        result = live_sync.auth_check(conn, self.live_gateway, now, self.credentials_present)
+        result = live_sync.auth_check(conn, self.live_gateway, now, self.credentials_present, self.credentials_error)
         if result.get("auth_ok"):
-            self.live_paused = "clock_skew" if result.get("skew_over_limit") else None
-            self.executor.live_blocked = self.live_paused
+            self._set_paused("clock_skew" if result.get("skew_over_limit") else None)
         return result
+
+    def _set_paused(self, reason: str | None) -> None:
+        if reason != self.live_paused:
+            log.warning("live placements %s", f"paused: {reason}" if reason else "resumed")
+        self.live_paused = reason
+        self.executor.live_blocked = reason
+
+    def check_skew(self, conn: Any) -> None:
+        """After a live task: the skew measured on its answers pauses placements
+        and auto-kills when over the limit, and clears the pause once back in range
+        (the auth probe is not the only answer that carries a Date header)."""
+        skew = getattr(self.live_gateway, "last_skew_ms", None)
+        if not self.credentials_present or not isinstance(skew, int):
+            return
+        if abs(skew) > self.skew_limit_ms:
+            if self.live_paused is None:
+                state.set_clock_skew(conn, skew)
+                self._set_paused("clock_skew")
+                live_sync.maybe_auto_kill(conn, "clock_skew", {"skew_ms": skew, "limit_ms": self.skew_limit_ms})
+        elif self.live_paused == "clock_skew":
+            state.set_clock_skew(conn, skew)
+            self._set_paused(None)
 
     def task_startup_reconcile(self, conn: Any, now: datetime) -> Any:
         return live_sync.startup_reconcile(conn, self.live_gateway, now)
@@ -146,20 +182,26 @@ class ExchangeLoop:
         return snapshots.poll(conn, source, self.limiter, now)
 
     def task_open_orders_audit(self, conn: Any, now: datetime) -> Any:
-        if not self.credentials_present or self.live_paused:
+        if not self.credentials_present:
             return None
-        return live_sync.audit_open_orders(conn, self.live_gateway, now)
+        result = live_sync.audit_open_orders(conn, self.live_gateway, now)
+        self.check_skew(conn)
+        return result
 
     def task_executor(self, conn: Any, now: datetime) -> Any:
-        return self.executor.tick(conn, now)
+        result = self.executor.tick(conn, now)
+        self.check_skew(conn)
+        return result
 
     def task_fills(self, conn: Any, now: datetime) -> Any:
         return paper.process(conn, now)
 
     def task_live_fills(self, conn: Any, now: datetime) -> Any:
-        if not self.credentials_present or self.live_paused:
+        if not self.credentials_present:
             return None
-        return live_sync.poll_fills(conn, self.live_gateway, now)
+        result = live_sync.poll_fills(conn, self.live_gateway, now)
+        self.check_skew(conn)
+        return result
 
     def task_scores(self, conn: Any, now: datetime) -> Any:
         return scores.poll(conn, now)
@@ -245,7 +287,9 @@ def run_once(pool: ConnectionPool, now: datetime | None = None, loop: ExchangeLo
 
 def load_credentials() -> Any:
     """host.exchange.credentials.load(), imported lazily; None when the module or the
-    environment variables are missing. The values are never logged."""
+    environment variables are missing. A present but malformed secret raises
+    CredentialsError (its message never carries the secret) after logging it, so
+    the owner can tell a bad format from a missing file. The values are never logged."""
     try:
         from host.exchange.credentials import load
     except ImportError:
@@ -253,19 +297,23 @@ def load_credentials() -> Any:
         return None
     try:
         return load()
-    except Exception as exc:  # noqa: BLE001 - a malformed secret must not stop the loop
+    except CredentialsError as exc:
+        log.error("credentials could not be loaded: %s", exc)
+        raise
+    except Exception as exc:  # noqa: BLE001 - anything else must not stop the loop
         log.error("credentials could not be loaded: %s", exc.__class__.__name__)
         return None
 
 
-def build_live_gateway(config: dict[str, Any], creds: Any, limiter: RateLimiter | None = None) -> OrderGateway:
+def build_live_gateway(config: dict[str, Any], creds: Any, limiter: RateLimiter | None = None, max_skew_ms: int | None = None) -> OrderGateway:
     """The real LiveGateway with credentials (imported lazily), otherwise a gateway
-    that rejects every live call as not configured."""
+    that rejects every live call as not configured. `max_skew_ms` is the skew over
+    which the gateway refuses to place."""
     if creds is None:
         return OrderGateway()
     from host.exchange.adapters.polymarket_us_live import LiveGateway
 
-    return LiveGateway(creds, config, limiter=limiter)
+    return LiveGateway(creds, config, limiter=limiter, max_skew_ms=max_skew_ms)
 
 
 def polymarket_us_config(conn: Any) -> dict[str, Any]:
@@ -276,9 +324,10 @@ def polymarket_us_config(conn: Any) -> dict[str, Any]:
 
 
 def live_gateway_from_settings(conn: Any) -> tuple[OrderGateway, Any]:
-    """(gateway, credentials) for the CLI commands that talk to the exchange directly."""
+    """(gateway, credentials) for the CLI commands that talk to the exchange directly
+    (CredentialsError for a malformed secret, so the command can say so)."""
     creds = load_credentials()
-    return build_live_gateway(polymarket_us_config(conn), creds), creds
+    return build_live_gateway(polymarket_us_config(conn), creds, max_skew_ms=live_sync.skew_limit_ms(conn)), creds
 
 
 def main() -> None:

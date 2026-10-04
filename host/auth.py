@@ -129,9 +129,19 @@ def check_owner(config: Config, login_header: str | None) -> str:
         return login or "dev"
     if not config.owner_login:
         raise Unauthorized("FLEET_OWNER_LOGIN is not configured")
-    presented = login.encode("utf-8", "surrogateescape")
-    if not login or not secrets.compare_digest(presented, config.owner_login.encode("utf-8")):
-        raise Unauthorized("owner login required")
+    if not login:
+        raise Unauthorized(
+            "owner login required: the request carried no Tailscale-User-Login header, so it did"
+            " not come through tailscale serve from a logged-in tailnet device"
+        )
+    # Logins are email addresses; compare them case-insensitively, in constant time.
+    presented = login.lower().encode("utf-8", "surrogateescape")
+    expected = config.owner_login.lower().encode("utf-8")
+    if not secrets.compare_digest(presented, expected):
+        raise Unauthorized(
+            f"owner login required: this device is signed in to Tailscale as {login!r},"
+            f" but FLEET_OWNER_LOGIN is set to {config.owner_login!r}"
+        )
     return login
 
 

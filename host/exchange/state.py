@@ -79,17 +79,20 @@ def record_auth_failure(conn: psycopg.Connection, now: datetime, error: str, cre
     return int(row["auth_failures"]) if row else 0
 
 
-def set_credentials_present(conn: psycopg.Connection, present: bool) -> None:
-    """Without credentials there is no session: auth_ok false and failures cleared."""
+def set_credentials_present(conn: psycopg.Connection, present: bool, error: str | None = None) -> None:
+    """Without credentials there is no session: auth_ok false and failures cleared;
+    `error` is the loader's secret-free message for a malformed secret (shown as
+    the last auth error so the owner can tell it from a missing file)."""
     if present:
         conn.execute("UPDATE exchange_state SET credentials_present = true, updated_at = now() WHERE id = true")
         return
     conn.execute(
         """
         UPDATE exchange_state SET credentials_present = false, auth_ok = false, auth_failures = 0,
-               last_auth_error = 'no credentials loaded', updated_at = now()
+               last_auth_error = %s, updated_at = now()
          WHERE id = true
-        """
+        """,
+        (str(error)[:500] if error else "no credentials loaded",),
     )
 
 

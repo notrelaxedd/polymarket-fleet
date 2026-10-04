@@ -4,7 +4,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+# Never commit secrets: .env (the host service loads it) and exchange.env (the Polymarket US keys).
 .env
+*.env
+!.env.example
+exchange.env
 *.tar.gz
 dist/
 build/

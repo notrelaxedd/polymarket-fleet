@@ -99,6 +99,8 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
     live_orders = views.live_order_counts(conn)
     return {
         "live_orders": live_orders["live"],
+        "live_open": live_orders["open"],
+        "live_cancel_pending": live_orders["cancel_pending"],
         "smoke_orders": live_orders["smoke"],
         "assignments": rows,
         "killed": killed,

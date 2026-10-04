@@ -6,11 +6,15 @@ Two gateways, chosen by the order's mode. Every tick: `approved -> submitting`
 `submitting` to be reconciled by client id (open orders, then fills, then expiry
 after `submitting_grace_s`), never resubmitted blind. `cancel_requested` rows go to
 the gateway with retries at 1, 2, 4, 8 s (then every 8 s) until `open_orders()` no
-longer lists them; `open`/`partial` rows past `gtd_at` expire with the ledger
-release. Nothing is ever submitted while the kill switch is on: the kill flag is read
-FOR SHARE in the transaction that marks a row `submitting`, so a kill in flight is
-waited for and an approved row found under kill is cancelled with release. While
-`live_blocked` is set (clock skew over the limit) no live request is signed.
+longer lists them, their last fills absorbed before the release (and never closed
+while the fills call fails); `open`/`partial` rows past `gtd_at` expire: paper at
+once with the release, live through the same cancel path (reason `gtd`), closed as
+`expired` once the exchange no longer lists them. Nothing is ever submitted while the
+kill switch is on: the kill flag is read FOR SHARE in the transaction that marks a
+row `submitting`, so a kill in flight is waited for and an approved row found under
+kill is cancelled with release. While `live_blocked` is set (clock skew over the
+limit) no live order is placed; cancels, listings and fills keep going so a kill's
+cancels still reach the exchange.
 """
 from __future__ import annotations
 
@@ -87,6 +91,7 @@ class Executor:
         self.limiter = limiter
         self.actor = actor
         self.retries: dict[str, tuple[int, float]] = {}
+        self.sent: set[str] = set()  # live cancels acknowledged, awaiting open_orders() confirmation
         self.live_blocked: str | None = None
 
     @property
@@ -96,9 +101,6 @@ class Executor:
 
     def gateway_for(self, order: dict[str, Any]) -> OrderGateway:
         return self.live_gateway if order["mode"] == "live" else self.paper_gateway
-
-    def _blocked(self, order: dict[str, Any]) -> bool:
-        return order["mode"] == "live" and self.live_blocked is not None
 
     def tick(self, conn: psycopg.Connection, now: datetime | None = None) -> dict[str, int]:
         now = now or utcnow()
@@ -112,9 +114,9 @@ class Executor:
         _commit(conn)
         counts["kickoff"] = self.cancel_at_kickoff(conn, now)
         _commit(conn)
-        counts["cancels"] = self.process_cancels(conn, now)
-        _commit(conn)
         counts["expired"] = self.expire_orders(conn, now)
+        _commit(conn)
+        counts["cancels"] = self.process_cancels(conn, now)
         _commit(conn)
         return counts
 
@@ -163,8 +165,14 @@ class Executor:
         return submitted
 
     def _take(self, gateway: OrderGateway, category: str, now: datetime) -> bool:
-        """One limiter token for a live call, unless the gateway takes its own."""
-        if self.limiter is None or takes_own_tokens(gateway):
+        """One limiter token for a live call. A gateway that takes its own tokens is
+        asked whether one is due within its `limiter_wait_s` first, so an order is
+        not marked submitting only to be refused by the local limiter."""
+        if takes_own_tokens(gateway):
+            wait = float(gateway.limiter.wait_seconds(category, now=now))  # type: ignore[attr-defined]
+            allowed = float((getattr(gateway, "live", None) or {}).get("limiter_wait_s") or 0.0)
+            return wait <= allowed
+        if self.limiter is None:
             return True
         return self.limiter.take(category, now=now)
 
@@ -190,7 +198,28 @@ class Executor:
             log.warning("order %s became %s while being placed; cancelling on the exchange", order["id"], current["status"])
             conn.execute("UPDATE orders SET exchange_order_id = %s, updated_at = now() WHERE id = %s", (exchange_id, order["id"]))
             current["exchange_order_id"] = exchange_id
-            self._cancel_on_exchange(conn, current, now=utcnow())
+            self._cancel_after_race(conn, current)
+
+    def _cancel_after_race(self, conn: psycopg.Connection, current: dict[str, Any]) -> None:
+        """The row changed under a place in flight (a kill, cancel-all --direct): the
+        order that reached the exchange is cancelled there right away whatever the
+        row's status, since a row already closed in the database would otherwise
+        leave it orphaned. A cancel_requested row is then confirmed like any other
+        (at once on a paper gateway, through open_orders() on a live one)."""
+        gateway = self.gateway_for(current)
+        if current["status"] == "cancel_requested":
+            if self._cancel_on_exchange(conn, current, utcnow()):
+                if isinstance(gateway, PaperGateway):
+                    orders.confirm_cancelled(conn, current["id"], self.actor, {"gateway": gateway.name})
+                else:
+                    self.sent.add(str(current["id"]))
+            return
+        if current["mode"] != "live":
+            return
+        try:
+            gateway.cancel(current)
+        except Exception as exc:  # noqa: BLE001 - the audit finds and cancels an orphan as a last resort
+            log.warning("cancel of order %s after the place race failed: %s", current["id"], exc)
 
     def _reject_by_exchange(self, conn: psycopg.Connection, order: dict[str, Any], reason: str) -> None:
         current = orders.get_order(conn, order["id"], for_update=True)
@@ -216,7 +245,7 @@ class Executor:
                 exchange_id = gateway.place(row)
                 orders.set_status(conn, row["id"], "open", self.actor, {"reconciled": True, "exchange_order_id": exchange_id}, expected=("submitting",), exchange_order_id=exchange_id)
                 done += 1
-            elif not self._blocked(row):
+            else:
                 live_rows.append(dict(row))
         if live_rows:
             result = live_sync.reconcile_submitting(conn, self.live_gateway, live_rows, now, self.actor)
@@ -260,10 +289,13 @@ class Executor:
         done, verify = 0, []
         for row in rows:
             key = str(row["id"])
-            attempts, next_at = self.retries.get(key, (0, 0.0))
-            if now.timestamp() < next_at or self._blocked(row):
+            if key in self.sent:
+                verify.append(dict(row))  # acknowledged earlier (the place race): confirm, do not resend
                 continue
-            if not self._cancel_on_exchange(conn, row, now, confirm=False):
+            attempts, next_at = self.retries.get(key, (0, 0.0))
+            if now.timestamp() < next_at:
+                continue
+            if not self._cancel_on_exchange(conn, row, now):
                 self._schedule_retry(key, attempts, now)
             elif isinstance(self.gateway_for(row), PaperGateway):
                 orders.confirm_cancelled(conn, row["id"], self.actor, {"gateway": self.gateway_for(row).name})
@@ -276,6 +308,9 @@ class Executor:
         return done
 
     def _confirm_live_cancels(self, conn: psycopg.Connection, rows: list[dict[str, Any]], now: datetime) -> int:
+        """Rows the exchange no longer lists are closed (expired past gtd, else
+        cancelled) once their last fills were read; when the listing or the fills
+        call fails nothing closes and every row is retried on the schedule."""
         try:
             remote = [o for o in self.live_gateway.open_orders() if isinstance(o, dict)]
         except Exception as exc:  # noqa: BLE001 - unconfirmed: retried on the schedule
@@ -284,37 +319,42 @@ class Executor:
         gone = [r for r in rows if remote is not None and not live_sync.listed(r, remote)]
         gone_ids = {str(r["id"]) for r in gone}
         if gone:
-            live_sync.record_fills(conn, live_sync.fetch_fills(self.live_gateway, live_sync.fills_since(gone, now)), only=gone_ids, actor=self.actor)
+            fills = live_sync.fetch_fills(self.live_gateway, live_sync.fills_since(gone, now))
+            if fills is None:
+                log.warning("fills unavailable: %d confirmed cancel(s) left open for the next pass", len(gone))
+                gone_ids = set()
+            else:
+                live_sync.record_fills(conn, fills, only=gone_ids, actor=self.actor)
         for row in rows:
             key = str(row["id"])
+            self.sent.discard(key)
             if key in gone_ids:
-                orders.confirm_cancelled(conn, row["id"], self.actor, {"gateway": self.live_gateway.name})
+                live_sync.confirm_gone(conn, row["id"], now, self.actor, {"gateway": self.live_gateway.name})
                 self.retries.pop(key, None)
             else:
                 self._schedule_retry(key, self.retries.get(key, (0, 0.0))[0], now)
-        return len(gone)
+        return len(gone_ids)
 
-    def _cancel_on_exchange(self, conn: psycopg.Connection, order: dict[str, Any], now: datetime, confirm: bool = True) -> bool:
-        """Send a cancel to the gateway; True when it answered ok. With `confirm` the
-        row is closed at once (paper, and the kill race in _place)."""
+    def _cancel_on_exchange(self, conn: psycopg.Connection, order: dict[str, Any], now: datetime) -> bool:
+        """Send a cancel to the gateway for a cancel_requested row; True when it
+        answered ok (the caller confirms through open_orders for live rows)."""
         if order["status"] != "cancel_requested":
             return True
         if order["mode"] == "live" and not self._take(self.gateway_for(order), "cancels", now):
             return False
         try:
-            ok = self.gateway_for(order).cancel(order)
+            return bool(self.gateway_for(order).cancel(order))
         except Exception as exc:  # noqa: BLE001 - retried on the schedule
             log.warning("cancel of order %s failed: %s", order["id"], exc)
             return False
-        if not ok:
-            return False
-        if confirm:
-            orders.confirm_cancelled(conn, order["id"], self.actor, {"gateway": self.gateway_for(order).name})
-        return True
 
     # ------------------------------------------------------------------ expiry
 
     def expire_orders(self, conn: psycopg.Connection, now: datetime) -> int:
+        """Paper rows past gtd_at expire at once with the release. A live row goes
+        through the cancel path (cancel_requested, reason gtd): the exchange may
+        have filled it in the last second, so it is closed as `expired` only once
+        open_orders() no longer lists it and its fills were absorbed."""
         rows = conn.execute(
             "SELECT * FROM orders WHERE status IN ('open', 'partial') AND gtd_at IS NOT NULL AND gtd_at <= %s FOR UPDATE SKIP LOCKED",
             (now,),
@@ -322,16 +362,10 @@ class Executor:
         expired = 0
         for row in rows:
             if row["mode"] == "live":
-                if self._blocked(row):
-                    continue
-                try:
-                    if not self.gateway_for(row).cancel(row):
-                        continue
-                except Exception as exc:  # noqa: BLE001
-                    log.warning("expiry cancel of order %s failed: %s", row["id"], exc)
-                    continue
-            orders.release_unfilled(conn, row, note="gtd expired")
-            orders.set_status(conn, row["id"], "expired", self.actor, {"gtd_at": row["gtd_at"].isoformat()}, expected=("open", "partial"))
+                orders.set_status(conn, row["id"], "cancel_requested", self.actor, {"reason": "gtd", "gtd_at": row["gtd_at"].isoformat()}, expected=("open", "partial"))
+            else:
+                orders.release_unfilled(conn, row, note="gtd expired")
+                orders.set_status(conn, row["id"], "expired", self.actor, {"gtd_at": row["gtd_at"].isoformat()}, expected=("open", "partial"))
             expired += 1
         return expired
 

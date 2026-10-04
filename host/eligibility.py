@@ -5,6 +5,9 @@ A lineage's status comes from its root model's backtest metrics against the
 back to candidate when they stop holding. paper_ok -> live_eligible is step 4 (an
 existing live_eligible row keeps it while the backtest thresholds still hold). A
 retired lineage stays retired. The status is written to every row of the lineage.
+Whenever a lineage leaves `live_eligible` (a thresholds change, a new backtest result,
+the paper gate, a retirement) its active live assignments are halted, which cancels
+their orders (docs/LIVE.md: "demoting a lineage halts them").
 
 `thresholds` reads the setting FOR SHARE, and every model write reads it before it
 touches a model row: a write that overlaps a thresholds change waits for the new
@@ -64,10 +67,20 @@ def status_for(current: str, metrics: dict[str, Any] | None, limits: dict[str, A
     return "live_eligible" if current == "live_eligible" else "paper_ok"
 
 
-def recompute_lineage(conn: psycopg.Connection, lineage_id: Any, limits: dict[str, Any] | None = None) -> str | None:
+def recompute_lineage(
+    conn: psycopg.Connection, lineage_id: Any, limits: dict[str, Any] | None = None, actor: str | None = "eligibility",
+) -> str | None:
     """Recompute and store the status of every row of a lineage; the new status, or
     None when the lineage has no root row. `limits` are the thresholds already read
-    by the caller (before it locked any model row), else they are read here."""
+    by the caller (before it locked any model row), else they are read here. A
+    lineage that was live_eligible and no longer is gets its live assignments halted
+    (under the live approval lock, taken before the model rows as the kill and the
+    settlement do)."""
+    from host.kill import approval_lock
+
+    was = conn.execute("SELECT status FROM models WHERE id = %s", (lineage_id,)).fetchone()
+    if was is not None and was["status"] == "live_eligible":
+        approval_lock(conn, "live")
     rows = conn.execute(
         "SELECT id, status, backtest_metrics FROM models WHERE lineage_id = %s FOR UPDATE", (lineage_id,)
     ).fetchall()
@@ -80,6 +93,9 @@ def recompute_lineage(conn: psycopg.Connection, lineage_id: Any, limits: dict[st
         "UPDATE models SET status = %s, updated_at = now() WHERE lineage_id = %s AND status <> %s",
         (new, lineage_id, new),
     )
+    if current == "live_eligible" and new != "live_eligible":
+        add_audit(conn, "eligibility_changed", str(lineage_id), actor, {"status": current}, {"status": new})
+        halt_live_assignments(conn, lineage_id, actor, "lineage no longer live_eligible")
     return new
 
 
@@ -157,7 +173,7 @@ def recompute_paper(conn: psycopg.Connection, lineage_id: Any, actor: str | None
     paper_ok` (live assignments halted, their orders cancelled) when they stop
     meeting them. The status, or None for an unknown lineage."""
     paper_limits = paper_thresholds(conn)
-    current = recompute_lineage(conn, lineage_id)
+    current = recompute_lineage(conn, lineage_id, actor=actor)
     if current is None:
         return None
     meets = meets_paper_thresholds(paper_stats(conn, lineage_id), paper_limits)

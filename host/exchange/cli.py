@@ -5,12 +5,13 @@ probe                                        the configured source's raw markets
 run-once                                     every exchange task once
 exchange-state                               the heartbeat row
 exchange-smoke --confirm "SMOKE YYYY-MM-DD"  the smoke order (docs/LIVE.md), [--market ID] [--hold S]
-cancel-all --direct                          list and cancel the open orders on the exchange, close the rows
+cancel-all --direct                          live off, then list and cancel the open orders on the exchange, close the rows
 probe-account                                the balance call's status and raw payload (key redacted)
 auth-check                                   one auth probe written to exchange_state
 
 The live commands load the credentials from the environment (exchange.env) the way
-the exchange process does; the key and secret are never printed.
+the exchange process does; the key and secret are never printed. A malformed secret
+exits 1 with the loader's secret-free message instead of "no credentials".
 """
 from __future__ import annotations
 
@@ -69,11 +70,17 @@ def cmd_exchange_state(config: Config, _: argparse.Namespace) -> None:
 
 
 def build_gateway(config: Config) -> tuple[Any, Any]:
-    """(live gateway, credentials) from the environment and the settings row."""
+    """(live gateway, credentials) from the environment and the settings row; exit 1
+    naming the problem when the secret is present but malformed."""
+    from host.exchange.credentials import CredentialsError
     from host.exchange.main import live_gateway_from_settings
 
-    with db.connect(config.database_url) as conn:
-        return live_gateway_from_settings(conn)
+    try:
+        with db.connect(config.database_url) as conn:
+            return live_gateway_from_settings(conn)
+    except CredentialsError as exc:
+        print(f"error: secret malformed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 def cmd_exchange_smoke(config: Config, args: argparse.Namespace) -> None:
@@ -81,6 +88,14 @@ def cmd_exchange_smoke(config: Config, args: argparse.Namespace) -> None:
     if creds is None:
         print("error: no credentials in the environment (POLYMARKET_US_API_KEY / _SECRET)", file=sys.stderr)
         raise SystemExit(1)
+    if args.drive:
+        # Driving from this process: measure the clock skew on a probe first, so the
+        # gateway's skew guard applies to the smoke placement as it does in the loop.
+        try:
+            gateway.balance()
+        except Exception as exc:  # noqa: BLE001 - the owner wants the error text
+            print(f"error: auth probe failed before the smoke order: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
     pool = db.make_pool(config.database_url, max_size=2)
     try:
         result = smoke.run_smoke(pool, args.confirm, args.market, args.hold, gateway=gateway if args.drive else None)
@@ -108,9 +123,17 @@ def cmd_cancel_all(config: Config, args: argparse.Namespace) -> None:
         raise SystemExit(1)
     with db.connect(config.database_url) as conn:
         result = live_sync.cancel_all_direct(conn, gateway, utcnow(), time.sleep, "cli")
+    off = result["live_off"]
+    print(f"live off (was {'on' if off['was_on'] else 'off'}): assignments halted={len(off['assignments_halted'])} "
+          f"approved rows cancelled={result['approved_cancelled']}")
     print_table(result["remote"], ["exchange_order_id", "client_order_id", "order_id", "cancelled", "attempts", "row_status", "error"])
     print(f"remote={len(result['remote'])} cancelled={sum(1 for r in result['remote'] if r['cancelled'])} "
           f"rows_closed={len(result['rows_closed'])} still_open={result['still_open']}")
+    if result["left_for_exchange"]:
+        print(f"left cancel_requested for the exchange process (never seen on the exchange): {', '.join(result['left_for_exchange'])}")
+    if result["error"]:
+        print(f"error: {result['error']}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 def cmd_probe_account(config: Config, _: argparse.Namespace) -> None:

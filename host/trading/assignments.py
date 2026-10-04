@@ -62,11 +62,11 @@ def lineage_retired(conn: psycopg.Connection, lineage_id: Any) -> bool:
     return row is not None
 
 
-def live_gate(conn: psycopg.Connection, model: dict[str, Any]) -> None:
-    """The three live preconditions (host.trading.live); 409 naming the first that fails."""
+def live_gate(conn: psycopg.Connection, model: dict[str, Any], game_id: str | None = None) -> None:
+    """The live preconditions (host.trading.live); 409 naming the first that fails."""
     from host.trading.live import live_gate as gate
 
-    gate(conn, model)
+    gate(conn, model, game_id)
 
 
 def halt_live_assignments(conn: psycopg.Connection, actor: str | None, reason: str) -> list[str]:
@@ -109,6 +109,10 @@ def create_assignment(
         raise BadRequest("bankroll must be a whole number of cents between 0 and the fleet maximum")
     if max_bet_cents is not None and (not _is_int(max_bet_cents) or max_bet_cents < 0 or max_bet_cents > MAX_CENTS):
         raise BadRequest("max bet must be a whole number of cents")
+    if mode == "live":
+        # The lock kill.live_off holds: a live assignment can never commit beside a
+        # live-off that did not see it (it would survive as active).
+        approval_lock(conn, "live")
     game = conn.execute("SELECT * FROM games WHERE game_id = %s FOR UPDATE", (str(game_id),)).fetchone()
     if game is None:
         raise BadRequest(f"unknown game {game_id!r}")
@@ -118,7 +122,7 @@ def create_assignment(
     if model["status"] == "retired" or lineage_retired(conn, model["lineage_id"]):
         raise BadRequest("the model's lineage is retired")
     if mode == "live":
-        live_gate(conn, model)
+        live_gate(conn, model, game["game_id"])
     else:
         cap = get_int_setting(conn, "max_paper_models_per_game", 3)
         n = conn.execute(
@@ -191,9 +195,10 @@ def _job_is_live(conn: psycopg.Connection, job_id: Any) -> bool:
 
 
 def _activate(conn: psycopg.Connection, row: dict[str, Any], actor: str | None) -> dict[str, Any]:
-    """Shared body of activate_assignment and activate_all_paper (row is locked)."""
+    """Shared body of activate_assignment and activate_all_paper (row is locked; a
+    live row's caller holds the live approval lock)."""
     if row["mode"] == "live":
-        live_gate(conn, _model(conn, row["model_id"]))
+        live_gate(conn, _model(conn, row["model_id"]), row["game_id"])
     if not _job_is_live(conn, row["job_id"]):
         _insert_trade_job(conn, row["id"], None)
     after = _set_status(conn, row["id"], "active")
@@ -214,6 +219,8 @@ def activate_assignment(conn: psycopg.Connection, assignment_id: Any, actor: str
     """halted -> active (refused under kill, for a final game, or when a live
     precondition fails). Already active: idempotent. Settled or cancelled: 409."""
     killed = killed_locked(conn)
+    if get_assignment(conn, assignment_id)["mode"] == "live":
+        approval_lock(conn, "live")  # serialised with live_off, before the row lock
     row = get_assignment(conn, assignment_id, for_update=True)
     if row["status"] == "active":
         return row

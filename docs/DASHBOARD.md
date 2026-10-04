@@ -33,8 +33,10 @@ Very simple and clean. Phone first. No framework, no build step, no external ass
 - Top bar (sticky): wordmark "Fleet"; nav: Fleet, Jobs, Models (changed: step 3 enables
   it), Trading (changed: step 4 enables it), Settings; status cluster: mode pill
   (`PAPER` grey or `LIVE` green from `settings.live_enabled`), P&L per mode "paper today
-  $0.00 · all $0.00" (from `/api/pnl`; "live today · all" follows it only while
-  `live_enabled` is on), red KILL button. (step 4) Two banners sit under the status
+  $0.00 · all $0.00" (from `/api/pnl`; "live today · all" follows it while
+  `live_enabled` is on and, with live off, as long as real money is still in play: an
+  active live order, a live assignment not yet settled, or cash reserved or in open
+  live positions), red KILL button. (step 4) Two banners sit under the status
   cluster on their own line, each a link with `role="alert"`: a red "EXCHANGE DOWN"
   (`/trading#exchange`) when the exchange heartbeat is missing or older than 15 s while
   any order is active or the kill switch is on, and an amber "N assignments unattended"
@@ -193,6 +195,9 @@ validation keep working:
   auth (`ok` chip, red `failed` chip with the failure streak, or "not checked", plus
   "checked N ago"), balance and buying power in dollars ("-" when never fetched), clock
   skew in ms, the last auth error in red, and the auto-kill reasons since the last reset
+  each followed by its one-line recovery (`data-remedy="<reason>"`); the credentials
+  line reads "exchange.env missing or malformed (see the last auth error)" when none
+  are loaded, and the kill card names the recovery for the newest automatic kill
   as red chips ("none since the last reset"). `live_enabled` has no field in any generic
   group and `POST /settings/live` is never treated as a settings group.
 - Kill switch: state, and when killed a reset form with a text field that must contain
@@ -246,9 +251,12 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
   - Exchange (`#exchange`): an "up" or red "DOWN" chip (heartbeat older than 15 s or
     never), heartbeat age and time, market source, (step 5) auth as an `ok` / red
     `failed` chip or "not checked" with "checked N ago", credentials yes/no and the
-    clock skew, balance and buying power in dollars with the age of the figure, "N open"
-    live orders with an amber "M smoke" chip when smoke orders rest among them, the last
-    error in red and, when set, the last auth error in red, and a "Probe markets" button
+    clock skew, balance and buying power in dollars with the age of the figure, live
+    orders as "N open, M cancel pending" (M only when some await the exchange's cancel)
+    with an amber "M smoke" chip when smoke orders rest among them, when the exchange is
+    DOWN with live orders active a "recovery" line (`c-direct-cancel`) naming the
+    `cancel-all --direct` command (press KILL first), the last error in red and, when
+    set, the last auth error in red, and a "Probe markets" button
     (`POST /exchange/probe`) that renders the raw truncated payload on its own page with
     a Copy button for pasting back.
   - (step 5) Live rows: an assignment or order in mode `live` carries `is-live` (a

@@ -16,6 +16,7 @@ from psycopg.types.json import Jsonb
 from host import kill
 from host.exchange import executor, mapping, ratelimit, retention, snapshots, state
 from host.exchange.adapters.base import Book, MarketInfo, NotConfigured, OrderGateway, PaperGateway
+from host.nflverse import EASTERN as _EASTERN
 from host.exchange.adapters.sim import SimSource
 from host.exchange.main import ExchangeLoop, run_once
 from host.exchange.paper import fee_per_contract
@@ -23,7 +24,10 @@ from host.trading import ledger, orders
 from tests.conftest import backtest_metrics, insert_model
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
-KICKOFF = NOW + timedelta(days=2)
+# Two days out at 13:00 Eastern, so the mapping tests' +1 h / +2 h starts stay on the
+# same Eastern gameday whatever the hour the suite runs at (02:00 to 04:00 UTC used
+# to cross the Eastern midnight).
+KICKOFF = (NOW + timedelta(days=2)).astimezone(_EASTERN).replace(hour=13, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
 
 # ---------------------------------------------------------------------- helpers
@@ -326,6 +330,9 @@ class FlakyGateway(OrderGateway):
 
     def open_orders(self):
         return self.remote
+
+    def fills(self, since):
+        return []  # a cancel is confirmed only once the fills were read
 
 
 def _setup(conn, mode="paper", bankroll=10_000):

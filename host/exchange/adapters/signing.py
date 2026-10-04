@@ -8,7 +8,10 @@ signature encoding and the header names all come from
     signature = Ed25519(seed).sign(message UTF-8), base64 (or hex)
 
 `path` includes the query string, `method` is upper-cased, `body` is the exact bytes
-sent (empty for GET). The same seed and message always give the same signature.
+sent (empty for GET). The same seed and message always give the same signature. The
+template comes from the database, so it is checked first (live_policy.template_problem):
+each placeholder exactly once and nothing else, so no setting can make this process
+sign attacker-chosen bytes.
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from typing import Any, Callable
 
 from nacl.signing import SigningKey
 
+from host.exchange.adapters.live_policy import template_problem
 from host.exchange.credentials import Credentials
 
 AUTH_DEFAULTS: dict[str, Any] = {
@@ -63,6 +67,9 @@ def timestamp_now(auth_config: dict[str, Any] | None, clock: Callable[[], dateti
 def message_for(method: str, path: str, body: bytes, timestamp: str, auth_config: dict[str, Any] | None) -> bytes:
     """The UTF-8 bytes that get signed."""
     template = str(_auth(auth_config, "template"))
+    problem = template_problem(template)
+    if problem:
+        raise ValueError(f"auth.template {problem}; signing refused")
     text = template.format(timestamp=timestamp, method=method.upper(), path=path, body=body.decode("utf-8"))
     return text.encode("utf-8")
 

@@ -188,7 +188,10 @@
   <dt>source</dt><dd>{{ exchange.market_source or '-' }}</dd>
   <dt>auth</dt><dd class="c-auth">{% if exchange.auth_ok %}<span class="chip chip-ok">ok</span>{% elif exchange.auth_checked_at %}<span class="chip chip-bad">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if exchange.auth_checked_at %} <span class="muted small">checked {{ exchange.auth_age_s | ago }}</span>{% endif %} &middot; credentials {{ 'yes' if exchange.credentials_present else 'no' }}{% if exchange.clock_skew_ms is not none %} &middot; skew {{ exchange.clock_skew_ms }} ms{% endif %}</dd>
   <dt>balance</dt><dd class="c-balance">{% if exchange.balance_cents is not none %}{{ exchange.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %} &middot; buying power {% if exchange.buying_power_cents is not none %}{{ exchange.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}{% if exchange.balance_checked_at %} <span class="muted small">{{ exchange.balance_age_s | ago }}</span>{% endif %}</dd>
-  <dt>live orders</dt><dd class="c-live-orders">{{ live_orders }} open{% if smoke_orders %} <span class="chip chip-smoke">{{ smoke_orders }} smoke</span>{% endif %}</dd>
+  <dt>live orders</dt><dd class="c-live-orders">{{ live_open }} open{% if live_cancel_pending %}, {{ live_cancel_pending }} cancel pending{% endif %}{% if smoke_orders %} <span class="chip chip-smoke">{{ smoke_orders }} smoke</span>{% endif %}</dd>
+  {% if exchange.down and live_orders %}
+  <dt>recovery</dt><dd class="c-direct-cancel"><span class="error">{{ live_orders }} live order{{ '' if live_orders == 1 else 's' }} may rest on the exchange with its process down.</span> Press KILL first, then on the host: <code>docker compose stop exchange &amp;&amp; docker compose run --rm exchange python -m host.exchange.cli cancel-all --direct</code></dd>
+  {% endif %}
   <dt>last error</dt><dd>{% if exchange.last_error %}<span class="error">{{ exchange.last_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
   {% if exchange.last_auth_error %}
   <dt>last auth error</dt><dd><span class="error">{{ exchange.last_auth_error }}</span></dd>

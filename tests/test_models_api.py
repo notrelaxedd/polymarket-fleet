@@ -211,7 +211,7 @@ def test_owner_summary_limit_and_retire(client, conn):
     audit = conn.execute("SELECT action, entity, before, after FROM audit_log WHERE action LIKE 'model_%%' ORDER BY id").fetchall()
     assert [a["action"] for a in audit] == ["model_summary", "model_summary", "model_summary", "model_retired"]
     assert audit[0]["entity"] == str(root["id"]) and audit[0]["before"] == {"summary": "old"} and audit[0]["after"] == {"summary": "x" * 600}
-    assert audit[-1] == {"action": "model_retired", "entity": str(child["id"]), "before": {"status": "paper_ok"}, "after": {"status": "retired"}}
+    assert audit[-1] == {"action": "model_retired", "entity": str(child["id"]), "before": {"status": "paper_ok"}, "after": {"status": "retired", "assignments_halted": []}}
 
 
 def test_data_refresh_route_reads_the_configured_url(client, conn, monkeypatch):

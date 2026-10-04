@@ -229,7 +229,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     assert third["exchange_order_id"] in gw.remote
     exchange.close()
     monkeypatch.setattr(exchange_main, "load_credentials", lambda: FakeCredentials())
-    monkeypatch.setattr(exchange_main, "build_live_gateway", lambda config, creds, limiter=None: gw)
+    monkeypatch.setattr(exchange_main, "build_live_gateway", lambda config, creds, limiter=None, max_skew_ms=None: gw)
     out = io.StringIO()
     with contextlib.redirect_stdout(out):
         assert exchange_cli.main(["cancel-all", "--direct"]) == 0, out.getvalue()
@@ -240,8 +240,12 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     assert closed["status"] == "cancelled" and closed["events"][-1]["detail"] == {"reason": "cancel-all --direct"}
     assert host.get(f"/api/assignments/{aid}")["bankroll"]["reserved_cents"] == 0
     direct = next(a for a in host.get("/api/audit?limit=10") if a["action"] == "cancel_all")
-    assert direct["after"]["direct"] is True and direct["actor"] == "cli"
+    assert direct["after"]["direct"] is True and direct["actor"] == "cli" and direct["after"]["live_was_on"] is True
+    assert "live off (was on)" in text, text
+    state = live_state(host)
+    assert state["live_enabled"] is False and host.get(f"/api/assignments/{aid}")["status"] == "halted", "the direct cancel-all turns live off first"
     assert "ledger ok" in run_cli(["ledger-check"])
+    _enable_live(host, phrase)  # the owner turns live on again once the exchange is back
 
     # simulate-final (sim source): the filled live order becomes a bet; live P&L.
     side = next(m["side"] for m in markets if m["id"] == first["market_id"])

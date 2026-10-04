@@ -34,7 +34,7 @@ docker compose up -d
 docker compose ps
 ```
 
-   `exchange.env` is optional (compose starts without it, and the system stays paper-only). It holds the Polymarket US API keys and is created in "Live trading (step 5)" below; keep it out of git. Only the `exchange` service loads it, never `host`.
+   `exchange.env` is optional (compose starts without it, and the system stays paper-only). It holds the Polymarket US API keys and is created in "Live trading (step 5)" below; `.gitignore` and `.dockerignore` keep it (and every other `*.env` file except `.env.example`) out of git and out of the image. Only the `exchange` service loads it, never `host`.
 
 6. In an elevated PowerShell, expose port 8080 to the tailnet:
 
@@ -193,18 +193,19 @@ POLYMARKET_US_API_SECRET=<your secret>
 POLYMARKET_US_PASSPHRASE=<only if you were given one>
 ```
 
-Make the file readable by your user only. Windows (PowerShell):
+Never put the keys in `.env`: the `host` service loads `.env`, and only the `exchange` service loads `exchange.env`. Make the file readable only by the user who runs `docker compose` (compose reads env files on the client side, so a root-only file breaks a docker-group user's `docker compose up`). Windows (PowerShell):
 
 ```powershell
 icacls exchange.env /inheritance:r /grant:r "$($env:USERNAME):(R,W)"
 ```
 
-Debian, as root:
+Debian, as the user who runs compose:
 
 ```bash
-chown root:root exchange.env
 chmod 600 exchange.env
 ```
+
+The file is git-ignored (`exchange.env` and every `*.env` but `.env.example`), so `git add .` cannot pick it up. If the exchange should talk to a sandbox instead of the real API, add `POLYMARKET_US_LIVE_BASE_URL=https://<sandbox host>` to the same file: the Settings value `polymarket_us.live.base_url` is pinned to https on `polymarket.us` and cannot send signed requests anywhere else.
 
 Restart only the exchange service so it loads the file (do not restart `host` or `db`):
 
@@ -212,7 +213,7 @@ Restart only the exchange service so it loads the file (do not restart `host` or
 docker compose up -d --force-recreate exchange
 ```
 
-Only the `exchange` service loads `exchange.env`. The keys are never logged, stored in the database or returned by any page or command.
+The keys are never logged, stored in the database or returned by any page or command.
 
 ### Check the credentials
 
@@ -223,11 +224,11 @@ docker compose exec exchange python -m host.exchange.cli auth-check
 docker compose exec exchange python -m host.exchange.cli probe-account
 ```
 
-If auth fails, paste the probe output back. The API was written without access to the docs, so the signing rule, header names and paths are assumptions kept in `market_source_config` (`polymarket_us.auth` and `.live`) and may need fixing from the raw payload. The probe shows the key's last 4 characters only, never the secret.
+If auth fails, paste the probe output back. The API was written without access to the docs, so the signing rule, header names and paths are assumptions kept in `market_source_config` (`polymarket_us.auth` and `.live`) and may need fixing from the raw payload. The probe shows the key's last 4 characters only, never the secret. If Settings says credentials "no" with a last auth error "credentials malformed: ...", the secret in `exchange.env` is not a usable Ed25519 seed (the message names the format problem, never the value); `probe-account` and the other live commands print the same as "secret malformed".
 
 ### How to test step 5
 
-Needs the compose stack up, credentials present and auth OK as above. Start with a clean state: kill off, nothing open on `/trading`.
+Needs the compose stack up, credentials present and auth OK as above. Start with a clean state: kill off, nothing open on `/trading`, and in Settings set market source to `polymarket_us` and confirm the NFL markets on `/trading` first: live orders and the smoke order only go to markets of the current source (`polymarket_clob` is a price source only, and markets left over from `sim` or the CLOB are never traded live).
 
 1. Enable live. In Settings, "Live trading", type the phrase exactly, with the current date in your time zone. For example, on 2026-10-04 it is:
 
@@ -235,41 +236,42 @@ Needs the compose stack up, credentials present and auth OK as above. Start with
 ENABLE LIVE TRADING 2026-10-04
 ```
 
-   Yesterday's or tomorrow's date, other wording or extra whitespace is refused. It is also refused while the kill is on, without credentials, or if auth was not checked within the last 10 minutes. On success the top bar pill turns green and says LIVE, and the audit log gets a `live_on` row. The form shows the exact phrase to type.
+   The date is the one in the Settings time zone (the form shows the exact phrase). Yesterday's or tomorrow's date, other wording or extra whitespace is refused. It is also refused while the kill is on, without credentials, or if auth was not checked within the last 10 minutes. On success the top bar pill turns green and says LIVE, and the audit log gets a `live_on` row. The form shows the exact phrase to type.
 2. Smoke order. This places one real 1-share order far below the best bid so it rests and never fills, then cancels it. It proves keys, signing, placement and cancellation without giving any model money. Use today's date:
 
 ```powershell
 docker compose exec exchange python -m host.exchange.cli exchange-smoke --confirm "SMOKE 2026-10-04"
 ```
 
-   Add `--market <id>` to pick a market; otherwise the most liquid confirmed market is used. The command prints a timeline (approved, submitting, open with the exchange order id, cancel requested, cancelled). While it is open (10 seconds by default) it appears on `/trading` flagged `smoke`, and you should see the same order in the Polymarket US app's open orders. After the hold it is cancelled and disappears from the exchange. No bankroll is touched.
-3. KILL. Place another smoke order with a longer hold if needed, press KILL and confirm. The order is cancelled and live turns off (the pill returns to PAPER). Then type `RESUME` in Settings: the kill clears, but live stays off and assignments stay halted. Type the dated phrase again to re-enable live.
+   Add `--market <id>` to pick a market; otherwise the most liquid confirmed market of the current source with a fresh price is used. The command prints a timeline (approved, submitting, open with the exchange order id, cancel requested, cancelled). While it is open (10 seconds by default, `--hold 120` for two minutes) it appears on `/trading` flagged `smoke`, and you should see the same order in the Polymarket US app's open orders. After the hold it is cancelled and disappears from the exchange. No bankroll is touched. A non-zero exit means the order never reached `open` in time (the exchange service is stopped and `--drive` was not given, or placement failed): the command cancels the row before exiting, and you should check `/trading` for the smoke row and the Polymarket US app for a resting order.
+3. KILL. Place another smoke order with a longer hold, for example `exchange-smoke --confirm "SMOKE 2026-10-04" --hold 120`, press KILL and confirm. The order is cancelled and live turns off (the pill returns to PAPER). Then type `RESUME` in Settings: the kill clears, but live stays off and assignments stay halted. Type the dated phrase again to re-enable live.
 4. Disable live without the kill: press "Disable live" in Settings. It is immediate: live assignments are halted and live orders are cancelled through the exchange.
-5. Cancel everything directly. If the exchange service is down with live orders resting, stop it and cancel straight on the exchange:
+5. Cancel everything directly. If the exchange service is down with live orders resting: press KILL first (it works with the exchange down: approved rows are cancelled at once, live rows become cancel-requested, live turns off), then stop the service and cancel straight on the exchange:
 
 ```powershell
 docker compose stop exchange
 docker compose run --rm exchange python -m host.exchange.cli cancel-all --direct
 ```
 
-   It loads the credentials, lists open orders on the exchange, cancels each with retry, marks the matching database rows cancelled (releasing reserved cash) and prints what it did. Restart the exchange afterwards with `docker compose up -d exchange`. Every live order also expires on its own at the exchange (GTD, 15 minutes by default) if the host is dead.
+   It loads the credentials, turns live off itself (live assignments halted, approved live rows cancelled so a restart cannot submit them), lists open orders on the exchange, cancels each with retry, reads the fills and marks the rows the exchange no longer lists cancelled (releasing reserved cash) and prints what it did. A row whose placement may still be in flight is left cancel-requested for the restarted exchange to confirm, and if the fills call fails nothing is closed and the command exits 1 (run it again). Restart the exchange afterwards with `docker compose up -d exchange`; the `/trading` exchange box shows this command whenever the exchange is DOWN with live orders active. Every live order also expires on its own at the exchange (GTD, 15 minutes by default) if the host is dead.
 6. Restart mid-order. Restart the exchange service while a smoke order is open: it runs auth, reconciliation and the open-order audit before submitting anything, and you should see no duplicate order.
 
 ### Auto-kill reasons
 
-The system kills trading by itself (kill on, live off, open orders cancelled) and shows the reason in the top bar until you RESUME:
+The system kills trading by itself (kill on, live off, every live order cancel-requested and cancelled on the exchange by the exchange process) and shows the reason in the top bar until you RESUME; the Settings page repeats the recovery line next to the reason:
 
-- `auth_failures`: three authentication probes in a row failed (bad or revoked keys, wrong signing rule, exchange down).
-- `clock_skew`: the host clock and the exchange's `Date` header differ by more than 30 seconds. Signing stops too. Fix the host clock (Docker Desktop on Windows can drift after sleep).
-- `unknown_order`: the exchange shows an open order that this system did not create. Someone else is using the account or the keys, or the database lost an order. The stray order is cancelled. Check the Polymarket US app before resuming.
-- `unknown_fill`: a fill arrived for a client order id this system does not know. Same causes and same advice as `unknown_order`.
-- `ambiguous_reconciliation`: after a timeout, two remote orders matched one client order id, so the system cannot tell which is ours. Check the app and cancel by hand if needed.
+- `auth_failures`: three authentication probes in a row failed (bad or revoked keys, wrong signing rule, exchange down). Recovery: fix `exchange.env` or the auth config, `docker compose up -d --force-recreate exchange`, run `probe-account` or `auth-check` until auth is ok (the count stays over the limit until a probe succeeds, so a RESUME before that kills again at once), then RESUME and re-enable live.
+- `clock_skew`: the host clock and the exchange's `Date` header differ by more than 30 seconds (measured by the auth probe and on every other live answer). New live orders are paused while cancels, the open-order audit and the fills poll keep running, so the kill's cancels still reach the exchange; if the exchange refuses a cancel signed with the bad clock, those orders rest until the skew clears or their GTD (15 minutes by default), and the top bar P&L keeps showing live money while any live order or position remains. Recovery: fix the host clock (Docker Desktop on Windows drifts after sleep: `wsl --shutdown` or restart Docker Desktop), then either wait for the next live answer (the loop resumes on the first in-range one, at the latest the next auth probe, `auth_probe_interval_s`, 5 minutes) or `docker compose restart exchange` so the startup probe clears the pause at once; confirm the skew in Settings, RESUME, re-enable. To pull resting orders right now, `cancel-all --direct` as in step 5 above.
+- `unknown_order`: the exchange shows an open order that this system did not create. Someone else is using the account or the keys, or the database lost an order. The stray order is cancelled. This system needs exclusive use of the account: do not place orders by hand in the app. Check the app's open orders before you RESUME and re-enable.
+- `unknown_fill`: a fill arrived for a client order id this system does not know. Same causes and same advice as `unknown_order`; reconcile the position by hand in the app.
+- `ambiguous_reconciliation`: after a timeout, two remote orders matched one client order id, so the system cannot tell which is ours. Cancel the duplicate in the app, then RESUME and re-enable.
+- `late_fill`: a fill arrived for an order this system had already closed (or exceeds what was open), so the ledger could not book it. Real money moved that the books do not show: check the app, book the position by hand (a ledger adjust), then RESUME and re-enable.
 
 Reset is the normal `RESUME`; live then stays off until you re-enable it with the typed phrase.
 
 ### When model orders go live
 
-Model-driven live orders only begin when a lineage is `live_eligible`. That requires the backtest and paper thresholds in Settings (backtest bets, ROI and drawdown, then paper games, bets, days, positive CLV and positive P&L) and there is no override and no typed bypass. Even then, an order is placed only if you created a live assignment for that model and game (which needs live on, the lineage `live_eligible` and auth OK), and every order still passes the host's limits: max bet, per-game bankroll, daily loss, liquidity floor, and buying power fresher than 5 minutes. One live model per game. A breach of the live daily-loss limit turns live off while paper keeps running. Start with small limits.
+Model-driven live orders only begin when a lineage is `live_eligible`. That requires the backtest and paper thresholds in Settings (backtest bets, ROI and drawdown, then paper games, bets, days, positive CLV and positive P&L) and there is no override and no typed bypass. Even then, an order is placed only if you created a live assignment for that model and game (which needs live on, the lineage `live_eligible`, auth OK and a confirmed market of the current source), and every order still passes the host's limits: max bet, per-game bankroll, daily loss, liquidity floor, and buying power fresher than 5 minutes (minus what live fills spent since the probe). One live model per game. A breach of the live daily-loss limit turns live off while paper keeps running; so does retiring the model or any demotion of its lineage out of `live_eligible` (the assignment is halted and its orders cancelled). Start with small limits.
 
 ### Risks
 

@@ -2,14 +2,20 @@
 configured field candidates in `market_source_config.polymarket_us.live.response_fields`.
 Every field is optional; a record without the one field that identifies it (an order
 id, a fill id) is dropped by the caller. Money arrives in `money_unit` (dollars by
-default) and leaves as integer cents."""
+default) and leaves as integer cents. An empty answer in any of the usual shapes
+(`[]`, `{}`, `{"orders": null}`, a null or empty body) is an empty list; a fill
+with a fractional size is refused loudly (SourceError) rather than truncated."""
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from host.exchange.adapters.base import parse_time
+from host.exchange.adapters.base import SourceError, parse_time, truncate
 from host.exchange.adapters.polymarket_us import pick
+
+log = logging.getLogger(__name__)
 
 
 def number(value: Any) -> float | None:
@@ -50,13 +56,24 @@ def unwrap(payload: Any, live: dict[str, Any]) -> Any:
 
 def records(payload: Any, live: dict[str, Any]) -> list[dict[str, Any]] | None:
     """The list of objects in a list payload or under one of `list_keys` (possibly
-    inside a wrapper); None when the payload is not a list of anything."""
+    inside a wrapper). A null or empty body, an empty object and a list or wrapper
+    key present with null are all an empty list (what an exchange answers once the
+    last order is gone); None when the payload is something else entirely."""
+    if payload is None:
+        return []
     if isinstance(payload, list):
         return [r for r in payload if isinstance(r, dict)]
     if isinstance(payload, dict):
+        if not payload:
+            return []
         for key in live["list_keys"]:
+            if key in payload and payload[key] is None:
+                return []
             if isinstance(payload.get(key), list):
                 return [r for r in payload[key] if isinstance(r, dict)]
+        for key in live["wrapper_keys"]:
+            if key in payload and payload[key] is None:
+                return []
         if any(isinstance(payload.get(k), dict) for k in live["wrapper_keys"]):
             return records(unwrap(payload, live), live)
     return None
@@ -87,18 +104,26 @@ def order_dict(record: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
 
 
 def fill_dict(record: dict[str, Any], live: dict[str, Any]) -> dict[str, Any] | None:
-    """A fill record for `orders.record_fill`; None without a fill id or a size."""
+    """A fill record for `orders.record_fill`; None without a fill id or a size.
+    A fractional size raises SourceError (logged at ERROR): sizes are whole
+    contracts here and silently truncating one would under-count real money."""
     size = number(field(record, live, "size"))
     fill_id = field(record, live, "fill_id")
     if fill_id is None or size is None:
         return None
+    if size != int(size):
+        shown = truncate(json.dumps(record, default=str), 512)
+        log.error("polymarket_us fill %s has a fractional size %s: %s", fill_id, size, shown)
+        raise SourceError(f"fill {fill_id} has a fractional size {size} (unknown shape): {shown}")
+    fee_cents = field(record, live, "fee_cents")
+    fee = int(round(number(fee_cents) or 0)) if fee_cents is not None else (cents(field(record, live, "fee"), live) or 0)
     return {
         "exchange_fill_id": str(fill_id),
         "exchange_order_id": text(field(record, live, "order_id")),
         "client_order_id": text(field(record, live, "client_order_id")),
         "price": number(field(record, live, "price")),
         "size": int(size),
-        "fee_cents": cents(field(record, live, "fee"), live) or 0,
+        "fee_cents": fee,
         "ts": parse_time(field(record, live, "fill_time")),
     }
 

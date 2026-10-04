@@ -135,7 +135,8 @@ assignment, job or game those have just closed. Checks, in order, each with a st
 4. `assignment`: active; `market`: mapped to the assignment's game, confirmed, unresolved;
    `kickoff`: game not started when `trade_pregame_only`.
 5. `mode`: live needs `live_enabled`, lineage `live_eligible`, `exchange_state.auth_ok`
-   (step 5).
+   and a market on the live platform (the current `market_source`, never
+   `polymarket_clob`; step 5).
 6. `stale_book`: cited `snapshot_id` belongs to the market and is no older than
    `book_max_age_s`; being the latest snapshot does not spare it (a stalled poller's
    newest book is still a dead book).
@@ -153,7 +154,8 @@ assignment, job or game those have just closed. Checks, in order, each with a st
     rejecting until the day rolls (assignments stay active).
 13. `exposure` (optional, `max_exposure_cents[mode] > 0`): open order cost + open positions
     + cost.
-14. `buying_power` (live, step 5).
+14. `buying_power` (live, step 5): the probed figure minus live reservations and minus
+    what live fills spent since the probe.
 Pass: `ledger reserve`, `orders` row `approved`. Fail: `orders` row `rejected` with the
 reason (also logged in `order_events`). The request body's limit fields, if any, are
 ignored. Response `{"status": "approved"|"rejected", "order_id", "reason"}`.
@@ -178,7 +180,9 @@ fee reserved at approval; every cost is rounded half up in one place
 Nothing fills while the kill switch is on.
 `cancel_requested` -> `cancelled` plus `ledger release` of the unfilled part (paper:
 immediate, done by whoever requested it, host or exchange; live: by the exchange with
-retry 1,2,4,8 s forever). Orders expire at `gtd_seconds` after submission. With
+retry 1,2,4,8 s forever, after its fills were read). Orders expire at `gtd_seconds`
+after submission (paper at once; a live row through the cancel path, closing as
+`expired` once the exchange no longer lists it). With
 `trade_pregame_only`, kickoff is a hard cutoff: `gtd_at` is capped at the game's
 `kickoff_at`, an executor pass cancels every active order of a game that has kicked off
 (actor `exchange`, reason `kickoff`; live rows become `cancel_requested`), and the paper
@@ -230,8 +234,9 @@ min_games, bets >= min_bets, days since first paper bet >= min_days, avg_clv >= 
 pnl >= min_pnl_cents` (`settings.thresholds_paper`); `games` counts distinct games (one
 game traded by several models of the lineage counts once; a settled game with no bet
 still counts), the rest are summed over the lineage's `model_scores`; a lineage that stops
-meeting them drops back to `paper_ok` (live assignments halted, orders cancelled). No
-override exists. Settlement runs under both approval locks and locks a game's open
+meeting them drops back to `paper_ok` (live assignments halted, orders cancelled), and so
+does every other way out of `live_eligible` (a backtest thresholds change, a new backtest
+result, a retirement). No override exists. Settlement runs under both approval locks and locks a game's open
 orders before its bankrolls (the order paper fills and the kill use), so a kill pressed
 mid-settlement waits instead of deadlocking.
 

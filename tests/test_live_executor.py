@@ -147,7 +147,9 @@ def test_fills_poll_is_idempotent(conn, gw, live):
     assert bank["open_cost_cents"] == 260 and bank["reserved_cents"] == 0 and bank["realized_pnl_cents"] == -3
     assert ledger.replay_problems(conn) == []
     assert gw.calls["fills"] == 4
-    assert live_sync.poll_fills(conn, gw, at(8)) == 0 and gw.calls["fills"] == 4, "no active live order: no call"
+    assert live_sync.poll_fills(conn, gw, at(8)) == 0 and gw.calls["fills"] == 5, "just closed: the poll still looks for a last fill"
+    conn.execute("UPDATE orders SET updated_at = %s WHERE id = %s", (at(9) - timedelta(minutes=3), row["id"]))
+    assert live_sync.poll_fills(conn, gw, at(9)) == 0 and gw.calls["fills"] == 5, "no active or recently closed live order: no call"
 
 
 def test_unknown_fill_auto_kills(conn, gw, live):
@@ -256,7 +258,12 @@ def test_cancel_all_direct_cancels_everything_and_updates_rows(conn, gw, live):
     assert result["rows_closed"] == {str(a["id"]): "cancelled", str(b["id"]): "cancelled"}
     assert bankroll_of(conn, live.assignment)["reserved_cents"] == 0 and ledger.replay_problems(conn) == []
     audit = audit_rows(conn, "cancel_all")[-1]
-    assert audit["after"] == {"direct": True, "remote": 3, "cancelled": 3, "rows_closed": 2} and audit["actor"] == "cli"
+    assert audit["actor"] == "cli" and audit["after"] == {
+        "direct": True, "remote": 3, "cancelled": 3, "rows_closed": 2, "live_was_on": True, "assignments_halted": 1,
+        "approved_cancelled": 0, "left_for_exchange": 0, "error": None,
+    }
+    assert result["live_off"]["was_on"] and assignment_row(conn, live.assignment["id"])["status"] == "halted"
+    assert conn.execute("SELECT value FROM settings WHERE key = 'live_enabled'").fetchone()["value"] is False, "live off first"
 
 
 def test_auth_failures_auto_kill_after_three_and_reset_on_success(conn, gw):
@@ -293,35 +300,43 @@ def test_auth_failures_auto_kill_after_three_and_reset_on_success(conn, gw):
     assert conn.execute("SELECT credentials_present, auth_ok FROM exchange_state").fetchone() == {"credentials_present": False, "auth_ok": False}
 
 
-def test_clock_skew_auto_kills_and_stops_signing(pool, conn, gw):
+def test_clock_skew_auto_kills_and_stops_placing(pool, conn, gw):
+    """A skew over the limit auto-kills and pauses live placements only: the
+    audit, the fills poll and the cancels keep going, so the kill's cancels reach
+    the exchange instead of resting there until GTD."""
     enable_live(conn)
+    lv = trade_setup(conn, mode="live", model_status="live_eligible", game_id=LIVE_GAME)
+    resting = approved_order(conn, lv, size=2)
+    Executor(PaperGateway(), gw).tick(conn, at(-10))
+    assert order_row(conn, resting["id"])["status"] == "open" and "ex-1" in gw.remote
     gw.set_skew_ms(45_000)
     loop = live_loop(pool, gw, clock=lambda: NOW)
     results = loop.run_due(NOW)
     assert results["auth"]["skew_over_limit"] is True and results["auth"]["auto_killed"] == "clock_skew"
-    assert "startup_reconcile" not in results and kill.is_killed(conn)
+    assert "startup_reconcile" in results and kill.is_killed(conn), "the startup audit runs even while paused"
     assert loop.live_paused == "clock_skew" and loop.executor.live_blocked == "clock_skew"
     assert conn.execute("SELECT clock_skew_ms FROM exchange_state").fetchone()["clock_skew_ms"] == 45_000
     assert live_state(conn)["auto_kill_reasons"] == ["clock_skew"]
-    assert gw.calls["open_orders"] == 0 and gw.calls["fills"] == 0, "nothing else is signed"
+    assert order_row(conn, resting["id"])["status"] == "cancelled" and gw.remote == {} and gw.calls["cancel"] == 1, \
+        "the kill's cancel reached the exchange in the same pass"
+    assert gw.calls["open_orders"] >= 1 and gw.calls["place"] == 1, "only the setup's place"
     loop.run_due(at(1), force=True)
-    assert gw.calls["open_orders"] == 0 and gw.calls["fills"] == 0 and gw.calls["place"] == 0, "still nothing while paused"
-    assert gw.calls["balance"] == 2, "the auth probe keeps running: it is how the loop learns the skew recovered"
+    assert gw.calls["place"] == 1 and gw.calls["balance"] == 2, "the auth probe keeps running: it is how the loop learns the skew recovered"
     kill.reset_kill(conn, "owner", "RESUME")
     loop.run_task("auth", at(2))
     assert kill.is_killed(conn) and len(audit_rows(conn, "auto_kill")) == 2, "a reset with the skew still over the limit kills again"
     kill.reset_kill(conn, "owner", "RESUME")
     enable_live(conn)
-    lv = trade_setup(conn, mode="live", model_status="live_eligible", game_id=LIVE_GAME)
+    conn.execute("UPDATE assignments SET status = 'active' WHERE id = %s", (lv.assignment["id"],))
     row = approved_order(conn, lv, size=1)
-    # held back while paused: the executor does not sign a live request
+    # held back while paused: the executor does not place a live order
     loop.executor.tick(conn, at(3))
-    assert gw.calls["place"] == 0 and order_row(conn, row["id"])["status"] == "approved"
+    assert gw.calls["place"] == 1 and order_row(conn, row["id"])["status"] == "approved"
     gw.set_skew_ms(100)
     assert loop.run_task("auth", at(4))["skew_over_limit"] is False and loop.live_paused is None
     assert loop.executor.live_blocked is None and not kill.is_killed(conn)
     loop.run_due(at(5), force=True)
-    assert gw.calls["place"] == 1 and order_row(conn, row["id"])["status"] == "open"
+    assert gw.calls["place"] == 2 and order_row(conn, row["id"])["status"] == "open"
 
 
 def test_buying_power_stale_rejects(conn, live):

@@ -6,7 +6,10 @@ proves keys, signing, placement and cancellation without giving any model money.
 auth_ok and the kill off. The row goes through the normal outbox: with a `gateway`
 (tests, or the CLI running with the exchange service stopped) this function drives an
 Executor itself; otherwise it waits for the running exchange process to submit and
-cancel the row. The result is the timeline of the order's events.
+cancel the row. The result is the timeline of the order's events. A row that never
+reached `open` within WAIT_MAX_S is cancelled before returning (approved rows at once,
+a submitting or open one through the exchange), so no stale-priced smoke order can be
+submitted by a later exchange start.
 """
 from __future__ import annotations
 
@@ -54,24 +57,37 @@ def check_preconditions(conn: psycopg.Connection, confirm: str, now: datetime | 
 
 def pick_market(conn: psycopg.Connection, market_id: Any = None) -> dict[str, Any]:
     """The given market, or the most liquid confirmed, open market of a scheduled game
-    on the live platform (any platform but sim)."""
+    on the live platform (the current market source, see host.trading.live) with a
+    snapshot no older than book_max_age_s. A chosen market must pass the same
+    platform check: a market left over from another source is never sent."""
+    from host.trading.live import live_platform, market_platform_problem
+
     if market_id is not None:
         row = conn.execute("SELECT * FROM markets WHERE id = %s::uuid", (str(market_id),)).fetchone()
         if row is None:
             raise NotFound("market not found")
         if not row["mapping_confirmed"] or row["status"] != "open":
             raise Conflict("the market is not confirmed and open")
+        problem = market_platform_problem(conn, row["platform"])
+        if problem:
+            raise Conflict(problem)
         return dict(row)
+    platform = live_platform(conn)
+    if platform is None:
+        raise Conflict(market_platform_problem(conn, None) or "no live platform")
+    max_age = get_int_setting(conn, "book_max_age_s", 60)
     row = conn.execute(
         """
         SELECT m.* FROM markets m JOIN games g ON g.game_id = m.game_id
-         WHERE m.mapping_confirmed AND m.status = 'open' AND m.platform <> 'sim' AND m.best_bid IS NOT NULL
+         WHERE m.mapping_confirmed AND m.status = 'open' AND m.platform = %s AND m.best_bid IS NOT NULL
+           AND m.last_snapshot_at >= now() - make_interval(secs => %s)
            AND g.status <> 'final' AND (g.kickoff_at IS NULL OR g.kickoff_at > now())
          ORDER BY m.liquidity_usd_cents DESC NULLS LAST, m.last_snapshot_at DESC NULLS LAST LIMIT 1
-        """
+        """,
+        (platform, max_age),
     ).fetchone()
     if row is None:
-        raise Conflict("no confirmed, unresolved live-tradable market with a price")
+        raise Conflict(f"no confirmed, unresolved market on {platform!r} with a price fresher than {max_age} s")
     return dict(row)
 
 
@@ -145,8 +161,12 @@ def run_smoke(
     result["status"] = _wait_for(pool, decision["order_id"], ("open", "partial"), sleep, drive)
     if result["status"] in ("open", "partial"):
         sleep(hold)
+        reason = "smoke hold over"
+    else:
+        reason = "smoke not confirmed in time"
+    if result["status"] not in orders.TERMINAL_STATUSES:
         with pool.connection() as conn:
-            orders.cancel_order(conn, decision["order_id"], "cli", "smoke hold over")
+            orders.cancel_order(conn, decision["order_id"], "cli", reason)
         result["status"] = _wait_for(pool, decision["order_id"], ("cancelled",), sleep, drive)
     with pool.connection() as conn:
         row = orders.get_order(conn, decision["order_id"])

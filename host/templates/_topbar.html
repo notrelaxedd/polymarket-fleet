@@ -1,5 +1,5 @@
 <span class="pill {{ 'live' if topbar.live else 'paper' }}">{{ 'LIVE' if topbar.live else 'PAPER' }}</span>
-<span class="pnl muted">paper today {{ topbar.pnl.paper.today_cents | money }} &middot; all {{ topbar.pnl.paper.all_time_cents | money }}{% if topbar.live %} <span class="nowrap">&middot; live today {{ topbar.pnl.live.today_cents | money }} &middot; all {{ topbar.pnl.live.all_time_cents | money }}</span>{% endif %}</span>
+<span class="pnl muted">paper today {{ topbar.pnl.paper.today_cents | money }} &middot; all {{ topbar.pnl.paper.all_time_cents | money }}{% if topbar.live_activity %} <span class="nowrap">&middot; live today {{ topbar.pnl.live.today_cents | money }} &middot; all {{ topbar.pnl.live.all_time_cents | money }}</span>{% endif %}</span>
 {% if topbar.killed %}
 <span class="chip chip-killed" data-killed="1" aria-disabled="true">KILLED</span>
 {% if topbar.auto_kill %}

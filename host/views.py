@@ -213,19 +213,62 @@ def latest_auto_kill(conn: psycopg.Connection) -> dict[str, Any] | None:
         return None
     after = row["after"] if isinstance(row["after"], dict) else {}
     reason = after.get("reason") or (row["actor"] or "").removeprefix("auto:") or "unknown"
-    return {"reason": str(reason), "ts": row["ts"], "actor": row["actor"], "detail": {k: v for k, v in after.items() if k != "reason"}}
+    return {"reason": str(reason), "ts": row["ts"], "actor": row["actor"], "detail": {k: v for k, v in after.items() if k != "reason"},
+            "remedy": auto_kill_remedy(str(reason))}
 
 
 def live_order_counts(conn: psycopg.Connection) -> dict[str, int]:
-    """Active live orders and, among them, the smoke orders (the /trading exchange box)."""
+    """Active live orders for the /trading exchange box: all of them (`live`), the
+    ones still open or on their way (`open`), the ones awaiting the exchange's
+    cancel (`cancel_pending`) and, among all, the smoke orders."""
     row = conn.execute(
         """
-        SELECT count(*) FILTER (WHERE mode = 'live') AS live, count(*) FILTER (WHERE mode = 'live' AND kind = 'smoke') AS smoke
+        SELECT count(*) FILTER (WHERE mode = 'live') AS live,
+               count(*) FILTER (WHERE mode = 'live' AND status = 'cancel_requested') AS cancel_pending,
+               count(*) FILTER (WHERE mode = 'live' AND kind = 'smoke') AS smoke
           FROM orders WHERE status = ANY(%s)
         """,
         (list(ACTIVE_ORDER_STATUSES),),
     ).fetchone()
-    return {"live": int(row["live"]), "smoke": int(row["smoke"])}
+    live, pending = int(row["live"]), int(row["cancel_pending"])
+    return {"live": live, "open": live - pending, "cancel_pending": pending, "smoke": int(row["smoke"])}
+
+
+def live_activity(conn: psycopg.Connection) -> bool:
+    """Real money still in play while live is off: an active live order, a live
+    assignment not yet settled, or a live bankroll with cash reserved or in open
+    positions. The top bar keeps the live P&L segment while this holds."""
+    row = conn.execute(
+        """
+        SELECT EXISTS (SELECT 1 FROM orders WHERE mode = 'live' AND status = ANY(%s))
+            OR EXISTS (SELECT 1 FROM assignments WHERE mode = 'live' AND status IN ('active', 'halted'))
+            OR EXISTS (SELECT 1 FROM bankrolls WHERE mode = 'live' AND (reserved_cents > 0 OR open_cost_cents > 0)) AS active
+        """,
+        (list(ACTIVE_ORDER_STATUSES),),
+    ).fetchone()
+    return bool(row and row["active"])
+
+
+AUTO_KILL_REMEDIES: dict[str, str] = {
+    "auth_failures": "fix exchange.env or the auth config, then docker compose up -d --force-recreate exchange, "
+                     "probe-account until auth is ok, then RESUME and re-enable live",
+    "clock_skew": "live orders rest until the skew clears or their GTD; fix the host clock (Docker Desktop: wsl --shutdown "
+                  "or restart Docker Desktop), then docker compose restart exchange, confirm the skew here, RESUME, re-enable; "
+                  "cancel-all --direct pulls them now",
+    "unknown_order": "this system needs exclusive use of the account: cancel any hand-placed order in the app, "
+                     "check the open orders there, then RESUME and re-enable",
+    "unknown_fill": "a fill for an order this system did not place: check the app for hand-placed orders, "
+                    "reconcile positions by hand, then RESUME and re-enable",
+    "ambiguous_reconciliation": "two exchange orders share one client id: cancel the duplicate in the app, "
+                                "then RESUME and re-enable",
+    "late_fill": "a fill arrived for an order already closed here: book the position by hand (ledger adjust), "
+                 "check the app, then RESUME and re-enable",
+}
+
+
+def auto_kill_remedy(reason: str | None) -> str | None:
+    """The one-line recovery for an auto-kill reason (README "Auto-kill reasons")."""
+    return AUTO_KILL_REMEDIES.get(str(reason or ""))
 
 
 def live_state_fallback(conn: psycopg.Connection) -> dict[str, Any]:

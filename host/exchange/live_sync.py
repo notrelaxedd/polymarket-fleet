@@ -5,6 +5,11 @@ direct cancel-all. Every function takes the gateway it should talk to and `now`;
 auto-kill triggers go through `host.kill.auto_kill` and fire only while the kill
 switch is off (a persisting condition kills again after RESUME, nothing spams the
 audit log while killed).
+
+Money rule: a live row is closed (its reservation released) only after its fills were
+read. When the fills call fails (`fetch_fills` returns None) every closing path leaves
+the row active for that pass and reports the error; a fill that still turns up for a
+row already closed auto-kills `late_fill`, because the ledger can no longer book it.
 """
 from __future__ import annotations
 
@@ -26,8 +31,11 @@ log = logging.getLogger(__name__)
 
 ACTOR = "exchange"
 FILLS_LOOKBACK = timedelta(seconds=60)
+CLOSED_TAIL = timedelta(seconds=120)
 LIVE_ACTIVE = ("submitting", "open", "partial", "cancel_requested")
 DIRECT_RETRIES = (1.0, 2.0, 4.0, 8.0)
+DEFAULT_SKEW_LIMIT_MS = 30_000
+DIRECT_REASON = "cancel-all --direct"
 
 
 # ----------------------------------------------------------------- helpers
@@ -41,6 +49,12 @@ def _int(value: Any) -> int | None:
 
 def _text(value: Any) -> str | None:
     return None if value is None else str(value)
+
+
+def skew_limit_ms(conn: psycopg.Connection) -> int:
+    """settings.auto_kill.clock_skew_ms (30 000 when unset or malformed)."""
+    limits = get_setting(conn, "auto_kill", None) or {}
+    return _int(limits.get("clock_skew_ms") if isinstance(limits, dict) else None) or DEFAULT_SKEW_LIMIT_MS
 
 
 def remote_ids(remote: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -80,6 +94,16 @@ def active_live_orders(conn: psycopg.Connection, statuses: tuple[str, ...] = LIV
     return [dict(r) for r in rows]
 
 
+def recently_closed_live_orders(conn: psycopg.Connection, now: datetime) -> list[dict[str, Any]]:
+    """Live rows that became terminal within CLOSED_TAIL: the fills poll keeps
+    looking for their last fills a while after the last active order is gone."""
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE mode = 'live' AND status = ANY(%s) AND updated_at >= %s ORDER BY created_at",
+        (list(orders.TERMINAL_STATUSES), now - CLOSED_TAIL),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def maybe_auto_kill(conn: psycopg.Connection, reason: str, detail: dict[str, Any]) -> bool:
     """auto_kill unless the fleet is already killed (then the condition is logged only)."""
     if kill.is_killed(conn):
@@ -96,13 +120,14 @@ def fills_since(rows: list[dict[str, Any]], now: datetime) -> datetime:
     return (min(stamps) if stamps else now) - FILLS_LOOKBACK
 
 
-def fetch_fills(gateway: OrderGateway, since: datetime) -> list[dict[str, Any]]:
-    """fills(since) as a list of dicts; failures are logged and give an empty list."""
+def fetch_fills(gateway: OrderGateway, since: datetime) -> list[dict[str, Any]] | None:
+    """fills(since) as a list of dicts; None (logged) when the call failed, which no
+    caller may read as "no fills"."""
     try:
         return [f for f in gateway.fills(since) if isinstance(f, dict)]
     except Exception as exc:  # noqa: BLE001 - the next pass retries
         log.warning("fills(since=%s) failed: %s", since, exc)
-        return []
+        return None
 
 
 def _order_for_fill(conn: psycopg.Connection, fill: dict[str, Any]) -> dict[str, Any] | None:
@@ -123,7 +148,9 @@ def record_fills(
 ) -> dict[str, Any]:
     """Record remote fills through orders.record_fill (idempotent on exchange_fill_id).
     `only` restricts to those order ids. Returns {"recorded", "unknown": [fills whose
-    order we do not have], "late": [fill ids for terminal orders]}."""
+    order we do not have], "late": [fill ids the ledger could not book]}. A fill the
+    ledger cannot book (its order is already closed, or the size exceeds what was
+    open) is real money the books do not show: auto-kill `late_fill`."""
     recorded, unknown, late = 0, [], []
     for fill in fills:
         fill_id = _text(fill.get("exchange_fill_id") or fill.get("id"))
@@ -145,22 +172,30 @@ def record_fills(
         except Conflict as exc:
             log.error("fill %s cannot be applied to order %s: %s", fill_id, row["id"], exc)
             late.append(fill_id)
+            maybe_auto_kill(conn, "late_fill", {
+                "order_id": str(row["id"]), "status": row["status"], "fill_id": fill_id, "size": size,
+                "price": _text(price), "error": str(exc)[:200],
+            })
     return {"recorded": recorded, "unknown": unknown, "late": late}
 
 
 # ------------------------------------------------------------------- auth
 
-def auth_check(conn: psycopg.Connection, gateway: OrderGateway, now: datetime, creds_present: bool) -> dict[str, Any]:
+def auth_check(
+    conn: psycopg.Connection, gateway: OrderGateway, now: datetime, creds_present: bool, creds_error: str | None = None,
+) -> dict[str, Any]:
     """The auth probe: balance() -> exchange_state (auth_ok, balances, skew, failures).
     Auto-kill on `auto_kill.auth_failures` consecutive failures and on a clock skew
-    over `auto_kill.clock_skew_ms`; `skew_over_limit` tells the loop to stop signing."""
+    over `auto_kill.clock_skew_ms`; `skew_over_limit` tells the loop to stop placing.
+    `creds_error` is the loader's (secret-free) message for a malformed secret."""
     limits = get_setting(conn, "auto_kill", None) or {}
     max_failures = _int(limits.get("auth_failures")) or 3
-    skew_limit = _int(limits.get("clock_skew_ms")) or 30_000
+    skew_limit = skew_limit_ms(conn)
     out: dict[str, Any] = {"auth_ok": False, "credentials_present": creds_present, "skew_ms": None, "skew_over_limit": False,
                            "auto_killed": None, "error": None, "failures": 0}
     if not creds_present:
-        state.set_credentials_present(conn, False)
+        state.set_credentials_present(conn, False, creds_error)
+        out["error"] = creds_error
         return out
     try:
         payload = gateway.balance()
@@ -186,13 +221,17 @@ def auth_check(conn: psycopg.Connection, gateway: OrderGateway, now: datetime, c
 # ------------------------------------------------------------------ fills
 
 def poll_fills(conn: psycopg.Connection, gateway: OrderGateway, now: datetime) -> int:
-    """fills(since the earliest active live submission - 60 s) -> record_fill, only
-    while live orders are active; a fill for an order we do not know auto-kills
+    """fills(since the earliest submission - 60 s) -> record_fill, while live orders
+    are active and for CLOSED_TAIL after the last one closed (a fill that lands as
+    the row closes is still seen); a fill for an order we do not know auto-kills
     `unknown_fill`. Returns the number of fills recorded."""
-    active = active_live_orders(conn)
-    if not active:
+    rows = active_live_orders(conn) or recently_closed_live_orders(conn, now)
+    if not rows:
         return 0
-    result = record_fills(conn, fetch_fills(gateway, fills_since(active, now)))
+    fills = fetch_fills(gateway, fills_since(rows, now))
+    if fills is None:
+        return 0
+    result = record_fills(conn, fills)
     if result["unknown"]:
         first = result["unknown"][0]
         maybe_auto_kill(conn, "unknown_fill", {"fill": {k: _text(v) for k, v in first.items()}, "count": len(result["unknown"])})
@@ -201,19 +240,34 @@ def poll_fills(conn: psycopg.Connection, gateway: OrderGateway, now: datetime) -
 
 # -------------------------------------------------------------- open orders
 
+def closed_status(row: dict[str, Any], now: datetime) -> str:
+    """`expired` when the row's gtd_at has passed, else `cancelled`."""
+    return "expired" if row.get("gtd_at") is not None and row["gtd_at"] <= now else "cancelled"
+
+
+def confirm_gone(conn: psycopg.Connection, order_id: Any, now: datetime, actor: str, detail: dict[str, Any] | None = None) -> str:
+    """A cancel_requested row the exchange no longer lists, fills absorbed: release
+    the rest and close it as expired (past gtd) or cancelled."""
+    current = orders.get_order(conn, order_id, for_update=True)
+    if current["status"] != "cancel_requested":
+        return current["status"]
+    to_status = closed_status(current, now)
+    orders.confirm_cancelled(conn, order_id, actor, detail, to_status=to_status)
+    return to_status
+
+
 def close_missing(conn: psycopg.Connection, row: dict[str, Any], now: datetime, actor: str = ACTOR) -> str:
     """An order of ours the exchange no longer lists, fills already absorbed: filled
-    stays filled; cancel_requested -> cancelled; past gtd -> expired; else cancelled
-    (the exchange dropped it). The unfilled reservation is released."""
+    stays filled; cancel_requested -> cancelled (expired past gtd); past gtd ->
+    expired; else cancelled (the exchange dropped it). The unfilled reservation is
+    released."""
     current = orders.get_order(conn, row["id"], for_update=True)
     if current["status"] not in LIVE_ACTIVE:
         return current["status"]
     if current["status"] == "cancel_requested":
-        orders.confirm_cancelled(conn, current["id"], actor, {"reason": "not listed on the exchange"})
-        return "cancelled"
+        return confirm_gone(conn, current["id"], now, actor, {"reason": "not listed on the exchange"})
     orders.release_unfilled(conn, current, note="missing on the exchange")
-    expired = current.get("gtd_at") is not None and current["gtd_at"] <= now
-    to_status = "expired" if expired else "cancelled"
+    to_status = closed_status(current, now)
     orders.set_status(conn, current["id"], to_status, actor, {"reason": "not listed on the exchange"}, expected=LIVE_ACTIVE)
     return to_status
 
@@ -221,7 +275,8 @@ def close_missing(conn: psycopg.Connection, row: dict[str, Any], now: datetime, 
 def audit_open_orders(conn: psycopg.Connection, gateway: OrderGateway, now: datetime) -> dict[str, Any]:
     """Remote open orders against our active live set. Unknown remote orders are
     cancelled and auto-kill `unknown_order`; our open/partial/cancel_requested rows
-    missing remotely are closed from their fills (close_missing)."""
+    missing remotely are closed from their fills (close_missing), or left for the
+    next pass when the fills call failed."""
     out: dict[str, Any] = {"remote": 0, "unknown": [], "closed": {}, "fills": 0, "auto_killed": None, "error": None}
     try:
         remote = [o for o in gateway.open_orders() if isinstance(o, dict)]
@@ -247,10 +302,13 @@ def audit_open_orders(conn: psycopg.Connection, gateway: OrderGateway, now: date
     missing = [r for r in ours if r["status"] != "submitting" and r["client_request_id"] not in by_client
                and str(r.get("exchange_order_id")) not in by_exchange]
     if missing:
-        result = record_fills(conn, fetch_fills(gateway, fills_since(missing, now)), only={str(r["id"]) for r in missing})
-        out["fills"] = result["recorded"]
-        for row in missing:
-            out["closed"][str(row["id"])] = close_missing(conn, row, now)
+        fills = fetch_fills(gateway, fills_since(missing, now))
+        if fills is None:
+            out["error"] = f"fills unavailable: {len(missing)} missing live order(s) left open for the next pass"
+        else:
+            out["fills"] = record_fills(conn, fills, only={str(r["id"]) for r in missing})["recorded"]
+            for row in missing:
+                out["closed"][str(row["id"])] = close_missing(conn, row, now)
     state.set_open_orders_checked(conn, now)
     return out
 
@@ -263,8 +321,8 @@ def reconcile_submitting(
 ) -> dict[str, Any]:
     """Live rows stuck in `submitting`: open_orders() by client id -> open (the exchange
     id adopted); else fills by client id -> recorded; else after submitting_grace_s ->
-    expired with the release. Two remote orders for one client id auto-kill
-    `ambiguous_reconciliation`. Never resubmits."""
+    expired with the release (never while the fills call fails). Two remote orders
+    for one client id auto-kill `ambiguous_reconciliation`. Never resubmits."""
     out: dict[str, Any] = {"opened": 0, "filled": 0, "expired": 0, "ambiguous": [], "error": None}
     if not rows:
         return out
@@ -291,8 +349,11 @@ def reconcile_submitting(
     if out["ambiguous"]:
         maybe_auto_kill(conn, "ambiguous_reconciliation", {"client_ids": out["ambiguous"][:10]})
     if missing:
-        result = record_fills(conn, fetch_fills(gateway, fills_since(missing, now)), only={str(r["id"]) for r in missing})
-        out["filled"] = result["recorded"]
+        fills = fetch_fills(gateway, fills_since(missing, now))
+        if fills is None:
+            out["error"] = f"fills unavailable: {len(missing)} submitting live order(s) kept for the next pass"
+            return out
+        out["filled"] = record_fills(conn, fills, only={str(r["id"]) for r in missing})["recorded"]
         for row in missing:
             current = orders.get_order(conn, row["id"])
             if current["status"] != "submitting" or row["submitted_at"] is None or row["submitted_at"] > now - timedelta(seconds=grace):
@@ -318,15 +379,25 @@ def startup_reconcile(conn: psycopg.Connection, gateway: OrderGateway, now: date
 def cancel_all_direct(
     conn: psycopg.Connection, gateway: OrderGateway, now: datetime, sleep: Callable[[float], None], actor: str = "cli",
 ) -> dict[str, Any]:
-    """List the open orders on the exchange, cancel each with retry (1, 2, 4, 8 s,
-    then give up on that order and report it), then close the matching rows
-    (`cancelled` with the release, fills absorbed first). The manual fallback for
-    "exchange process down with live orders resting"."""
+    """The manual fallback for "exchange process down with live orders resting":
+    first `kill.live_off` (live off, live assignments halted, `approved` live rows
+    cancelled with their release so a restart cannot submit them, the rest
+    `cancel_requested`), then list the open orders on the exchange and cancel each
+    with retry (1, 2, 4, 8 s, then give up on that order and report it), then close
+    the rows the exchange no longer lists (fills absorbed first; nothing closes when
+    the fills call fails). A `submitting` row never seen on the exchange stays
+    `cancel_requested` for the exchange process to confirm, since its place may
+    still be in flight."""
+    approved = len(active_live_orders(conn, ("approved",)))
+    off = kill.live_off(conn, actor, DIRECT_REASON)
+    never_seen = {str(r["id"]) for r in active_live_orders(conn) if r["status"] == "cancel_requested" and r.get("exchange_order_id") is None}
     remote = [o for o in gateway.open_orders() if isinstance(o, dict)]
     results: list[dict[str, Any]] = []
     for item in remote:
         client, exchange = remote_ids(item)
         row = _order_for_fill(conn, item)
+        if row is not None:
+            never_seen.discard(str(row["id"]))
         entry = {"exchange_order_id": exchange, "client_order_id": client, "order_id": str(row["id"]) if row else None,
                  "cancelled": False, "attempts": 0, "row_status": row["status"] if row else "unknown"}
         for delay in (0.0,) + DIRECT_RETRIES:
@@ -341,18 +412,23 @@ def cancel_all_direct(
                 entry["error"] = str(exc)[:200]
         results.append(entry)
     confirmed = [o for o in gateway.open_orders() if isinstance(o, dict)]
-    rows = [r for r in active_live_orders(conn, ("submitting", "open", "partial", "cancel_requested"), for_update=True) if not listed(r, confirmed)]
-    if rows:
-        record_fills(conn, fetch_fills(gateway, fills_since(rows, now)), only={str(r["id"]) for r in rows})
-    closed = {}
-    for row in rows:
-        current = orders.get_order(conn, row["id"], for_update=True)
-        if current["status"] in LIVE_ACTIVE:
-            orders.release_unfilled(conn, current, note="cancel-all --direct")
-            orders.set_status(conn, row["id"], "cancelled", actor, {"reason": "cancel-all --direct"}, expected=LIVE_ACTIVE)
-        closed[str(row["id"])] = orders.get_order(conn, row["id"])["status"]
+    rows = [r for r in active_live_orders(conn, for_update=True) if not listed(r, confirmed) and str(r["id"]) not in never_seen]
+    closed: dict[str, str] = {}
+    error = None
+    fills = fetch_fills(gateway, fills_since(rows, now)) if rows else []
+    if fills is None:
+        error = f"fills unavailable: {len(rows)} row(s) left cancel_requested for the exchange process"
+    else:
+        if rows:
+            record_fills(conn, fills, only={str(r["id"]) for r in rows})
+        for row in rows:
+            closed[str(row["id"])] = confirm_gone(conn, row["id"], now, actor, {"reason": DIRECT_REASON})
     for entry in results:
         if entry["order_id"] in closed:
             entry["row_status"] = closed[entry["order_id"]]
-    add_audit(conn, "cancel_all", "live", actor, None, {"direct": True, "remote": len(remote), "cancelled": sum(e["cancelled"] for e in results), "rows_closed": len(closed)})
-    return {"remote": results, "rows_closed": closed, "still_open": len(confirmed)}
+    summary = {"direct": True, "remote": len(remote), "cancelled": sum(e["cancelled"] for e in results), "rows_closed": len(closed),
+               "live_was_on": off["was_on"], "assignments_halted": len(off["assignments_halted"]),
+               "approved_cancelled": approved, "left_for_exchange": len(never_seen), "error": error}
+    add_audit(conn, "cancel_all", "live", actor, None, summary)
+    return {"remote": results, "rows_closed": closed, "still_open": len(confirmed), "live_off": off, "approved_cancelled": approved,
+            "left_for_exchange": sorted(never_seen), "error": error}

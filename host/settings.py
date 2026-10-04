@@ -153,6 +153,19 @@ def _json_object(value: Any) -> str | None:
     return None
 
 
+def _market_source_config(value: Any) -> str | None:
+    """The free-form source config, except that the live gateway's destination and
+    signing template are pinned (host/exchange/adapters/live_policy.py): a settings
+    write can never redirect signed requests or choose the signed bytes."""
+    error = _json_object(value)
+    if error:
+        return error
+    from host.exchange.adapters.live_policy import polymarket_us_problems
+
+    problems = polymarket_us_problems(value.get("polymarket_us"))
+    return "; ".join(problems) if problems else None
+
+
 def timing_problems(settings: dict[str, Any]) -> list[str]:
     """Cross-field rules over the merged fleet timing settings.
 
@@ -203,7 +216,7 @@ SCHEMA: dict[str, Validator] = {
     "snapshot_active_s": _int_range(1, 300),
     "snapshot_idle_s": _int_range(1, 3600),
     "market_source": _one_of("sim", "polymarket_us", "polymarket_clob"),
-    "market_source_config": _json_object,
+    "market_source_config": _market_source_config,
     "market_lookahead_days": _int_range(1, 60),
     "max_paper_models_per_game": _int_range(1, 20),
     "thresholds_paper": _object_of(

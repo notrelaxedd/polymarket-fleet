@@ -155,8 +155,29 @@ def disable_live(conn: psycopg.Connection, actor: str, reason: str = "owner") ->
     return out
 
 
-def live_gate(conn: psycopg.Connection, model: dict[str, Any]) -> None:
-    """The three live preconditions of a live assignment; 409 naming the first that fails."""
+def live_platform(conn: psycopg.Connection) -> str | None:
+    """The market platform live orders may be placed on: the current `market_source`,
+    never `polymarket_clob` (a price-only source). Markets left over from another
+    source (their platform differs) are never traded live."""
+    source = str(get_setting(conn, "market_source", "sim") or "sim")
+    return None if source == "polymarket_clob" else source
+
+
+def market_platform_problem(conn: psycopg.Connection, platform: str | None) -> str | None:
+    """Why a market of `platform` cannot take a live order right now (None when it can)."""
+    wanted = live_platform(conn)
+    if wanted is None:
+        return "market_source polymarket_clob is a price source only; set it to polymarket_us for live orders"
+    if platform != wanted:
+        return f"the market is on {platform!r}, not on the current market source {wanted!r}"
+    return None
+
+
+def live_gate(conn: psycopg.Connection, model: dict[str, Any], game_id: str | None = None) -> None:
+    """The three live preconditions of a live assignment; 409 naming the first that
+    fails. With `game_id`, the game must also have a confirmed market on the live
+    platform (the current market source), so stale markets of another source and
+    the price-only CLOB source never receive live orders."""
     if not is_live_enabled(conn):
         raise Conflict("live trading is disabled (live_enabled is false)")
     if model["status"] != "live_eligible":
@@ -164,3 +185,13 @@ def live_gate(conn: psycopg.Connection, model: dict[str, Any]) -> None:
     state = conn.execute("SELECT auth_ok FROM exchange_state WHERE id").fetchone()
     if state is None or not state["auth_ok"]:
         raise Conflict("the exchange has not confirmed its credentials (auth_ok is false)")
+    if game_id is not None:
+        wanted = live_platform(conn)
+        if wanted is None:
+            raise Conflict(market_platform_problem(conn, None) or "no live platform")
+        row = conn.execute(
+            "SELECT 1 FROM markets WHERE game_id = %s AND platform = %s AND mapping_confirmed AND status = 'open' LIMIT 1",
+            (game_id, wanted),
+        ).fetchone()
+        if row is None:
+            raise Conflict(f"game {game_id} has no confirmed open market on the live platform {wanted!r}")
