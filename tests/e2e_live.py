@@ -124,7 +124,11 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     wait_for(settled(host, worker_id, "trade"), "worker in the trade role")
     wait_for(lambda: (j := host.job(job_id))["status"] == "leased" and j["lease_worker_id"] == worker_id, "live trade job claimed")
     set_min_edge(host, 0.0)
-    first = wait_for(order_in(host, aid, "open"), "first live order placed and open", timeout=15.0)
+    try:
+        first = wait_for(order_in(host, aid, "open"), "first live order placed and open", timeout=15.0)
+    except AssertionError as exc:
+        raise AssertionError(f"{exc}; orders={orders_of(host, aid)!r}; trade={trade_status(state_dir)!r}; "
+                             f"exchange={host.get('/api/exchange')!r}; live={live_state(host)!r}; calls={dict(gw.calls)!r}") from None
     set_min_edge(host, 1.0)
     assert first["mode"] == "live" and first["exchange_order_id"] == "ex-1" and first["worker_id"] == worker_id
     assert gw.placed == [first["client_request_id"]] and [o["client_order_id"] for o in gw.open_orders()] == [first["client_request_id"]]
