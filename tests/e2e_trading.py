@@ -95,11 +95,18 @@ def pick_minutes(clock: SimClock, game: dict[str, Any]) -> list[int]:
 
 
 class ExchangeThread:
-    """The real exchange loop (python -m host.exchange.main) in a thread, sim source."""
+    """The real exchange loop (python -m host.exchange.main) in a thread, sim source.
+    With `gateway` (step 5) the loop's live gateway is that object and its credentials
+    "load" (tests/fake_gateway.py), so the live tasks run."""
 
-    def __init__(self, database_url: str, clock: SimClock) -> None:
+    def __init__(self, database_url: str, clock: SimClock, gateway: Any = None) -> None:
         self.pool = db.make_pool(database_url, min_size=1, max_size=4)
-        self.loop = ExchangeLoop(self.pool)
+        if gateway is None:
+            self.loop = ExchangeLoop(self.pool)
+        else:
+            from tests.fake_gateway import live_loop
+
+            self.loop = live_loop(self.pool, gateway)
         self.loop.source = SimSource(clock=clock)
         self.loop.source_name = "sim"
         self.stop = threading.Event()
@@ -124,23 +131,24 @@ def rows(host: Any, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, An
         return [jsonable(dict(r)) for r in conn.execute(sql, params).fetchall()]
 
 
-def shifted_game_csv(directory: Path) -> tuple[Path, dict[str, Any]]:
-    """The fixture's BUF @ NYJ row shifted to 2026 week 5, two days ahead, unplayed."""
+def shifted_game_csv(directory: Path, source_game: str = SOURCE_GAME, game_id: str = GAME_ID) -> tuple[Path, dict[str, Any]]:
+    """The fixture's BUF @ NYJ row (or `source_game`) shifted to 2026 week 5, two days
+    ahead, unplayed, as `game_id`."""
     with open(FIXTURE_GAMES, newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         header = list(reader.fieldnames or [])
-        source = next(r for r in reader if r["game_id"] == SOURCE_GAME)
+        source = next(r for r in reader if r["game_id"] == source_game)
     gameday = (datetime.now(EASTERN) + timedelta(days=2)).strftime("%Y-%m-%d")
     row = dict(source)
-    row.update({"game_id": GAME_ID, "season": "2026", "week": "5", "gameday": gameday, "gametime": "13:00",
+    row.update({"game_id": game_id, "season": "2026", "week": "5", "gameday": gameday, "gametime": "13:00",
                 "home_score": "", "away_score": "", "result": "", "total": "", "overtime": "", "old_game_id": "",
                 "gsis": "", "pfr": "", "espn": "", "ftn": ""})
-    path = directory / "shifted_game.csv"
+    path = directory / f"shifted_{game_id}.csv"
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=header)
         writer.writeheader()
         writer.writerow(row)
-    game = {"game_id": GAME_ID, "home_team": row["home_team"], "away_team": row["away_team"],
+    game = {"game_id": game_id, "home_team": row["home_team"], "away_team": row["away_team"],
             "home_moneyline": int(row["home_moneyline"]), "away_moneyline": int(row["away_moneyline"])}
     return path, game
 
@@ -178,7 +186,8 @@ def newest_snapshot_id(host: Any, market_id: str) -> int | None:
     return int(found[0]["id"]) if found else None
 
 
-def rest_open_order(host: Any, clock: SimClock, minute: int, order: dict[str, Any], wait_for: Callable[..., Any]) -> None:
+def rest_open_order(host: Any, clock: SimClock, minute: int, order: dict[str, Any], wait_for: Callable[..., Any],
+                    game_id: str = GAME_ID) -> None:
     """Step the sim to `minute` (a higher away ask) and see the next snapshot leave the
     open order unfilled: it rests on the book."""
     before = newest_snapshot_id(host, order["market_id"])
@@ -187,7 +196,7 @@ def rest_open_order(host: Any, clock: SimClock, minute: int, order: dict[str, An
     time.sleep(1.5)  # the fills task runs every second; it must leave the order alone
     current = host.get(f"/api/orders/{order['id']}")
     assert current["status"] == "open" and current["filled_size"] == 0, current
-    market = next(m for m in host.get(f"/api/markets?game_id={GAME_ID}") if m["id"] == order["market_id"])
+    market = next(m for m in host.get(f"/api/markets?game_id={game_id}") if m["id"] == order["market_id"])
     assert float(market["best_ask"]) > float(order["price"]), "the ask moved above the resting order"
 
 
