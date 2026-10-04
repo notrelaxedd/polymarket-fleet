@@ -36,9 +36,13 @@ blocks trading (below).
 
 ## Feed latency: two sources and a lag measurement
 
-Two free play feeds are polled, ESPN and NFL.com (`nfl.com` live game JSON), every 3 to 5
-seconds while a game is on; whichever reports a play first wins, and each `game_state`
-row records its source and arrival time. For every scoring play and possession change
+Two free play feeds are polled while a game is on: ESPN (summary and core plays
+endpoints, every 3 to 5 s per active game, about one request per second per host in total,
+only for games in progress, with jittered backoff on any 429 or 403 and never a tight retry
+loop) and Yahoo's play-by-play payload (`shangrila` playbookBoxscore, every 10 to 15 s) as a
+cross-check. NFL.com's live feeds need rotating app tokens and are not used. Whichever
+source reports a play first wins, and each `game_state` row records its source and arrival
+time. For every scoring play and possession change
 the host also records when the Polymarket price for that game first moved by more than
 3 cents after the event (`feed_lag (game_id, event_ts, source, feed_seen_at,
 market_moved_at)`), so the Trading page can show, per source, whether the fleet sees
