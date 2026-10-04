@@ -1,13 +1,18 @@
-"""Lineage eligibility (docs/MODELS.md, "Eligibility").
+"""Lineage eligibility (docs/MODELS.md "Eligibility", docs/ROBUSTNESS.md A4).
 
-A lineage's status comes from its root model's backtest metrics against the
-`thresholds_backtest` settings: candidate -> paper_ok when every threshold holds,
-back to candidate when they stop holding. paper_ok -> live_eligible is step 4 (an
-existing live_eligible row keeps it while the backtest thresholds still hold). A
-retired lineage stays retired. The status is written to every row of the lineage.
-Whenever a lineage leaves `live_eligible` (a thresholds change, a new backtest result,
-the paper gate, a retirement) its active live assignments are halted, which cancels
-their orders (docs/LIVE.md: "demoting a lineage halts them").
+A lineage's status comes from its root model's metrics against the
+`thresholds_backtest` settings: candidate -> paper_ok when every rule holds, back to
+candidate when they stop holding. With `require_validation` (the default) the era
+judged is the held-out validation era (`validation_metrics`) and every rule applies:
+`n_bets >= min_bets`, `roi >= min_roi`, `max_drawdown <= max_drawdown`, the ROI 5th
+percentile `>= min_roi_ci_low`, `market_p <= max_market_p` and none of `forbid_flags`
+among the model's flags (validation and stress flags together); a lineage without
+validation metrics is a candidate. With `require_validation` false the three step 3
+rules judge `backtest_metrics` as before. paper_ok -> live_eligible is the paper gate
+(host/paper_gate.py); an existing live_eligible row keeps it while this gate holds.
+A retired lineage stays retired. The status is written to every row of the lineage.
+Whenever a lineage leaves `live_eligible` its active live assignments are halted,
+which cancels their orders (docs/LIVE.md).
 
 `thresholds` reads the setting FOR SHARE, and every model write reads it before it
 touches a model row: a write that overlaps a thresholds change waits for the new
@@ -22,12 +27,16 @@ import psycopg
 
 from host.events import add_audit
 
-DEFAULT_THRESHOLDS: dict[str, Any] = {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.30}
+DEFAULT_THRESHOLDS: dict[str, Any] = {
+    "min_bets": 50, "min_roi": 0.02, "max_drawdown": 0.30, "require_validation": True,
+    "min_roi_ci_low": 0.0, "max_market_p": 0.10, "forbid_flags": ["overfit", "fragile"],
+}
+BASE_RULES = ("min_bets", "min_roi", "max_drawdown")
 
 
 def thresholds(conn: psycopg.Connection) -> dict[str, Any]:
     """The backtest thresholds in force (read FOR SHARE, see the module docstring),
-    with the MODELS.md defaults for missing keys."""
+    with the ROBUSTNESS.md defaults for missing keys."""
     row = conn.execute("SELECT value FROM settings WHERE key = 'thresholds_backtest' FOR SHARE").fetchone()
     value = None if row is None else row["value"]
     out = dict(DEFAULT_THRESHOLDS)
@@ -43,28 +52,83 @@ def _number(metrics: dict[str, Any], key: str) -> float | None:
     return float(value)
 
 
-def meets_thresholds(metrics: dict[str, Any] | None, limits: dict[str, Any]) -> bool:
-    """n_bets >= min_bets, roi >= min_roi and max_drawdown <= max_drawdown; a missing
-    or malformed metric never passes."""
+def ci_low(metrics: dict[str, Any], key: str = "roi") -> float | None:
+    """The lower bound of `metrics.ci[key]`; None when missing or malformed."""
+    ci = metrics.get("ci")
+    bounds = ci.get(key) if isinstance(ci, dict) else None
+    if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+        return None
+    low = bounds[0]
+    if isinstance(low, bool) or not isinstance(low, (int, float)):
+        return None
+    return float(low)
+
+
+def model_flags(metrics: dict[str, Any] | None, stress: dict[str, Any] | None = None) -> list[str]:
+    """The flags of a model: `validation_metrics.flags` then `stress_metrics.flags`,
+    each once, in that order."""
+    out: list[str] = []
+    for source in (metrics, stress):
+        flags = source.get("flags") if isinstance(source, dict) else None
+        for flag in flags if isinstance(flags, list) else []:
+            if isinstance(flag, str) and flag not in out:
+                out.append(flag)
+    return out
+
+
+def meets_thresholds(metrics: dict[str, Any] | None, limits: dict[str, Any], stress: dict[str, Any] | None = None) -> bool:
+    """Every rule of `limits` holds on `metrics`: the three base rules always, and
+    `min_roi_ci_low`, `max_market_p` and `forbid_flags` when `limits` carries them.
+    A missing or malformed metric never passes."""
     if not isinstance(metrics, dict):
         return False
     n_bets, roi, drawdown = (_number(metrics, k) for k in ("n_bets", "roi", "max_drawdown"))
     if n_bets is None or roi is None or drawdown is None:
         return False
-    return (
-        n_bets >= float(limits["min_bets"])
-        and roi >= float(limits["min_roi"])
-        and drawdown <= float(limits["max_drawdown"])
-    )
+    if not (n_bets >= float(limits["min_bets"]) and roi >= float(limits["min_roi"]) and drawdown <= float(limits["max_drawdown"])):
+        return False
+    if limits.get("min_roi_ci_low") is not None:
+        low = ci_low(metrics, "roi")
+        if low is None or low < float(limits["min_roi_ci_low"]):
+            return False
+    if limits.get("max_market_p") is not None:
+        market_p = _number(metrics, "market_p")
+        if market_p is None or market_p > float(limits["max_market_p"]):
+            return False
+    forbid = limits.get("forbid_flags")
+    if forbid and set(model_flags(metrics, stress)) & set(forbid):
+        return False
+    return True
 
 
-def status_for(current: str, metrics: dict[str, Any] | None, limits: dict[str, Any]) -> str:
-    """The lineage status that follows from the root's metrics."""
+def gate_limits(limits: dict[str, Any]) -> dict[str, Any]:
+    """The rules that apply: all of them under `require_validation`, the three base
+    rules otherwise (the step 3 gate on the search era, as before)."""
+    if limits.get("require_validation", True):
+        return limits
+    return {key: limits[key] for key in BASE_RULES}
+
+
+def gate_metrics(row: dict[str, Any], limits: dict[str, Any]) -> dict[str, Any] | None:
+    """The metrics object the gate judges for a root row: the validation era under
+    `require_validation`, else the search-era backtest metrics."""
+    if limits.get("require_validation", True):
+        return row.get("validation_metrics")
+    return row.get("backtest_metrics")
+
+
+def status_for(current: str, metrics: dict[str, Any] | None, limits: dict[str, Any], stress: dict[str, Any] | None = None) -> str:
+    """The lineage status that follows from the judged metrics."""
     if current == "retired":
         return "retired"
-    if not meets_thresholds(metrics, limits):
+    if not meets_thresholds(metrics, gate_limits(limits), stress):
         return "candidate"
     return "live_eligible" if current == "live_eligible" else "paper_ok"
+
+
+def root_status(root: dict[str, Any], current: str, limits: dict[str, Any]) -> str:
+    """status_for over the era `limits` selects on the root row."""
+    return status_for(current, gate_metrics(root, limits), limits, root.get("stress_metrics"))
 
 
 def recompute_lineage(
@@ -82,13 +146,14 @@ def recompute_lineage(
     if was is not None and was["status"] == "live_eligible":
         approval_lock(conn, "live")
     rows = conn.execute(
-        "SELECT id, status, backtest_metrics FROM models WHERE lineage_id = %s FOR UPDATE", (lineage_id,)
+        "SELECT id, status, backtest_metrics, validation_metrics, stress_metrics FROM models WHERE lineage_id = %s FOR UPDATE",
+        (lineage_id,),
     ).fetchall()
     root = next((r for r in rows if r["id"] == lineage_id), None)
     if root is None:
         return None
     current = "retired" if any(r["status"] == "retired" for r in rows) else root["status"]
-    new = status_for(current, root["backtest_metrics"], limits if limits is not None else thresholds(conn))
+    new = root_status(root, current, limits if limits is not None else thresholds(conn))
     conn.execute(
         "UPDATE models SET status = %s, updated_at = now() WHERE lineage_id = %s AND status <> %s",
         (new, lineage_id, new),
@@ -108,91 +173,6 @@ def recompute_all(conn: psycopg.Connection) -> int:
     return len(rows)
 
 
-# ------------------------------------------------------------ step 4: paper gate
-
-DEFAULT_PAPER_THRESHOLDS: dict[str, Any] = {
-    "min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1,
-}
-
-
-def paper_thresholds(conn: psycopg.Connection) -> dict[str, Any]:
-    """`settings.thresholds_paper` (read FOR SHARE) with defaults for missing keys."""
-    row = conn.execute("SELECT value FROM settings WHERE key = 'thresholds_paper' FOR SHARE").fetchone()
-    value = None if row is None else row["value"]
-    out = dict(DEFAULT_PAPER_THRESHOLDS)
-    if isinstance(value, dict):
-        out.update({k: v for k, v in value.items() if k in out and v is not None})
-    return out
-
-
-def paper_stats(conn: psycopg.Connection, lineage_id: Any, now: Any = None) -> dict[str, Any]:
-    """The lineage's pooled paper record: distinct games (one game traded by several
-    models of the lineage counts once; a settled game with no bet still counts) and
-    bets from model_scores, stake weighted CLV, P&L and days since its first paper bet."""
-    row = conn.execute(
-        """
-        SELECT count(DISTINCT game_id) AS games, COALESCE(SUM(n_bets), 0) AS bets, COALESCE(SUM(pnl_cents), 0) AS pnl_cents,
-               SUM(CASE WHEN avg_clv IS NOT NULL THEN avg_clv * stake_cents END) AS clv_weight,
-               SUM(CASE WHEN avg_clv IS NOT NULL THEN stake_cents END) AS clv_stake
-          FROM model_scores WHERE lineage_id = %s AND mode = 'paper'
-        """,
-        (lineage_id,),
-    ).fetchone()
-    first = conn.execute(
-        "SELECT MIN(settled_at) AS first FROM bets WHERE lineage_id = %s AND mode = 'paper'", (lineage_id,)
-    ).fetchone()["first"]
-    days = 0.0
-    if first is not None:
-        current = now or conn.execute("SELECT now() AS now").fetchone()["now"]
-        days = max(0.0, (current - first).total_seconds() / 86400.0)
-    stake = float(row["clv_stake"] or 0)
-    avg_clv = float(row["clv_weight"]) / stake if stake > 0 else None
-    return {
-        "games": int(row["games"]), "bets": int(row["bets"]), "pnl_cents": int(row["pnl_cents"]),
-        "avg_clv": avg_clv, "days": days,
-    }
-
-
-def meets_paper_thresholds(stats: dict[str, Any], limits: dict[str, Any]) -> bool:
-    """games, bets, days, avg_clv and pnl each at or above its threshold; a lineage
-    with no CLV yet never passes."""
-    if stats.get("avg_clv") is None:
-        return False
-    return (
-        stats["games"] >= int(limits["min_games"])
-        and stats["bets"] >= int(limits["min_bets"])
-        and stats["days"] >= float(limits["min_days"])
-        and float(stats["avg_clv"]) >= float(limits["min_clv"])
-        and stats["pnl_cents"] >= int(limits["min_pnl_cents"])
-    )
-
-
-def recompute_paper(conn: psycopg.Connection, lineage_id: Any, actor: str | None = "settle") -> str | None:
-    """After settlement: the backtest gate first, then `paper_ok -> live_eligible`
-    when the pooled paper scores meet `thresholds_paper` and `live_eligible ->
-    paper_ok` (live assignments halted, their orders cancelled) when they stop
-    meeting them. The status, or None for an unknown lineage."""
-    paper_limits = paper_thresholds(conn)
-    current = recompute_lineage(conn, lineage_id, actor=actor)
-    if current is None:
-        return None
-    meets = meets_paper_thresholds(paper_stats(conn, lineage_id), paper_limits)
-    new = current
-    if current == "paper_ok" and meets:
-        new = "live_eligible"
-    elif current == "live_eligible" and not meets:
-        new = "paper_ok"
-    if new != current:
-        conn.execute(
-            "UPDATE models SET status = %s, updated_at = now() WHERE lineage_id = %s AND status <> %s",
-            (new, lineage_id, new),
-        )
-        add_audit(conn, "eligibility_changed", str(lineage_id), actor, {"status": current}, {"status": new})
-        if new == "paper_ok":
-            halt_live_assignments(conn, lineage_id, actor, "lineage no longer live_eligible")
-    return new
-
-
 def halt_live_assignments(conn: psycopg.Connection, lineage_id: Any, actor: str | None, reason: str) -> int:
     """Halt every active live assignment of the lineage (orders cancelled by halt)."""
     from host.trading import assignments
@@ -203,3 +183,21 @@ def halt_live_assignments(conn: psycopg.Connection, lineage_id: Any, actor: str 
     for row in rows:
         assignments.halt_assignment(conn, row["id"], actor, reason)
     return len(rows)
+
+
+# The paper gate (step 4, with the step 6 CLV bootstrap) lives in host.paper_gate and
+# is re-exported here, where the settlement and the settings forms look for it.
+from host.paper_gate import (  # noqa: E402
+    DEFAULT_PAPER_THRESHOLDS,
+    meets_paper_thresholds,
+    paper_ci,
+    paper_stats,
+    paper_thresholds,
+    recompute_paper,
+)
+
+__all__ = [
+    "DEFAULT_PAPER_THRESHOLDS", "DEFAULT_THRESHOLDS", "ci_low", "gate_limits", "gate_metrics", "halt_live_assignments",
+    "meets_paper_thresholds", "meets_thresholds", "model_flags", "paper_ci", "paper_stats", "paper_thresholds",
+    "recompute_all", "recompute_lineage", "recompute_paper", "root_status", "status_for", "thresholds",
+]
