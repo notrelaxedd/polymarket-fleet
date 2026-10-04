@@ -229,6 +229,14 @@ SCHEMA: dict[str, Validator] = {
     ),
     "max_exposure_cents": _cents_by_mode,
     "scores_url": _url,
+    # step 5: live
+    "auth_probe_interval_s": _int_range(10, 86400),
+    "buying_power_max_age_s": _int_range(10, 86400),
+    "submitting_grace_s": _int_range(5, 3600),
+    "auto_kill": _object_of({"auth_failures": _int_range(1, 100), "clock_skew_ms": _int_range(1000, 600000)}, "auth_failures and clock_skew_ms"),
+    "smoke_hold_seconds": _int_range(1, 600),
+    "live_fills_poll_s": _int_range(1, 60),
+    "open_orders_audit_s": _int_range(5, 3600),
 }
 
 

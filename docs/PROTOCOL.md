@@ -793,3 +793,21 @@ has been handed back.
   `assignments [--status]`, `orders [--status] [--limit]`, `cancel-all [--mode]`,
   `simulate-final <game_id> --home N --away M`, `exchange-state`, `ledger-check` (exit 1 and
   one line per problem when a bankroll's ledger disagrees with its cached columns).
+
+## Step 5 additions
+
+Workers are unchanged in step 5: they never learn whether an assignment is paper or live
+beyond the `mode` field, and they never see keys. Host-side additions (see docs/LIVE.md):
+- Owner routes: `POST /live` `{"confirm": "ENABLE LIVE TRADING YYYY-MM-DD"}`, `POST /live/off`,
+  `GET /api/live` (state, credentials_present, auth, balance, buying power, skew, auto-kill
+  reasons), `POST /api/exchange/probe-account` (balance call, raw payload, key redacted).
+- `/api/settings` refuses `live_enabled` (400, "use /live").
+- Exchange state columns: `auth_failures`, `credentials_present`, `last_auth_error`,
+  `open_orders_checked_at`, `live_enabled_at`, `live_enabled_by`.
+- Settings keys: `auth_probe_interval_s`, `buying_power_max_age_s`, `submitting_grace_s`,
+  `auto_kill {"auth_failures", "clock_skew_ms"}`, `smoke_hold_seconds`, `live_fills_poll_s`,
+  `open_orders_audit_s`, and `market_source_config.polymarket_us.auth` / `.live` blocks
+  (defaults applied in code when absent).
+- CLI (`python -m host.exchange.cli`): `exchange-smoke --confirm "SMOKE YYYY-MM-DD"
+  [--market ID]`, `cancel-all --direct`, `probe-account`, `auth-check`.
+- Audit actions: `live_on`, `live_off`, `auto_kill`, `smoke_order`.
