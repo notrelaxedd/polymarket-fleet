@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse
 from host import data_refresh, kill, nflverse, pnl, views, web
 from host.api.deps import DB, get_config, require_owner
 from host.api.job_forms import jobs_context
+from host.api.robustness import robustness_context
 from host.leaderboard import short_params
 from host.config import Config
 from host.scheduling import online_after
@@ -142,10 +143,12 @@ def jobs_page_response(
 
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs_page(
-    request: Request, train_model: str | None = Query(default=None, max_length=64), conn: psycopg.Connection = DB
+    request: Request, train_model: str | None = Query(default=None, max_length=64),
+    validate_model: str | None = Query(default=None, max_length=64), conn: psycopg.Connection = DB,
 ) -> HTMLResponse:
-    """Send forms plus the newest 50 jobs; ?train_model=<id> prefills the train form."""
-    return jobs_page_response(request, conn, train_model=train_model)
+    """Send forms plus the newest 50 jobs; ?train_model=<id> prefills the train form,
+    ?validate_model=<id> the validate form."""
+    return jobs_page_response(request, conn, train_model=train_model, validate_model=validate_model)
 
 
 def checkpoint_digest(kind: Any, checkpoint: Any) -> str:
@@ -161,6 +164,8 @@ def checkpoint_digest(kind: Any, checkpoint: Any) -> str:
         return f"{len(checkpoint.get('per_season') or [])} seasons done"
     if kind == "train":
         return f"{nxt} of {len(checkpoint.get('seasons') or [])} seasons replayed"
+    if kind == "validate" and checkpoint.get("stage"):
+        return f"stage {checkpoint['stage']}"
     return f"{len(checkpoint)} keys"
 
 
@@ -172,9 +177,11 @@ def job_page(request: Request, job_id: str, conn: psycopg.Connection = DB) -> HT
     created = [m for m in (result.get("created_models") or []) if isinstance(m, dict) and m.get("id")]
     top = [t for t in (result.get("top") or []) if isinstance(t, dict)]
     per_season = [s for s in (result.get("per_season") or []) if isinstance(s, dict)]
+    validation = result.get("validation_metrics") if isinstance(result.get("validation_metrics"), dict) else None
     return page(
         request, conn, "job.html", job=job, names=views.worker_names(conn), result=result,
         created_models=created, top=top, per_season=per_season, checkpoint_digest=checkpoint_digest(job["kind"], job.get("checkpoint")),
+        robustness=robustness_context(validation, result.get("stress_metrics")),
         model_links={m.get("id") for m in created}, family=job["params"].get("family") if isinstance(job.get("params"), dict) else None,
     )
 

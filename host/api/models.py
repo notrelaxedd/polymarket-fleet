@@ -7,7 +7,7 @@ import psycopg
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from host import auth, leaderboard, models
+from host import auth, leaderboard, model_validation, models
 from host.api.deps import DB, bearer, require_owner
 from host.api.limits import small_payload
 from host.api.serialize import jsonable
@@ -23,11 +23,13 @@ class NewModelBody(BaseModel):
     params: dict[str, Any]
     artifact: dict[str, Any] | None = None
     backtest_metrics: dict[str, Any] | None = None
+    validation_metrics: dict[str, Any] | None = None
+    stress_metrics: dict[str, Any] | None = None
     summary: str | None = Field(default=None, max_length=models.MAX_WORKER_SUMMARY)
     parent_model_id: str | None = Field(default=None, max_length=64)
     trained_through: Any = None
 
-    @field_validator("artifact", "backtest_metrics")
+    @field_validator("artifact", "backtest_metrics", "validation_metrics", "stress_metrics")
     @classmethod
     def _small(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
         return small_payload(value, "payload")
@@ -42,6 +44,18 @@ class BacktestBody(BaseModel):
     @classmethod
     def _small(cls, value: dict[str, Any]) -> dict[str, Any]:
         return small_payload(value, "backtest_metrics")
+
+
+class ValidationBody(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    job_id: str = Field(max_length=64)
+    validation_metrics: dict[str, Any]
+    stress_metrics: dict[str, Any]
+
+    @field_validator("validation_metrics", "stress_metrics")
+    @classmethod
+    def _small(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return small_payload(value, "metrics")
 
 
 class SummaryBody(BaseModel):
@@ -80,6 +94,18 @@ def post_backtest(
     """Store backtest metrics on the model's lineage and re-run eligibility."""
     worker = auth.worker_for_token(conn, token)
     row = models.set_backtest_metrics(conn, model_id, body.backtest_metrics, body.job_id, worker["id"])
+    return jsonable({"id": row["id"], "lineage_id": row["lineage_id"], "status": row["status"]})
+
+
+@worker_router.post("/{model_id}/validation")
+def post_validation(
+    model_id: str, body: ValidationBody, token: str = Depends(bearer), conn: psycopg.Connection = DB
+) -> dict[str, Any]:
+    """Store validation and stress metrics on the model's lineage and re-run eligibility."""
+    worker = auth.worker_for_token(conn, token)
+    row = model_validation.set_validation_metrics(
+        conn, model_id, body.validation_metrics, body.stress_metrics, body.job_id, worker["id"]
+    )
     return jsonable({"id": row["id"], "lineage_id": row["lineage_id"], "status": row["status"]})
 
 

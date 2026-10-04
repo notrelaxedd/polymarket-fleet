@@ -1,13 +1,15 @@
-"""The leaderboard (docs/MODELS.md, docs/TRADING.md "Leaderboard and P&L") and the
-owner's model detail view.
+"""The leaderboard (docs/MODELS.md, docs/TRADING.md "Leaderboard and P&L",
+docs/ROBUSTNESS.md A1) and the owner's model detail view.
 
-One row per lineage. Each row carries the root model's backtest metrics and the
-lineage's pooled paper (and live) record from model_scores. Rank mode: paper, by
-shrunk CLV (avg_clv * bets / (bets + 25), ties broken by ROI), once the lineage has
-PAPER_RANK_GAMES paper games and PAPER_RANK_BETS paper bets; otherwise the step 3
-backtest ranking by shrunk ROI (roi * n_bets / (n_bets + 100)), ties broken by
-log-loss, when the root has MIN_RANKED_BETS bets. Paper-ranked lineages come first.
-Retired lineages are always unranked.
+One row per lineage. Each row carries the root model's search-era backtest metrics,
+its validation-era metrics with the step 6 extras (the ROI interval, the market test,
+the flags), the lineage's pooled paper (and live) record from model_scores and the
+cached paper CLV interval. Rank mode: paper, by shrunk CLV (avg_clv * bets / (bets +
+25), ties broken by ROI), once the lineage has PAPER_RANK_GAMES paper games and
+PAPER_RANK_BETS paper bets; otherwise validation, by the validation era's shrunk ROI
+(roi * n_bets / (n_bets + 100)), ties broken by the mean log-loss gain over the
+market. Paper-ranked lineages come first. A lineage without validation metrics is
+unranked with the reason "not validated"; a retired lineage is always unranked.
 """
 from __future__ import annotations
 
@@ -15,23 +17,26 @@ from typing import Any
 
 import psycopg
 
+from host.eligibility import model_flags
 from host.models import get_model, lineage_rows
+from host.stats import shrunk_roi
 
-MIN_RANKED_BETS = 50
 PAPER_RANK_GAMES, PAPER_RANK_BETS, CLV_SHRINK = 5, 30, 25
 EMPTY_RECORD: dict[str, Any] = {"games": 0, "bets": 0, "pnl_cents": 0, "stake_cents": 0, "roi": None, "avg_clv": None}
 METRIC_KEYS = ("roi", "n_bets", "log_loss", "market_log_loss", "max_drawdown", "seasons", "hit_rate", "avg_edge", "pnl_cents")
-
-
-def shrunk_roi(metrics: dict[str, Any] | None) -> float:
-    """roi * n_bets / (n_bets + 100); 0 without usable metrics."""
-    if not isinstance(metrics, dict):
-        return 0.0
-    try:
-        n = float(metrics.get("n_bets") or 0)
-        return float(metrics.get("roi") or 0.0) * n / (n + 100.0)
-    except (TypeError, ValueError):
-        return 0.0
+VALIDATION_KEYS = METRIC_KEYS + (
+    "shrunk_roi", "ci", "mean_ll_gain", "market_p", "flags", "calib_slope", "calib_intercept", "brier_decomposition",
+)
+MARKET_BEATEN_P = 0.05
+FLAG_MEANINGS = {
+    "overfit": "the search era looked better than the held-out era: its shrunk ROI was more than 3 points higher, "
+               "or it beat the market on log-loss while the validation era did not",
+    "fragile": "a spread two cents wider removes half the bets or turns the ROI negative, or a 10% nudge of the "
+               "parameters does",
+    "regime_dependent": "one game regime (favourites, home, primetime, cold weather...) holds more than 80% of the "
+                        "profit and the model loses elsewhere",
+}
+UNRANKED_REASONS = {"retired": "retired", "not_validated": "not validated"}
 
 
 def shrunk_clv(record: dict[str, Any] | None) -> float:
@@ -72,6 +77,19 @@ def trading_records(conn: psycopg.Connection) -> dict[tuple[Any, str], dict[str,
     return out
 
 
+def paper_intervals(conn: psycopg.Connection) -> dict[Any, dict[str, Any]]:
+    """lineage_id -> the cached paper CLV bootstrap {n_bets, avg_clv, ci, computed_at}."""
+    rows = conn.execute("SELECT * FROM lineage_paper_ci").fetchall()
+    return {r["lineage_id"]: _paper_ci(r) for r in rows}
+
+
+def _paper_ci(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    ci = [float(row["clv_low"]), float(row["clv_high"])] if row["clv_low"] is not None and row["clv_high"] is not None else None
+    return {"n_bets": int(row["n_bets"]), "avg_clv": _num(row["avg_clv"]), "ci": ci, "computed_at": row["computed_at"]}
+
+
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
@@ -96,18 +114,35 @@ def short_params(family: str, params: dict[str, Any] | None) -> str:
     return " · ".join(parts) or "defaults"
 
 
-def _metric_subset(metrics: dict[str, Any] | None) -> dict[str, Any]:
+def _subset(metrics: dict[str, Any] | None, keys: tuple[str, ...]) -> dict[str, Any]:
     metrics = metrics if isinstance(metrics, dict) else {}
-    return {key: metrics.get(key) for key in METRIC_KEYS}
+    return {key: metrics.get(key) for key in keys}
+
+
+def validation_summary(root: dict[str, Any]) -> dict[str, Any] | None:
+    """The validation-era numbers a leaderboard row shows, with `shrunk_roi` filled
+    in and `beats_market` (market_p below MARKET_BEATEN_P); None when not validated."""
+    metrics = root.get("validation_metrics")
+    if not isinstance(metrics, dict):
+        return None
+    out = _subset(metrics, VALIDATION_KEYS)
+    out["shrunk_roi"] = shrunk_roi(metrics)
+    out["flags"] = model_flags(metrics)
+    market_p = _num(metrics.get("market_p"))
+    out["beats_market"] = market_p is not None and market_p < MARKET_BEATEN_P
+    return out
 
 
 def lineage_row(
-    root: dict[str, Any], members: int, records: dict[tuple[Any, str], dict[str, Any]] | None = None
+    root: dict[str, Any], members: int, records: dict[tuple[Any, str], dict[str, Any]] | None = None,
+    paper_cis: dict[Any, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """The leaderboard entry of a lineage from its root row and the pooled trading records."""
-    metrics = root.get("backtest_metrics")
+    """The leaderboard entry of a lineage from its root row, the pooled trading
+    records and the cached paper intervals."""
     records = records or {}
     paper = records.get((root["lineage_id"], "paper"), EMPTY_RECORD)
+    validation = validation_summary(root)
+    stress = root.get("stress_metrics") if isinstance(root.get("stress_metrics"), dict) else None
     return {
         "id": root["id"],
         "lineage_id": root["lineage_id"],
@@ -116,12 +151,19 @@ def lineage_row(
         "short_params": short_params(root["family"], root["params"]),
         "status": root["status"],
         "summary": root.get("summary"),
-        "metrics": _metric_subset(metrics),
-        "score": shrunk_roi(metrics),
+        "metrics": _subset(root.get("backtest_metrics"), METRIC_KEYS),
+        "search_score": shrunk_roi(root.get("backtest_metrics")),
+        "validation": validation,
+        "validated": validation is not None,
+        "score": validation["shrunk_roi"] if validation else 0.0,
+        "ll_gain": _num(validation.get("mean_ll_gain")) if validation else None,
+        "flags": model_flags(root.get("validation_metrics"), stress),
+        "stress_flags": model_flags(None, stress),
         "paper": dict(paper),
         "live": dict(records.get((root["lineage_id"], "live"), EMPTY_RECORD)),
         "paper_score": shrunk_clv(paper),
-        "rank_mode": "paper" if paper_ranked(paper) else "backtest",
+        "paper_ci": (paper_cis or {}).get(root["lineage_id"]),
+        "rank_mode": "paper" if paper_ranked(paper) else "validation",
         "members": members,
         "created_at": root["created_at"],
         "updated_at": root["updated_at"],
@@ -129,8 +171,8 @@ def lineage_row(
 
 
 def _rank_key(entry: dict[str, Any]) -> tuple[float, float, Any]:
-    log_loss = _num(entry["metrics"].get("log_loss"))
-    return (-entry["score"], log_loss if log_loss is not None else float("inf"), entry["created_at"])
+    gain = entry.get("ll_gain")
+    return (-entry["score"], -(gain if gain is not None else float("-inf")), entry["created_at"])
 
 
 def _paper_key(entry: dict[str, Any]) -> tuple[float, float, Any]:
@@ -138,9 +180,21 @@ def _paper_key(entry: dict[str, Any]) -> tuple[float, float, Any]:
     return (-entry["paper_score"], -(roi if roi is not None else 0.0), entry["created_at"])
 
 
+def unranked_reason(entry: dict[str, Any]) -> str | None:
+    """Why a lineage sits in the unranked list, or None when it ranks."""
+    if entry["status"] == "retired":
+        return UNRANKED_REASONS["retired"]
+    if entry["rank_mode"] == "paper":
+        return None
+    if not entry["validated"]:
+        return UNRANKED_REASONS["not_validated"]
+    return None
+
+
 def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
     """{"ranked": [...], "unranked": [...]} over every lineage with a root row: the
-    paper-ranked lineages first, then the backtest-ranked ones, then the rest."""
+    paper-ranked lineages first, then the validation-ranked ones, then the rest
+    (each with its `unranked_reason`)."""
     roots = conn.execute(
         """
         SELECT r.*, (SELECT count(*) FROM models m WHERE m.lineage_id = r.lineage_id) AS members
@@ -148,21 +202,21 @@ def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
         """
     ).fetchall()
     records = trading_records(conn)
-    by_paper, by_backtest, unranked = [], [], []
+    cis = paper_intervals(conn)
+    by_paper, by_validation, unranked = [], [], []
     for root in roots:
-        entry = lineage_row(root, int(root["members"]), records)
-        n_bets = _num(entry["metrics"].get("n_bets")) or 0.0
-        if root["status"] == "retired":
+        entry = lineage_row(root, int(root["members"]), records, cis)
+        reason = unranked_reason(entry)
+        if reason is not None:
+            entry["unranked_reason"] = reason
             unranked.append(entry)
         elif entry["rank_mode"] == "paper":
             by_paper.append(entry)
-        elif n_bets >= MIN_RANKED_BETS:
-            by_backtest.append(entry)
         else:
-            unranked.append(entry)
+            by_validation.append(entry)
     by_paper.sort(key=_paper_key)
-    by_backtest.sort(key=_rank_key)
-    ranked = by_paper + by_backtest
+    by_validation.sort(key=_rank_key)
+    ranked = by_paper + by_validation
     for position, entry in enumerate(ranked, start=1):
         entry["rank"] = position
     return {"ranked": ranked, "unranked": unranked}
@@ -183,15 +237,22 @@ def model_jobs(conn: psycopg.Connection, model_id: Any) -> list[dict[str, Any]]:
 
 
 def model_detail(conn: psycopg.Connection, model_id: Any) -> dict[str, Any]:
-    """GET /api/models/{id}: the row plus short params, lineage members and related jobs."""
+    """GET /api/models/{id}: the row plus short params, the validation summary, flags
+    with their meanings, the paper interval, lineage members and related jobs."""
     model = dict(get_model(conn, model_id))
     model["short_params"] = short_params(model["family"], model["params"])
-    model["score"] = shrunk_roi(model.get("backtest_metrics"))
+    model["search_score"] = shrunk_roi(model.get("backtest_metrics"))
+    model["validation"] = validation_summary(model)
+    model["validated"] = model["validation"] is not None
+    model["score"] = model["validation"]["shrunk_roi"] if model["validation"] else 0.0
+    model["flags"] = model_flags(model.get("validation_metrics"), model.get("stress_metrics"))
+    model["flag_meanings"] = {flag: FLAG_MEANINGS.get(flag, "") for flag in model["flags"]}
     records = trading_records(conn)
     model["paper"] = dict(records.get((model["lineage_id"], "paper"), EMPTY_RECORD))
     model["live"] = dict(records.get((model["lineage_id"], "live"), EMPTY_RECORD))
     model["paper_score"] = shrunk_clv(model["paper"])
-    model["rank_mode"] = "paper" if paper_ranked(model["paper"]) else "backtest"
+    model["paper_ci"] = _paper_ci(conn.execute("SELECT * FROM lineage_paper_ci WHERE lineage_id = %s", (model["lineage_id"],)).fetchone())
+    model["rank_mode"] = "paper" if paper_ranked(model["paper"]) else "validation"
     model["lineage"] = [
         {
             "id": r["id"], "parent_model_id": r["parent_model_id"], "trained_through": r["trained_through"],

@@ -1,7 +1,8 @@
 """Model rows: creation (idempotent, lineage inheritance), metrics, summary, retire.
 
 A root model is its own lineage (`lineage_id = id`); a child created by training
-inherits the parent's lineage, status and backtest metrics. Every write that can
+inherits the parent's lineage, status, backtest, validation and stress metrics
+(step 6: the validation write itself is host/model_validation.py). Every write that can
 move a lineage's status reads the thresholds first (host.eligibility.thresholds,
 FOR SHARE) and ends in recompute_lineage. The job a worker names must be bound to
 the write: a root comes from a model_search job, a child from the train job whose
@@ -30,8 +31,9 @@ MAX_SUMMARY = 600
 MAX_WORKER_SUMMARY = 2000
 WORKER_FIELDS = (
     "id", "lineage_id", "family", "params", "artifact", "parent_model_id", "trained_through", "status",
-    "backtest_metrics",
+    "backtest_metrics", "validation_metrics", "stress_metrics",
 )
+METRIC_FIELDS = ("backtest_metrics", "validation_metrics", "stress_metrics")
 
 
 def known_family(family: Any) -> bool:
@@ -153,6 +155,8 @@ def validate_new_model(body: dict[str, Any]) -> dict[str, Any]:
         "params_hash": params_hash(params),
         "artifact": _finite(_object_or_none(body.get("artifact"), "artifact"), "artifact"),
         "backtest_metrics": _finite(_object_or_none(body.get("backtest_metrics"), "backtest_metrics"), "backtest_metrics"),
+        "validation_metrics": _finite(_object_or_none(body.get("validation_metrics"), "validation_metrics"), "validation_metrics"),
+        "stress_metrics": _finite(_object_or_none(body.get("stress_metrics"), "stress_metrics"), "stress_metrics"),
         "summary": _summary(body.get("summary"), MAX_WORKER_SUMMARY),
         "parent_model_id": body.get("parent_model_id"),
         "trained_through": _trained_through(body.get("trained_through")),
@@ -179,16 +183,33 @@ def _store_metrics(conn: psycopg.Connection, lineage_id: Any, metrics: dict[str,
     )
 
 
+def store_validation(
+    conn: psycopg.Connection, lineage_id: Any, validation: dict[str, Any] | None, stress: dict[str, Any] | None
+) -> None:
+    """Validation and stress metrics on every row of a lineage (a null leaves that
+    column as it is)."""
+    conn.execute(
+        """
+        UPDATE models SET validation_metrics = COALESCE(%s, validation_metrics), stress_metrics = COALESCE(%s, stress_metrics),
+               updated_at = now() WHERE lineage_id = %s
+        """,
+        (Jsonb(validation) if validation is not None else None, Jsonb(stress) if stress is not None else None, lineage_id),
+    )
+
+
 def _existing_root(
     conn: psycopg.Connection, existing: dict[str, Any], fields: dict[str, Any], limits: dict[str, Any]
 ) -> dict[str, Any]:
-    """An identity hit on a root that carries backtest metrics: the latest evaluation
-    wins (like POST /models/{id}/backtest), so the first, possibly empty, search no
-    longer fixes the lineage's metrics for good."""
-    metrics = fields["backtest_metrics"]
-    if existing["id"] != existing["lineage_id"] or metrics is None or metrics == existing["backtest_metrics"]:
+    """An identity hit on a root that carries metrics: the latest evaluation wins
+    (like POST /models/{id}/backtest and /validation), so the first, possibly empty,
+    search no longer fixes the lineage's metrics for good."""
+    changed = {key: fields[key] for key in METRIC_FIELDS if fields[key] is not None and fields[key] != existing[key]}
+    if existing["id"] != existing["lineage_id"] or not changed:
         return existing
-    _store_metrics(conn, existing["lineage_id"], metrics)
+    if "backtest_metrics" in changed:
+        _store_metrics(conn, existing["lineage_id"], changed["backtest_metrics"])
+    if "validation_metrics" in changed or "stress_metrics" in changed:
+        store_validation(conn, existing["lineage_id"], changed.get("validation_metrics"), changed.get("stress_metrics"))
     status = recompute_lineage(conn, existing["lineage_id"], limits)
     row = get_model(conn, existing["id"])
     row["status"] = status or row["status"]
@@ -222,22 +243,26 @@ def create_model(
         if parent["family"] != fields["family"] or parent["params_hash"] != fields["params_hash"]:
             raise BadRequest("a child must keep its parent's family and params")
         # A child is the same model trained further: it shares the parent's lineage,
-        # status and backtest metrics (its own metrics field is ignored).
-        lineage_id, status, metrics = parent["lineage_id"], parent["status"], parent["backtest_metrics"]
+        # status and metrics (its own metrics fields are ignored).
+        lineage_id, status = parent["lineage_id"], parent["status"]
+        metrics = {key: parent[key] for key in METRIC_FIELDS}
         parent_uuid: uuid.UUID | None = parent["id"]
     else:
-        lineage_id, status, metrics, parent_uuid = model_id, "candidate", fields["backtest_metrics"], None
+        lineage_id, status, parent_uuid = model_id, "candidate", None
+        metrics = {key: fields[key] for key in METRIC_FIELDS}
     row = conn.execute(
         """
         INSERT INTO models (id, lineage_id, family, params, params_hash, artifact, parent_model_id,
-                            trained_through, summary, status, backtest_metrics, created_by_job_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                            trained_through, summary, status, backtest_metrics, validation_metrics, stress_metrics,
+                            created_by_job_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
         """,
         (
             model_id, lineage_id, fields["family"], Jsonb(fields["params"]), fields["params_hash"],
             Jsonb(fields["artifact"]) if fields["artifact"] is not None else None, parent_uuid,
             Jsonb(fields["trained_through"]) if fields["trained_through"] is not None else None,
-            fields["summary"], status, Jsonb(metrics) if metrics is not None else None, job["id"],
+            fields["summary"], status, *(Jsonb(metrics[key]) if metrics[key] is not None else None for key in METRIC_FIELDS),
+            job["id"],
         ),
     ).fetchone()
     new_status = recompute_lineage(conn, lineage_id, limits)
@@ -264,36 +289,5 @@ def set_backtest_metrics(
     return get_model(conn, model_id)
 
 
-def set_summary(conn: psycopg.Connection, model_id: Any, summary: Any, actor: str | None) -> dict[str, Any]:
-    """Owner edit of the summary text (at most MAX_SUMMARY characters), audited."""
-    if not isinstance(summary, str):
-        raise BadRequest("summary must be a string")
-    text = _summary(summary, MAX_SUMMARY)
-    model = get_model(conn, model_id, for_update=True)
-    row = conn.execute(
-        "UPDATE models SET summary = %s, updated_at = now() WHERE id = %s RETURNING *", (text, model["id"])
-    ).fetchone()
-    add_audit(conn, "model_summary", str(model["id"]), actor, {"summary": model["summary"]}, {"summary": text})
-    return row
-
-
-def retire(conn: psycopg.Connection, model_id: Any, status: Any, actor: str | None) -> dict[str, Any]:
-    """Owner status change: only `retired`, applied to the whole lineage, audited."""
-    if status != "retired":
-        raise BadRequest("the owner can only set status retired")
-    from host.trading import assignments
-
-    model = get_model(conn, model_id, for_update=True)
-    conn.execute(
-        "UPDATE models SET status = 'retired', updated_at = now() WHERE lineage_id = %s AND status <> 'retired'",
-        (model["lineage_id"],),
-    )
-    # A retired lineage trades nothing more: every active assignment is halted, which
-    # cancels its approved rows at once and asks the exchange to cancel the live ones.
-    active = conn.execute(
-        "SELECT id FROM assignments WHERE lineage_id = %s AND status = 'active' ORDER BY created_at", (model["lineage_id"],)
-    ).fetchall()
-    halted = [str(assignments.halt_assignment(conn, r["id"], actor, "lineage retired")["id"]) for r in active]
-    add_audit(conn, "model_retired", str(model["id"]), actor, {"status": model["status"]},
-              {"status": "retired", "assignments_halted": halted})
-    return get_model(conn, model_id)
+# The owner's edits (summary, retire) live in host.model_owner and are re-exported here.
+from host.model_owner import retire, set_summary  # noqa: E402,F401

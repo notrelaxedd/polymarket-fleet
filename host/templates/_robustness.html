@@ -1,0 +1,77 @@
+{# The "Robustness" section (docs/ROBUSTNESS.md A2, A3): `r` is host.api.robustness.robustness_context.
+   Everything is labelled pairs and stacked tables so it reads on a phone. #}
+{% macro range(pair, filter='signed_pct') -%}
+{% if pair and pair[0] is not none and pair[1] is not none %}{% if filter == 'pct1' %}{{ pair[0] | pct1 }} to {{ pair[1] | pct1 }}{% elif filter == 'fixed' %}{{ pair[0] | fixed }} to {{ pair[1] | fixed }}{% else %}{{ pair[0] | signed_pct }} to {{ pair[1] | signed_pct }}{% endif %}{% else %}-{% endif %}
+{%- endmacro %}
+{% macro flag_chips(flags) -%}
+{% for f in flags %}<span class="chip chip-flag chip-{{ f.name }}" title="{{ f.meaning }}">{{ f.name.replace('_', '-') }}</span> {% endfor %}
+{%- endmacro %}
+{% macro section(r, per_season=none) -%}
+{% set m = r.metrics %}
+{% set bets = m.n_bets or 0 %}
+<section class="robustness" id="robustness">
+<h2>Robustness <span class="muted small">validation era {{ m.seasons | season_span }}, held out of the search</span></h2>
+<p class="flags-line">
+  {% if r.flags %}{{ flag_chips(r.flags) }}{% else %}<span class="chip chip-ok">no flags</span>{% endif %}
+  {% if r.beats_market %}<span class="chip chip-beats">beats market</span>{% endif %}
+</p>
+{% if r.flags %}
+<ul class="flag-meanings small">
+  {% for f in r.flags %}<li><strong>{{ f.name.replace('_', '-') }}</strong>: {{ f.meaning }}.</li>{% endfor %}
+</ul>
+{% endif %}
+<p class="ci-line">Validation ROI <strong>{{ m.roi | signed_pct if bets else '-' }}</strong>{% if bets %} <span class="range">(90% range {{ range(r.ci.roi) }})</span>{% endif %} over {{ bets }} bets, shrunk {{ r.summary.shrunk_roi | signed_pct(2) }}.
+  Hit rate {{ m.hit_rate | pct1 if bets else '-' }}{% if bets %} <span class="range">({{ range(r.ci.hit_rate, 'pct1') }})</span>{% endif %},
+  average edge {{ m.avg_edge | signed_pct if bets else '-' }}{% if bets %} <span class="range">({{ range(r.ci.avg_edge) }})</span>{% endif %},
+  max drawdown {{ m.max_drawdown | pct1 }}{% if bets %} <span class="range">({{ range(r.ci.max_drawdown, 'pct1') }})</span>{% endif %},
+  CLV range <span class="range">{{ range(r.ci.avg_clv, 'fixed') }}</span> <span class="muted small">(0 on closing lines by construction)</span>.</p>
+<p class="market-line{% if r.beats_market %} beats{% endif %}">{{ r.market }}</p>
+<dl class="kv metrics calib">
+  <div><dt>log-loss vs market</dt><dd>{{ m.log_loss | fixed }} <span class="muted">vs {{ m.market_log_loss | fixed }}</span></dd></div>
+  <div><dt>calibration slope</dt><dd>{{ r.calib_slope | fixed }} <span class="muted small">1 = calibrated</span></dd></div>
+  <div><dt>calibration intercept</dt><dd>{{ r.calib_intercept | fixed }} <span class="muted small">0 = no bias</span></dd></div>
+  <div><dt>brier</dt><dd>{{ m.brier | fixed }}</dd></div>
+  <div><dt>reliability</dt><dd>{{ r.brier_decomposition.reliability | fixed(4) }}</dd></div>
+  <div><dt>resolution</dt><dd>{{ r.brier_decomposition.resolution | fixed(4) }}</dd></div>
+  <div><dt>uncertainty</dt><dd>{{ r.brier_decomposition.uncertainty | fixed(4) }}</dd></div>
+  <div><dt>games</dt><dd>{{ m.n_games }}</dd></div>
+  <div><dt>P&amp;L</dt><dd>{{ m.pnl_cents | money }}</dd></div>
+</dl>
+<h3>price stress <span class="muted small">the same validation run with worse prices</span></h3>
+{% if r.prices %}
+<div class="table-wrap">
+<table class="metrics stress stack">
+  <thead><tr><th>prices</th><th>bets</th><th>ROI</th><th>log-loss</th><th>log-loss gain</th></tr></thead>
+  <tbody>
+  <tr><td class="lead"><strong>base</strong></td><td><span class="k">bets</span> {{ m.n_bets }}</td><td><span class="k">ROI</span> {{ m.roi | signed_pct if bets else '-' }}</td><td><span class="k">log-loss</span> {{ m.log_loss | fixed }}</td><td><span class="k">gain</span> {{ m.mean_ll_gain | fixed(4) }}</td></tr>
+  {% for p in r.prices %}
+  <tr><td class="lead"><strong>{{ p.name }}</strong></td><td><span class="k">bets</span> {{ p.n_bets }}</td><td><span class="k">ROI</span> {{ p.roi | signed_pct if p.n_bets else '-' }}</td><td><span class="k">log-loss</span> {{ p.log_loss | fixed }}</td><td><span class="k">gain</span> {{ p.mean_ll_gain | fixed(4) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No price stress table yet.</p>{% endif %}
+<h3>parameter neighbourhood</h3>
+{% if r.neighbourhood %}
+<p class="neighbourhood">{{ r.neighbourhood.n }} perturbations (every numeric parameter scaled by 0.9 to 1.1): shrunk ROI median {{ r.neighbourhood.shrunk_roi_median | signed_pct(2) }}, 10th percentile {{ r.neighbourhood.shrunk_roi_p10 | signed_pct(2) }}; log-loss gain median {{ r.neighbourhood.ll_gain_median | fixed(4) }}, 10th percentile {{ r.neighbourhood.ll_gain_p10 | fixed(4) }}.</p>
+{% else %}<p class="muted">No neighbourhood summary yet.</p>{% endif %}
+<h3>regimes</h3>
+{% if r.regimes %}
+<div class="table-wrap">
+<table class="metrics regimes stack">
+  <thead><tr><th>regime</th><th>games</th><th>bets</th><th>ROI</th><th>P&amp;L</th><th>log-loss gain</th></tr></thead>
+  <tbody>
+  {% for g in r.regimes %}
+  <tr><td class="lead"><strong>{{ g.label }}</strong></td><td><span class="k">games</span> {{ g.n_games }}</td><td><span class="k">bets</span> {{ g.n_bets }}</td><td><span class="k">ROI</span> {{ g.roi | signed_pct if g.n_bets else '-' }}</td><td><span class="k">P&amp;L</span> {{ g.pnl_cents | money }}</td><td><span class="k">gain</span> {{ g.mean_ll_gain | fixed(4) }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}<p class="muted">No regime table yet.</p>{% endif %}
+{% if per_season %}
+<h3>validation per season</h3>
+{{ caller() if caller else '' }}
+{% endif %}
+{% if r.seed is not none %}<p class="muted small">Stress seed {{ r.seed }}; bootstrap B = 1000, 10 000 sign flips.</p>{% endif %}
+</section>
+{%- endmacro %}

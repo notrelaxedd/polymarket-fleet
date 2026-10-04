@@ -11,6 +11,7 @@ from host import leaderboard, models, nflverse, web
 from host.api.dashboard import page
 from host.api.dashboard_forms import FORM
 from host.api.deps import DB, require_owner
+from host.api.robustness import calibration_rows, robustness_context
 from host.data_refresh import refresh_now
 from host.errors import BadRequest, Upstream
 from host.settings import get_setting
@@ -22,16 +23,6 @@ NFLVERSE_ATTRIBUTION = (
 )
 
 
-def _calibration(metrics: dict[str, Any] | None) -> list[dict[str, Any]]:
-    rows = (metrics or {}).get("calibration") if isinstance(metrics, dict) else None
-    out = []
-    for index, bucket in enumerate(rows or []):
-        if not isinstance(bucket, dict):
-            continue
-        out.append({"bucket": f"{index / 10:.1f}-{(index + 1) / 10:.1f}", **bucket})
-    return out
-
-
 @router.get("/models", response_class=HTMLResponse)
 def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     """The leaderboard: ranked lineages, then the unranked ones."""
@@ -41,13 +32,17 @@ def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse
 
 @router.get("/models/{model_id}", response_class=HTMLResponse)
 def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """One model: params, metrics (overall and per season), calibration, lineage, jobs."""
+    """One model: params, the robustness section (validation era, stress tests),
+    search-era metrics (overall and per season), calibration, lineage, jobs."""
     model = leaderboard.model_detail(conn, model_id)
     metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else {}
+    validation = model.get("validation_metrics") if isinstance(model.get("validation_metrics"), dict) else None
     return page(
         request, conn, "model.html", model=model, metrics=metrics,
         per_season=[s for s in (metrics.get("per_season") or []) if isinstance(s, dict)],
-        calibration=_calibration(metrics), attribution=NFLVERSE_ATTRIBUTION,
+        calibration=calibration_rows(metrics), attribution=NFLVERSE_ATTRIBUTION,
+        robustness=robustness_context(validation, model.get("stress_metrics")),
+        validation_per_season=[s for s in ((validation or {}).get("per_season") or []) if isinstance(s, dict)],
     )
 
 

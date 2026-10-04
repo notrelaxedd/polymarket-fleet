@@ -3,8 +3,9 @@ must precede it (docs/PROTOCOL.md, step 3).
 
 A result carrying create_models becomes a sequence: one POST /api/v1/models per entry
 (in order), then for a backtest job with params.model_id one POST
-/api/v1/models/{id}/backtest, then the /complete whose result carries created_models
-instead of create_models. The sequence is persisted in pending_posts.json with the
+/api/v1/models/{id}/backtest (for a validate job one POST /api/v1/models/{id}/validation
+with its validation_metrics and stress_metrics), then the /complete whose result
+carries created_models instead of create_models. The sequence is persisted in pending_posts.json with the
 index of the next step, so a crash between posts resumes where it stopped and never
 re-posts a model the host already acknowledged (the host is idempotent on the model
 identity as well). A step the host refuses (4xx) turns the sequence into a /fail with
@@ -21,7 +22,9 @@ from fleet.common import http
 
 log = logging.getLogger("fleet.agent")
 
-MODEL_FIELDS = ("family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through")
+MODEL_FIELDS = ("family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through",
+                "validation_metrics", "stress_metrics")
+VALIDATION_FIELDS = ("validation_metrics", "stress_metrics")
 MODELS_PATH = "/api/v1/models"
 
 
@@ -91,6 +94,10 @@ def complete_post(job: dict[str, Any], lease_token: str, result: Any) -> Pending
     if job.get("kind") == "backtest" and model_id and isinstance(final, dict):
         metrics = {k: v for k, v in final.items() if k != "created_models"}
         steps.append({"kind": "backtest", "path": f"{MODELS_PATH}/{model_id}/backtest", "body": {"job_id": job_id, "backtest_metrics": metrics}})
+    if job.get("kind") == "validate" and model_id and isinstance(final, dict):
+        body = {"job_id": job_id}
+        body.update({name: final.get(name) for name in VALIDATION_FIELDS})
+        steps.append({"kind": "validation", "path": f"{MODELS_PATH}/{model_id}/validation", "body": body})
     return PendingPost(path=f"/api/v1/jobs/{job_id}/complete", body={"lease_token": lease_token, "result": final}, job_id=job_id, progress=1.0, steps=steps)
 
 

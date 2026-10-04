@@ -5,8 +5,10 @@ It calls emit(checkpoint, progress) after every unit of work (units must take < 
 and raises JobStopped when should_stop() turns true between units. The runner child
 merges job["context"] into params as params["_context"] ({"games_path", "model"}).
 The host copies the relevant settings into params at job creation (fee_model,
-default_bankroll_cents, max_bet_cents, trade_max_games, backtest_seasons); the
-docs/MODELS.md defaults apply when they are absent.
+default_bankroll_cents, max_bet_cents, trade_max_games, backtest_seasons, and for
+model_search validation_seasons and workers); the docs/MODELS.md defaults apply when
+they are absent. Step 6 adds the validate kind (docs/ROBUSTNESS.md): params
+{"model_id", "seed" (default 1), "validation_seasons"}, the model from the context.
 """
 
 from __future__ import annotations
@@ -27,6 +29,8 @@ DEFAULT_LIMITS: dict[str, Any] = {
     "trade_max_games": 6,
     "backtest_seasons": [2010, None],
 }
+DEFAULT_VALIDATION_SEASONS: list[int | None] = [2022, None]
+DEFAULT_SEED = 1
 
 
 def run_sleep(
@@ -104,6 +108,17 @@ def _seasons(params: dict[str, Any], limits: dict[str, Any]) -> list[int | None]
     return list(limits["backtest_seasons"])
 
 
+def _season_pair(value: Any) -> list[int | None] | None:
+    if isinstance(value, (list, tuple)) and len(value) == 2:
+        return [None if value[0] is None else int(value[0]), None if value[1] is None else int(value[1])]
+    return None
+
+
+def _seed(params: dict[str, Any]) -> int:
+    value = params.get("seed")
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else DEFAULT_SEED
+
+
 def run_backtest_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
                      emit: Emit, should_stop: ShouldStop) -> dict[str, Any]:
     from fleet.sim.backtest import run_backtest
@@ -111,11 +126,15 @@ def run_backtest_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
     limits = limits_from_params(params)
     family, model_params = _family_and_params(params)
     games = _load_games(params)
-    return run_backtest(games, family, model_params, _seasons(params, limits), limits, emit, should_stop, checkpoint)
+    return run_backtest(games, family, model_params, _seasons(params, limits), limits, emit, should_stop, checkpoint,
+                        "search", _seed(params))
 
 
 def run_model_search_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
                          emit: Emit, should_stop: ShouldStop) -> dict[str, Any]:
+    """params.validation_seasons (absent: the kept candidates are not validated) and
+    params.workers ("auto" or an integer, default 1) come from the host's settings."""
+    from fleet.sim.parallel import resolve_workers
     from fleet.sim.search import run_search
 
     limits = limits_from_params(params)
@@ -126,7 +145,26 @@ def run_model_search_job(params: dict[str, Any], checkpoint: dict[str, Any] | No
     return run_search(
         games, family, int(params.get("n", 200)), int(params.get("seed", 0)), _seasons(params, limits),
         int(params.get("top_k", 5)), limits, emit, should_stop, checkpoint,
+        validation_seasons=_season_pair(params.get("validation_seasons")), workers=resolve_workers(params.get("workers")),
     )
+
+
+def run_validate_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
+                     emit: Emit, should_stop: ShouldStop) -> dict[str, Any]:
+    """{"validation_metrics", "stress_metrics"} of the context model on the validation
+    era (params.validation_seasons, default [2022, last complete]); the model's stored
+    backtest_metrics feed the overfit flag."""
+    from fleet.sim.validate import run_validate
+
+    model = _context(params).get("model")
+    if not isinstance(model, dict) or not model.get("family"):
+        raise ValueError("validate needs the model in the job context (params.model_id)")
+    limits = limits_from_params(params)
+    games = _load_games(params)
+    seasons = _season_pair(params.get("validation_seasons")) or list(DEFAULT_VALIDATION_SEASONS)
+    search_metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else None
+    return run_validate(games, str(model["family"]), dict(model.get("params") or {}), seasons, limits, _seed(params),
+                        emit, should_stop, checkpoint, search_metrics=search_metrics)
 
 
 def run_train_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
@@ -145,4 +183,5 @@ JOBS: dict[str, JobFunc] = {
     "backtest": run_backtest_job,
     "model_search": run_model_search_job,
     "train": run_train_job,
+    "validate": run_validate_job,
 }

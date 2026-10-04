@@ -17,7 +17,8 @@ Step 3: GET /api/v1/data/games serves the rows given to set_games() with an ETag
 (304 on If-None-Match), GET /api/v1/models/{id} serves models seeded with add_model(),
 POST /api/v1/models creates a model (idempotent on family + params_hash +
 trained_through, 409 when job_id is not leased by the caller) and
-POST /api/v1/models/{id}/backtest stores metrics; models() and model_posts() expose
+POST /api/v1/models/{id}/backtest stores metrics, POST /api/v1/models/{id}/validation
+stores validation_metrics and stress_metrics; models() and model_posts() expose
 the store and the recorded calls. hold_posts() parks matching POSTs until
 release_holds() (they then get a 503), which lets a test stop an agent between two
 posts of a sequence; fail_next(..., status=0) drops the connection without an answer.
@@ -52,13 +53,14 @@ from typing import Any, Callable
 import fleet
 
 BATCH_ROLES = ("backtest", "model_search", "train")
-KIND_TO_ROLE = {"sleep": "backtest", "trade": "trade"}
+KIND_TO_ROLE = {"sleep": "backtest", "trade": "trade", "validate": "backtest"}
 OPEN_ORDER_STATUSES = ("approved", "submitting", "open", "partial")
 DEFAULT_TRADE_SETTINGS: dict[str, Any] = {
     "min_edge": 0.02, "kelly_fraction": 0.25, "participation": 0.5, "trade_pregame_only": True,
     "fee_model": {"taker_rate": 0.05, "half_spread": 0.01}, "trade_tick_s": 5, "trade_max_games": 6,
 }
-MODEL_FIELDS = ("family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through")
+MODEL_FIELDS = ("family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through",
+                "validation_metrics", "stress_metrics")
 HOLD_TIMEOUT = 60.0
 
 
@@ -480,7 +482,8 @@ class FakeHost:
     def add_model(self, model: dict[str, Any] | None = None) -> str:
         """Seed a model row (defaults filled in); returns its id."""
         row = {"id": str(uuid.uuid4()), "family": "elo_blend", "params": {}, "artifact": None, "parent_model_id": None,
-               "trained_through": None, "status": "candidate", "backtest_metrics": None, "summary": None}
+               "trained_through": None, "status": "candidate", "backtest_metrics": None, "summary": None,
+               "validation_metrics": None, "stress_metrics": None}
         row.update(model or {})
         row.setdefault("lineage_id", row["id"])
         row["_key"] = (row["family"], params_hash(row["params"]), json.dumps(row.get("trained_through")))
@@ -919,6 +922,23 @@ class FakeHost:
             self.model_calls.append({"path": f"/api/v1/models/{model_id}/backtest", "body": body, "worker_id": w["id"], "response": resp})
             return resp
 
+    def post_validation(self, w: dict[str, Any], model_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        with self.lock:
+            self._job_leased_by(w, body.get("job_id"))
+            model = self.models_store.get(model_id)
+            if model is None:
+                raise ApiError(404, "no such model")
+            for name in ("validation_metrics", "stress_metrics"):
+                if not isinstance(body.get(name), dict):
+                    raise ApiError(400, f"{name} must be an object")
+            for row in self.models_store.values():
+                if row["lineage_id"] == model["lineage_id"]:
+                    row["validation_metrics"] = body["validation_metrics"]
+                    row["stress_metrics"] = body["stress_metrics"]
+            resp = {"id": model_id, "lineage_id": model["lineage_id"], "status": model["status"]}
+            self.model_calls.append({"path": f"/api/v1/models/{model_id}/validation", "body": body, "worker_id": w["id"], "response": resp})
+            return resp
+
     def _fenced_job(self, job_id: str, body: dict[str, Any]) -> dict[str, Any]:
         job = self.jobs.get(job_id)
         if job is None:
@@ -1041,6 +1061,9 @@ class _Handler(BaseHTTPRequestHandler):
         if len(parts) == 5 and parts[:3] == ["api", "v1", "models"] and parts[4] == "backtest":
             w = self.host.auth_any_worker(auth)
             return self.host.post_backtest(w, parts[3], self._body())
+        if len(parts) == 5 and parts[:3] == ["api", "v1", "models"] and parts[4] == "validation":
+            w = self.host.auth_any_worker(auth)
+            return self.host.post_validation(w, parts[3], self._body())
         if parts in (["api", "v1", "orders", "request"], ["api", "v1", "trade", "release"]) or (
             len(parts) == 5 and parts[:3] == ["api", "v1", "orders"] and parts[4] == "cancel"
         ):
@@ -1088,5 +1111,5 @@ def run_echo(params: dict[str, Any], checkpoint: dict[str, Any] | None, emit: An
     return out
 
 
-TEST_JOBS = {"echo": run_echo, "backtest": run_echo, "model_search": run_echo, "train": run_echo}
+TEST_JOBS = {"echo": run_echo, "backtest": run_echo, "model_search": run_echo, "train": run_echo, "validate": run_echo}
 TEST_JOBS_SPEC = "tests.fake_host:TEST_JOBS"

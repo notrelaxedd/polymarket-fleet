@@ -1,6 +1,6 @@
 """Runner context for the batch job kinds (docs/PROTOCOL.md, step 3).
 
-Before a backtest, model_search or train runner starts, the agent refreshes the games
+Before a backtest, model_search, train or validate runner starts, the agent refreshes the games
 cache (<state>/cache/games.json, with its ETag in games.etag) from
 GET /api/v1/data/games and fetches the model named by params.model_id from
 GET /api/v1/models/{id}. The result is job["context"] =
@@ -23,7 +23,7 @@ from fleet.worker import config
 
 log = logging.getLogger("fleet.context")
 
-CONTEXT_KINDS = ("backtest", "model_search", "train")
+CONTEXT_KINDS = ("backtest", "model_search", "train", "validate")
 GAMES_PATH = "/api/v1/data/games"
 
 

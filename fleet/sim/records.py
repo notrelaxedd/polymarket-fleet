@@ -11,6 +11,7 @@ minus game_id.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -116,6 +117,11 @@ def bet_rows(records: list[dict[str, Any]]) -> list[tuple[float, float, float, f
 def ll_gains(records: list[dict[str, Any]]) -> list[float]:
     """d = ll_market - ll_model per scored game (positive when the model did better)."""
     return [r["ll_market"] - r["ll_model"] for r in records]
+
+
+def mean_ll_gain(records: list[dict[str, Any]]) -> float:
+    gains = ll_gains(records)
+    return math.fsum(gains) / len(gains) if gains else 0.0
 
 
 # regimes ------------------------------------------------------------------------

@@ -32,10 +32,11 @@ trade_tick_s; lost[] drops a trade job, preempt/cancel release it through the us
 released[] handshake, and a role change away from trade calls POST /api/v1/trade/release
 (bounded, one retry) before the ack heartbeat.
 
-Step 3: before a backtest, model_search or train runner starts, fleet.worker.context
-refreshes the games cache and fetches the job's model into job["context"] (a failure
-fails the job); a result with create_models becomes a post sequence (fleet.worker.posts)
-that creates the models, posts backtest metrics and only then completes the job.
+Step 3: before a backtest, model_search, train or validate runner starts,
+fleet.worker.context refreshes the games cache and fetches the job's model into
+job["context"] (a failure fails the job); a result with create_models becomes a post
+sequence (fleet.worker.posts) that creates the models, posts backtest metrics (or, for
+validate, the validation and stress metrics) and only then completes the job.
 """
 
 from __future__ import annotations

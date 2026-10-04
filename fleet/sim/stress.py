@@ -14,7 +14,7 @@ from typing import Any
 
 from fleet.sim.fills import BetRule
 from fleet.sim.metrics import empty_stats, metrics_from_stats, record_game, shrunk_roi
-from fleet.sim.records import REGIME_DIMENSIONS, ll_gains, regimes_of, replan
+from fleet.sim.records import REGIME_DIMENSIONS, mean_ll_gain, regimes_of, replan
 from fleet.sim.stats import percentile
 
 PRICE_STRESSES: tuple[tuple[str, dict[str, float]], ...] = (
@@ -38,11 +38,6 @@ def stressed_rule(params: dict[str, Any], limits: dict[str, Any], change: dict[s
     )
 
 
-def _mean_gain(records: list[dict[str, Any]]) -> float:
-    gains = ll_gains(records)
-    return sum(gains) / len(gains) if gains else 0.0
-
-
 def _summary(records: list[dict[str, Any]], limits: dict[str, Any]) -> dict[str, Any]:
     stats = empty_stats()
     for r in records:
@@ -58,7 +53,7 @@ def price_stress(records: list[dict[str, Any]], params: dict[str, Any], limits: 
         stressed = [replan(r, rule) for r in records]
         m = _summary(stressed, limits)
         out.append({"name": name, "n_bets": m["n_bets"], "roi": m["roi"], "log_loss": m["log_loss"],
-                    "mean_ll_gain": _mean_gain(stressed)})
+                    "mean_ll_gain": mean_ll_gain(stressed)})
     return out
 
 
@@ -85,7 +80,7 @@ def regime_table(records: list[dict[str, Any]], limits: dict[str, Any]) -> dict[
     for name, members in groups.items():
         m = _summary(members, limits)
         out[name] = {"n_games": m["n_games"], "n_bets": m["n_bets"], "roi": m["roi"], "pnl_cents": m["pnl_cents"],
-                     "mean_ll_gain": _mean_gain(members)}
+                     "mean_ll_gain": mean_ll_gain(members)}
     return out
 
 
