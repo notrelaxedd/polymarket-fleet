@@ -4,13 +4,20 @@
 
 It creates a throwaway database, seeds three workers and a few jobs straight through
 SQL plus the step 3 rows (the nflverse fixture, a real six-candidate search and its
-models, a trained child, a backtest; tests/hw/seed_step3.py), serves the app with
-FLEET_DEV=1 on a free port, and captures the fleet, jobs, job detail, settings, models,
-model detail and search result pages at phone (390x844) and laptop (1280x800) widths in
-the light and dark colour schemes, plus the fleet page after POST /kill. At phone width
-it also asserts: no horizontal scroll on any page, every visible button, select and
-link inside a worker card and every visible form control is at least 40 px tall, and
-the fragment refresh resets the "updated N s ago" counter. Needs the playwright package in the venv and the Chromium
+models, a trained child, a backtest; tests/hw/seed_step3.py) and the step 4 rows (two
+upcoming games with sim markets and books, an unmatched market, assignments held by a
+fourth worker in the trade role, open, resting, rejected and cancelled orders, a fill,
+a settled game with its bet and paper score, an exchange heartbeat;
+tests/hw/seed_step4.py), serves the app with FLEET_DEV=1 on a free port, and captures
+the fleet (with per-worker P&L), jobs, job detail, settings (with the Trading group),
+models (with the paper columns), model detail, search result and trading pages at
+phone (390x844) and laptop (1280x800) widths in the light and dark colour schemes,
+plus the trading page with the create form open, the fleet and trading pages after
+POST /kill and the trading page after the reset (the "Activate all paper" button). At
+phone width it also asserts: no horizontal scroll on any page, every visible button,
+select and link inside a worker card and every visible form control (a checkbox counts
+through its label) is at least 40 px tall, and the fragment refresh resets the
+"updated N s ago" counter. Needs the playwright package in the venv and the Chromium
 build it expects under PLAYWRIGHT_BROWSERS_PATH; it never downloads a browser.
 """
 from __future__ import annotations
@@ -35,14 +42,15 @@ from host import db  # noqa: E402
 from host.events import add_audit  # noqa: E402
 from tests.conftest import ADMIN_URL, db_url, insert_job, insert_worker, set_heartbeat_age  # noqa: E402
 from tests.hw.seed_step3 import seed_models  # noqa: E402
+from tests.hw.seed_step4 import seed_trading, touch_trading  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 
-DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step3"))
+DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step4"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 SCHEMES = ("light", "dark")
 MIN_TAP_PX = 40
 CARD_TARGETS = ".card.worker button, .card.worker select, .card.worker a"
-FORM_TARGETS = "form button, form select, form input:not([type=hidden]), form textarea"
+FORM_TARGETS = "form button, form select, form input:not([type=hidden]):not([type=checkbox]), form textarea, form label.check"
 
 
 # ---------------------------------------------------------------- database and seed
@@ -84,9 +92,11 @@ def _event(conn: psycopg.Connection, job_id: Any, event: str, worker_id: str | N
 
 def seed(url: str) -> dict[str, str]:
     """Three workers (running, switching, offline), two finished jobs, one queued job,
-    then the step 3 rows (a finished search with models, a running search on box1)."""
+    then the step 3 rows (a finished search with models, a running search on box1),
+    then the step 4 rows (a trade worker, games, markets, assignments, orders, a bet)."""
     ids = _seed_fleet(url)
     ids.update(seed_models(url, ids["box2"], ids["box1"]))
+    ids.update(seed_trading(url, ids["model"]))
     return ids
 
 
@@ -147,6 +157,7 @@ def touch(url: str, box1: str) -> None:
         conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '3 seconds' WHERE id = %s", (box1,))
         conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '1 second' WHERE name = 'box2'")
         conn.execute("UPDATE jobs SET lease_expires_at = now() + interval '30 seconds' WHERE status = 'leased'")
+        touch_trading(conn)
 
 
 # ---------------------------------------------------------------- captures and checks
@@ -157,6 +168,7 @@ def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
         ("fleet", "/"), ("jobs", "/jobs"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
         ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("job-search", f"/jobs/{ids['search_job']}"),
         ("job-backtest", f"/jobs/{ids['backtest_job']}"),
+        ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"),
     ]
 
 
@@ -222,6 +234,13 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             assert "TRADING KILLED" in client.get("/").text
         for scheme in SCHEMES:
             shoot("/", "fleet-killed", "390", scheme, check=(scheme == "light"))
+            shoot("/trading", "trading-killed", "390", scheme, check=(scheme == "light"))
+        with httpx.Client(base_url=server_url, trust_env=False) as client:
+            resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
+            assert resp.status_code == 303, resp.text
+            assert "Activate all paper" in client.get("/trading").text
+        for scheme in SCHEMES:
+            shoot("/trading", "trading-reset", "390", scheme, check=(scheme == "light"))
         browser.close()
     for line in problems:
         print("PROBLEM", line)

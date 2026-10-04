@@ -1,4 +1,4 @@
-/* Fleet dashboard: role select auto-submit, KILL and retire confirms, copy buttons, fragment refresh.
+/* Fleet dashboard: role select auto-submit, KILL, retire and cancel-all confirms, copy buttons, fragment refresh.
    Everything works without this file; it only removes clicks and keeps the page fresh. */
 (function () {
   "use strict";
@@ -54,7 +54,7 @@
     if (inflight) { return true; }
     if (!a || !target.contains(a)) { return false; }
     if (a.tagName === "INPUT" || a.tagName === "TEXTAREA") { return true; }
-    // A select keeps focus after its picker is dismissed: hold the refresh only while it is likely open.
+    // A select keeps focus after its picker is dismissed (the link forms on /trading): hold the refresh only while it is likely open.
     return a.tagName === "SELECT" && Date.now() - focusedAt < FOCUS_HOLD_MS;
   }
 
@@ -79,9 +79,9 @@
   function tick() {
     var el = document.getElementById("updated");
     if (!el) { return; }
-    var down = !!(lost["fleet-grid"] || lost["topbar-status"]);
-    // Freshness is the fleet grid's on the fleet page: a held grid must not read as fresh.
-    var since = ok[document.getElementById("fleet-grid") ? "fleet-grid" : "topbar-status"] || loaded;
+    var down = !!(lost["fleet-grid"] || lost["trading-live"] || lost["topbar-status"]);
+    // Freshness is the page's own region (fleet grid or trading region): a held region must not read as fresh.
+    var since = ok[document.getElementById("fleet-grid") ? "fleet-grid" : document.getElementById("trading-live") ? "trading-live" : "topbar-status"] || loaded;
     el.textContent = down ? "connection lost" : "updated " + Math.max(0, Math.round((Date.now() - since) / 1000)) + " s ago";
     el.classList.toggle("lost", down);
     document.body.classList.toggle("conn-lost", down);
@@ -89,6 +89,7 @@
 
   function refreshAll() {
     refresh("fleet-grid", "/fragments/fleet");
+    refresh("trading-live", "/fragments/trading");
     refresh("topbar-status", "/fragments/topbar");
   }
 
@@ -101,6 +102,9 @@
 
   if (document.getElementById("fleet-grid")) {
     setInterval(function () { refresh("fleet-grid", "/fragments/fleet"); }, FLEET_MS);
+  }
+  if (document.getElementById("trading-live")) {
+    setInterval(function () { refresh("trading-live", "/fragments/trading"); }, FLEET_MS);
   }
   if (document.getElementById("topbar-status")) {
     setInterval(function () { refresh("topbar-status", "/fragments/topbar"); }, TOPBAR_MS);

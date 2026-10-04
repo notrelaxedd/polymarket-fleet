@@ -1,7 +1,7 @@
 {# One leaderboard row: `m` is a lineage entry from host.leaderboard (`rank` set for ranked ones). #}
 <tr class="model-row" data-model="{{ m.id }}">
   <td class="lead c-name">
-    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% endif %}
+    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% if m.rank_mode == 'paper' %}<span class="chip chip-paper" title="ranked on paper CLV">paper</span>{% endif %}{% endif %}
     <a href="/models/{{ m.id }}"><strong>{{ m.family }}</strong> <span class="params">{{ m.short_params }}</span></a>
     <span class="badge st-{{ m.status }}">{{ m.status.replace('_', ' ') }}</span>
     {% if m.members > 1 %}<span class="chip">{{ m.members }} rows</span>{% endif %}
@@ -11,6 +11,7 @@
   <td class="nowrap c-ll"><span class="k">log-loss</span> {{ m.metrics.log_loss | fixed }} <span class="muted">vs {{ m.metrics.market_log_loss | fixed }}</span></td>
   <td class="nowrap c-dd"><span class="k">drawdown</span> {{ m.metrics.max_drawdown | pct1 }}</td>
   <td class="nowrap c-seasons"><span class="k">seasons</span> {{ m.metrics.seasons | season_span }}</td>
+  <td class="nowrap c-paper"><span class="k">paper</span> {% if m.paper.games %}{{ m.paper.games }} g &middot; {{ m.paper.bets }} bets &middot; {{ m.paper.pnl_cents | money }} &middot; ROI {{ m.paper.roi | signed_pct }} &middot; CLV {{ m.paper.avg_clv | fixed }}{% else %}-{% endif %}</td>
   <td class="wide c-summary">
     <p class="summary">{{ m.summary or 'No summary yet.' }}</p>
     <details class="edit">
@@ -24,6 +25,6 @@
   </td>
   <td class="action c-actions">
     <a class="btn small" href="/jobs?train_model={{ m.id }}#train">Train</a>
-    <button type="button" class="btn small soon" disabled title="comes with step 4">Assign <small>step 4</small></button>
+    {% if m.status != 'retired' %}<a class="btn small" href="/trading?model={{ m.id }}#assign">Assign</a>{% endif %}
   </td>
 </tr>

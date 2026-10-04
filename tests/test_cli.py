@@ -126,10 +126,10 @@ def test_run_loop_dispatches(run, make_worker, conn) -> None:
     job_id = out.split()[2]
     assert job_row(conn, job_id)["target_worker_id"] is None
     code, out, _ = run("run-loop")
-    assert code == 0 and json.loads(out) == {"reaped": 0, "dispatched": 1}
+    assert code == 0 and json.loads(out) == {"reaped": 0, "dispatched": 1, "orphaned": 0}
     assert job_row(conn, job_id)["target_worker_id"] == w.id
     code, out, _ = run("run-loop")
-    assert code == 0 and json.loads(out) == {"reaped": 0, "dispatched": 0}
+    assert code == 0 and json.loads(out) == {"reaped": 0, "dispatched": 0, "orphaned": 0}
 
 
 def test_module_entry_point(cli_env, make_worker) -> None:

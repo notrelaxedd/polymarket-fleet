@@ -3,15 +3,19 @@ from __future__ import annotations
 
 import dataclasses
 import re
-from datetime import timezone
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
 from host.api.app import create_app
 from tests.conftest import (
-    FIXTURE_GAMES, backtest_metrics, flash_cookie, heartbeat_body, ingest_fixture, insert_model, job_row, lease_job,
-    model_row, set_heartbeat_age, worker_row,
+    FIXTURE_GAMES, GAME_ID, approve, approved_order, assignment_row, backtest_metrics, flash_cookie, heartbeat_body,
+    ingest_fixture, insert_game, insert_market, insert_model, insert_snapshot, insert_worker, job_row, lease_job,
+    make_assignment, model_row, order_row, set_heartbeat_age, set_setting, trade_setup, worker_row,
 )
 
 
@@ -24,6 +28,7 @@ def test_every_page_renders(client, make_worker):
         (f"/jobs/{job['id']}", "events"),
         ("/settings", 'action="/settings/trading"'),
         ("/kill/confirm", 'action="/kill"'),
+        ("/trading", 'id="trading-live"'),
     ]:
         r = client.get(path)
         assert r.status_code == 200, path
@@ -34,7 +39,8 @@ def test_every_page_renders(client, make_worker):
         assert 'href="/static/style.css"' in html and 'src="/static/app.js"' in html
         assert 'id="topbar-status"' in html and ">PAPER<" in html and "today $0.00" in html
         assert 'id="kill-form"' in html and 'id="updated"' in html
-        assert ">Models<" in html and ">Trading<" in html and 'href="/settings"' in html
+        assert ">Models<" in html and '<a href="/trading"' in html and 'href="/settings"' in html
+        assert "step 4" not in html
     assert w.id in client.get("/").text
 
 
@@ -283,15 +289,19 @@ def test_settings_inputs_open_the_number_keyboard(client):
     """MEDIUM: every numeric field carries an inputmode; the tz field does not."""
     html = client.get("/settings").text
     decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction",
-               "taker_rate", "half_spread", "min_roi", "max_drawdown")
+               "taker_rate", "half_spread", "min_roi", "max_drawdown", "participation", "max_exposure_paper", "max_exposure_live",
+               "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s", "market_data_per_s", "account_per_s")
     numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries",
-               "min_bets", "seasons_first", "seasons_last", "nflverse_refresh_hours")
+               "min_bets", "seasons_first", "seasons_last", "nflverse_refresh_hours", "book_max_age_s", "gtd_seconds",
+               "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game", "market_lookahead_days", "snapshot_active_s",
+               "snapshot_idle_s", "snapshot_retention_days", "paper_min_games", "paper_min_bets", "paper_min_days")
     for name in decimal:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="decimal"', html), name
     for name in numeric:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="numeric"', html), name
     assert re.search(r'<input type="text" name="tz" value="[^"]*" autocomplete="off">', html)
     assert re.search(r'<input type="text" name="nflverse_url" value="https://[^"]*" autocomplete="off">', html)
+    assert re.search(r'<input type="text" name="scores_url" value="https://[^"]*" autocomplete="off">', html)
     assert html.count("inputmode=") == len(decimal) + len(numeric)
 
 
@@ -334,7 +344,7 @@ def test_dashboard_responses_refuse_framing_and_caching(client):
     """MEDIUM: anti-framing headers on every non-API response (the owner is
     authenticated by the network, so a framed form would pass the Origin check).
     LOW: pages, the enroll token page in particular, are never cached."""
-    for path in ("/", "/jobs", "/settings", "/kill/confirm", "/fragments/fleet", "/static/style.css", "/nope"):
+    for path in ("/", "/jobs", "/settings", "/kill/confirm", "/fragments/fleet", "/trading", "/fragments/trading", "/static/style.css", "/nope"):
         r = client.get(path)
         assert r.headers["x-frame-options"] == "DENY", path
         assert r.headers["content-security-policy"] == "frame-ancestors 'none'", path
@@ -407,7 +417,7 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     assert "+5.0%" in ranked and ">400<" not in ranked and "400" in ranked and "0.650" in ranked and "vs 0.659" in ranked
     assert "14.0%" in ranked and "2016-2019" in ranked and "Best lineage." in ranked and '<span class="chip">2 rows</span>' in ranked
     assert f'href="/jobs?train_model={best["id"]}#train"' in ranked and ">Train</a>" in ranked
-    assert 'disabled title="comes with step 4">Assign <small>step 4</small></button>' in ranked
+    assert f'<a class="btn small" href="/trading?model={best["id"]}#assign">Assign</a>' in ranked
     assert f'action="/models/{best["id"]}/summary"' in ranked and 'maxlength="600"' in ranked
     assert "&lt;b&gt;bold&lt;/b&gt;" in html and "<b>bold</b>" not in html
     assert "No summary yet." in html
@@ -571,7 +581,7 @@ def test_phone_layout_rules(client, conn):
     assert "--tap: 44px" in css and "@media (max-width: 700px)" in css
     assert "table.models td.action .btn { flex: 1; min-height: var(--tap); }" in css
     assert ".send-grid { grid-template-columns: 1fr; }" in css
-    for path in ("/models", "/jobs"):
+    for path in ("/models", "/jobs", "/trading"):
         html = client.get(path).text
         tables = re.findall(r"<table class=\"([^\"]+)\"", html)
         assert tables and all("stack" in t for t in tables), (path, tables)
@@ -593,7 +603,7 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
     assert "<dt>ROI</dt><dd>-</dd>" in html and "<dt>hit rate</dt><dd>-</dd>" in html and "<dt>avg edge</dt><dd>-</dd>" in html, "no bets: no ROI, hit rate or edge"
     assert "<dt>max drawdown</dt><dd>0.4%" in html, "a 0.4% drawdown is not rounded to 0%"
     assert "+0.0%" not in html.split("<h2>lineage</h2>")[0]
-    assert 'class="btn soon" disabled title="comes with step 4">Assign' in html
+    assert f'<a class="btn" href="/trading?model={model["id"]}#assign">Assign</a>' in html
     assert '<details class="edit">' in html and html.count("No summary yet.") == 1, "the summary editor is folded"
     assert "<dt>shrunk ROI</dt><dd>+0.00%" in html
     tables = re.findall(r"<table class=\"([^\"]+)\"", html)
@@ -601,7 +611,7 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
     # The leaderboard row: "-" for ROI without bets, one-decimal drawdown.
     row = client.get("/models").text
     assert '<span class="k">ROI</span> -' in row and '<span class="k">drawdown</span> 0.4%' in row
-    assert 'class="btn small soon" disabled' in row
+    assert '<span class="k">paper</span> -' in row and 'href="/trading?model=' in row
     # The search result page: a stacked top list with a shrunk ROI percentage.
     top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": -0.0103, "metrics": backtest_metrics(n_bets=5, roi=-0.355, max_drawdown=0.5)}]
     ms = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 1}, "target": w.id}).json()
@@ -636,3 +646,482 @@ def test_send_cards_fold_so_the_job_list_is_near_the_top(client, conn):
     assert '<details class="card send" id="backtest">' in r.text
     insert_model(conn, family="elo_blend", params={"k": 21.0})
     assert "elo_blend · K 21" not in client.get("/jobs").text, "one family: no family prefix"
+
+
+# ------------------------------------------------------------------ step 4: trading
+
+
+def _open_order(conn, setup, **kw):
+    """An approved order moved to open, as the paper executor would."""
+    from host.trading import orders
+
+    row = approved_order(conn, setup, **kw)
+    orders.set_status(conn, row["id"], "open", "test", expected=("approved",), submitted_at=datetime.now(timezone.utc))
+    return order_row(conn, row["id"])
+
+
+def _fill(conn, order, price=0.52, size=10, fee=12, age_s=0):
+    """Record a fill on an open order (fills row, ledger fill, status partial/filled)."""
+    from host.trading import orders
+
+    orders.record_fill(conn, order["id"], price, size, fee, order["mode"], "test", snapshot_id=order["snapshot_id"])
+    if age_s:
+        conn.execute("UPDATE fills SET ts = now() - make_interval(secs => %s) WHERE order_id = %s", (age_s, order["id"]))
+    return conn.execute("SELECT * FROM fills WHERE order_id = %s ORDER BY id DESC LIMIT 1", (order["id"],)).fetchone()
+
+
+def _bet(conn, order, pnl_cents, settled_age_s=0, worker_id=None, clv=0.01):
+    """A settled bet for an order, `settled_age_s` ago (seeded straight in SQL)."""
+    a = assignment_row(conn, order["assignment_id"])
+    conn.execute(
+        """
+        INSERT INTO bets (order_id, assignment_id, model_id, lineage_id, game_id, worker_id, mode, date, event, platform,
+                          contract, side, entry_price, fee_cents, cost_cents, stake_cents, closing_price, clv, result, pnl_cents,
+                          settled_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, current_date, 'KC @ LV', 'sim', 'LV wins', 'home', 0.52, 12, 520, 532, 0.53, %s,
+                %s, %s, now() - make_interval(secs => %s))
+        """,
+        (order["id"], a["id"], a["model_id"], a["lineage_id"], a["game_id"], worker_id or order["worker_id"], order["mode"],
+         clv, "win" if pnl_cents >= 0 else "loss", pnl_cents, settled_age_s),
+    )
+
+
+def _score(conn, model, game_id, n_bets, pnl_cents, stake_cents, avg_clv):
+    conn.execute(
+        """
+        INSERT INTO model_scores (model_id, game_id, mode, lineage_id, n_bets, stake_cents, pnl_cents, avg_clv)
+        VALUES (%s, %s, 'paper', %s, %s, %s, %s, %s)
+        """,
+        (model["id"], game_id, model["lineage_id"], n_bets, stake_cents, pnl_cents, avg_clv),
+    )
+
+
+def test_trading_page_empty_state_and_fragment(client, conn):
+    html = client.get("/trading").text
+    assert '<a href="/trading" class="active">Trading</a>' in html
+    assert 'id="assign"' in html and '<details class="card send assign" id="assign">' in html, "the create form is folded"
+    assert "No assignments yet." in html and "No open orders." in html and "No orders yet." in html and "No fills yet." in html
+    assert "Every market is mapped." in html and "No mapped markets yet." in html
+    assert 'id="exchange"' in html and '<span class="chip chip-bad">DOWN</span>' in html and "never" in html
+    assert 'id="ledger"' in html and '<span class="chip chip-ok">OK</span>' in html and "Replay of 0 bankrolls" in html
+    assert "No upcoming game has a confirmed market yet" in html and "No model of a non-retired lineage" in html
+    assert '<button type="submit" class="btn primary" disabled>Create assignment</button>' in html
+    assert 'action="/assignments/activate-paper"' not in html and 'action="/cancel-all"' not in html
+    assert 'id="trading-live"' in html and html.count("<section") == 8
+    fragment = client.get("/fragments/trading").text
+    assert "<html" not in fragment and 'id="trading-live"' not in fragment and 'id="assignments"' in fragment
+    assert 'id="assign"' not in fragment, "the create form stays out of the refreshed region"
+    assert fragment.count("<section") == 8
+
+
+def test_trading_page_shows_assignments_orders_fills_markets_and_exchange(client, conn):
+    setup = trade_setup(conn)
+    other = insert_market(conn, GAME_ID, side="away")
+    insert_snapshot(conn, other["id"], bid=0.46, ask=0.48, age_s=90)
+    loose = insert_market(conn, GAME_ID, side="home", confirmed=False)
+    conn.execute("UPDATE markets SET title = 'Chiefs vs Raiders <b>x</b>' WHERE id = %s", (loose["id"],))
+    opened = _open_order(conn, setup)
+    _fill(conn, opened, size=4)
+    rejected = approve(conn, setup, size=200)
+    assert rejected["reason"] == "max_bet"
+    conn.execute("UPDATE exchange_state SET heartbeat_at = now() - interval '3 seconds', market_source = 'sim', last_error = 'boom <i>'")
+    html = client.get("/trading").text
+    live = html.split('id="trading-live"')[1]
+    # assignments
+    row = re.search(rf'<tr class="assignment-row" data-assignment="{setup.assignment["id"]}">.*?</tr>', live, re.S).group(0)
+    assert "<strong>KC @ LV</strong>" in row and GAME_ID in row and f'href="/models/{setup.model["id"]}"' in row
+    assert '<span class="chip mode-paper">paper</span>' in row and '<span class="badge st-active">active</span>' in row
+    bank = conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (setup.assignment["id"],)).fetchone()
+    assert f"avail ${bank['available_cents'] // 100}.{bank['available_cents'] % 100:02d}" in row
+    assert "reserved $" in row and "open $2.08" in row and "realized -$0.12" in row
+    assert '<span class="k">open orders</span> 1' in row and f'action="/assignments/{setup.assignment["id"]}/halt"' in row
+    assert "Settle now" not in row and "Activate" not in row
+    # open orders with a cancel button and the cancel-all form
+    assert f'action="/orders/{opened["id"]}/cancel"' in live and 'action="/cancel-all"' in live
+    assert "10 @ 0.52 (4 filled" in live and '<span class="badge st-partial">partial</span>' in live
+    # recent orders: the rejection with its reason, the rationale, the worker name
+    recent = live.split('id="orders"')[1].split('id="fills"')[0]
+    assert str(rejected["order_id"]) in recent and '<span class="reason">max_bet: over max bet $' in recent and "&gt; $25.00</span>" in recent
+    assert '<span class="badge st-rejected">rejected</span>' in recent and "my 0.58 vs ask 0.52, fee 0.012, edge 0.04" in recent
+    assert "+4.0%" in recent and "my 0.58 vs 0.51" in recent and f"trader-" in recent and "200 @ 0.52" in recent
+    # fills
+    fills = live.split('id="fills"')[1].split('id="unmatched"')[0]
+    assert "4 @ 0.52" in fills and "of 10 @ 0.52" in fills and "$0.12" in fills
+    # unmatched market with the link form, escaped title
+    unmatched = live.split('id="unmatched"')[1].split('id="markets"')[0]
+    assert "Chiefs vs Raiders &lt;b&gt;x&lt;/b&gt;" in unmatched and f'action="/markets/{loose["id"]}/link"' in unmatched
+    assert f'<option value="{GAME_ID}" selected>' in unmatched and '<option value="home" selected>home wins</option>' in unmatched
+    assert "(50%)" in unmatched
+    # mapped markets with snapshot ages
+    markets = live.split('id="markets"')[1].split('id="exchange"')[0]
+    assert markets.count("<tr data-market=") == 2 and "0.50 / 0.52" in markets and "0.46 / 0.48" in markets
+    assert '<span class="stale-age">1 min ago</span>' in markets and "$2,000.00" in markets and "home wins" in markets and "away wins" in markets
+    # exchange state and ledger
+    exchange = live.split('id="exchange"')[1].split('id="ledger"')[0]
+    assert '<span class="chip chip-ok">up</span>' in exchange and "3 s ago" in exchange and ">sim<" in exchange
+    assert "boom &lt;i&gt;" in exchange and 'action="/exchange/probe"' in exchange
+    assert "Replay of 1 bankroll " in live and '<span class="chip chip-ok">OK</span>' in live
+    conn.execute("UPDATE bankrolls SET available_cents = available_cents + 1 WHERE id = %s", (bank["id"],))
+    broken = client.get("/fragments/trading").text
+    assert '<span class="chip chip-bad">problems</span>' in broken and "cached" in broken and "ledger sums to" in broken
+    tables = re.findall(r'<table class="([^"]+)"', html)
+    assert len(tables) == 6 and all("stack" in t for t in tables)
+
+
+def test_create_assignment_form(client, conn):
+    game = insert_game(conn)
+    insert_market(conn, GAME_ID)
+    insert_game(conn, "2026_05_DAL_PHI", home="PHI", away="DAL", kickoff_in_s=3 * 86400)
+    insert_game(conn, "2025_01_OLD_GAME", kickoff_in_s=-86400)
+    insert_market(conn, "2025_01_OLD_GAME")
+    model = insert_model(conn, status="paper_ok", params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, trained_through=[2024, 18])
+    retired = insert_model(conn, status="retired", params={"k": 21.0})
+    html = client.get("/trading").text
+    assert f'<option value="{GAME_ID}">KC @ LV · ' in html and "2026_05_DAL_PHI" not in html.split('id="trading-live"')[0], "only games with confirmed markets"
+    assert "2025_01_OLD_GAME" not in html.split('id="trading-live"')[0], "kicked off games are not offered"
+    assert f'<option value="{model["id"]}">elo_blend · K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model["id"])[:8]}</option>' in html
+    assert str(retired["id"]) not in html
+    assert 'name="bankroll" value="100.00"' in html and '<option value="paper" selected>paper</option>' in html and 'value="live"' not in html
+    assert '<button type="submit" class="btn primary">Create assignment</button>' in html
+    # ?model= opens the form with that model selected (the Assign button on the Models page)
+    html = client.get(f"/trading?model={model['id']}").text
+    assert '<details class="card send assign" id="assign" open>' in html and f'<option value="{model["id"]}" selected>' in html
+    r = client.post("/assignments", data={"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "paper", "bankroll": "250", "max_bet": "5"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/trading", r.text
+    assert flash_cookie(r).endswith(f"created: paper on {GAME_ID}, bankroll $250.00")
+    a = conn.execute("SELECT * FROM assignments").fetchone()
+    assert a["model_id"] == model["id"] and a["max_bet_cents"] == 500 and a["status"] == "active"
+    bank = conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (a["id"],)).fetchone()
+    assert bank["initial_cents"] == 25000 and bank["available_cents"] == 25000
+    job = conn.execute("SELECT * FROM jobs WHERE id = %s", (a["job_id"],)).fetchone()
+    assert job["kind"] == "trade" and job["status"] == "queued" and job["params"] == {"assignment_id": str(a["id"])}
+    assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'assignment_created'").fetchone()["n"] == 1
+    page = client.get("/trading").text
+    assert f'data-assignment="{a["id"]}"' in page and '<details class="card send assign" id="assign">' in page
+    # a refusal re-renders the page with the error inline, the submitted values kept, nothing stored
+    for data, status, message in [
+        ({"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "paper", "bankroll": "lots"}, 400, "Bankroll must be a dollar amount"),
+        ({"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "paper", "bankroll": "100"}, 409, "already has a paper assignment"),
+        ({"game_id": "nope", "model_id": str(model["id"]), "mode": "paper", "bankroll": "100"}, 400, "unknown game"),
+        ({"game_id": GAME_ID, "model_id": str(retired["id"]), "mode": "paper", "bankroll": "100"}, 400, "retired"),
+        ({"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "live", "bankroll": "100"}, 409, "live trading is disabled"),
+        ({"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "paper", "bankroll": "100", "max_bet": "1,5"}, 400, "Max bet: use a dot"),
+    ]:
+        r = client.post("/assignments", data=data, follow_redirects=False)
+        assert r.status_code == status and r.headers["content-type"].startswith("text/html"), (data, r.status_code)
+        assert '<p class="error inline-error">' in r.text and message in r.text, (data, message)
+        assert '<details class="card send assign" id="assign" open>' in r.text and f'name="bankroll" value="{data["bankroll"]}"' in r.text
+    assert conn.execute("SELECT count(*) AS n FROM assignments").fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM bankrolls").fetchone()["n"] == 1
+    assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 1
+    assert game["game_id"] == GAME_ID
+
+
+def test_halt_activate_and_settle_forms(client, conn):
+    setup = trade_setup(conn)
+    aid = setup.assignment["id"]
+    opened = _open_order(conn, setup)
+    _fill(conn, opened, size=10)
+    r = client.post(f"/assignments/{aid}/halt", data={}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/trading" and flash_cookie(r) == f"assignment {str(aid)[:8]} halted"
+    assert assignment_row(conn, aid)["status"] == "halted" and order_row(conn, opened["id"])["status"] == "filled"
+    html = client.get("/trading").text
+    assert '<span class="badge st-halted">halted</span>' in html and f'action="/assignments/{aid}/activate"' in html
+    assert f'action="/assignments/{aid}/halt"' not in html
+    # settle is refused until the game is final (flash, not an error page)
+    r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "settle refused: the game is not final yet"
+    r = client.post(f"/assignments/{aid}/activate", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == f"assignment {str(aid)[:8]} activated"
+    assert assignment_row(conn, aid)["status"] == "active"
+    assert client.post(f"/assignments/{aid}/activate", data={}, follow_redirects=False).status_code == 303, "idempotent"
+    assert client.post("/assignments/00000000-0000-0000-0000-000000000000/halt", data={}, follow_redirects=False).status_code == 404
+    # the game goes final: the row offers Settle now; settling writes the bet and the score
+    conn.execute("UPDATE games SET status = 'final', home_score = 24, away_score = 20 WHERE game_id = %s", (GAME_ID,))
+    html = client.get("/trading").text
+    assert f'action="/assignments/{aid}/settle"' in html and ">Settle now</button>" in html and "final 20-24" in html
+    r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == f"{GAME_ID} settled: 1 bets, P&L $4.68", flash_cookie(r)
+    assert assignment_row(conn, aid)["status"] == "settled"
+    bet = conn.execute("SELECT * FROM bets").fetchone()
+    assert bet["result"] == "win" and bet["pnl_cents"] == 468 and bet["worker_id"] == setup.worker.id
+    html = client.get("/trading").text
+    assert '<span class="badge st-settled">settled</span>' in html and "paper today $4.68 &middot; all $4.68" in html
+    assert '<span class="badge st-resolved">resolved YES</span>' in html
+    fleet = client.get("/").text
+    assert re.search(rf'data-worker="{setup.worker.id}">.*?today \$4\.68', fleet, re.S), "the worker's card shows its P&L"
+    r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r).startswith("settle refused") or "settled" in flash_cookie(r)
+    board = client.get("/models").text
+    assert "1 g &middot; 1 bets &middot; $4.68" in board
+
+
+def test_order_cancel_and_cancel_all_forms(client, conn):
+    setup = trade_setup(conn)
+    first = _open_order(conn, setup)
+    second = approved_order(conn, setup, price=0.53)
+    r = client.post(f"/orders/{first['id']}/cancel", data={}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/trading" and flash_cookie(r) == f"order {str(first['id'])[:8]} cancelled"
+    assert order_row(conn, first["id"])["status"] == "cancelled"
+    bank = conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (setup.assignment["id"],)).fetchone()
+    assert bank["reserved_cents"] == second["cost_cents"], "the first order's reservation was released"
+    r = client.post(f"/orders/{first['id']}/cancel", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r).endswith("cancelled"), "a terminal order answers its status"
+    assert client.post("/orders/not-an-order/cancel", data={}, follow_redirects=False).status_code == 404
+    assert client.post(f"/orders/{uuid.uuid4()}/cancel", data={}, follow_redirects=False).status_code == 404
+    r = client.post("/cancel-all", data={"mode": "live"}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "0 orders cancelled, 0 cancel requested"
+    assert order_row(conn, second["id"])["status"] == "approved"
+    r = client.post("/cancel-all", data={"mode": ""}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "1 orders cancelled, 0 cancel requested"
+    assert order_row(conn, second["id"])["status"] == "cancelled" and bankroll_reserved(conn, setup) == 0
+    r = client.post("/cancel-all", data={"mode": "margin"}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r).startswith("cancel all refused")
+    assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'cancel_all'").fetchone()["n"] == 2
+    assert client.get("/api/settings").json()["kill_switch"] is False, "cancel-all is not a kill"
+
+
+def bankroll_reserved(conn, setup):
+    return conn.execute("SELECT reserved_cents FROM bankrolls WHERE assignment_id = %s", (setup.assignment["id"],)).fetchone()["reserved_cents"]
+
+
+def test_link_market_form(client, conn):
+    insert_game(conn)
+    insert_game(conn, "2026_05_DAL_PHI", home="PHI", away="DAL", kickoff_in_s=3 * 86400)
+    loose = insert_market(conn, GAME_ID, confirmed=False)
+    r = client.post(f"/markets/{loose['id']}/link", data={"game_id": "2026_05_DAL_PHI", "side": "away"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/trading#markets" and flash_cookie(r) == "market linked to 2026_05_DAL_PHI (away)"
+    m = conn.execute("SELECT * FROM markets WHERE id = %s", (loose["id"],)).fetchone()
+    assert m["mapping_confirmed"] is True and m["game_id"] == "2026_05_DAL_PHI" and m["side"] == "away" and m["mapping_confidence"] == 1.0
+    html = client.get("/trading").text
+    assert "Every market is mapped." in html and "2026_05_DAL_PHI &middot; away wins" in html
+    assert '<option value="2026_05_DAL_PHI">DAL @ PHI · ' in html, "a game without markets can be assigned now"
+    r = client.post(f"/markets/{loose['id']}/link", data={"game_id": "nope", "side": "home"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/trading#unmatched" and flash_cookie(r).startswith("market not linked: unknown game")
+    r = client.post(f"/markets/{loose['id']}/link", data={"game_id": GAME_ID, "side": "sideways"}, follow_redirects=False)
+    assert flash_cookie(r) == "market not linked: side must be home or away"
+    assert client.post(f"/markets/{uuid.uuid4()}/link", data={"game_id": GAME_ID, "side": "home"}, follow_redirects=False).status_code == 404
+    assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'market_linked'").fetchone()["n"] == 1
+
+
+def test_activate_all_paper_after_a_kill_reset(client, conn):
+    setup = trade_setup(conn)
+    _open_order(conn, setup)
+    second = make_assignment(conn, GAME_ID)
+    done = make_assignment(conn, insert_game(conn, "2026_05_DAL_PHI", home="PHI", away="DAL")["game_id"])
+    conn.execute("UPDATE games SET status = 'final', home_score = 1, away_score = 0 WHERE game_id = '2026_05_DAL_PHI'")
+    r = client.post("/kill", follow_redirects=False)
+    assert r.status_code == 303
+    html = client.get("/trading").text
+    assert "Trading is killed: every assignment stays halted" in html and 'action="/assignments/activate-paper"' not in html
+    assert html.count('<span class="badge st-halted">halted</span>') == 3 and "No open orders." in html
+    assert ">Activate</button>" not in html, "no per-row activate under kill"
+    assert 'data-banner="exchange-down"' in html, "no exchange heartbeat while killed"
+    r = client.post("/assignments/activate-paper", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "activate all paper refused: the kill switch is on; reset it first"
+    client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
+    html = client.get("/trading").text
+    assert ">Activate all paper (2)</button>" in html and f'action="/assignments/{done["id"]}/settle"' in html
+    r = client.post("/assignments/activate-paper", data={}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "2 paper assignments activated"
+    assert assignment_row(conn, setup.assignment["id"])["status"] == "active" and assignment_row(conn, second["id"])["status"] == "active"
+    assert assignment_row(conn, done["id"])["status"] == "halted", "a final game's assignment waits for settlement"
+    assert 'action="/assignments/activate-paper"' not in client.get("/trading").text
+    assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'activate_all_paper'").fetchone()["n"] == 1
+
+
+def test_topbar_banners(client, conn):
+    assert 'data-banner' not in client.get("/fragments/topbar").text, "no heartbeat but nothing at stake: no banner"
+    client.post("/kill", follow_redirects=False)
+    topbar = client.get("/fragments/topbar").text
+    assert '<a class="banner banner-down" href="/trading#exchange" data-banner="exchange-down" role="alert">EXCHANGE DOWN</a>' in topbar
+    client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
+    assert 'data-banner' not in client.get("/fragments/topbar").text
+    setup = trade_setup(conn)
+    _open_order(conn, setup)
+    assert "EXCHANGE DOWN" in client.get("/").text, "an open order with no heartbeat"
+    conn.execute("UPDATE exchange_state SET heartbeat_at = now() - interval '14 seconds'")
+    assert "EXCHANGE DOWN" not in client.get("/fragments/topbar").text
+    conn.execute("UPDATE exchange_state SET heartbeat_at = now() - interval '16 seconds'")
+    assert "EXCHANGE DOWN" in client.get("/fragments/topbar").text
+    # unattended: an active assignment whose trade job sits queued for over a minute
+    assert "unattended" not in client.get("/fragments/topbar").text, "the job is leased"
+    conn.execute("UPDATE jobs SET status = 'queued', lease_worker_id = NULL, lease_token = NULL, updated_at = now() - interval '30 seconds',"
+                 " created_at = now() - interval '2 minutes' WHERE id = %s", (setup.job["id"],))
+    assert "unattended" not in client.get("/fragments/topbar").text, "queued again 30 s ago"
+    conn.execute("UPDATE jobs SET updated_at = now() - interval '61 seconds' WHERE id = %s", (setup.job["id"],))
+    topbar = client.get("/fragments/topbar").text
+    assert '<a class="banner banner-warn" href="/trading#assignments" data-banner="unattended" role="alert">1 assignment unattended</a>' in topbar
+    second = make_assignment(conn, GAME_ID)
+    conn.execute("UPDATE jobs SET created_at = now() - interval '2 minutes', updated_at = now() - interval '2 minutes' WHERE id = %s", (second["job_id"],))
+    assert "2 assignments unattended" in client.get("/jobs").text
+    client.post(f"/assignments/{second['id']}/halt", data={}, follow_redirects=False)
+    assert "1 assignment unattended" in client.get("/fragments/topbar").text, "a halted assignment is not unattended"
+    assert 'role="alert"' in client.get("/").text
+
+
+def test_pnl_maths(client, conn, make_worker):
+    """Today = bets settled today (owner tz) + mark-to-mid change of open positions since
+    the later of the day start and the fill; all-time = every bet + the whole unrealized."""
+    from host import pnl
+
+    start, end = pnl.owner_day(conn, datetime(2026, 10, 3, 3, 0, tzinfo=timezone.utc))
+    assert (start.isoformat(), end.isoformat()) == ("2026-10-02T00:00:00-04:00", "2026-10-03T00:00:00-04:00"), "the owner's day in America/New_York"
+    idle = make_worker("idle-box")
+    setup = trade_setup(conn)
+    helper = insert_worker(conn, "helper", role="trade")
+    assert client.get("/api/pnl").json() == {
+        "today_cents": 0, "all_time_cents": 0, "by_worker": {idle.id: 0, setup.worker.id: 0, helper.id: 0},
+        "by_mode": {"paper": {"today_cents": 0, "all_time_cents": 0}, "live": {"today_cents": 0, "all_time_cents": 0}},
+    }
+    # an old fill: 10 @ 0.52 two days ago; the mid was 0.50 before today and is 0.51 now
+    old = _open_order(conn, setup)
+    _fill(conn, old, price=0.52, size=10, age_s=2 * 86400)
+    insert_snapshot(conn, setup.market["id"], bid=0.49, ask=0.51, age_s=25 * 3600)
+    insert_snapshot(conn, setup.market["id"], bid=0.50, ask=0.52)
+    totals = pnl.pnl(conn)
+    assert totals["today_cents"] == 10 and totals["all_time_cents"] == -10, "today: 510 - 500; all time: 510 - 520"
+    assert totals["by_worker"][setup.worker.id] == 10 and totals["by_mode"]["paper"] == {"today_cents": 10, "all_time_cents": -10}
+    # a fill made today counts from its own price
+    fresh = _open_order(conn, setup, price=0.53)
+    _fill(conn, fresh, price=0.53, size=10)
+    totals = pnl.pnl(conn)
+    assert totals["today_cents"] == 10 - 20 and totals["all_time_cents"] == -10 - 20
+    # settled bets: one today (+300, the helper worker), one two days ago (-100)
+    a = _open_order(conn, setup, price=0.54)
+    b = _open_order(conn, setup, price=0.55)
+    _bet(conn, a, 300, worker_id=helper.id)
+    _bet(conn, b, -100, settled_age_s=2 * 86400)
+    totals = client.get("/api/pnl").json()
+    assert totals["today_cents"] == 290 and totals["all_time_cents"] == 170
+    assert totals["by_worker"] == {idle.id: 0, setup.worker.id: -10, helper.id: 300}
+    assert totals["by_mode"] == {"paper": {"today_cents": 290, "all_time_cents": 170}, "live": {"today_cents": 0, "all_time_cents": 0}}
+    html = client.get("/").text
+    assert "paper today $2.90 &middot; all $1.70" in html and "live today" not in html
+    assert re.search(rf'data-worker="{helper.id}">.*?today \$3\.00', html, re.S) and re.search(rf'data-worker="{setup.worker.id}">.*?today -\$0\.10', html, re.S)
+    card = re.search(rf'data-worker="{setup.worker.id}">.*?</article>', html, re.S).group(0)
+    assert f'<div class="jobrow">\n    <a class="joblink" href="/jobs/{setup.job["id"]}">KC @ LV</a>' in card and '<span class="small muted">held</span>' in card
+    assert 'role="progressbar"' not in card, "a held trade job has no progress to show"
+    # a resolved market drops out of the open positions
+    conn.execute("UPDATE markets SET status = 'resolved', resolved_yes = true WHERE id = %s", (setup.market["id"],))
+    assert client.get("/api/pnl").json()["today_cents"] == 300
+    set_setting(conn, "live_enabled", True)
+    assert "live today $0.00 &middot; all $0.00" in client.get("/fragments/topbar").text
+
+
+def test_leaderboard_paper_columns_and_ranking(client, conn):
+    """A lineage with 5 paper games and 30 paper bets ranks on shrunk CLV ahead of the
+    backtest-ranked ones; the others keep the step 3 order; paper columns show per row."""
+    backtested = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05), status="paper_ok")
+    papered = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="paper_ok")
+    better = insert_model(conn, params={"k": 31.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="live_eligible")
+    almost = insert_model(conn, params={"k": 32.0}, metrics=backtest_metrics(n_bets=10, roi=0.01))
+    retired = insert_model(conn, params={"k": 33.0}, status="retired")
+    for i in range(5):
+        insert_game(conn, f"2026_0{i + 1}_A_B", kickoff_in_s=-(i + 1) * 86400)
+        _score(conn, papered, f"2026_0{i + 1}_A_B", 6, 120, 6000, 0.02)
+        _score(conn, better, f"2026_0{i + 1}_A_B", 6, -60, 6000, 0.03)
+        _score(conn, retired, f"2026_0{i + 1}_A_B", 6, 900, 6000, 0.09)
+    for i in range(4):
+        _score(conn, almost, f"2026_0{i + 1}_A_B", 10, 100, 1000, 0.05)
+    board = client.get("/api/models").json()
+    ranked = board["ranked"]
+    assert [m["id"] for m in ranked] == [str(better["id"]), str(papered["id"]), str(backtested["id"])]
+    assert [m["rank"] for m in ranked] == [1, 2, 3] and [m["rank_mode"] for m in ranked] == ["paper", "paper", "backtest"]
+    assert ranked[0]["paper"] == {"games": 5, "bets": 30, "pnl_cents": -300, "stake_cents": 30000, "roi": -0.01, "avg_clv": pytest.approx(0.03)}
+    assert ranked[0]["paper_score"] == pytest.approx(0.03 * 30 / 55) and ranked[1]["paper_score"] == pytest.approx(0.02 * 30 / 55)
+    assert ranked[2]["paper"]["games"] == 0 and ranked[2]["paper"]["roi"] is None and ranked[2]["score"] == 0.05 * 400 / 500
+    assert ranked[0]["live"] == {"games": 0, "bets": 0, "pnl_cents": 0, "stake_cents": 0, "roi": None, "avg_clv": None}
+    unranked = {m["id"]: m for m in board["unranked"]}
+    assert set(unranked) == {str(almost["id"]), str(retired["id"])}
+    assert unranked[str(almost["id"])]["paper"]["games"] == 4 and unranked[str(almost["id"])]["rank_mode"] == "backtest", "4 games: not yet"
+    assert unranked[str(retired["id"])]["paper"]["games"] == 5, "retired lineages are never ranked, however good"
+    # ties on shrunk CLV break on paper ROI
+    _score(conn, almost, "2026_05_A_B", 10, 1000, 1000, 0.06)
+    assert client.get("/api/models").json()["ranked"][0]["id"] == str(almost["id"])
+    html = client.get("/models").text
+    first = re.search(rf'<tr class="model-row" data-model="{almost["id"]}">.*?</tr>', html, re.S).group(0)
+    assert '<span class="rank">#1</span><span class="chip chip-paper" title="ranked on paper CLV">paper</span>' in first
+    assert '<span class="k">paper</span> 5 g &middot; 50 bets &middot; $14.00 &middot; ROI +28.0% &middot; CLV 0.052' in first
+    last = re.search(rf'<tr class="model-row" data-model="{backtested["id"]}">.*?</tr>', html, re.S).group(0)
+    assert '<span class="k">paper</span> -' in last and "chip-paper" not in last and "#4" in last
+    assert "<th>paper</th>" in html and "5 paper games and 30 paper bets" in html
+    detail = client.get(f"/models/{better['id']}").text
+    assert "<dt>paper record</dt><dd>5 games &middot; 30 bets &middot; -$3.00 &middot; ROI -1.0% &middot; CLV 0.030" in detail
+    assert "ranked on paper" in detail and "no paper games yet" in client.get(f"/models/{backtested['id']}").text
+
+
+def test_settings_trade_group_round_trip(client, conn):
+    html = client.get("/settings").text
+    form = html.split('id="trade"')[1].split("</form>")[0]
+    assert 'action="/settings/trade"' in html and "<h3>Order approval</h3>" in form and "<h3>Paper thresholds" in form
+    assert '<option value="sim" selected>sim</option>' in form and '<option value="polymarket_clob">' in form
+    assert 'name="participation" value="0.5"' in form and 'name="gtd_seconds" value="900"' in form
+    assert 'name="trade_pregame_only" value="true" checked>' in form and 'name="paper_min_pnl" value="0.01"' in form
+    assert 'name="max_exposure_paper" value="0.00"' in form and 'name="orders_per_s" value="5"' in form
+    assert "&#34;gamma_url&#34;: &#34;https://gamma-api.polymarket.com&#34;" in form and "<textarea name=\"market_source_config\"" in form
+    good = {
+        "participation": "0.4", "book_max_age_s": "45", "gtd_seconds": "600", "orphan_cancel_after_s": "40", "trade_tick_s": "4",
+        "max_paper_models_per_game": "2", "max_exposure_paper": "1,000", "max_exposure_live": "0",
+        "market_source": "polymarket_clob", "market_lookahead_days": "9", "snapshot_active_s": "3", "snapshot_idle_s": "20",
+        "snapshot_retention_days": "7", "scores_url": "https://example.com/scores",
+        "market_source_config": '{"polymarket_clob": {"gamma_url": "https://g.example", "clob_url": "https://c.example", "tag_slug": "nfl"}}',
+        "paper_min_games": "8", "paper_min_bets": "20", "paper_min_days": "14", "paper_min_clv": "0.005", "paper_min_pnl": "2.50",
+        "orders_per_s": "4", "cancels_per_s": "8", "market_data_per_s": "9.5", "account_per_s": "1",
+    }
+    r = client.post("/settings/trade", data=good, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/settings" and flash_cookie(r) == "trade settings saved"
+    s = client.get("/api/settings").json()
+    assert s["participation"] == 0.4 and s["book_max_age_s"] == 45 and s["gtd_seconds"] == 600 and s["trade_tick_s"] == 4
+    assert s["trade_pregame_only"] is False, "an unticked checkbox sends nothing"
+    assert s["market_source"] == "polymarket_clob" and s["market_source_config"]["polymarket_clob"]["gamma_url"] == "https://g.example"
+    assert s["thresholds_paper"] == {"min_games": 8, "min_bets": 20, "min_days": 14, "min_clv": 0.005, "min_pnl_cents": 250}
+    assert s["max_exposure_cents"] == {"paper": 100000, "live": 0} and s["scores_url"] == "https://example.com/scores"
+    assert s["rate_limits"] == {"orders_per_s": 4, "cancels_per_s": 8, "market_data_per_s": 9.5, "account_per_s": 1}
+    html = client.get("/settings").text
+    assert '<option value="polymarket_clob" selected>' in html and 'name="trade_pregame_only" value="true">' in html
+    assert 'name="max_exposure_paper" value="1000.00"' in html and "&#34;gamma_url&#34;: &#34;https://g.example&#34;" in html
+    for bad, message in [
+        ({**good, "participation": "2"}, "participation must be between 0 and 1"),
+        ({**good, "market_source": "kalshi"}, "market_source must be one of sim, polymarket_us, polymarket_clob"),
+        ({**good, "market_source_config": "[1, 2]"}, "Market source config must be a JSON object"),
+        ({**good, "market_source_config": "{not json"}, "Market source config must be a JSON object"),
+        ({**good, "paper_min_games": "x"}, "Paper min games must be a whole number"),
+        ({**good, "paper_min_pnl": "1,5"}, "Paper min P&amp;L: use a dot for cents"),
+        ({**good, "scores_url": "ftp://x"}, "scores_url must be an http(s) URL"),
+        ({**good, "snapshot_active_s": "0"}, "snapshot_active_s must be between 1 and 300"),
+    ]:
+        r = client.post("/settings/trade", data=bad, follow_redirects=False)
+        assert r.status_code == 400 and message in r.text, (bad, message)
+        assert 'name="participation" value="%s"' % bad["participation"] in r.text, "submitted values are kept"
+    assert client.get("/api/settings").json()["participation"] == 0.4
+    audited = [a["entity"] for a in conn.execute("SELECT entity FROM audit_log WHERE action = 'settings_changed' ORDER BY id").fetchall()]
+    assert "market_source" in audited and "thresholds_paper" in audited and "trade_pregame_only" in audited and len(audited) == 17
+    # saving the group again with a paper record present recomputes paper eligibility without error
+    model = insert_model(conn, status="paper_ok", metrics=backtest_metrics())
+    insert_game(conn, "2026_01_A_B", kickoff_in_s=-86400)
+    _score(conn, model, "2026_01_A_B", 5, 100, 1000, 0.02)
+    r = client.post("/settings/trade", data={**good, "paper_min_games": "1", "paper_min_bets": "1", "paper_min_days": "0"}, follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_probe_page_and_exchange_card(client, conn):
+    """The probe button renders the raw payload page (the sim source needs no network)."""
+    insert_game(conn)
+    r = client.post("/exchange/probe", data={}, follow_redirects=False)
+    assert r.status_code == 200 and "Market probe" in r.text and '<pre id="payload">' in r.text and 'data-copy="payload"' in r.text
+    assert ">sim<" in r.text or "sim" in r.text
+
+
+def test_trading_style_rules():
+    """The banner and chip colours use the text-safe tokens; the step 4 rules exist."""
+    css = (Path(__file__).resolve().parent.parent / "host" / "static" / "style.css").read_text()
+    assert ".banner-down { background: var(--red); color: var(--red-text); }" in css
+    assert ".banner-warn { background: var(--amber-fill); color: #fff; }" in css
+    assert ".chip.chip-bad { background: var(--red); color: var(--red-text); }" in css
+    assert ".badge.st-rejected, .badge.st-rejected_by_exchange { background: var(--red); color: var(--red-text); }" in css
+    phone = css.split("@media (max-width: 700px)")[-1]
+    assert "table.assignments td.action { position: static; flex-basis: 100%; display: flex; gap: 0.5rem; }" in phone
+    assert "label.check { min-height: var(--tap); }" in phone
+    js = (Path(__file__).resolve().parent.parent / "host" / "static" / "app.js").read_text()
+    assert 'refresh("trading-live", "/fragments/trading")' in js and chr(0x2014) not in js

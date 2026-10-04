@@ -5,7 +5,10 @@ runner, is preempted by a role change, resumes from its checkpoint, auto-returns
 idle, gets a job cancelled, is driven through the dashboard forms (role select, KILL,
 RESUME; step 2), is handed the same lease again after a dropped heartbeat response
 (re-offer), runs the step 3 models phase (tests/e2e_models.py: fixture ingest, model
-search, train, backtest, a preempted search that resumes), and finally survives a
+search, train, backtest, a preempted search that resumes), runs the step 4 paper
+trading phase (tests/e2e_trading.py: the real exchange loop on the sim source, an
+assignment, approvals, a rejection, fills, KILL, RESUME, the release handshake on a
+role change, simulate-final with bets, scores and P&L), and finally survives a
 simulated crash with a lost register reply (the retry with the previous token succeeds,
 held_jobs are re-adopted). Heartbeat 0.3 s, host loop 0.5 s, every wait bounded.
 """
@@ -32,6 +35,7 @@ from host.config import Config
 from host.loop import LoopThread
 from tests.conftest import flash_cookie, heartbeat_body
 from tests.e2e_models import CountingRunner, phase_models
+from tests.e2e_trading import phase_trading
 
 HEARTBEAT = 0.3
 LOOP = 0.5
@@ -517,9 +521,10 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     phase_cancel(live_host, worker_id)
     phase_dashboard(live_host, state_dir, worker_id, first)
     phase_reoffer(live_host, worker_id, first, drop_box)
-    phase_models(live_host, state_dir, worker_id, monkeypatch, wait_for, settled)
+    models = phase_models(live_host, state_dir, worker_id, monkeypatch, wait_for, settled)
+    phase_trading(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_crash(live_host, state_dir, worker_id, first, agents)
 
-    assert time.monotonic() - started < 150.0
+    assert time.monotonic() - started < 200.0
     statuses = {j["status"] for j in live_host.get("/api/jobs")}
     assert statuses == {"succeeded", "cancelled"}

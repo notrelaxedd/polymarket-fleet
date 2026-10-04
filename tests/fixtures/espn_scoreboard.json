@@ -1,0 +1,79 @@
+{
+  "leagues": [{"id": "28", "name": "National Football League", "abbreviation": "NFL"}],
+  "season": {"type": 2, "year": 2026},
+  "week": {"number": 5},
+  "events": [
+    {
+      "id": "401800001",
+      "date": "2026-10-05T20:15Z",
+      "name": "Kansas City Chiefs at Las Vegas Raiders",
+      "shortName": "KC @ LV",
+      "status": {"type": {"id": "3", "name": "STATUS_FINAL", "state": "post", "completed": true, "description": "Final"}},
+      "competitions": [
+        {
+          "id": "401800001",
+          "date": "2026-10-05T20:15Z",
+          "status": {"clock": 0.0, "displayClock": "0:00", "period": 4, "type": {"id": "3", "name": "STATUS_FINAL", "state": "post", "completed": true, "description": "Final"}},
+          "competitors": [
+            {"id": "13", "homeAway": "home", "winner": false, "score": "17", "team": {"id": "13", "abbreviation": "LV", "displayName": "Las Vegas Raiders", "name": "Raiders", "location": "Las Vegas"}},
+            {"id": "12", "homeAway": "away", "winner": true, "score": "27", "team": {"id": "12", "abbreviation": "KC", "displayName": "Kansas City Chiefs", "name": "Chiefs", "location": "Kansas City"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401800002",
+      "date": "2026-10-04T17:00Z",
+      "name": "Philadelphia Eagles at Dallas Cowboys",
+      "status": {"type": {"id": "2", "name": "STATUS_IN_PROGRESS", "state": "in", "completed": false, "description": "In Progress"}},
+      "competitions": [
+        {
+          "id": "401800002",
+          "date": "2026-10-04T17:00Z",
+          "status": {"clock": 512.0, "displayClock": "8:32", "period": 3, "type": {"id": "2", "name": "STATUS_IN_PROGRESS", "state": "in", "completed": false}},
+          "competitors": [
+            {"id": "6", "homeAway": "home", "score": "14", "team": {"id": "6", "abbreviation": "DAL", "displayName": "Dallas Cowboys"}},
+            {"id": "21", "homeAway": "away", "score": "20", "team": {"id": "21", "abbreviation": "PHI", "displayName": "Philadelphia Eagles"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401800003",
+      "date": "2026-10-04T20:25Z",
+      "name": "Green Bay Packers at Chicago Bears",
+      "status": {"type": {"id": "3", "name": "STATUS_FINAL", "state": "post", "completed": true}},
+      "competitions": [
+        {
+          "id": "401800003",
+          "date": "2026-10-04T20:25Z",
+          "competitors": [
+            {"id": "3", "homeAway": "home", "score": "24", "team": {"id": "3", "abbreviation": "CHI", "displayName": "Chicago Bears"}},
+            {"id": "9", "homeAway": "away", "score": "24", "team": {"id": "9", "abbreviation": "GB", "displayName": "Green Bay Packers"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401800004",
+      "date": "2026-10-04T20:25Z",
+      "name": "malformed event",
+      "status": {"type": {"completed": true}},
+      "competitions": [
+        {
+          "competitors": [
+            {"homeAway": "home", "score": "3", "team": {"abbreviation": "XYZ"}},
+            {"homeAway": "away", "score": "none", "team": {"abbreviation": "ATL"}}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "401800005",
+      "date": "2026-10-04T20:25Z",
+      "status": {"type": {"completed": true}},
+      "competitions": "not a list"
+    },
+    "not an event"
+  ]
+}

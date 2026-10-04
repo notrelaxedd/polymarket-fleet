@@ -13,18 +13,23 @@ JOB_STATUSES = ("queued", "leased", "cancel_requested", "succeeded", "failed", "
 
 
 def _current_jobs(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
-    """Active jobs grouped by lease worker."""
+    """Active jobs grouped by lease worker; a trade job carries its game ("KC @ LV")."""
     rows = conn.execute(
         """
-        SELECT id, kind, status, progress, lease_worker_id FROM jobs
-         WHERE status IN ('leased', 'cancel_requested') ORDER BY started_at
+        SELECT j.id, j.kind, j.status, j.progress, j.lease_worker_id,
+               g.away_team || ' @ ' || g.home_team AS game
+          FROM jobs j
+          LEFT JOIN assignments a ON j.kind = 'trade' AND a.id::text = j.params ->> 'assignment_id'
+          LEFT JOIN games g ON g.game_id = a.game_id
+         WHERE j.status IN ('leased', 'cancel_requested') ORDER BY j.started_at
         """
     ).fetchall()
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        grouped.setdefault(row["lease_worker_id"], []).append(
-            {"id": str(row["id"]), "kind": row["kind"], "status": row["status"], "progress": row["progress"]}
-        )
+        entry = {"id": str(row["id"]), "kind": row["kind"], "status": row["status"], "progress": row["progress"]}
+        if row["kind"] == "trade":
+            entry["game"] = row["game"]
+        grouped.setdefault(row["lease_worker_id"], []).append(entry)
     return grouped
 
 
@@ -102,3 +107,83 @@ def worker_names(conn: psycopg.Connection) -> dict[str, str]:
     """worker id -> name for every worker, sorted by name."""
     rows = conn.execute("SELECT id, name FROM workers ORDER BY name, id").fetchall()
     return {row["id"]: row["name"] for row in rows}
+
+
+# ------------------------------------------------------------------ step 4: the /trading page
+
+UNATTENDED_AFTER_S = 60
+EXCHANGE_DOWN_AFTER_S = 15
+ACTIVE_ORDER_STATUSES = ("approved", "submitting", "open", "partial", "cancel_requested")
+
+
+def upcoming_games(conn: psycopg.Connection, with_markets: bool = True, limit: int = 200) -> list[dict[str, Any]]:
+    """Games that have not kicked off, soonest first; `with_markets` keeps only those
+    with a confirmed market (the ones an assignment can trade)."""
+    clause = "AND EXISTS (SELECT 1 FROM markets m WHERE m.game_id = g.game_id AND m.mapping_confirmed)" if with_markets else ""
+    return conn.execute(
+        f"""
+        SELECT g.game_id, g.season, g.week, g.home_team, g.away_team, g.kickoff_at, g.status FROM games g
+         WHERE g.status <> 'final' AND (g.kickoff_at IS NULL OR g.kickoff_at > now()) {clause}
+         ORDER BY g.kickoff_at NULLS LAST, g.game_id LIMIT %s
+        """,
+        (max(1, min(int(limit), 1000)),),
+    ).fetchall()
+
+
+def assignable_models(conn: psycopg.Connection, limit: int = 200) -> list[dict[str, Any]]:
+    """Models whose lineage is not retired for the Assign select: trained models
+    first (an untrained search root mirrors the market and never trades), newest
+    first within each group."""
+    return conn.execute(
+        """
+        SELECT m.id, m.lineage_id, m.family, m.params, m.status, m.trained_through FROM models m
+         WHERE NOT EXISTS (SELECT 1 FROM models r WHERE r.lineage_id = m.lineage_id AND r.status = 'retired')
+         ORDER BY (m.trained_through IS NOT NULL) DESC, m.created_at DESC, m.id LIMIT %s
+        """,
+        (max(1, min(int(limit), 1000)),),
+    ).fetchall()
+
+
+def unattended_assignments(conn: psycopg.Connection, after_s: int = UNATTENDED_AFTER_S) -> int:
+    """Active assignments whose trade job has sat queued for more than `after_s`."""
+    row = conn.execute(
+        """
+        SELECT count(*) AS n FROM assignments a JOIN jobs j ON j.id = a.job_id
+         WHERE a.status = 'active' AND j.status = 'queued'
+           AND GREATEST(j.created_at, j.updated_at) < now() - make_interval(secs => %s)
+        """,
+        (after_s,),
+    ).fetchone()
+    return int(row["n"])
+
+
+def exchange_down(conn: psycopg.Connection, after_s: int = EXCHANGE_DOWN_AFTER_S) -> bool:
+    """The EXCHANGE DOWN banner: no heartbeat within `after_s` while an order is active
+    or the kill switch is on."""
+    row = conn.execute(
+        """
+        SELECT (heartbeat_at IS NULL OR heartbeat_at < now() - make_interval(secs => %s)) AS stale
+          FROM exchange_state WHERE id
+        """,
+        (after_s,),
+    ).fetchone()
+    if row is None or not row["stale"]:
+        return False
+    killed = conn.execute("SELECT value FROM settings WHERE key = 'kill_switch'").fetchone()
+    if killed is not None and killed["value"] is True:
+        return True
+    active = conn.execute(
+        "SELECT 1 FROM orders WHERE status = ANY(%s) LIMIT 1", (list(ACTIVE_ORDER_STATUSES),)
+    ).fetchone()
+    return active is not None
+
+
+def halted_paper_count(conn: psycopg.Connection) -> int:
+    """Halted paper assignments whose game is not final (what "Activate all paper" would touch)."""
+    row = conn.execute(
+        """
+        SELECT count(*) AS n FROM assignments a JOIN games g ON g.game_id = a.game_id
+         WHERE a.mode = 'paper' AND a.status = 'halted' AND g.status <> 'final'
+        """
+    ).fetchone()
+    return int(row["n"])

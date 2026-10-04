@@ -215,7 +215,8 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
   Each worker: `id, name, online (bool), desired_role, reported_role, role_epoch, acked_epoch,
   switching (bool: acked_epoch != role_epoch or reported != desired), auto_role, enabled,
   cpu_pct, ram_used_mb, ram_total_mb, code_version, python_version, hostname,
-  last_heartbeat_at, current_jobs: [{id, kind, status, progress}]`.
+  last_heartbeat_at, current_jobs: [{id, kind, status, progress}]` (a `trade` job also
+  carries `game`, "KC @ LV", for the fleet card).
 - `POST /api/workers/{id}/role` `{"role": "backtest"}` -> sets `desired_role`,
   `role_epoch += 1`, `auto_role=false`; marks this worker's leased jobs whose `role` differs
   from the new role `preempt_requested=true`; `audit_log`. Returns the worker. 400 on bad role.
@@ -244,7 +245,10 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
     `"waiting_for_idle_worker": true`.
   - `idempotency_key` present and already used -> return the existing job (200).
 - `POST /api/jobs/{id}/cancel` -> `queued` -> `cancelled`; `leased` -> `cancel_requested`
-  (worker releases it on its next heartbeat and the host marks it `cancelled`).
+  (worker releases it on its next heartbeat and the host marks it `cancelled`). (changed:
+  step 4) A `trade` job's assignment is halted first, in the same transaction: its open
+  orders are cancelled with the ledger release and `/trading` shows it `halted`
+  (Activate makes a new trade job).
 - `GET /api/jobs?status=&limit=` (newest first) and `GET /api/jobs/{id}` (job + last 50
   `job_events`).
 - `POST /api/enroll-token` -> `{"token": "...", "expires_at": ...}` (1 hour). Also prints the
@@ -252,6 +256,9 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
 - `GET /api/settings` / `POST /api/settings` `{"key": value, ...}` (jsonb values; unknown key -> 400).
   (changed: validation and audit) Values are checked per key with no coercion (the string
   `"false"` is rejected); any problem rejects the whole batch with 400 and changes nothing.
+  (changed: step 4) `kill_switch` is read-only here (400 "use /api/kill or /api/kill/reset":
+  only the kill transaction and the RESUME reset move it), and `live_enabled: true` is 400
+  while `kill_switch` is true.
   Every changed key writes an `audit_log` row `settings_changed` (entity = key, actor = the
   owner login, before/after). Schema:
 
@@ -684,11 +691,19 @@ A `trade` worker sends `"want_jobs": <free slots>` (int, `trade_max_games` minus
 jobs it holds; `want_job: true` still means 1 for batch roles). The host claims up to that
 many `trade` jobs (same claim CTE, `LIMIT $n`), refusing under `kill`. Trade jobs have
 `max_expiries NULL`; a crashed trade worker's job expires after `lease_seconds` and any
-trade worker reclaims it (all state is on the host).
+trade worker reclaims it (all state is on the host). (changed: shape) `want_jobs` is an
+integer 0..100 (400 outside), a trade worker's `want_job: true` claims nothing, and a
+batch worker's `want_jobs` is ignored. A trade job's `checkpoint` is unused and a release
+with reason `oom` never fails it either (`max_expiries` is NULL). (changed: cap) The host
+also caps a claim at `settings.trade_max_games` minus the trade jobs the worker already
+holds, so a worker's `want_jobs` never exceeds the setting (and `trade_max_games 0`
+pauses claims fleet-wide).
 
 ### `GET /api/v1/trade/state` (worker bearer)
 Returns `{"kill", "server_time", "settings": {"min_edge", "kelly_fraction", "participation",
-"trade_pregame_only", "fee_model", "trade_tick_s"}, "assignments": [...]}`, one entry per
+"trade_pregame_only", "fee_model", "trade_tick_s", "max_bet_cents", "trade_max_games"},
+"assignments": [...]}` (the worker caps its stake with `max_bet_cents`, its size with
+`participation` and its claims with `trade_max_games`), one entry per
 trade job this worker holds: `{"id", "job_id", "lease_token", "status", "mode",
 "max_bet_cents", "game": {game row fields incl. kickoff_at, status}, "model": {"id",
 "family", "params", "artifact"}, "bankroll": {"available_cents", "reserved_cents",
@@ -696,38 +711,85 @@ trade job this worker holds: `{"id", "job_id", "lease_token", "status", "mode",
 "tick", "min_size", "snapshot_id", "snapshot_at", "liquidity_usd_cents", "ask_depth",
 "status"}], "open_orders": [{"id", "market_id", "price", "size", "filled_size", "status"}],
 "positions": [{"market_id", "side", "size", "avg_price"}]}`. Markets below the liquidity
-floor are included but flagged `"below_floor": true`.
+floor are included but flagged `"below_floor": true`. (changed: detail) Only markets with a
+confirmed mapping are listed; `game` is the games row without `raw`; `positions` entries
+also carry `basis_cents`; `open_orders` entries also carry `snapshot_id` and `created_at`;
+an entry is omitted when a held trade job's assignment no longer exists.
 
 ### `POST /api/v1/orders/request` (worker bearer)
 `{"client_request_id", "job_id", "lease_token", "assignment_id", "market_id", "snapshot_id",
 "price", "size", "my_p", "market_p", "edge", "rationale"}` ->
-`{"status": "approved"|"rejected", "order_id", "reason"}` (200 in both cases; 401/409 only
-for auth and fence failures). See docs/TRADING.md for the checks.
+`{"status": "approved"|"rejected", "order_id", "reason"}` (200 in both cases; 401 only for
+auth failures). See docs/TRADING.md for the checks. (changed: fence) A lease mismatch (wrong
+token, another worker's job, a preempted or cancel-requested job, a worker whose desired
+role is not `trade`) is a recorded rejection with reason `lease`, not a 409, so the worker's
+log and the owner's orders table show it. A repeated `client_request_id` returns the stored
+decision with `"duplicate": true`. A malformed price (outside 0..1), size (< 1) or a body
+missing the ids is 400. A request naming an unknown market cannot be stored (`orders.market_id`
+is NOT NULL) and answers `{"status": "rejected", "order_id": null, "reason": "market"}`.
 
 ### `POST /api/v1/orders/{id}/cancel` (worker bearer)
 Marks the worker's own open order `cancel_requested` (paper: cancelled at once with the
-ledger release). `{"status": ...}`.
+ledger release). `{"status": ...}`. (changed: codes) 404 for an unknown order, 409 for
+another worker's order; a terminal order answers its current status unchanged.
 
 ### `POST /api/v1/trade/release` (worker bearer)
 `{"jobs": [{"id", "lease_token"}]}`: cancels the worker's open orders for those assignments
 (paper at once; live `cancel_requested`, waiting up to 3 s), releases the jobs to `queued`
 (reason `drain`), answers `{"cancelled": n, "pending": m, "released": [ids]}`. The agent
 calls it before the ack heartbeat of any role change away from `trade`, and under kill it
-keeps running the tick (proposing nothing) until told otherwise.
+keeps running the tick (proposing nothing) until told otherwise. (changed: detail) Entries
+whose id or token do not match a trade job this worker holds are ignored (not 409); `pending`
+counts live orders still `cancel_requested` when the 3 s wait ends (including ones already
+pending from an earlier call); the orders and job releases are committed before the wait so
+the exchange can see the cancel requests. (changed: fence) The release runs under both
+approval locks, so an approval that read a job as leased cannot commit after the job
+has been handed back.
 
 ### Owner API added in step 4
 - `GET/POST /api/assignments`, `POST /api/assignments/{id}/halt|activate|settle`,
-  `POST /api/assignments/activate-paper` (after a kill reset).
+  `POST /api/assignments/activate-paper` (after a kill reset). (changed: shapes)
+  `POST /api/assignments` takes `{"game_id", "model_id", "mode" (default paper),
+  "bankroll_cents" (default `default_bankroll_cents`), "max_bet_cents" (optional)}` and
+  answers 201 with the row plus `bankroll` and `job_id`; 400 for a bad input or a retired
+  lineage, 409 for the per-game limits and the live preconditions. `GET /api/assignments?status=`
+  rows carry `bankroll`, `game`, `model`, `job` and `open_orders`; `GET /api/assignments/{id}`
+  is the same row shape plus `orders`, `fills` and `positions`. `halt` takes an optional `{"reason"}` (idempotent
+  on a halted row; 409 on settled); `activate` is 409 under kill, for a final game or when
+  a live precondition fails; `settle` is 409 until the game is final and 503 ("exchange
+  module not available") when host/exchange is missing; `activate-paper` answers
+  `{"activated": n}` and is 409 under kill. Audit rows: `assignment_created`,
+  `assignment_halted`, `assignment_activated`, `activate_all_paper`.
 - `GET /api/orders?status=&limit=`, `POST /api/orders/{id}/cancel`, `GET /api/fills`,
   `GET /api/markets?unmatched=1`, `POST /api/markets/{id}/link` `{"game_id", "side"}`.
+  (changed: detail) `status` is one order status or `active`; `&assignment_id=` filters;
+  rows carry `market_title`, `side`, `game_id`, `platform`, `worker_name`, `model_id`,
+  `family`; `GET /api/orders/{id}` adds `events` and `fills`. `GET /api/fills?limit=` rows
+  carry the order's `assignment_id`, `worker_id`, `market_id`, `side`, `game_id`. Markets
+  carry `snapshot_age_s`; `link` writes audit `market_linked` and answers the market.
+  `POST /api/cancel-all` `{"mode": "paper"|"live"|null}` cancels every active order (one
+  mode's, or all) under the approval lock(s) without a kill, answers
+  `{"cancelled", "requested"}`, audit `cancel_all`.
 - `GET /api/exchange` (state), `POST /api/exchange/probe` (raw markets payload of the
   configured source, truncated to 64 KiB, for pasting back), `GET /api/pnl` (real now).
+  (changed: detail) The state carries `heartbeat_age_s` and `down` (no heartbeat, or one
+  older than 15 s); the probe is 503 "exchange module not available" without host/exchange.
 - `POST /api/kill` now cancels orders and halts assignments (docs/TRADING.md).
+  (changed: audit) The `kill` audit row keeps its before/after flag shape; when the press
+  actually disabled live, cancelled or cancel-requested orders or halted assignments, a
+  second row `kill_cancel_all` lists their ids. The live daily-loss trip writes
+  `daily_loss_trip`. (changed: daily loss) The approval's daily-loss check counts the
+  reservation of still-open orders of the mode as money at risk
+  (`losses_today + reserved + cost > max_daily_loss`), so concurrent approvals across
+  games cannot together pass the limit; the trip condition stays `losses_today >= max`.
+- Orphan rule: the host loop's third pass cancels the active orders of workers whose last
+  heartbeat is older than `orphan_cancel_after_s` (actor `orphan`, reason "worker silent").
 - Settings keys added (all on the Settings page): `participation`, `book_max_age_s`,
   `orphan_cancel_after_s`, `gtd_seconds`, `snapshot_retention_days`, `snapshot_active_s`,
   `snapshot_idle_s`, `market_source`, `market_source_config`, `market_lookahead_days`,
   `max_paper_models_per_game`, `thresholds_paper`, `trade_pregame_only`, `trade_tick_s`,
   `rate_limits`, `max_exposure_cents`, `scores_url`.
-- CLI: `assign <game_id> <model_id> [--mode paper] [--bankroll DOLLARS]`, `assignments`,
-  `orders [--status]`, `cancel-all [--mode]`, `simulate-final <game_id> --home N --away M`,
-  `exchange-state`, `ledger-check`.
+- CLI: `assign <game_id> <model_id> [--mode paper] [--bankroll DOLLARS] [--max-bet DOLLARS]`,
+  `assignments [--status]`, `orders [--status] [--limit]`, `cancel-all [--mode]`,
+  `simulate-final <game_id> --home N --away M`, `exchange-state`, `ledger-check` (exit 1 and
+  one line per problem when a bankroll's ledger disagrees with its cached columns).

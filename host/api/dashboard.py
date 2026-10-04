@@ -1,4 +1,5 @@
-"""Dashboard pages and refresh fragments (GET). Form posts live in dashboard_forms.
+"""Dashboard pages and refresh fragments (GET). Form posts live in dashboard_forms,
+the models pages in dashboard_models and the trading page in dashboard_trading.
 
 Everything here is read-only and reuses the queries behind the JSON API
 (host.views, host.settings, host.pnl, host.kill); the templates do the layout.
@@ -19,11 +20,20 @@ from host.leaderboard import short_params
 from host.config import Config
 from host.scheduling import online_after
 from host.settings import ROLES, get_settings
-from host.settings_forms import form_values
+from host.settings_forms import MARKET_SOURCES, form_values
 
 router = APIRouter(tags=["dashboard"], dependencies=[Depends(require_owner)])
 
 STALE_AFTER_SECONDS = 60
+
+
+async def form_data(request: Request) -> dict[str, str]:
+    """The posted form as plain strings (file fields are ignored)."""
+    form = await request.form()
+    return {key: value for key, value in form.items() if isinstance(value, str)}
+
+
+FORM = Depends(form_data)
 
 
 def _now(conn: psycopg.Connection) -> datetime:
@@ -60,7 +70,8 @@ def fleet_context(conn: psycopg.Connection) -> dict[str, Any]:
 
 
 def topbar_context(conn: psycopg.Connection, settings: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Mode pill, P&L totals and the kill state."""
+    """Mode pill, P&L per mode, the kill state and the two banners (docs/TRADING.md
+    "Dashboard additions"): EXCHANGE DOWN and N assignments unattended."""
     settings = get_settings(conn) if settings is None else settings
     totals = pnl.pnl(conn)
     return {
@@ -68,6 +79,9 @@ def topbar_context(conn: psycopg.Connection, settings: dict[str, Any] | None = N
         "killed": settings.get("kill_switch") is True,
         "pnl_today": totals["today_cents"],
         "pnl_all": totals["all_time_cents"],
+        "pnl": totals["by_mode"],
+        "exchange_down": views.exchange_down(conn),
+        "unattended": views.unattended_assignments(conn),
     }
 
 
@@ -159,7 +173,7 @@ def settings_page(
     values.update(overrides or {})
     return page(
         request, conn, "settings.html", status=status, settings=settings, values=values,
-        errors=errors or {}, killed=kill.is_killed(conn), audit=views.audit_rows(conn, 20),
+        errors=errors or {}, killed=kill.is_killed(conn), audit=views.audit_rows(conn, 20), market_sources=MARKET_SOURCES,
         public_url=config.public_url, games_count=nflverse.games_count(conn),
         last_complete_season=nflverse.last_complete_season(conn), refresh=data_refresh.STATUS.snapshot(),
     )
@@ -177,3 +191,10 @@ def settings_get(
 def kill_confirm(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     """The no-JavaScript confirmation page with a real POST button."""
     return page(request, conn, "kill_confirm.html", killed=kill.is_killed(conn))
+
+
+# The trading router imports `page` and `FORM` from this module, so it is included
+# here, after they exist, rather than registered in host/api/app.py.
+from host.api import dashboard_trading  # noqa: E402
+
+router.include_router(dashboard_trading.router)

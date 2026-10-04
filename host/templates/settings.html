@@ -26,6 +26,55 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
+<form class="card group" method="post" action="/settings/trade" id="trade">
+  <h2>Trading <span class="muted small">approval, snapshots, market source, paper thresholds, rate limits</span></h2>
+  {% if errors.trade %}<p class="error inline-error">{{ errors.trade }}</p>{% endif %}
+  <h3>Order approval</h3>
+  <div class="fields">
+    {{ field('participation', 'Participation', 'share of book depth, 0..1', 'decimal') }}
+    {{ field('book_max_age_s', 'Book max age (s)', '1..3600', 'numeric') }}
+    {{ field('gtd_seconds', 'Order lifetime (s)', '10..86400', 'numeric') }}
+    {{ field('orphan_cancel_after_s', 'Orphan cancel after (s)', '5..3600', 'numeric') }}
+    {{ field('trade_tick_s', 'Trade tick (s)', '1..60', 'numeric') }}
+    {{ field('max_paper_models_per_game', 'Max paper models per game', '1..20', 'numeric') }}
+    {{ field('max_exposure_paper', 'Max exposure, paper', '$, 0 = off', 'decimal') }}
+    {{ field('max_exposure_live', 'Max exposure, live', '$, 0 = off', 'decimal') }}
+    <label class="check"><input type="checkbox" name="trade_pregame_only" value="true"{% if values.trade_pregame_only %} checked{% endif %}> <span>Pregame only <span class="muted small">no orders after kickoff</span></span></label>
+  </div>
+  <h3>Market source and snapshots</h3>
+  <div class="fields">
+    <label><span>Market source</span>
+      <select name="market_source">
+        {% for source in market_sources %}<option value="{{ source }}"{% if values.market_source == source %} selected{% endif %}>{{ source }}</option>{% endfor %}
+      </select>
+    </label>
+    {{ field('market_lookahead_days', 'Market lookahead (days)', '1..60', 'numeric') }}
+    {{ field('snapshot_active_s', 'Snapshot cadence, active (s)', '1..300', 'numeric') }}
+    {{ field('snapshot_idle_s', 'Snapshot cadence, idle (s)', '1..3600', 'numeric') }}
+    {{ field('snapshot_retention_days', 'Snapshot retention (days)', '1..365', 'numeric') }}
+    {{ field('scores_url', 'Scores URL', 'ESPN scoreboard') }}
+    <label class="span-all"><span>Market source config <span class="muted small">JSON: endpoints and field names per source</span></span>
+      <textarea name="market_source_config" rows="6" spellcheck="false">{{ values.market_source_config }}</textarea>
+    </label>
+  </div>
+  <h3>Paper thresholds <span class="muted small">paper_ok to live_eligible</span></h3>
+  <div class="fields">
+    {{ field('paper_min_games', 'Min games', '', 'numeric') }}
+    {{ field('paper_min_bets', 'Min bets', '', 'numeric') }}
+    {{ field('paper_min_days', 'Min days', 'since the first paper bet', 'numeric') }}
+    {{ field('paper_min_clv', 'Min avg CLV', '-1..1', 'decimal') }}
+    {{ field('paper_min_pnl', 'Min P&L', '$', 'decimal') }}
+  </div>
+  <h3>Rate limits <span class="muted small">per second, fleet-wide</span></h3>
+  <div class="fields">
+    {{ field('orders_per_s', 'Orders', '', 'decimal') }}
+    {{ field('cancels_per_s', 'Cancels', '', 'decimal') }}
+    {{ field('market_data_per_s', 'Market data', '', 'decimal') }}
+    {{ field('account_per_s', 'Account calls', '', 'decimal') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
 <form class="card group" method="post" action="/settings/fleet" id="fleet">
   <h2>Fleet</h2>
   {% if errors.fleet %}<p class="error inline-error">{{ errors.fleet }}</p>{% endif %}
@@ -106,7 +155,7 @@
 <section class="card group{% if killed %} killed{% endif %}" id="kill">
   <h2>Kill switch</h2>
   {% if killed %}
-  <p class="error">Trading is killed. Trade workers do not claim and (from step 4) no order is approved.</p>
+  <p class="error">Trading is killed. Trade workers do not claim, no order is approved and every assignment stays halted until you activate it again on the <a href="/trading">Trading</a> page.</p>
   {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
   <form method="post" action="/kill/reset" class="reset">
     <label>Type RESUME to clear it

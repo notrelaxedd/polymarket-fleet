@@ -70,6 +70,13 @@ def test_fills_use_the_text_safe_tokens() -> None:
     assert ".badge.st-leased { background: var(--leased-fill)" in CSS
     assert ".switching { margin: 0.4rem 0 0; color: var(--amber-text)" in CSS
     assert ".error { color: var(--red-fg); }" in CSS
+    # step 4: the banners, mode chips and order badges use the same text-safe fills
+    assert ".banner-down { background: var(--red); color: var(--red-text); }" in CSS
+    assert ".banner-warn { background: var(--amber-fill); color: #fff; }" in CSS
+    assert ".chip.mode-live { background: var(--green-fill); color: #fff; }" in CSS
+    assert ".badge.st-approved, .badge.st-submitting, .badge.st-halted { background: var(--amber-fill); color: #fff; }" in CSS
+    assert ".stale-age { color: var(--amber-text); font-weight: 600; }" in CSS
+    assert ".reason { color: var(--red-fg);" in CSS
 
 
 def test_js_only_rule_outranks_btn_without_javascript() -> None:

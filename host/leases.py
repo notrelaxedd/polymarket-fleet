@@ -69,16 +69,22 @@ def get_job(conn: psycopg.Connection, job_id: Any, for_update: bool = False) -> 
     return row
 
 
-def claim(conn: psycopg.Connection, worker_id: str, role: str, lease: int) -> dict[str, Any] | None:
-    """Claim at most one queued job of `role` for the worker (targeted first)."""
-    row = conn.execute(
+def claim_many(conn: psycopg.Connection, worker_id: str, role: str, lease: int, limit: int) -> list[dict[str, Any]]:
+    """Claim up to `limit` queued jobs of `role` for the worker (targeted first).
+
+    Batch roles claim one at a time; a trade worker asks for its free slots
+    (`want_jobs`) and the same CTE runs with `LIMIT n`.
+    """
+    if limit <= 0:
+        return []
+    rows = conn.execute(
         """
         WITH c AS (
           SELECT id FROM jobs
            WHERE status = 'queued' AND role = %(role)s AND run_after <= now()
              AND (target_worker_id IS NULL OR target_worker_id = %(wid)s)
            ORDER BY (target_worker_id IS NOT DISTINCT FROM %(wid)s) DESC, created_at
-           LIMIT 1 FOR UPDATE SKIP LOCKED)
+           LIMIT %(limit)s FOR UPDATE SKIP LOCKED)
         UPDATE jobs j SET status = 'leased', lease_worker_id = %(wid)s,
                lease_token = gen_random_uuid(),
                lease_expires_at = now() + make_interval(secs => %(lease)s),
@@ -86,11 +92,18 @@ def claim(conn: psycopg.Connection, worker_id: str, role: str, lease: int) -> di
                preempt_requested = false, updated_at = now()
           FROM c WHERE j.id = c.id RETURNING j.*
         """,
-        {"role": role, "wid": worker_id, "lease": lease},
-    ).fetchone()
-    if row is not None:
+        {"role": role, "wid": worker_id, "lease": lease, "limit": limit},
+    ).fetchall()
+    rows.sort(key=lambda r: r["created_at"])
+    for row in rows:
         add_job_event(conn, row["id"], "claimed", worker_id)
-    return row
+    return rows
+
+
+def claim(conn: psycopg.Connection, worker_id: str, role: str, lease: int) -> dict[str, Any] | None:
+    """Claim at most one queued job of `role` for the worker (targeted first)."""
+    rows = claim_many(conn, worker_id, role, lease, 1)
+    return rows[0] if rows else None
 
 
 def renew(

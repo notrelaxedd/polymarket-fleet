@@ -1,6 +1,7 @@
 """Owner-driven scheduling: job creation, targeting, role changes, dispatcher."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -39,20 +40,35 @@ def online_after(conn: psycopg.Connection) -> int:
     return get_int_setting(conn, "online_after_seconds", 15)
 
 
+IDLE_PICK_RETRIES = 4
+IDLE_PICK_WAIT_S = 0.02
+
+
 def idle_pick(conn: psycopg.Connection) -> dict[str, Any] | None:
-    """Lock and return one online idle worker with nothing targeted at it."""
-    return conn.execute(
-        """
-        SELECT * FROM workers w
-         WHERE enabled AND desired_role = 'idle' AND reported_role = 'idle'
-           AND acked_epoch = role_epoch
-           AND last_heartbeat_at > now() - make_interval(secs => %s)
-           AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.target_worker_id = w.id
-                           AND j.status IN ('queued', 'leased', 'cancel_requested'))
-         ORDER BY last_heartbeat_at DESC LIMIT 1 FOR UPDATE SKIP LOCKED
-        """,
-        (online_after(conn),),
-    ).fetchone()
+    """Lock and return one online idle worker with nothing targeted at it.
+
+    SKIP LOCKED keeps two pickers off the same worker, but a worker's own heartbeat
+    holds its row lock for a few milliseconds every beat, so an idle worker can look
+    taken for an instant; a few short retries make an `any_idle` job land on it at
+    creation instead of waiting for the dispatcher's next pass.
+    """
+    for attempt in range(IDLE_PICK_RETRIES + 1):
+        row = conn.execute(
+            """
+            SELECT * FROM workers w
+             WHERE enabled AND desired_role = 'idle' AND reported_role = 'idle'
+               AND acked_epoch = role_epoch
+               AND last_heartbeat_at > now() - make_interval(secs => %s)
+               AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.target_worker_id = w.id
+                               AND j.status IN ('queued', 'leased', 'cancel_requested'))
+             ORDER BY last_heartbeat_at DESC LIMIT 1 FOR UPDATE SKIP LOCKED
+            """,
+            (online_after(conn),),
+        ).fetchone()
+        if row is not None or attempt == IDLE_PICK_RETRIES:
+            return row
+        time.sleep(IDLE_PICK_WAIT_S)
+    return None
 
 
 def preempt_other_roles(conn: psycopg.Connection, worker_id: str, role: str) -> list[Any]:
@@ -186,8 +202,30 @@ def create_job(
     return CreateResult(job, True, False)
 
 
+def _halt_for_cancelled_trade_job(conn: psycopg.Connection, job: dict[str, Any], actor: str | None) -> None:
+    """A trade job cancelled from the Jobs page or `POST /api/jobs/{id}/cancel` goes
+    through the assignment halt first: its open orders are cancelled with the ledger
+    release and the assignment shows `halted` on /trading (Activate makes a new
+    trade job). Runs before the job row is locked, because the halt takes the
+    approval lock and the approval locks the job row after it."""
+    from host.trading import assignments
+
+    params = job["params"] if isinstance(job["params"], dict) else {}
+    aid = params.get("assignment_id")
+    if job["kind"] != "trade" or aid is None:
+        return
+    try:
+        assignments.halt_assignment(conn, aid, actor, "job cancelled")
+    except (NotFound, Conflict):
+        return
+
+
 def cancel_job(conn: psycopg.Connection, job_id: Any, actor: str | None = None) -> dict[str, Any]:
-    """queued -> cancelled; leased -> cancel_requested; terminal -> 409."""
+    """queued -> cancelled; leased -> cancel_requested; terminal -> 409. A trade
+    job's assignment is halted first (its open orders cancelled)."""
+    job = get_job(conn, job_id)
+    if job["status"] in ("queued", "leased"):
+        _halt_for_cancelled_trade_job(conn, job, actor)
     job = get_job(conn, job_id, for_update=True)
     status = job["status"]
     if status in ("cancelled", "cancel_requested"):

@@ -357,3 +357,250 @@ def lease_job(conn: psycopg.Connection, worker: FakeWorker, kind: str = "backtes
 def model_row(conn: psycopg.Connection, model_id: Any) -> dict[str, Any]:
     """Fetch a model row by id."""
     return conn.execute("SELECT * FROM models WHERE id = %s", (uuid.UUID(str(model_id)),)).fetchone()
+
+
+# ------------------------------------------------------------------ step 4 helpers
+
+GAME_ID = "2026_05_KC_LV"
+
+
+def insert_game(
+    conn: psycopg.Connection,
+    game_id: str = GAME_ID,
+    home: str = "LV",
+    away: str = "KC",
+    kickoff_in_s: int = 48 * 3600,
+    season: int = 2026,
+    week: int = 5,
+    status: str = "scheduled",
+) -> dict[str, Any]:
+    """Insert (or refresh) a scheduled game kicking off `kickoff_in_s` from now."""
+    return conn.execute(
+        """
+        INSERT INTO games (game_id, season, game_type, week, gameday, kickoff_at, home_team, away_team,
+                           home_moneyline, away_moneyline, status, raw)
+        VALUES (%s, %s, 'REG', %s, (now() + make_interval(secs => %s))::date, now() + make_interval(secs => %s),
+                %s, %s, -150, 130, %s, '{}')
+        ON CONFLICT (game_id) DO UPDATE SET kickoff_at = EXCLUDED.kickoff_at, status = EXCLUDED.status
+        RETURNING *
+        """,
+        (game_id, season, week, kickoff_in_s, kickoff_in_s, home, away, status),
+    ).fetchone()
+
+
+def insert_market(
+    conn: psycopg.Connection,
+    game_id: str = GAME_ID,
+    side: str = "home",
+    confirmed: bool = True,
+    status: str = "open",
+    tick: float = 0.01,
+    min_size: int = 1,
+    platform: str = "sim",
+) -> dict[str, Any]:
+    """Insert a market mapped to a game (confirmed by default)."""
+    return conn.execute(
+        """
+        INSERT INTO markets (platform, market_ref, title, game_id, side, mapping_confirmed, mapping_confidence,
+                             status, tick, min_size)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+        """,
+        (platform, uuid.uuid4().hex, f"{game_id} {side} wins", game_id, side, confirmed, 1.0 if confirmed else 0.5,
+         status, tick, min_size),
+    ).fetchone()
+
+
+def insert_snapshot(
+    conn: psycopg.Connection,
+    market_id: Any,
+    bid: float = 0.50,
+    ask: float = 0.52,
+    liquidity_usd_cents: int = 200_000,
+    ask_depth: list[list[float]] | None = None,
+    bid_depth: list[list[float]] | None = None,
+    age_s: float = 0.0,
+) -> dict[str, Any]:
+    """Insert a price snapshot `age_s` seconds old and mirror bid/ask on the market."""
+    from psycopg.types.json import Jsonb
+
+    if ask_depth is None:
+        ask_depth = [[ask, 500], [round(ask + 0.01, 4), 500], [round(ask + 0.02, 4), 500]]
+    if bid_depth is None:
+        bid_depth = [[bid, 500], [round(bid - 0.01, 4), 500]]
+    row = conn.execute(
+        """
+        INSERT INTO price_snapshots (market_id, ts, bid, ask, mid, bid_depth, ask_depth, liquidity_usd_cents)
+        VALUES (%s, now() - make_interval(secs => %s), %s, %s, %s, %s, %s, %s) RETURNING *
+        """,
+        (market_id, age_s, bid, ask, round((bid + ask) / 2, 4), Jsonb(bid_depth), Jsonb(ask_depth), liquidity_usd_cents),
+    ).fetchone()
+    conn.execute(
+        "UPDATE markets SET best_bid = %s, best_ask = %s, liquidity_usd_cents = %s, last_snapshot_at = %s WHERE id = %s",
+        (bid, ask, liquidity_usd_cents, row["ts"], market_id),
+    )
+    return row
+
+
+def make_assignment(
+    conn: psycopg.Connection,
+    game_id: str = GAME_ID,
+    model_id: Any = None,
+    mode: str = "paper",
+    bankroll_cents: int = 10_000,
+    max_bet_cents: int | None = None,
+    actor: str = "test",
+) -> dict[str, Any]:
+    """Create an assignment through host.trading.assignments (bankroll + trade job)."""
+    from host.trading.assignments import create_assignment
+
+    if model_id is None:
+        model_id = insert_model(conn, status="paper_ok", artifact={"ratings": {}, "blend": {"a": 1, "b": 0, "c": 0}},
+                                params={"k": 24.0, "hfa": 55.0, "mov_scale": 1, "seed": uuid.uuid4().hex[:8]})["id"]
+    return create_assignment(conn, game_id, model_id, mode, bankroll_cents, actor, max_bet_cents)
+
+
+def lease_trade_job(conn: psycopg.Connection, worker: FakeWorker, assignment: dict[str, Any]) -> dict[str, Any]:
+    """Lease the assignment's trade job to `worker` directly (as a claim would)."""
+    return conn.execute(
+        """
+        UPDATE jobs SET status = 'leased', lease_worker_id = %s, lease_token = gen_random_uuid(),
+               lease_expires_at = now() + interval '60 seconds', started_at = COALESCE(started_at, now()),
+               preempt_requested = false, updated_at = now()
+         WHERE id = %s RETURNING *
+        """,
+        (worker.id, assignment["job_id"]),
+    ).fetchone()
+
+
+def order_body(
+    assignment: dict[str, Any],
+    job: dict[str, Any],
+    market: dict[str, Any],
+    snapshot: dict[str, Any] | None,
+    price: float = 0.52,
+    size: int = 10,
+    **extra: Any,
+) -> dict[str, Any]:
+    """A complete POST /api/v1/orders/request body with a fresh client_request_id."""
+    body = {
+        "client_request_id": uuid.uuid4().hex,
+        "job_id": str(job["id"]),
+        "lease_token": str(job["lease_token"]),
+        "assignment_id": str(assignment["id"]),
+        "market_id": str(market["id"]),
+        "snapshot_id": None if snapshot is None else int(snapshot["id"]),
+        "price": price,
+        "size": size,
+        "my_p": 0.58,
+        "market_p": 0.51,
+        "edge": 0.04,
+        "rationale": "my 0.58 vs ask 0.52, fee 0.012, edge 0.04",
+    }
+    body.update(extra)
+    return body
+
+
+@dataclass
+class TradeSetup:
+    """A game, a confirmed market with a snapshot, a funded assignment and a trade
+    worker holding its leased trade job."""
+
+    game: dict[str, Any]
+    model: dict[str, Any]
+    market: dict[str, Any]
+    snapshot: dict[str, Any]
+    assignment: dict[str, Any]
+    worker: FakeWorker
+    worker_row: dict[str, Any]
+    job: dict[str, Any]
+
+    def body(self, **kw: Any) -> dict[str, Any]:
+        return order_body(self.assignment, self.job, self.market, self.snapshot, **kw)
+
+
+def trade_setup(
+    conn: psycopg.Connection,
+    mode: str = "paper",
+    bankroll_cents: int = 10_000,
+    max_bet_cents: int | None = None,
+    game_id: str = GAME_ID,
+    worker: FakeWorker | None = None,
+    model_status: str = "paper_ok",
+    kickoff_in_s: int = 48 * 3600,
+    liquidity_usd_cents: int = 200_000,
+    side: str = "home",
+) -> TradeSetup:
+    """Everything an approval needs, in one call (live mode also flips the gates on)."""
+    game = insert_game(conn, game_id, kickoff_in_s=kickoff_in_s)
+    model = insert_model(conn, status=model_status, artifact={"ratings": {}, "blend": {"a": 1, "b": 0, "c": 0}},
+                         params={"k": 24.0 + len(game_id) % 7, "hfa": 55.0, "mov_scale": 1, "seed": uuid.uuid4().hex[:6]})
+    market = insert_market(conn, game_id, side=side)
+    snapshot = insert_snapshot(conn, market["id"], liquidity_usd_cents=liquidity_usd_cents)
+    if mode == "live":
+        enable_live(conn)
+    assignment = make_assignment(conn, game_id, model["id"], mode, bankroll_cents, max_bet_cents)
+    worker = worker or insert_worker(conn, f"trader-{uuid.uuid4().hex[:4]}", role="trade")
+    job = lease_trade_job(conn, worker, assignment)
+    return TradeSetup(game, model, market, snapshot, assignment, worker, worker_row(conn, worker.id), job)
+
+
+def enable_live(conn: psycopg.Connection) -> None:
+    """Flip every live gate on: live_enabled and the exchange auth row."""
+    conn.execute("UPDATE settings SET value = 'true' WHERE key = 'live_enabled'")
+    conn.execute("UPDATE exchange_state SET auth_ok = true, auth_checked_at = now(), heartbeat_at = now()")
+
+
+def set_setting(conn: psycopg.Connection, key: str, value: Any) -> None:
+    """Write one setting as JSON without validation."""
+    from psycopg.types.json import Jsonb
+
+    conn.execute("UPDATE settings SET value = %s WHERE key = %s", (Jsonb(value), key))
+
+
+def post_loss(conn: psycopg.Connection, bankroll_id: Any, cents: int, ts: Any = None) -> None:
+    """Record a realized loss of `cents` on a bankroll (an `adjust` ledger row at `ts`,
+    default now) and keep the cached columns in step."""
+    bank = conn.execute("SELECT mode FROM bankrolls WHERE id = %s", (bankroll_id,)).fetchone()
+    conn.execute(
+        """
+        INSERT INTO ledger (bankroll_id, ts, mode, kind, d_available, d_realized, ref_type, note)
+        VALUES (%s, COALESCE(%s, clock_timestamp()), %s, 'adjust', %s, %s, 'owner', 'test loss')
+        """,
+        (bankroll_id, ts, bank["mode"], -cents, -cents),
+    )
+    conn.execute(
+        "UPDATE bankrolls SET available_cents = available_cents - %s, realized_pnl_cents = realized_pnl_cents - %s WHERE id = %s",
+        (cents, cents, bankroll_id),
+    )
+
+
+def approve(conn: psycopg.Connection, setup: TradeSetup, **kw: Any) -> dict[str, Any]:
+    """Run approve_order for a setup; the decision dict."""
+    from host.trading.limits import approve_order
+
+    return approve_order(conn, worker_row(conn, setup.worker.id), setup.body(**kw))
+
+
+def approved_order(conn: psycopg.Connection, setup: TradeSetup, **kw: Any) -> dict[str, Any]:
+    """An approved order row for the setup (asserts the approval)."""
+    decision = approve(conn, setup, **kw)
+    assert decision["status"] == "approved", decision
+    return order_row(conn, decision["order_id"])
+
+
+def order_row(conn: psycopg.Connection, order_id: Any) -> dict[str, Any]:
+    return conn.execute("SELECT * FROM orders WHERE id = %s", (uuid.UUID(str(order_id)),)).fetchone()
+
+
+def order_events(conn: psycopg.Connection, order_id: Any) -> list[str]:
+    """The to_status column of an order's events in order."""
+    rows = conn.execute("SELECT to_status FROM order_events WHERE order_id = %s ORDER BY id", (uuid.UUID(str(order_id)),)).fetchall()
+    return [r["to_status"] for r in rows]
+
+
+def bankroll_of(conn: psycopg.Connection, assignment: dict[str, Any]) -> dict[str, Any]:
+    return conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (assignment["id"],)).fetchone()
+
+
+def assignment_row(conn: psycopg.Connection, assignment_id: Any) -> dict[str, Any]:
+    return conn.execute("SELECT * FROM assignments WHERE id = %s", (uuid.UUID(str(assignment_id)),)).fetchone()

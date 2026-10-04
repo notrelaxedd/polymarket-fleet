@@ -1199,3 +1199,256 @@ def test_pending_post_sequence_round_trips_through_json() -> None:
     assert posts.PendingPost.from_dict(data).index == 2, "a stale index is clamped to the step count"
     plain = posts.complete_post({"id": "j1", "kind": "sleep", "params": {"seconds": 1}}, "tok", {"slept": 1})
     assert plain.steps == [] and plain.to_dict() == {"path": "/api/v1/jobs/j1/complete", "body": {"lease_token": "tok", "result": {"slept": 1}}, "job_id": "j1", "progress": 1.0, "attempts": 0}
+
+
+# ------------------------------------------------- step 4: trade role
+
+
+TICK = 0.2
+
+
+@pytest.fixture
+def trader(host: FakeHost, state_dir: str, enrolled: str) -> Iterator[AgentThread]:
+    """A running agent that ticks the trade loop every 0.2 s."""
+    runner = AgentThread(state_dir, trade_tick_s=TICK).start()
+    try:
+        yield runner
+    finally:
+        runner.stop()
+
+
+def _held_trade_jobs(host: FakeHost, worker_id: str) -> list[str]:
+    with host.lock:
+        return sorted(j["id"] for j in host.jobs.values() if j["kind"] == "trade" and j["lease_worker_id"] == worker_id and j["status"] == "leased")
+
+
+def _ack_heartbeat(host: FakeHost, worker_id: str, role: str, epoch: int, since: int = 0):
+    def find():
+        for hb in host.heartbeats[since:]:
+            req = hb["request"]
+            if req["reported_role"] == role and req["acked_epoch"] == epoch:
+                return hb
+        return None
+
+    return find
+
+
+def test_trade_worker_claims_up_to_the_slots_ticks_and_proposes(host: FakeHost, state_dir: str, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_max_games=2, trade_tick_s=TICK)
+    first, second, third = (host.add_assignment() for _ in range(3))
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: len(_held_trade_jobs(host, enrolled)) == 2, timeout=8.0)
+    assert trader.agent.running == {}, "trade jobs start no runner"
+    assert sorted(trader.agent.trade_jobs) == _held_trade_jobs(host, enrolled)
+    held = {host.job(j)["params"]["assignment_id"] for j in _held_trade_jobs(host, enrolled)}
+    queued = ({first, second, third} - held).pop()
+    assert host.job(host.assignment(queued)["job_id"])["status"] == "queued", "the third assignment waits for a free slot"
+    claim_hb = next(h for h in host.heartbeats if h["response"]["claimed"])
+    assert claim_hb["request"]["want_jobs"] == 2 and claim_hb["request"]["want_job"] is False
+    host.wait_for(lambda: host.heartbeats[-1]["request"]["want_jobs"] == 0 and host.heartbeats[-1]["request"]["reported_role"] == "trade", timeout=8.0)
+    assert sorted(j["id"] for j in host.heartbeats[-1]["request"]["jobs"]) == sorted(trader.agent.trade_jobs), "trade jobs are renewed like any lease"
+    # One proposal per held assignment: my 0.65 vs home ask 0.55 has the edge, the away side does not.
+    host.wait_for(lambda: len(host.orders(status="open")) == 2, timeout=8.0)
+    orders = host.orders(status="open")
+    assert {o["assignment_id"] for o in orders} == held
+    fee = 0.05 * 0.55 * 0.45
+    cost = 0.55 + fee
+    edge = 0.65 - cost
+    stake = int(0.25 * 10000 * edge / (1 - cost))
+    size = int(stake / (cost * 100))
+    assert size == 8
+    for o in orders:
+        assert o["market_id"] == host.market_ids(o["assignment_id"])["home"]
+        assert o["price"] == 0.55 and o["size"] == size and o["cost_cents"] == int(round(size * cost * 100))
+        assert o["rationale"] == f"my 0.65 vs ask 0.55, fee {fee:.3f}, edge {edge:.3f}"
+        assert o["edge"] == pytest.approx(edge, abs=1e-6)
+    for aid in held:
+        bank = host.assignment(aid)["bankroll"]
+        assert bank["reserved_cents"] == orders[0]["cost_cents"] and bank["available_cents"] == 10000 - orders[0]["cost_cents"]
+    # The open order keeps its market from being proposed again; ticks continue.
+    ticks = trader.agent.trade.ticks
+    host.wait_for(lambda: trader.agent.trade.ticks >= ticks + 3, timeout=8.0)
+    assert len(host.trade_calls("/orders/request")) == 2, "one open order per market"
+    host.wait_for(lambda: (_status(state_dir).get("trade") or {}).get("last_tick"), timeout=5.0)
+    status = _status(state_dir)["trade"]
+    assert sorted(status["jobs"]) == sorted(trader.agent.trade_jobs) and status["max_games"] == 2
+    assert {a["id"] for a in status["assignments"]} == held
+    assert all(a["open_orders"] == 1 and a["status"] == "active" for a in status["assignments"])
+    assert status["last_tick"]["assignments"] == 2 and status["last_tick"]["kill"] is False
+
+
+def test_trade_worker_cancels_stale_orders(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK)
+    aid = host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: host.orders(aid, status="open"), timeout=8.0)
+    order = host.orders(aid, status="open")[0]
+    host.set_ask(host.market_ids(aid)["home"], 0.70)  # my 0.65 against a cost above 0.71: negative edge
+    host.wait_for(lambda: host.orders(aid, status="cancelled"), timeout=8.0)
+    assert host.orders(aid, status="cancelled")[0]["id"] == order["id"]
+    assert any(c["path"].endswith(f"/orders/{order['id']}/cancel") for c in host.trade_calls())
+    bank = host.assignment(aid)["bankroll"]
+    assert bank["reserved_cents"] == 0 and bank["available_cents"] == 10000, "the fake released the reservation"
+    ticks = trader.agent.trade.ticks
+    host.wait_for(lambda: trader.agent.trade.ticks >= ticks + 2, timeout=8.0)
+    assert len(host.orders(aid)) == 1, "no new proposal at a price without edge"
+    assert trader.agent.trade.last_tick["cancelled"] in (0, 1)
+
+
+def test_trade_worker_stops_proposing_under_kill_but_keeps_ticking(host: FakeHost, state_dir: str, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK)
+    aid = host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: host.orders(aid, status="open"), timeout=8.0)
+    host.set_kill(True)
+    host.halt_assignment(aid)  # what the real kill does: orders cancelled, assignment halted
+    host.wait_for(lambda: trader.agent.kill is True, timeout=8.0)
+    killed_at = time.monotonic()
+    asked_before = len(host.trade_calls("/orders/request"))
+    ticks = trader.agent.trade.ticks
+    host.wait_for(lambda: trader.agent.trade.ticks >= ticks + 3, timeout=8.0)
+    assert trader.agent.trade.last_tick["kill"] is True and trader.agent.trade.last_tick["proposed"] == 0
+    assert [c for c in host.trade_calls("/orders/request") if c["t"] > killed_at] == [], "no request once the kill flag arrived"
+    assert len(host.trade_calls("/orders/request")) == asked_before
+    assert sorted(trader.agent.trade_jobs) == _held_trade_jobs(host, enrolled), "the trade job stays held under kill"
+    host.wait_for(lambda: _status(state_dir).get("kill") is True and (_status(state_dir).get("trade") or {}).get("last_tick", {}).get("kill") is True, timeout=5.0)
+    assert _status(state_dir)["trade"]["assignments"][0]["status"] == "halted"
+    # Reset the kill (assignments stay halted): still nothing. Reactivate: proposals resume.
+    host.set_kill(False)
+    host.wait_for(lambda: trader.agent.kill is False, timeout=8.0)
+    ticks = trader.agent.trade.ticks
+    host.wait_for(lambda: trader.agent.trade.ticks >= ticks + 2, timeout=8.0)
+    assert len(host.trade_calls("/orders/request")) == asked_before, "a halted assignment gets no proposal"
+    with host.lock:
+        host.trade.assignments[aid]["status"] = "active"
+    host.set_ask(host.market_ids(aid)["home"], 0.55)  # a new snapshot: the old client_request_id would be a duplicate
+    host.wait_for(lambda: host.orders(aid, status="open"), timeout=8.0)
+    assert trader.agent.trade.last_tick["kill"] is False
+
+
+def test_role_change_away_from_trade_calls_release_before_the_ack(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK)
+    a1, a2 = host.add_assignment(), host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: len(host.orders(status="open")) == 2, timeout=8.0)
+    jobs = _held_trade_jobs(host, enrolled)
+    assert len(jobs) == 2
+    before = len(host.heartbeats)
+    host.set_desired_role(enrolled, "idle")
+    epoch = host.worker(enrolled)["role_epoch"]
+    ack = host.wait_for(_ack_heartbeat(host, enrolled, "idle", epoch, before), timeout=8.0)
+    releases = host.trade_calls("/trade/release")
+    assert len(releases) == 1
+    assert sorted(j["id"] for j in releases[0]["body"]["jobs"]) == jobs
+    assert releases[0]["t"] < ack["t"], "the release handshake runs before the ack heartbeat"
+    assert releases[0]["response"] == {"cancelled": 2, "pending": 0, "released": pytest.approx(releases[0]["response"]["released"])}
+    assert sorted(releases[0]["response"]["released"]) == jobs
+    assert ack["request"]["jobs"] == [] and ack["request"]["released"] == [], "the ack carries no trade jobs"
+    assert trader.agent.trade_jobs == {} and trader.agent.role == "idle"
+    for job_id in jobs:
+        job = host.job(job_id)
+        assert job["status"] == "queued" and job["lease_worker_id"] is None
+        assert host.releases(job_id) == [{"checkpoint": None, "reason": "drain"}]
+    assert host.orders(status="open") == [] and len(host.orders(status="cancelled")) == 2
+    for aid in (a1, a2):
+        assert host.assignment(aid)["bankroll"] == {"available_cents": 10000, "reserved_cents": 0, "open_cost_cents": 0, "realized_pnl_cents": 0}
+    assert all(hb["request"]["want_jobs"] == 0 for hb in host.heartbeats[len(host.heartbeats) - 1:])
+
+
+def test_role_change_release_failure_falls_back_to_the_heartbeat_release(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK)
+    host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: host.orders(status="open"), timeout=8.0)
+    job_id = _held_trade_jobs(host, enrolled)[0]
+    host.fail_next("trade/release", 503, count=2)
+    before = len(host.heartbeats)
+    host.set_desired_role(enrolled, "idle")
+    epoch = host.worker(enrolled)["role_epoch"]
+    ack = host.wait_for(_ack_heartbeat(host, enrolled, "idle", epoch, before), timeout=8.0)
+    assert [s for m, p, s in host.requests if p.endswith("/trade/release")] == [503, 503], "one retry, then proceed"
+    assert [(r["id"], r["reason"]) for r in ack["request"]["released"]] == [(job_id, "drain")]
+    assert ack["request"]["jobs"] == []
+    assert host.job(job_id)["status"] == "queued" and trader.agent.trade_jobs == {}
+
+
+def test_kickoff_in_the_past_means_no_proposals(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK)
+    aid = host.add_assignment()
+    host.set_kickoff_past(aid)
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: _held_trade_jobs(host, enrolled), timeout=8.0)
+    host.wait_for(lambda: trader.agent.trade.ticks >= 3, timeout=8.0)
+    assert host.trade_calls("/orders/request") == []
+    assert host.orders(aid) == []
+    assert trader.agent.trade.last_tick["assignments"] == 1 and trader.agent.trade.last_tick["proposed"] == 0
+    # Not a pregame rule when the setting is off.
+    host.set_trade_settings(trade_pregame_only=False)
+    host.wait_for(lambda: host.orders(aid, status="open"), timeout=8.0)
+
+
+def test_preempted_trade_job_is_released_through_the_heartbeat(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK, trade_max_games=1)
+    aid = host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    job_id = host.wait_for(lambda: (_held_trade_jobs(host, enrolled) or [None])[0], timeout=8.0)
+    token = host.job(job_id)["lease_token"]
+    host.request_preempt(job_id)
+    host.wait_for(lambda: host.releases(job_id), timeout=8.0)
+    assert host.releases(job_id)[0]["reason"] == "preempt"
+    hb = next(h for h in host.heartbeats if any(r["id"] == job_id for r in h["request"]["released"]))
+    assert [(r["id"], r["lease_token"], r["reason"]) for r in hb["request"]["released"]] == [(job_id, token, "preempt")]
+    assert not any(j["id"] == job_id for j in hb["request"]["jobs"])
+    # The job went back to the queue; the same worker (with a free slot again) claims it anew.
+    host.wait_for(lambda: host.job(job_id)["status"] == "leased" and host.job(job_id)["lease_token"] != token, timeout=8.0)
+    assert host.job_events(job_id) == ["claimed", "released", "claimed"]
+    host.cancel_job(job_id)
+    host.wait_for(lambda: host.job(job_id)["status"] == "cancelled", timeout=8.0)
+    assert host.releases(job_id)[-1]["reason"] == "cancel"
+    assert trader.agent.trade_jobs == {} and trader.agent.running == {}
+    assert host.assignment(aid)["status"] == "active"
+
+
+def test_lost_trade_job_is_dropped_and_reclaimed(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK, trade_max_games=1)
+    host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    job_id = host.wait_for(lambda: (_held_trade_jobs(host, enrolled) or [None])[0], timeout=8.0)
+    token = host.job(job_id)["lease_token"]
+    host.expire_lease(job_id)
+    host.wait_for(lambda: any(job_id in hb["response"]["lost"] for hb in host.heartbeats), timeout=8.0)
+    host.wait_for(lambda: host.job(job_id)["status"] == "leased" and host.job(job_id)["lease_token"] != token, timeout=8.0)
+    assert list(trader.agent.trade_jobs) == [job_id] and trader.agent.trade_jobs[job_id]["lease_token"] == host.job(job_id)["lease_token"]
+
+
+def test_shutdown_releases_trade_jobs_through_the_handshake(host: FakeHost, enrolled: str, trader: AgentThread) -> None:
+    host.set_trade_settings(trade_tick_s=TICK)
+    aid = host.add_assignment()
+    host.set_desired_role(enrolled, "trade")
+    host.wait_for(lambda: host.orders(aid, status="open"), timeout=8.0)
+    job_id = _held_trade_jobs(host, enrolled)[0]
+    trader.stop()
+    release = host.trade_calls("/trade/release")[-1]
+    assert release["response"]["released"] == [job_id]
+    assert host.job(job_id)["status"] == "queued" and host.orders(aid, status="open") == []
+    assert host.releases(job_id) == [{"checkpoint": None, "reason": "drain"}]
+    assert not any(hb["t"] > release["t"] and any(j["id"] == job_id for j in hb["request"]["jobs"]) for hb in host.heartbeats)
+    assert trader.agent.trade_jobs == {}
+
+
+def test_want_jobs_is_zero_outside_the_trade_role(state_dir: str) -> None:
+    agent = Agent(state_dir=state_dir, options=AgentOptions(heartbeat_seconds=HB))
+    assert agent.want_jobs() == 0
+    agent.role = "trade"
+    assert agent.want_jobs() == 6, "trade_max_games defaults to 6 before any state payload"
+    agent.trade.settings["trade_max_games"] = 3
+    agent.trade_jobs = {"a": {"id": "a", "lease_token": "t", "params": {}}}
+    assert agent.want_jobs() == 2
+    agent.stopping = True
+    assert agent.want_jobs() == 0
+    agent.stopping = False
+    agent.options.trade_max_games = 1
+    assert agent.want_jobs() == 0
+    hb = agent.build_heartbeat()
+    assert hb["want_jobs"] == 0 and hb["want_job"] is False
+    assert hb["jobs"] == [{"id": "a", "lease_token": "t", "progress": 0.0}]

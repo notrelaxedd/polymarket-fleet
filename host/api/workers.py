@@ -60,6 +60,7 @@ class HeartbeatBody(BaseModel):
     jobs: list[JobEntry] = Field(default_factory=list, max_length=MAX_JOB_ENTRIES)
     released: list[JobEntry] = Field(default_factory=list, max_length=MAX_JOB_ENTRIES)
     want_job: bool = False
+    want_jobs: int = Field(default=0, ge=0, le=100)
     code_version: str | None = Field(default=None, pattern=SHORT_RE)
     skew_ms: int | None = None
 

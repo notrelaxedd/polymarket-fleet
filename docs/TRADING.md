@@ -64,7 +64,9 @@ every `snapshot_active_s` (2) for markets with an active assignment, every
 stores bid, ask, mid, up to 10 levels per side and `liquidity_usd_cents` = dollar depth
 within 5 cents of the touch on both sides. `markets.best_bid/best_ask/liquidity` mirror the
 latest snapshot. `closing_price` = mid of the last snapshot strictly before `kickoff_at`
-(fallback: the last snapshot), frozen when the game kicks off and never changed. Raw rows
+(fallback: the last snapshot), frozen when the game kicks off and never changed; a game
+settled before its kickoff (`simulate-final`) freezes it at settlement by the same rule,
+so every bet has a CLV. Raw rows
 are deleted after `snapshot_retention_days`; a nightly roll-up keeps 1-minute bars in
 `price_bars` (open/high/low/close of mid, last bid/ask, min liquidity, count). Bets and
 closing prices are frozen before any deletion.
@@ -100,10 +102,15 @@ per active assignment whose game has not kicked off (when `trade_pregame_only`):
    the artifact from the state payload (cached by model id).
 2. For each market (side): `p_side`, `price = ask`, `fee = taker_rate * price * (1 - price)`,
    `cost = price + fee`, `edge = p_side - cost`. If `edge >= min_edge`, no open order on that
-   market, and `available > 0`: `stake = floor(kelly_fraction * available * edge / (1 - cost))`
-   cents, capped at `min(max_bet, available)`; `size = floor(stake / (cost * 100))`
-   contracts; propose when `size >= min_size`. `client_request_id =
-   sha256(assignment|market|snapshot_id|price|size)[:32]`.
+   market, and `available > 0`: the Kelly stake is a target position,
+   `target = floor(kelly_fraction * equity * edge / (1 - cost))` cents with
+   `equity = available + reserved + open_cost`; `stake = target - basis_cents of the
+   position already held on that market`, capped at `min(max_bet, available)` where
+   `max_bet = min(assignment.max_bet_cents, settings.max_bet_cents)` (both travel in the
+   state payload); `size = min(floor(stake / (cost * 100)), floor(participation * depth at
+   or below the ask))` contracts; propose when `stake > 0` and `size >= min_size`. A filled
+   position therefore stops the worker re-buying the same edge every tick.
+   `client_request_id = sha256(assignment|market|snapshot_id|price|size)[:32]`.
 3. Cancel its own open orders whose edge at the current ask is below 0.
 4. Under `kill`, or when the assignment is halted, or after kickoff: propose nothing.
 Rationale text (one line: "my 0.57 vs ask 0.52, fee 0.012, edge 0.038") travels with the
@@ -112,17 +119,26 @@ request and is shown on `/trading`.
 ## Approval (`host/limits.py`, `approve_order`, one transaction)
 
 `pg_advisory_xact_lock(hashtext('approve:' || mode))` serialises approvals and the kill
-per mode; the bankroll row is `FOR UPDATE`. Checks, in order, each with a stable
+per mode; the bankroll row is `FOR UPDATE`. Everything that halts, releases or settles
+takes the same lock first: `halt_assignment` (the owner's Halt, the live daily-loss trip,
+an eligibility demotion, a cancelled trade job), `POST /api/v1/trade/release`,
+`settle_game` and `cancel-all`, so an approval in flight can never commit onto an
+assignment, job or game those have just closed. Checks, in order, each with a stable
 `reject_reason` code:
 1. `duplicate`: `client_request_id` seen -> return the stored decision.
 2. `killed`: `kill_switch`.
-3. `lease`: job leased by this worker with this `lease_token`, not `preempt_requested` or
-   `cancel_requested`, worker `desired_role = trade`.
+3. `lease`: job leased by this worker with this `lease_token`, lease not expired, not
+   `preempt_requested` or `cancel_requested`, worker `desired_role = trade`. The job row
+   is read `FOR SHARE` after the bankroll lock, so a release committing at the same
+   time (heartbeat `released[]`, the reaper, `/trade/release`) is waited for and its
+   queued row is what the check sees.
 4. `assignment`: active; `market`: mapped to the assignment's game, confirmed, unresolved;
    `kickoff`: game not started when `trade_pregame_only`.
 5. `mode`: live needs `live_enabled`, lineage `live_eligible`, `exchange_state.auth_ok`
    (step 5).
-6. `stale_book`: cited `snapshot_id` is the latest or within `book_max_age_s`.
+6. `stale_book`: cited `snapshot_id` belongs to the market and is no older than
+   `book_max_age_s`; being the latest snapshot does not spare it (a stalled poller's
+   newest book is still a dead book).
 7. `liquidity`: cited and latest snapshot liquidity `>= liquidity_floor_cents`.
 8. `participation`: `size <= participation * depth at or better than price`.
 9. `price_band`: `0.01 <= price <= 0.99` and `price <= ask + 0.05`.
@@ -151,10 +167,23 @@ Paper gateway: `place` marks `open` immediately; fills come from `paper.simulate
 snapshot)` for every snapshot newer than the order's submission: walk ask levels with
 `price <= order.price`, fill `min(remaining, participation * level_size)` per level,
 fee per contract from `fee_model`; `fills` rows, `ledger fill`, order `partial`/`filled`.
-Resting bids (price below the ask) fill only when a later snapshot's ask crosses them.
+One snapshot's level offers `participation * size` contracts to all paper orders on the
+market together (in submission order), not to each order separately. Resting bids (the
+first snapshot after submission had its ask above the price) fill only when a later
+snapshot's ask crosses them, and then at the order's own limit price, as a resting limit
+order does on a real book; a marketable order takes the ask levels as they are. Fees are
+rounded on the order's cumulative filled size so per-fill roundings never exceed the
+fee reserved at approval; every cost is rounded half up in one place
+(`orders.fill_cost_cents`), and what a fill consumed is read back from the ledger.
+Nothing fills while the kill switch is on.
 `cancel_requested` -> `cancelled` plus `ledger release` of the unfilled part (paper:
 immediate, done by whoever requested it, host or exchange; live: by the exchange with
-retry 1,2,4,8 s forever). Orders expire at `gtd_seconds` after submission.
+retry 1,2,4,8 s forever). Orders expire at `gtd_seconds` after submission. With
+`trade_pregame_only`, kickoff is a hard cutoff: `gtd_at` is capped at the game's
+`kickoff_at`, an executor pass cancels every active order of a game that has kicked off
+(actor `exchange`, reason `kickoff`; live rows become `cancel_requested`), and the paper
+simulator never uses a snapshot taken at or after kickoff, so no in-game book can fill a
+pregame order and CLV is always measured against the pre-kickoff closing price.
 
 ## Kill switch (full)
 
@@ -166,7 +195,11 @@ became `cancelled`; assignments `active -> halted`; audit. Heartbeats carry `kil
 trade workers stop proposing. Live `cancel_requested` rows are cancelled by the exchange
 with retry until `open_orders()` is empty (step 5). Reset (`RESUME`) clears the flag only;
 assignments stay halted and `/trading` offers "Activate all paper". A kill works with every
-worker offline and, for paper, with the exchange down.
+worker offline and, for paper, with the exchange down. `kill_switch` is read-only for
+`POST /api/settings` (400: use `/api/kill` or `/api/kill/reset`), and `live_enabled`
+cannot be switched on while the fleet is killed. Activate and "Activate all paper" read
+the flag `FOR SHARE` before touching an assignment, so a kill committing at the same time
+is waited for and nothing it halted is re-activated.
 
 ## Role switch away from trade, orphans
 
@@ -194,8 +227,13 @@ avg_clv` (stake-weighted), mark the assignment `settled`, complete the trade job
 (`succeeded` with the score summary), then recompute lineage eligibility:
 `paper_ok -> live_eligible` when the lineage's pooled paper scores have `games >=
 min_games, bets >= min_bets, days since first paper bet >= min_days, avg_clv >= min_clv,
-pnl >= min_pnl_cents` (`settings.thresholds_paper`); a lineage that stops meeting them
-drops back to `paper_ok` (live assignments halted, orders cancelled). No override exists.
+pnl >= min_pnl_cents` (`settings.thresholds_paper`); `games` counts distinct games (one
+game traded by several models of the lineage counts once; a settled game with no bet
+still counts), the rest are summed over the lineage's `model_scores`; a lineage that stops
+meeting them drops back to `paper_ok` (live assignments halted, orders cancelled). No
+override exists. Settlement runs under both approval locks and locks a game's open
+orders before its bankrolls (the order paper fills and the kill use), so a kill pressed
+mid-settlement waits instead of deadlocking.
 
 ## Leaderboard and P&L
 
@@ -229,7 +267,12 @@ restricted to orders that worker requested; per mode.
 The exchange process keeps one token bucket per category from `settings.rate_limits`
 (`orders_per_s, cancels_per_s, market_data_per_s, account_per_s`), fleet-wide by
 construction. Paper orders take no tokens. Priority: cancels, orders, fills, snapshots.
-A 429 halves the refill rate for 60 s.
+A 429 (`RateLimited`, raised by every source on that status) halves the refill rate for
+60 s. Book fetches time out after 2 s and a snapshot pass stops fetching after 5 s of
+wall clock (the rest is due again next pass); each snapshot is stamped with the time its
+fetch returned, not the pass start. Failed book fetches and a game whose settlement
+rolled back are reported as the exchange's `last_error` (the heartbeat carries it to
+`/trading`) even though the loop carries on.
 
 ## Tests that must exist
 

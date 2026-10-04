@@ -80,7 +80,7 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
     """A three-candidate search on any_idle: the worker flips, the job succeeds, two
     models exist, the leaderboard and the Models page show them."""
     job = send(host, "model_search", SHORT_SEARCH, "any_idle")
-    assert job["target_worker_id"] == worker_id and job["role"] == "model_search"
+    assert job["target_worker_id"] == worker_id and job["role"] == "model_search", (job, host.worker(worker_id))
     assert job["params"]["seed"] == 0 and job["params"]["fee_model"]["taker_rate"] == 0.05
     flipped = host.worker(worker_id)
     assert flipped["desired_role"] == "model_search" and flipped["auto_role"] is True
@@ -205,9 +205,11 @@ def preempt_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settl
 
 
 def phase_models(host: Any, state_dir: str, worker_id: str, monkeypatch: Any,
-                 wait_for: Callable[..., Any], settled: Callable[..., Any]) -> None:
+                 wait_for: Callable[..., Any], settled: Callable[..., Any]) -> dict[str, Any]:
+    """Returns {"roots": [search model ids], "child": the trained model id} for step 4."""
     ingest_through_cli(host, state_dir, monkeypatch)
     ids = search_phase(host, worker_id, wait_for, settled)
     child_id = train_phase(host, worker_id, ids[0], wait_for)
     backtest_phase(host, worker_id, child_id, ids[0], wait_for)
     preempt_phase(host, worker_id, wait_for, settled)
+    return {"roots": ids, "child": child_id}

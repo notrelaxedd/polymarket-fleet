@@ -21,6 +21,16 @@ POST /api/v1/models/{id}/backtest stores metrics; models() and model_posts() exp
 the store and the recorded calls. hold_posts() parks matching POSTs until
 release_holds() (they then get a 503), which lets a test stop an agent between two
 posts of a sequence; fail_next(..., status=0) drops the connection without an answer.
+
+Step 4: the trade role. A trade worker's heartbeat claims up to want_jobs queued trade
+jobs (none under kill). TradeStore holds assignments (game, model, bankroll, two
+markets with a snapshot each), orders and the trade settings behind
+GET /api/v1/trade/state, POST /api/v1/orders/request (a small approval: duplicate,
+killed, lease, assignment, market, kickoff, bankroll; approved orders are paper and
+open at once with the reservation taken), POST /api/v1/orders/{id}/cancel and
+POST /api/v1/trade/release (cancels the orders, requeues the jobs). Controls:
+add_assignment(), set_snapshot()/set_ask(), halt_assignment(), set_kickoff_past(),
+set_trade_settings(); orders() and trade_calls() expose the store and the calls.
 """
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import secrets
 import socket
@@ -41,7 +52,12 @@ from typing import Any, Callable
 import fleet
 
 BATCH_ROLES = ("backtest", "model_search", "train")
-KIND_TO_ROLE = {"sleep": "backtest"}
+KIND_TO_ROLE = {"sleep": "backtest", "trade": "trade"}
+OPEN_ORDER_STATUSES = ("approved", "submitting", "open", "partial")
+DEFAULT_TRADE_SETTINGS: dict[str, Any] = {
+    "min_edge": 0.02, "kelly_fraction": 0.25, "participation": 0.5, "trade_pregame_only": True,
+    "fee_model": {"taker_rate": 0.05, "half_spread": 0.01}, "trade_tick_s": 5, "trade_max_games": 6,
+}
 MODEL_FIELDS = ("family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through")
 HOLD_TIMEOUT = 60.0
 
@@ -112,6 +128,229 @@ def _add_bytes(tar: tarfile.TarFile, name: str, data: bytes) -> None:
     tar.addfile(info, io.BytesIO(data))
 
 
+class TradeStore:
+    """Assignments, markets, orders and the trade settings of the fake host (step 4)."""
+
+    def __init__(self, host: "FakeHost") -> None:
+        self.host = host
+        self.settings: dict[str, Any] = json.loads(json.dumps(DEFAULT_TRADE_SETTINGS))
+        self.assignments: dict[str, dict[str, Any]] = {}
+        self.markets: dict[str, dict[str, Any]] = {}
+        self.orders: dict[str, dict[str, Any]] = {}
+        self.calls: list[dict[str, Any]] = []
+        self.snapshot_seq = 0
+
+    # control
+
+    def add_assignment(
+        self, game: dict[str, Any] | None = None, model: dict[str, Any] | None = None, bankroll_cents: int = 10000,
+        max_bet_cents: int | None = None, home_ask: float = 0.55, away_ask: float = 0.47, spread: float = 0.02,
+        liquidity_usd_cents: int = 500_000, my_p: float = 0.65,
+    ) -> str:
+        """An active paper assignment with a funded bankroll, two markets with a snapshot
+        each and its queued trade job. The default model is an elo_blend whose blend
+        ignores Elo and the market and always predicts `my_p` for the home side."""
+        aid = str(uuid.uuid4())
+        n = len(self.assignments) + 1
+        row_game = {
+            "game_id": f"2025_01_BUF_KC_{n}", "season": 2025, "game_type": "REG", "week": 1, "gameday": "2025-09-07",
+            "kickoff_at": _iso(time.time() + 86400.0), "home_team": "KC", "away_team": "BUF", "home_score": None,
+            "away_score": None, "home_moneyline": -130, "away_moneyline": 110, "spread_line": -2.5, "total_line": 47.5,
+            "home_rest": 7, "away_rest": 7, "div_game": False, "roof": "outdoors", "surface": "grass", "temp": 72,
+            "wind": 5, "status": "scheduled",
+        }
+        row_game.update(game or {})
+        row_model = {
+            "id": str(uuid.uuid4()), "family": "elo_blend", "params": {},
+            "artifact": {"ratings": {}, "blend": {"a": 0.0, "b": 0.0, "c": math.log(my_p / (1.0 - my_p))}, "through": [2025, 1], "season": 2025},
+        }
+        row_model.update(model or {})
+        with self.host.lock:
+            job_id = self.host.enqueue_job("trade", {"assignment_id": aid})
+            self.assignments[aid] = {
+                "id": aid, "game_id": row_game["game_id"], "game": row_game, "model": row_model, "mode": "paper",
+                "status": "active", "max_bet_cents": max_bet_cents, "job_id": job_id,
+                "bankroll": {"available_cents": int(bankroll_cents), "reserved_cents": 0, "open_cost_cents": 0, "realized_pnl_cents": 0},
+                "market_ids": {},
+            }
+            for side, ask in (("home", home_ask), ("away", away_ask)):
+                mid = str(uuid.uuid4())
+                self.markets[mid] = {
+                    "id": mid, "assignment_id": aid, "game_id": row_game["game_id"], "side": side, "tick": 0.01, "min_size": 1,
+                    "status": "open", "title": f"{row_game['home_team'] if side == 'home' else row_game['away_team']} to win",
+                    "bid": None, "ask": None, "mid": None, "snapshot_id": None, "snapshot_at": None,
+                    "liquidity_usd_cents": None, "ask_depth": None, "below_floor": False,
+                }
+                self.assignments[aid]["market_ids"][side] = mid
+                self.set_snapshot(mid, ask - spread, ask, liquidity_usd_cents)
+        return aid
+
+    def set_snapshot(self, market_id: str, bid: float, ask: float, liquidity_usd_cents: int | None = None, below_floor: bool = False) -> int:
+        """A new snapshot for a market; returns its id."""
+        with self.host.lock:
+            m = self.markets[market_id]
+            self.snapshot_seq += 1
+            liquidity = m["liquidity_usd_cents"] if liquidity_usd_cents is None else int(liquidity_usd_cents)
+            m.update(
+                bid=round(bid, 4), ask=round(ask, 4), mid=round((bid + ask) / 2.0, 4), snapshot_id=self.snapshot_seq,
+                snapshot_at=_iso(time.time()), liquidity_usd_cents=liquidity, below_floor=bool(below_floor),
+                ask_depth=[[round(ask, 4), 500], [round(ask + 0.01, 4), 500]],
+            )
+            return self.snapshot_seq
+
+    def set_ask(self, market_id: str, ask: float, spread: float = 0.02) -> int:
+        return self.set_snapshot(market_id, ask - spread, ask)
+
+    def market_ids(self, assignment_id: str) -> dict[str, str]:
+        with self.host.lock:
+            return dict(self.assignments[assignment_id]["market_ids"])
+
+    def halt(self, assignment_id: str, reason: str = "owner halt") -> int:
+        with self.host.lock:
+            a = self.assignments[assignment_id]
+            a["status"] = "halted"
+            return self._cancel_assignment_orders(assignment_id, reason)
+
+    def set_kickoff(self, assignment_id: str, when: float) -> None:
+        with self.host.lock:
+            self.assignments[assignment_id]["game"]["kickoff_at"] = _iso(when)
+
+    def assignment(self, assignment_id: str) -> dict[str, Any]:
+        with self.host.lock:
+            return json.loads(json.dumps(self.assignments[assignment_id]))
+
+    def list_orders(self, assignment_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        with self.host.lock:
+            rows = [dict(o) for o in self.orders.values()]
+        rows = [o for o in rows if assignment_id is None or o["assignment_id"] == assignment_id]
+        return [o for o in rows if status is None or o["status"] == status]
+
+    # routes
+
+    def state(self, w: dict[str, Any]) -> dict[str, Any]:
+        with self.host.lock:
+            entries = []
+            for job in sorted(self.host.jobs.values(), key=lambda j: j["created_at"]):
+                if job["kind"] != "trade" or job["lease_worker_id"] != w["id"] or job["status"] not in ("leased", "cancel_requested"):
+                    continue
+                a = self.assignments.get(str(job["params"].get("assignment_id")))
+                if a is None:
+                    continue
+                entries.append({
+                    "id": a["id"], "job_id": job["id"], "lease_token": job["lease_token"], "status": a["status"], "mode": a["mode"],
+                    "max_bet_cents": a["max_bet_cents"], "game": dict(a["game"]), "model": dict(a["model"]), "bankroll": dict(a["bankroll"]),
+                    "markets": [{k: v for k, v in self.markets[m].items() if k != "assignment_id"} for m in a["market_ids"].values()],
+                    "open_orders": [
+                        {k: o[k] for k in ("id", "market_id", "price", "size", "filled_size", "status", "snapshot_id", "created_at")}
+                        for o in self.orders.values() if o["assignment_id"] == a["id"] and o["status"] in OPEN_ORDER_STATUSES
+                    ],
+                    "positions": [],
+                })
+            return {"kill": self.host.kill_switch, "server_time": _iso(time.time()), "settings": dict(self.settings), "assignments": entries}
+
+    def _reject(self, w: dict[str, Any], body: dict[str, Any], reason: str, cost: int) -> dict[str, Any]:
+        order = self._order_row(w, body, "rejected", cost)
+        order["reject_reason"] = reason
+        self.orders[order["id"]] = order
+        return {"status": "rejected", "order_id": order["id"], "reason": reason}
+
+    def _order_row(self, w: dict[str, Any], body: dict[str, Any], status: str, cost: int) -> dict[str, Any]:
+        return {
+            "id": str(uuid.uuid4()), "client_request_id": body["client_request_id"], "assignment_id": str(body.get("assignment_id")),
+            "worker_id": w["id"], "job_id": str(body.get("job_id")), "market_id": str(body.get("market_id")), "mode": "paper",
+            "price": float(body["price"]), "size": int(body["size"]), "cost_cents": cost, "snapshot_id": body.get("snapshot_id"),
+            "status": status, "reject_reason": None, "filled_size": 0, "my_p": body.get("my_p"), "market_p": body.get("market_p"),
+            "edge": body.get("edge"), "rationale": body.get("rationale"), "created_at": _iso(time.time()),
+        }
+
+    def request(self, w: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        for key in ("client_request_id", "job_id", "lease_token", "assignment_id", "market_id", "price", "size"):
+            if body.get(key) in (None, ""):
+                raise ApiError(400, f"{key} is required")
+        price, size = float(body["price"]), int(body["size"])
+        if not 0.0 <= price <= 1.0 or size < 1:
+            raise ApiError(400, "bad price or size")
+        with self.host.lock:
+            dup = next((o for o in self.orders.values() if o["client_request_id"] == body["client_request_id"]), None)
+            if dup is not None:
+                return {"status": dup["status"] if dup["status"] == "rejected" else "approved", "order_id": dup["id"], "reason": dup["reject_reason"], "duplicate": True}
+            fee = float(self.settings["fee_model"]["taker_rate"]) * price * (1.0 - price)
+            cost = int(round(size * (price + fee) * 100))
+            market = self.markets.get(str(body["market_id"]))
+            if market is None:
+                return {"status": "rejected", "order_id": None, "reason": "market"}
+            if self.host.kill_switch:
+                return self._reject(w, body, "killed", cost)
+            job = self.host.jobs.get(str(body["job_id"]))
+            if (job is None or job["lease_worker_id"] != w["id"] or job["lease_token"] != body["lease_token"] or job["status"] != "leased"
+                    or job["preempt_requested"] or w["desired_role"] != "trade"):
+                return self._reject(w, body, "lease", cost)
+            a = self.assignments.get(str(body["assignment_id"]))
+            if a is None or a["status"] != "active":
+                return self._reject(w, body, "assignment", cost)
+            if market["assignment_id"] != a["id"]:
+                return self._reject(w, body, "market", cost)
+            if self.settings.get("trade_pregame_only") and _parse_iso(a["game"]["kickoff_at"]) <= time.time():
+                return self._reject(w, body, "kickoff", cost)
+            if cost > a["bankroll"]["available_cents"]:
+                return self._reject(w, body, "bankroll", cost)
+            a["bankroll"]["available_cents"] -= cost
+            a["bankroll"]["reserved_cents"] += cost
+            order = self._order_row(w, body, "open", cost)
+            self.orders[order["id"]] = order
+            return {"status": "approved", "order_id": order["id"], "reason": None}
+
+    def _cancel_order(self, order: dict[str, Any], reason: str) -> str:
+        if order["status"] not in OPEN_ORDER_STATUSES:
+            return order["status"]
+        a = self.assignments[order["assignment_id"]]
+        a["bankroll"]["available_cents"] += order["cost_cents"]
+        a["bankroll"]["reserved_cents"] -= order["cost_cents"]
+        order["status"] = "cancelled"
+        order["cancel_reason"] = reason
+        return "cancelled"
+
+    def _cancel_assignment_orders(self, assignment_id: str, reason: str) -> int:
+        n = 0
+        for o in self.orders.values():
+            if o["assignment_id"] == assignment_id and self._cancel_order(o, reason) == "cancelled":
+                n += 1
+        return n
+
+    def cancel(self, w: dict[str, Any], order_id: str) -> dict[str, Any]:
+        with self.host.lock:
+            order = self.orders.get(order_id)
+            if order is None:
+                raise ApiError(404, "order not found")
+            if order["worker_id"] != w["id"]:
+                raise ApiError(409, "order belongs to another worker")
+            return {"status": self._cancel_order(order, "worker cancel")}
+
+    def release(self, w: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+        with self.host.lock:
+            cancelled, released = 0, []
+            for entry in body.get("jobs") or []:
+                job = self.host.jobs.get(str(entry.get("id")))
+                if job is None or job["kind"] != "trade" or job["lease_worker_id"] != w["id"] or job["lease_token"] != entry.get("lease_token"):
+                    continue
+                if job["status"] not in ("leased", "cancel_requested"):
+                    continue
+                cancelled += self._cancel_assignment_orders(str(job["params"].get("assignment_id")), "drain")
+                self.host._release(job, w["id"], None, None, "drain")
+                released.append(job["id"])
+            return {"cancelled": cancelled, "pending": 0, "released": released}
+
+
+def _iso(ts: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+def _parse_iso(text: str) -> float:
+    import datetime as dt
+
+    return dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+
+
 class FakeHost:
     """Fake host: start() it, talk to it over HTTP, poke it through the control methods."""
 
@@ -141,6 +380,7 @@ class FakeHost:
         self.games_etag = "0-0"
         self.models_store: dict[str, dict[str, Any]] = {}
         self.model_calls: list[dict[str, Any]] = []
+        self.trade = TradeStore(self)
         self._tarball: bytes | None = None
         self._sha_override: str | None = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
@@ -261,6 +501,42 @@ class FakeHost:
         {"path", "body", "worker_id", "response"}."""
         with self.lock:
             return [dict(c) for c in self.model_calls]
+
+    # ------------------------------------------------------- step 4 control
+
+    def add_assignment(self, **kwargs: Any) -> str:
+        """An active paper assignment with markets, bankroll and its queued trade job (TradeStore)."""
+        return self.trade.add_assignment(**kwargs)
+
+    def set_snapshot(self, market_id: str, bid: float, ask: float, liquidity_usd_cents: int | None = None, below_floor: bool = False) -> int:
+        return self.trade.set_snapshot(market_id, bid, ask, liquidity_usd_cents, below_floor)
+
+    def set_ask(self, market_id: str, ask: float) -> int:
+        return self.trade.set_ask(market_id, ask)
+
+    def market_ids(self, assignment_id: str) -> dict[str, str]:
+        return self.trade.market_ids(assignment_id)
+
+    def halt_assignment(self, assignment_id: str) -> int:
+        return self.trade.halt(assignment_id)
+
+    def set_kickoff_past(self, assignment_id: str, seconds_ago: float = 60.0) -> None:
+        self.trade.set_kickoff(assignment_id, time.time() - seconds_ago)
+
+    def set_trade_settings(self, **updates: Any) -> None:
+        with self.lock:
+            self.trade.settings.update(updates)
+
+    def assignment(self, assignment_id: str) -> dict[str, Any]:
+        return self.trade.assignment(assignment_id)
+
+    def orders(self, assignment_id: str | None = None, status: str | None = None) -> list[dict[str, Any]]:
+        return self.trade.list_orders(assignment_id, status)
+
+    def trade_calls(self, suffix: str | None = None) -> list[dict[str, Any]]:
+        """Recorded trade POSTs ({"path", "body", "worker_id", "response", "t"}), oldest first."""
+        with self.lock:
+            return [dict(c) for c in self.trade.calls if suffix is None or c["path"].endswith(suffix)]
 
     def _take_failure(self, path: str) -> int | None:
         with self.lock:
@@ -518,7 +794,8 @@ class FakeHost:
                     w["auto_role"] = False
                     in_sync = False
             claimed: list[dict[str, Any]] = []
-            if w["enabled"] and body.get("want_job") and in_sync and w["desired_role"] in BATCH_ROLES:
+            slots = self._claim_slots(w, body, in_sync)
+            if slots > 0:
                 orphans = [
                     j for j in self.jobs.values()
                     if j["lease_worker_id"] == wid and j["status"] in ("leased", "cancel_requested") and j["id"] not in reported
@@ -532,8 +809,7 @@ class FakeHost:
                     if j["status"] == "queued" and j["role"] == w["desired_role"] and j["target_worker_id"] in (None, wid)
                 ]
                 candidates.sort(key=lambda j: (0 if j["target_worker_id"] == wid else 1, j["created_at"]))
-                if candidates:
-                    job = candidates[0]
+                for job in candidates[:slots]:
                     job.update(status="leased", lease_worker_id=wid, lease_token=str(uuid.uuid4()), lease_expires_at=now + self.lease_seconds, preempt_requested=False)
                     self._event(job["id"], "claimed", wid)
                     claimed.append(self._job_payload(job))
@@ -541,6 +817,19 @@ class FakeHost:
             resp.update(self._worker_fields(w))
             self.heartbeats.append({"t": time.monotonic(), "worker_id": wid, "request": body, "response": resp})
             return resp
+
+    def _claim_slots(self, w: dict[str, Any], body: dict[str, Any], in_sync: bool) -> int:
+        """Batch roles: 1 with want_job (also under kill); trade: want_jobs (0..100), none under kill."""
+        if not (w["enabled"] and in_sync):
+            return 0
+        if w["desired_role"] in BATCH_ROLES:
+            return 1 if body.get("want_job") else 0
+        if w["desired_role"] == "trade" and not self.kill_switch:
+            wanted = body.get("want_jobs")
+            if isinstance(wanted, bool) or not isinstance(wanted, int):
+                return 0
+            return max(0, min(wanted, 100))
+        return 0
 
     def checkpoint(self, w: dict[str, Any], job_id: str, body: dict[str, Any]) -> dict[str, Any]:
         with self.lock:
@@ -718,6 +1007,9 @@ class _Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:3] == ["api", "v1", "models"]:
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 self._send(200, self.host.get_model(w, parts[3]))
+            elif parts == ["api", "v1", "trade", "state"]:
+                w = self.host.auth_any_worker(self.headers.get("Authorization"))
+                self._send(200, self.host.trade.state(w))
             else:
                 self._send(404, {"detail": "not found"})
         except ApiError as exc:
@@ -749,6 +1041,20 @@ class _Handler(BaseHTTPRequestHandler):
         if len(parts) == 5 and parts[:3] == ["api", "v1", "models"] and parts[4] == "backtest":
             w = self.host.auth_any_worker(auth)
             return self.host.post_backtest(w, parts[3], self._body())
+        if parts in (["api", "v1", "orders", "request"], ["api", "v1", "trade", "release"]) or (
+            len(parts) == 5 and parts[:3] == ["api", "v1", "orders"] and parts[4] == "cancel"
+        ):
+            w = self.host.auth_any_worker(auth)
+            body = self._body()
+            if parts[2] == "trade":
+                resp = self.host.trade.release(w, body)
+            elif parts[3] == "request":
+                resp = self.host.trade.request(w, body)
+            else:
+                resp = self.host.trade.cancel(w, parts[3])
+            with self.host.lock:
+                self.host.trade.calls.append({"path": self.path, "body": body, "worker_id": w["id"], "response": resp, "t": time.monotonic()})
+            return resp
         raise ApiError(404, "not found")
 
 

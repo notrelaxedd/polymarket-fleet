@@ -7,12 +7,19 @@ update that host.settings.set_settings validates.
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from host.errors import BadRequest
 from host.money import cents_to_dollars, dollars_to_cents
 
-GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse")
+GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse", "trade")
+MARKET_SOURCES = ("sim", "polymarket_us", "polymarket_clob")
+RATE_KEYS = ("orders_per_s", "cancels_per_s", "market_data_per_s", "account_per_s")
+TRADE_INTS = (
+    "book_max_age_s", "orphan_cancel_after_s", "gtd_seconds", "trade_tick_s", "market_lookahead_days",
+    "max_paper_models_per_game", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days",
+)
 
 LABELS = {
     "max_bet": "Max bet",
@@ -37,6 +44,30 @@ LABELS = {
     "seasons_last": "Last season",
     "nflverse_refresh_hours": "Refresh every (hours)",
     "nflverse_url": "games.csv URL",
+    "participation": "Participation",
+    "book_max_age_s": "Book max age (s)",
+    "orphan_cancel_after_s": "Orphan cancel after (s)",
+    "gtd_seconds": "Order lifetime (s)",
+    "trade_tick_s": "Trade tick (s)",
+    "market_lookahead_days": "Market lookahead (days)",
+    "max_paper_models_per_game": "Max paper models per game",
+    "snapshot_active_s": "Snapshot cadence, active (s)",
+    "snapshot_idle_s": "Snapshot cadence, idle (s)",
+    "snapshot_retention_days": "Snapshot retention (days)",
+    "market_source": "Market source",
+    "market_source_config": "Market source config",
+    "scores_url": "Scores URL",
+    "paper_min_games": "Paper min games",
+    "paper_min_bets": "Paper min bets",
+    "paper_min_days": "Paper min days",
+    "paper_min_clv": "Paper min CLV",
+    "paper_min_pnl": "Paper min P&L",
+    "max_exposure_paper": "Max exposure (paper)",
+    "max_exposure_live": "Max exposure (live)",
+    "orders_per_s": "Orders per second",
+    "cancels_per_s": "Cancels per second",
+    "market_data_per_s": "Market data per second",
+    "account_per_s": "Account calls per second",
 }
 
 
@@ -116,6 +147,42 @@ def _parse_nflverse(form: dict[str, str]) -> dict[str, Any]:
     return {"nflverse_refresh_hours": _int(form, "nflverse_refresh_hours"), "nflverse_url": _text(form, "nflverse_url")}
 
 
+def _json_object(form: dict[str, str], name: str) -> dict[str, Any]:
+    text = _text(form, name) or "{}"
+    try:
+        value = json.loads(text)
+    except ValueError:
+        raise BadRequest(f"{LABELS[name]} must be a JSON object") from None
+    if not isinstance(value, dict):
+        raise BadRequest(f"{LABELS[name]} must be a JSON object")
+    return value
+
+
+def _parse_trade(form: dict[str, str]) -> dict[str, Any]:
+    """The step 4 trading group: approval, snapshots, market source, paper thresholds,
+    exposure and rate limits. The checkbox sends nothing when unticked."""
+    updates: dict[str, Any] = {name: _int(form, name) for name in TRADE_INTS}
+    updates.update(
+        {
+            "participation": _number(form, "participation"),
+            "trade_pregame_only": _text(form, "trade_pregame_only").lower() in {"1", "true", "on", "yes"},
+            "market_source": _text(form, "market_source"),
+            "market_source_config": _json_object(form, "market_source_config"),
+            "scores_url": _text(form, "scores_url"),
+            "thresholds_paper": {
+                "min_games": _int(form, "paper_min_games"),
+                "min_bets": _int(form, "paper_min_bets"),
+                "min_days": _int(form, "paper_min_days"),
+                "min_clv": _number(form, "paper_min_clv"),
+                "min_pnl_cents": _dollars(form, "paper_min_pnl"),
+            },
+            "max_exposure_cents": {"paper": _dollars(form, "max_exposure_paper"), "live": _dollars(form, "max_exposure_live")},
+            "rate_limits": {name: _number(form, name) for name in RATE_KEYS},
+        }
+    )
+    return updates
+
+
 PARSERS: dict[str, Callable[[dict[str, str]], dict[str, Any]]] = {
     "trading": _parse_trading,
     "fleet": _parse_fleet,
@@ -124,6 +191,7 @@ PARSERS: dict[str, Callable[[dict[str, str]], dict[str, Any]]] = {
     "thresholds": _parse_thresholds,
     "seasons": _parse_seasons,
     "nflverse": _parse_nflverse,
+    "trade": _parse_trade,
 }
 
 
@@ -145,7 +213,30 @@ def form_values(settings: dict[str, Any]) -> dict[str, str]:
     thresholds = settings.get("thresholds_backtest") if isinstance(settings.get("thresholds_backtest"), dict) else {}
     seasons = settings.get("backtest_seasons") if isinstance(settings.get("backtest_seasons"), list) else [None, None]
     seasons = (list(seasons) + [None, None])[:2]
+    paper = settings.get("thresholds_paper") if isinstance(settings.get("thresholds_paper"), dict) else {}
+    exposure = settings.get("max_exposure_cents") if isinstance(settings.get("max_exposure_cents"), dict) else {}
+    rates = settings.get("rate_limits") if isinstance(settings.get("rate_limits"), dict) else {}
+    config = settings.get("market_source_config")
+    trade = {name: _shown(settings.get(name)) for name in TRADE_INTS}
+    trade.update({name: _shown(rates.get(name)) for name in RATE_KEYS})
+    trade.update(
+        {
+            "participation": _shown(settings.get("participation")),
+            "trade_pregame_only": "true" if settings.get("trade_pregame_only") is True else "",
+            "market_source": str(settings.get("market_source") or MARKET_SOURCES[0]),
+            "market_source_config": json.dumps(config, indent=2, sort_keys=True) if isinstance(config, dict) else "{}",
+            "scores_url": str(settings.get("scores_url", "")),
+            "paper_min_games": _shown(paper.get("min_games")),
+            "paper_min_bets": _shown(paper.get("min_bets")),
+            "paper_min_days": _shown(paper.get("min_days")),
+            "paper_min_clv": _shown(paper.get("min_clv")),
+            "paper_min_pnl": cents_to_dollars(paper.get("min_pnl_cents")),
+            "max_exposure_paper": cents_to_dollars(exposure.get("paper")),
+            "max_exposure_live": cents_to_dollars(exposure.get("live")),
+        }
+    )
     return {
+        **trade,
         "max_bet": cents_to_dollars(settings.get("max_bet_cents")),
         "max_daily_loss_paper": cents_to_dollars(loss.get("paper")),
         "max_daily_loss_live": cents_to_dollars(loss.get("live")),

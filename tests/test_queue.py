@@ -338,7 +338,7 @@ def test_disabled_blocks_claims_and_kill_only_blocks_trade(pool, conn, make_work
     reply = hb(pool, trader, reported_role="trade")
     assert reply["kill"] is True and reply["claimed"] == [], "trade never claims under kill"
     conn.execute("UPDATE settings SET value = 'false' WHERE key = 'kill_switch'")
-    assert hb(pool, trader, reported_role="trade")["claimed"] == [], "trade claims arrive in step 4"
+    assert hb(pool, trader, reported_role="trade")["claimed"] == [], "a trade worker claims with want_jobs, not want_job"
 
 
 def test_release_reason_is_stored_and_oom_counts_as_expiry(pool, conn, make_worker):
@@ -647,3 +647,74 @@ def test_batch_jobs_refuse_untestable_seasons_and_unknown_param_names(pool, conn
     ok = create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2016, 2019]}).job
     assert ok["params"]["seasons"] == [2016, 2019], "2019 has three earlier seasons with lines"
     assert create(pool, kind="backtest", params={"family": "elo_blend", "params": {"k": 30}, "seasons": [2019, None]}).job["params"]["seasons"] == [2019, 2025]
+
+
+# ------------------------------------------------------------------ step 4: trade claims
+
+
+def test_trade_claims_up_to_want_jobs(pool, conn, make_worker):
+    """A trade worker claims up to `want_jobs` trade jobs per heartbeat (LIMIT n, oldest
+    first); `want_job` (bool) still means one job for batch roles and nothing for trade."""
+    from tests.conftest import insert_game, make_assignment, set_setting
+
+    insert_game(conn)
+    set_setting(conn, "max_paper_models_per_game", 10)
+    created = [make_assignment(conn) for _ in range(4)]
+    trader = make_worker("t", role="trade")
+    assert hb(pool, trader, reported_role="trade", want_job=True)["claimed"] == []
+    reply = hb(pool, trader, reported_role="trade", want_job=False, want_jobs=3)
+    assert [c["id"] for c in reply["claimed"]] == [a["job_id"] for a in created[:3]]
+    assert all(c["kind"] == "trade" and c["lease_seconds"] == 30 for c in reply["claimed"])
+    for a in created[:3]:
+        assert job_row(conn, a["job_id"])["lease_worker_id"] == trader.id
+    held = [{"id": c["id"], "lease_token": c["lease_token"]} for c in reply["claimed"]]
+    reply = hb(pool, trader, reported_role="trade", want_jobs=3, jobs=held)
+    assert [c["id"] for c in reply["claimed"]] == [created[3]["job_id"]], "only the one left"
+    events = [e["event"] for e in conn.execute(
+        "SELECT event FROM job_events WHERE job_id = %s ORDER BY id", (created[0]["job_id"],)).fetchall()]
+    assert events == ["created", "claimed"]
+    tester = make_worker("b", role="backtest")
+    create(pool)
+    assert hb(pool, tester, reported_role="backtest", want_job=False, want_jobs=5)["claimed"] == [], "want_jobs is for trade"
+    assert len(hb(pool, tester, reported_role="backtest", want_job=True)["claimed"]) == 1
+
+
+def test_trade_claims_refused_under_kill_and_concurrent_claims_never_double(pool, conn, make_worker):
+    from tests.conftest import insert_game, make_assignment
+
+    insert_game(conn)
+    created = [make_assignment(conn) for _ in range(3)]
+    conn.execute("UPDATE settings SET value = 'true' WHERE key = 'kill_switch'")
+    trader = make_worker("t", role="trade")
+    reply = hb(pool, trader, reported_role="trade", want_jobs=3)
+    assert reply["kill"] is True and reply["claimed"] == []
+    conn.execute("UPDATE settings SET value = 'false' WHERE key = 'kill_switch'")
+    workers = [make_worker(f"t{i}", role="trade") for i in range(6)]
+    replies = run_threads(6, lambda i: hb(pool, workers[i], reported_role="trade", want_jobs=2))
+    claimed = [c["id"] for r in replies for c in r["claimed"]]
+    assert sorted(claimed) == sorted(a["job_id"] for a in created) and len(claimed) == 3
+
+
+def test_trade_jobs_never_fail_by_expiry(pool, conn, make_worker):
+    """max_expiries is NULL on trade jobs: a crashed trade worker's job is requeued every
+    time its lease expires and any trade worker reclaims it."""
+    from tests.conftest import insert_game, make_assignment
+
+    insert_game(conn)
+    a = make_assignment(conn)
+    assert job_row(conn, a["job_id"])["max_expiries"] is None
+    trader = make_worker("t", role="trade")
+    for n in range(1, 6):
+        reply = hb(pool, trader, reported_role="trade", want_jobs=1)
+        assert [c["id"] for c in reply["claimed"]] == [a["job_id"]]
+        expire_lease(conn, a["job_id"])
+        with pool.connection() as c:
+            queue.reap(c)
+        row = job_row(conn, a["job_id"])
+        assert row["status"] == "queued" and row["expiries"] == n and row["error"] is None
+    other = make_worker("u", role="trade")
+    assert [c["id"] for c in hb(pool, other, reported_role="trade", want_jobs=1)["claimed"]] == [a["job_id"]]
+    hb(pool, other, reported_role="trade", want_jobs=0, released=[{
+        "id": a["job_id"], "lease_token": str(job_row(conn, a["job_id"])["lease_token"]), "reason": "oom"}])
+    row = job_row(conn, a["job_id"])
+    assert row["status"] == "queued" and row["expiries"] == 6, "even oom never fails a trade job"

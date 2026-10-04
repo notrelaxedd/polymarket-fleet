@@ -4,7 +4,7 @@ A small fleet of machines that builds, tests and (much later) runs NFL predictio
 
 ## Architecture
 
-The host is a Windows 11 machine running a Docker Compose stack: `db` (postgres:16) and `host` (the FastAPI app that serves the worker API, the owner API and the dashboard). Both containers publish ports on `127.0.0.1` only. `tailscale serve` on the host OS puts HTTPS in front of port 8080 for your tailnet and injects a `Tailscale-User-Login` header, which the app compares with `FLEET_OWNER_LOGIN` to identify you. Workers are Debian 13 boxes: each runs the `fleet-worker` systemd service, which registers with an enroll token, sends a heartbeat every 5 seconds, claims leased jobs for its current role, checkpoints as it goes, and updates its own code from the host. The wire contract is in `docs/PROTOCOL.md`; the full design is in `docs/DESIGN.md`.
+The host is a Windows 11 machine running a Docker Compose stack: `db` (postgres:16), `host` (the FastAPI app that serves the worker API, the owner API and the dashboard) and `exchange` (`fleet-exchange`, the second process: market snapshots, the order executor, the paper fill simulator, settlement and scoring; it is the only process that ever talks to a market or exchange). `db` and `host` publish ports on `127.0.0.1` only; `exchange` publishes none. `tailscale serve` on the host OS puts HTTPS in front of port 8080 for your tailnet and injects a `Tailscale-User-Login` header, which the app compares with `FLEET_OWNER_LOGIN` to identify you. Workers are Debian 13 boxes: each runs the `fleet-worker` systemd service, which registers with an enroll token, sends a heartbeat every 5 seconds, claims leased jobs for its current role, checkpoints as it goes, and updates its own code from the host. The wire contract is in `docs/PROTOCOL.md`; the full design is in `docs/DESIGN.md`.
 
 The dashboard is server-rendered HTML (Jinja2, one stylesheet, a little vanilla JS) served by the same `host` container, so there is no separate frontend to build. Owner pages and routes authenticate through the `Tailscale-User-Login` header; a request with a different login gets a 401 page. A worker machine's IP is refused on owner routes even if it sends the header, so a compromised worker cannot act as you. The spec is in `docs/DASHBOARD.md`.
 
@@ -27,11 +27,14 @@ FLEET_PUBLIC_URL=https://<machine>.<tailnet>.ts.net
 FLEET_OWNER_LOGIN=<your tailscale login email>
 ```
 
-5. Start the stack:
+5. Start the stack. This now starts three services, `db`, `host` and `exchange`:
 
 ```powershell
 docker compose up -d
+docker compose ps
 ```
+
+   `exchange.env` is optional until step 5 (compose starts without it). When you create it (it will hold the Polymarket US API keys), keep it out of git and make it readable by your Windows user only, for example `icacls exchange.env /inheritance:r /grant:r "$($env:USERNAME):(R,W)"`; on Debian use `chmod 600 exchange.env` as root. Only the `exchange` service loads it, never `host`.
 
 6. In an elevated PowerShell, expose port 8080 to the tailnet:
 
@@ -123,7 +126,7 @@ docker compose exec host python -m host.cli roletest <worker>
 
    Read the printed number. Under 10 means pass (exit 0); over 10, or no ack, is exit 1. The worker is left in `train`. From a shell with the repo checked out, `tests/hw/roletest.sh <worker>` does the same.
 4. Wrong user. On a tailnet device signed in as a different Tailscale user (a second account, or a shared-in device), open the dashboard URL. You should see a 401 page and no fleet data. The same goes for any worker machine: its IP is refused on owner routes.
-5. Kill switch. Press KILL and confirm. The whole top bar turns red with "TRADING KILLED. Reset in Settings." and the button becomes a disabled KILLED chip. Then open Settings, find the kill form, type `RESUME` exactly and submit; the bar returns to normal. Anything other than `RESUME` is rejected and the flag stays set. The kill switch only affects trading (the trade role); batch jobs such as backtests and training keep running. In step 4 KILL also cancels all open orders.
+5. Kill switch. Press KILL and confirm. The whole top bar turns red with "TRADING KILLED. Reset in Settings." and the button becomes a disabled KILLED chip. Then open Settings, find the kill form, type `RESUME` exactly and submit; the bar returns to normal. Anything other than `RESUME` is rejected and the flag stays set. The kill switch only affects trading (the trade role); batch jobs such as backtests and training keep running. From step 4, KILL also cancels all open orders.
 6. Limits and audit. In Settings change a limit, for example max bet from 25 to 20 dollars, and save. The Audit log at the bottom of the Settings page gets a new row with the time, your login, the action and the entity. The kill presses and the reset from step 5 are in the same log.
 7. Enroll token. In Settings press "New enroll token". The page shows the token once with the two install one-liners and a Copy button.
 
@@ -147,6 +150,30 @@ docker compose exec host python -m host.cli ingest-games
 
 **Read the numbers honestly.** Backtests here use sportsbook closing lines from nflverse, which are sharp and already efficient. An ROI near zero or slightly negative is normal and expected, and a model that beats it by a wide margin is more likely overfit than good. These backtests measure calibration and discipline (does the model add anything to the market price, and does it bet sensibly), not true edge. The real test is paper trading on live Polymarket prices in step 4, where closing line value is measured. Only lineages whose backtest clears the thresholds in Settings become `paper_ok`, and nothing trades real money before step 5.
 
+## How to test step 4
+
+Needs the compose stack up (`db`, `host`, `exchange`), games ingested (step 3), at least one model and one worker. Everything below is paper trading on simulated markets, so no network and no keys are needed. Commands run on the host.
+
+1. Market source. Open Settings, Trading group, and check "market source" is `sim` (the default). The simulated source makes two markets per upcoming game (home and away YES) with a seeded random-walk price around the devigged nflverse moneyline and a 5-level book.
+2. Ingest games if you have not (`docker compose exec host python -m host.cli ingest-games`). Within a minute the exchange creates markets and `/trading` shows snapshot ages per market that stay under a few seconds for assigned games. Check `docker compose ps` shows `exchange` running.
+3. Create a paper assignment for an upcoming game: press Assign on a model on the Models page (opens `/trading` prefilled), or use the create form on `/trading`. Mode is paper, bankroll defaults to `default_bankroll_cents`. Repeat with two more models on the same game to see three paper models at once (the limit is `max_paper_models_per_game`).
+4. Put a worker in the trade role (Fleet page dropdown, confirm the prompt). It claims the trade jobs, up to `trade_max_games`.
+5. Watch `/trading`. Within about 5 to 10 seconds you should see orders proposed with a one-line rationale ("my 0.57 vs ask 0.52, fee 0.012, edge 0.038"), approved or rejected with a reason code, and fills arriving from the simulated book. Open orders have a Cancel button. The assignment row shows bankroll available, reserved, open and realized.
+6. Daily loss limit. In Settings set the paper max daily loss to $1 and save. New proposals whose cost, added to today's losses and the cash still reserved by open paper orders, would pass $1 are rejected with `daily_loss`; existing paper assignments stay active. Put the limit back afterwards.
+7. Kill switch. Press KILL and confirm. Every open paper order should be cancelled within 2 seconds (watch `/trading`), the reserved cash returns to the bankroll, and every assignment shows halted. Trade workers stop proposing.
+8. Reset. In Settings type `RESUME` in the kill form. The flag clears but assignments stay halted; on `/trading` press "Activate all paper" and trading resumes.
+9. Role switch. Change the trade worker's role to anything else. Its open orders are cancelled first (the host's release call), then the role acknowledges, and the trade jobs go back to the queue for another trade worker.
+10. Simulate a final (only allowed for the `sim` source, or with `FLEET_DEV`):
+
+```powershell
+docker compose exec exchange python -m host.exchange.cli simulate-final <game_id> --home 24 --away 20
+```
+
+    The game id is on `/trading` (assignments table). Expect: open orders cancelled, positions settled, one `bets` row per filled order with entry price, closing price and CLV (`closing_price - entry_price`), `model_scores` filled in, the assignment `settled`, today's P&L updated on the Fleet card of the worker that traded and in the top bar, and a paper line (games, bets, P&L, ROI, CLV) for the model's lineage on the Models page. Once a lineage has enough paper games, bets, days and positive CLV and P&L (thresholds in Settings), it becomes `live_eligible`; nothing trades real money before step 5.
+11. Real market data. On the host (which has internet), set market source to `polymarket_us` or `polymarket_clob` in Settings. Press "Probe markets" on `/trading` (or run `docker compose exec exchange python -m host.exchange.cli probe`). If NFL markets do not appear under "unmatched markets" or in the assignment form, paste the probe output back so the field names can be fixed. Markets whose teams or date do not match exactly are never traded until you link them to a game by hand on `/trading`.
+
+**An honest note.** The Polymarket US and CLOB readers were written without access to the exchange docs (they were unreachable from the build sandbox), so endpoint paths and field names are best guesses kept in `market_source_config` and may need fixes from your probe output. The private order endpoints (place, cancel, fills, balance, signing) arrive in step 5; until then only paper orders exist, filled by a simulator against the real or simulated books. Paper fills are optimistic, so expect live results below paper.
+
 ## Data
 
 Game schedules, scores and closing lines come from [nflverse](https://github.com/nflverse/nflverse-data) (`games.csv`), licensed CC BY 4.0. Attribution: "Data: nflverse (https://nflverse.com), CC BY 4.0." It is also shown on the Models page.
@@ -168,7 +195,7 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
 1. [x] Step 1: fleet core (queue, leases, worker agent, installer, owner API, host in Docker)
 2. [x] Step 2: dashboard fleet cards, role handshake, drain and watchdog, settings page, kill flag
 3. [x] Step 3: nflverse data, models, backtest / search / train jobs, leaderboard
-4. [ ] Step 4: fleet-exchange, paper trading, approval limits, ledger, scoring
+4. [x] Step 4: fleet-exchange, paper trading, approval limits, ledger, scoring
 5. [ ] Step 5: Polymarket US live adapter, live switch, smoke order
 
 Data is free-only for now; paid sources are considered once profit comes in.

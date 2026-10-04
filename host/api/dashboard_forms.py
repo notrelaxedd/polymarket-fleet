@@ -11,26 +11,19 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
 from host import auth, kill, queue, web
-from host.api.dashboard import jobs_page_response, page, settings_page
+from host.api.dashboard import FORM, form_data, jobs_page_response, page, settings_page
 from host.api.deps import DB, get_config, require_owner
 from host.api.job_forms import parse_job_form
 from host.api.owner import install_command
 from host.config import Config
-from host.eligibility import recompute_all
+from host.eligibility import recompute_all, recompute_paper
 from host.errors import BadRequest, QueueError
 from host.settings import set_settings
 from host.settings_forms import GROUPS, parse_group
 
 router = APIRouter(tags=["dashboard-forms"], dependencies=[Depends(require_owner)])
 
-
-async def form_data(request: Request) -> dict[str, str]:
-    """The posted form as plain strings (file fields are ignored)."""
-    form = await request.form()
-    return {key: value for key, value in form.items() if isinstance(value, str)}
-
-
-FORM = Depends(form_data)
+__all__ = ["FORM", "form_data", "router"]
 
 
 def _truthy(value: str | None) -> bool:
@@ -106,6 +99,9 @@ def post_settings(
         return settings_page(request, conn, config, errors={group: exc.message}, overrides=form, status=400)
     if "thresholds_backtest" in updates:
         recompute_all(conn)
+    if "thresholds_paper" in updates:
+        for row in conn.execute("SELECT DISTINCT lineage_id FROM model_scores WHERE mode = 'paper'").fetchall():
+            recompute_paper(conn, row["lineage_id"], actor)
     return web.redirect("/settings", f"{group} settings saved")
 
 

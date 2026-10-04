@@ -1,0 +1,74 @@
+[
+  {
+    "id": "90001",
+    "title": "Chiefs vs. Raiders",
+    "slug": "nfl-kc-lv-2026-10-05",
+    "startDate": "2026-10-05T20:15:00Z",
+    "markets": [
+      {
+        "id": "500001",
+        "question": "Chiefs vs. Raiders",
+        "outcomes": "[\"Chiefs\", \"Raiders\"]",
+        "clobTokenIds": "[\"111111\", \"222222\"]",
+        "gameStartTime": "2026-10-05 20:15:00+00",
+        "endDate": "2026-10-06T04:00:00Z",
+        "orderPriceMinTickSize": 0.01,
+        "orderMinSize": 5,
+        "active": true,
+        "closed": false
+      },
+      {
+        "id": "500002",
+        "question": "Chiefs vs. Raiders: O/U 45.5",
+        "outcomes": "[\"Over\", \"Under\"]",
+        "clobTokenIds": "[\"333333\", \"444444\"]",
+        "gameStartTime": "2026-10-05T20:15:00Z"
+      }
+    ]
+  },
+  {
+    "id": "90002",
+    "title": "Will the Philadelphia Eagles beat the Dallas Cowboys?",
+    "startDate": "2026-10-04T17:00:00Z",
+    "markets": [
+      {
+        "id": "500003",
+        "question": "Will the Philadelphia Eagles beat the Dallas Cowboys?",
+        "outcomes": ["Yes", "No"],
+        "clobTokenIds": ["555555", "666666"],
+        "endDate": "2026-10-05T04:00:00Z"
+      }
+    ]
+  },
+  {
+    "id": "90003",
+    "title": "Bills vs. Dolphins",
+    "markets": [
+      {
+        "id": "500004",
+        "question": "Bills vs. Dolphins",
+        "outcomes": "not json [",
+        "clobTokenIds": "[\"777777\", \"888888\"]"
+      },
+      {
+        "id": "500005",
+        "question": "Bills vs. Dolphins",
+        "outcomes": "[\"Bills\", \"Dolphins\"]",
+        "clobTokenIds": "[\"999999\"]"
+      },
+      {
+        "id": "500006",
+        "question": "Bills vs. Dolphins (closed)",
+        "outcomes": "[\"Bills\", \"Dolphins\"]",
+        "clobTokenIds": "[\"101010\", \"121212\"]",
+        "closed": true
+      },
+      "not a market"
+    ]
+  },
+  {
+    "id": "90004",
+    "title": "event without markets"
+  },
+  "not an event"
+]

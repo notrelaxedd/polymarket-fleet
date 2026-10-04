@@ -1,0 +1,21 @@
+{
+  "book": {
+    "market_id": "pmus-kc-lv-kc",
+    "bids": [
+      {"price": "0.55", "size": "120"},
+      {"price": "0.57", "size": "80"},
+      {"price": "0.50", "size": "900"},
+      {"price": "1.20", "size": "5"},
+      {"price": "0.40", "size": "0"},
+      {"price": "oops", "size": "10"},
+      "garbage"
+    ],
+    "asks": [
+      {"price": "0.61", "size": "70"},
+      {"price": "0.59", "size": "150"},
+      {"price": "0.70", "size": "1000"},
+      {"price": "0.80"},
+      {"size": "10"}
+    ]
+  }
+}

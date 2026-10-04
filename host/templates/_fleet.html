@@ -34,9 +34,15 @@
   <div class="job">
     {% if w.current_jobs %}
     {% for j in w.current_jobs %}
-    <a class="joblink" href="/jobs/{{ j.id }}">{{ j.kind }}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}</a>
+    <div class="jobrow">
+    <a class="joblink" href="/jobs/{{ j.id }}">{% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind }}{% endif %}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}</a>
+    {% if j.kind == 'trade' %}
+    <span class="small muted">held</span>
+    {% else %}
     <div class="bar" role="progressbar" aria-label="{{ j.kind }} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ ((j.progress or 0) * 100) | round | int }}"><span style="width: {{ j.progress | pct }}"></span></div>
     <span class="small">{{ j.progress | pct }}</span>
+    {% endif %}
+    </div>
     {% endfor %}
     {% else %}
     <span class="muted">no job</span>

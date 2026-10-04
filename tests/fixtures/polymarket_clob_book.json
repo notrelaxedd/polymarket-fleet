@@ -1,0 +1,19 @@
+{
+  "market": "0xabc",
+  "asset_id": "111111",
+  "timestamp": "1759696500000",
+  "hash": "deadbeef",
+  "bids": [
+    {"price": "0.52", "size": "250.5"},
+    {"price": "0.54", "size": "100"},
+    {"price": "0.49", "size": "2000"},
+    {"price": "0", "size": "100"},
+    {"price": "0.30"}
+  ],
+  "asks": [
+    {"price": "0.58", "size": "400"},
+    {"price": "0.56", "size": "60"},
+    {"price": "0.65", "size": "1500"},
+    {"price": "1", "size": "100"}
+  ]
+}

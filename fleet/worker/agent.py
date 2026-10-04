@@ -22,7 +22,15 @@ exceed watchdog_rss_fraction of the machine's RAM; those are stopped and release
 with reason "oom" and the trip is counted in status.json.
 
 Kill flag: mirrors settings.kill_switch and only concerns the trade role. Batch
-roles keep claiming and running under kill; on_kill() is the step 4 hook.
+roles keep claiming and running under kill; a trade worker keeps ticking but proposes
+nothing (fleet.worker.trade).
+
+Step 4, trade role: claimed trade jobs start no runner, they are held in trade_jobs
+and renewed through heartbeat jobs[] like any lease; the heartbeat asks for
+want_jobs = trade_max_games - held trade jobs; the main loop runs TradeLoop every
+trade_tick_s; lost[] drops a trade job, preempt/cancel release it through the usual
+released[] handshake, and a role change away from trade calls POST /api/v1/trade/release
+(bounded, one retry) before the ack heartbeat.
 
 Step 3: before a backtest, model_search or train runner starts, fleet.worker.context
 refreshes the games cache and fetches the job's model into job["context"] (a failure
@@ -45,6 +53,7 @@ from fleet.common import http, sysinfo
 from fleet.worker import config, context, launch, posts, update
 from fleet.worker.posts import PendingPost
 from fleet.worker.runner import Runner
+from fleet.worker.trade import TradeLoop
 from fleet.worker.watchdog import MemoryWatchdog
 
 log = logging.getLogger("fleet.agent")
@@ -90,6 +99,8 @@ class AgentOptions:
     ram_total_mb: int | None = None
     watchdog_interval: float = 1.0
     data_timeout: float = 15.0
+    trade_tick_s: float | None = None
+    trade_max_games: int | None = None
 
 
 def _utcnow_iso() -> str:
@@ -144,6 +155,9 @@ class Agent:
         self.kill = False
         self.stopping = False
         self.running: dict[str, RunningJob] = {}
+        self.trade_jobs: dict[str, dict[str, Any]] = {}
+        self.trade = TradeLoop(self)
+        self._next_trade_at = 0.0
         self.pending_releases: list[dict[str, Any]] = []
         self.pending_posts: list[PendingPost] = []
         self.misses = 0
@@ -205,6 +219,8 @@ class Agent:
             log.info("shutting down: draining %d runner(s)", len(self.running))
             for rj in self._stop_runners(list(self.running), self.options.drain_grace):
                 self.pending_releases.append(self._release_entry(rj, "shutdown"))
+        if self.trade_jobs:
+            self._release_trade_jobs("shutdown")
         self.flush_posts(attempts=SHUTDOWN_FLUSH_ATTEMPTS, delay=self.options.shutdown_flush_delay)
         if self.pending_releases:
             try:
@@ -273,6 +289,9 @@ class Agent:
         log.info("registered as %s, role %s epoch %s, %d held job(s)", self.conf["worker_id"], self.role, self.acked_epoch, len(held))
         for job in held:
             self._start_job(job)
+        if self.role == "trade":
+            self._next_trade_at = 0.0
+            self.trade.fetch_state()  # settings (trade_max_games) before the first heartbeat asks for slots
         self.flush_posts()
         self._write_status()
 
@@ -308,6 +327,7 @@ class Agent:
                 continue
             if self.service_runners():
                 self.flush_posts()
+            self._maybe_trade_tick()
             if self.misses and self._lease_overdue():
                 self._leave_for_register("lease deadline passed between heartbeats")
                 return None
@@ -385,6 +405,8 @@ class Agent:
         for post in self.pending_posts:
             if post.job_id and post.job_id not in self.running:
                 jobs.append({"id": post.job_id, "lease_token": post.body.get("lease_token"), "progress": post.progress})
+        for job in self.trade_jobs.values():
+            jobs.append({"id": job["id"], "lease_token": job["lease_token"], "progress": 0.0})
         return {
             "cpu_pct": self._cpu.sample(),
             "ram_used_mb": sysinfo.ram_used_mb(),
@@ -394,6 +416,7 @@ class Agent:
             "jobs": jobs,
             "released": list(self.pending_releases),
             "want_job": self.wants_job(),
+            "want_jobs": self.want_jobs(),
             "code_version": self.code_version,
             "skew_ms": self.skew_ms,
         }
@@ -402,10 +425,30 @@ class Agent:
         """Batch roles claim regardless of the kill flag (it only concerns trade)."""
         return self.role in BATCH_ROLES and not self.running and not self.stopping
 
+    def want_jobs(self) -> int:
+        """Trade role: free slots (trade_max_games minus the held trade jobs), 0..100.
+        0 for every other role; the host refuses trade claims under kill by itself."""
+        if self.role != "trade" or self.stopping:
+            return 0
+        return max(0, min(100, self.trade.trade_max_games() - len(self.trade_jobs)))
+
     def on_kill(self) -> None:
-        """Called when the kill flag turns on. A no-op for batch roles; step 4 makes
-        a trade worker stop proposing and cancel its open orders here."""
+        """Called when the kill flag turns on. A no-op for batch roles; a trade worker
+        keeps ticking but proposes nothing (the host cancelled its orders)."""
+        if self.role == "trade":
+            log.warning("kill switch on: trade proposals stop, ticks continue")
         return None
+
+    def _maybe_trade_tick(self) -> None:
+        """Run the trade tick every trade_tick_s while in the trade role."""
+        if self.role != "trade" or self.stopping or self.conf is None:
+            return
+        now = self._clock()
+        if now < self._next_trade_at:
+            return
+        self._next_trade_at = now + self.trade.tick_seconds()
+        self.trade.run()
+        self._write_status()
 
     def _post_heartbeat(self, payload: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
         assert self.conf is not None
@@ -465,11 +508,17 @@ class Agent:
             self._start_job(job)
         cancelled = {str(j) for j in (resp.get("cancel") or [])}
         role_change = self.desired_role != self.role or self.role_epoch != self.acked_epoch
-        preempt = [str(j) for j in (resp.get("preempt") or []) if str(j) in self.running]
+        preempt_ids = [str(j) for j in (resp.get("preempt") or [])]
+        preempt = [j for j in preempt_ids if j in self.running]
         if preempt and not role_change:
             log.info("preempt requested for %s", ", ".join(preempt))
             for rj in self._stop_runners(preempt, self.options.drain_grace):
                 self.pending_releases.append(self._release_entry(rj, "cancel" if rj.job_id in cancelled else "preempt"))
+        if not role_change:
+            # A trade job runs nothing: hand it back on the next heartbeat. (On a role
+            # change the drain's trade release handshake covers them.)
+            for job_id in [j for j in preempt_ids if j in self.trade_jobs]:
+                self._drop_trade_job(job_id, "cancel" if job_id in cancelled else "preempt")
         if role_change:
             # A role change arrives with preempt[] for the other-role jobs; the drain
             # stops them all and the release reason names the cause (drain, or cancel).
@@ -509,9 +558,15 @@ class Agent:
             entry = self._release_entry(rj, "cancel" if rj.job_id in (cancelled or ()) else "drain")
             if not self._release_now(entry):
                 self.pending_releases.append(entry)
+        if self.trade_jobs and self.desired_role != "trade":
+            # Away from trade: the host cancels our orders and requeues the jobs first.
+            self._release_trade_jobs("drain", cancelled)
         self.role = self.desired_role
         self.acked_epoch = self.role_epoch
         self.state = "ACTIVE"
+        if self.role == "trade":
+            self._next_trade_at = 0.0
+            self.trade.fetch_state()  # settings (trade_max_games) before the ack asks for slots
 
     def _release_now(self, entry: dict[str, Any]) -> bool:
         """POST /checkpoint release=true so the release is acknowledged before the switch.
@@ -543,6 +598,28 @@ class Agent:
             log.warning("release of %s not delivered (%s); carried in the next heartbeat", entry["id"], exc)
             return False
         return True
+
+    def _drop_trade_job(self, job_id: str, reason: str) -> None:
+        """Forget a held trade job and carry its release in the next heartbeat."""
+        job = self.trade_jobs.pop(job_id, None)
+        if job is None:
+            return
+        log.info("trade job %s released (%s)", job_id, reason)
+        self.pending_releases.append({"id": job_id, "lease_token": job["lease_token"], "progress": None, "checkpoint": None, "reason": reason})
+
+    def _release_trade_jobs(self, reason: str, cancelled: set[str] | None = None) -> None:
+        """The release handshake: POST /api/v1/trade/release for every held trade job
+        (the host cancels their orders and requeues them). Jobs the host did not confirm,
+        or all of them when it never answered, ride the next heartbeat's released[]
+        (reason `cancel` for the ids in cancelled, else `reason`)."""
+        jobs = list(self.trade_jobs.values())
+        answer = self.trade.release_jobs(jobs)
+        confirmed = {str(j) for j in (answer or {}).get("released") or []}
+        for job in jobs:
+            if job["id"] in confirmed:
+                self.trade_jobs.pop(job["id"], None)
+            else:
+                self._drop_trade_job(job["id"], "cancel" if job["id"] in (cancelled or ()) else reason)
 
     def _stop_runners(self, job_ids: list[str], grace: float) -> list[RunningJob]:
         """SIGTERM the given runners in parallel, SIGKILL survivors after grace."""
@@ -582,6 +659,12 @@ class Agent:
         lease = job.get("lease_seconds")
         if isinstance(lease, (int, float)) and lease > 0:
             self.lease_seconds = float(lease)
+        if job.get("kind") == "trade":
+            # No runner: the trade tick serves every held assignment from the host's state.
+            held = job_id in self.trade_jobs
+            self.trade_jobs[job_id] = {"id": job_id, "lease_token": token, "params": job.get("params") or {}}
+            log.info("%s trade job %s (%d held)", "re-keyed" if held else "holding", job_id, len(self.trade_jobs))
+            return
         if context.needs_context(job.get("kind")):
             try:
                 job = dict(job, context=self._build_context(job))
@@ -625,6 +708,8 @@ class Agent:
         return hit
 
     def _forget_lost(self, job_id: str) -> None:
+        if self.trade_jobs.pop(job_id, None) is not None:
+            log.warning("trade job %s lost (lease gone)", job_id)
         rj = self.running.pop(job_id, None)
         if rj is None:
             return
@@ -768,6 +853,7 @@ class Agent:
                 "host_code_version": self.host_code_version,
                 "heartbeat_seconds": self.heartbeat_seconds,
                 "running": sorted(self.running),
+                "trade": self.trade.status(),
                 "kill": self.kill,
                 "watchdog_trips": self.watchdog.trips,
                 "pending_posts": [p.job_id for p in self.pending_posts],

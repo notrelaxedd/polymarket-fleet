@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from host import db, web
-from host.api import dashboard, dashboard_forms, dashboard_models, data, dl, jobs, models, owner, workers
+from host.api import dashboard, dashboard_forms, dashboard_models, data, dl, jobs, models, owner, owner_trading, trade, workers
 from host.bundle import build_bundle
 from host.config import Config
 from host.errors import QueueError
@@ -150,9 +150,11 @@ def create_app(config: Config) -> FastAPI:
 
     app.include_router(workers.router)
     app.include_router(jobs.router)
+    app.include_router(trade.router)
     app.include_router(data.worker_router)
     app.include_router(models.worker_router)
     app.include_router(owner.router)
+    app.include_router(owner_trading.router)
     app.include_router(data.owner_router)
     app.include_router(models.owner_router)
     app.include_router(owner.health_router)

@@ -186,34 +186,42 @@ def test_settings_are_validated_and_audited(client, conn, make_worker):
         assert next(iter(body)) in r.json()["detail"]
     assert client.get("/api/settings").json() == before, "nothing changed"
     assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'settings_changed'").fetchone()["n"] == 0
-    r = client.post("/api/settings", json={"kill_switch": True, "lease_seconds": 45, "tz": "America/New_York", "max_expiries": None})
+    # kill_switch never moves through the generic settings write: only the kill
+    # transaction (cancel-all, halts, audit) and the RESUME reset may change it
+    for body in ({"kill_switch": True}, {"kill_switch": False}, {"kill_switch": True, "lease_seconds": 45}):
+        r = client.post("/api/settings", json=body)
+        assert r.status_code == 400 and "use /api/kill" in r.json()["detail"], (body, r.text)
+    assert client.get("/api/settings").json() == before
+    r = client.post("/api/settings", json={"lease_seconds": 45, "tz": "America/New_York", "max_expiries": None})
     assert r.status_code == 200, r.text
-    assert r.json()["kill_switch"] is True and r.json()["max_expiries"] is None
+    assert r.json()["kill_switch"] is False and r.json()["max_expiries"] is None
     rows = conn.execute(
         "SELECT entity, actor, before, after FROM audit_log WHERE action = 'settings_changed' ORDER BY id"
     ).fetchall()
     assert [(x["entity"], x["before"], x["after"]) for x in rows] == [
-        ("kill_switch", {"kill_switch": False}, {"kill_switch": True}),
         ("lease_seconds", {"lease_seconds": 30}, {"lease_seconds": 45}),
         ("max_expiries", {"max_expiries": 3}, {"max_expiries": None}),
     ]
     assert all(x["actor"] for x in rows)
     w = make_worker("box1", role="backtest")
+    assert client.post("/api/kill").status_code == 200
     hb = client.post(f"/api/v1/workers/{w.id}/heartbeat", json=heartbeat_body("backtest"), headers=w.headers).json()
     assert hb["kill"] is True
-    assert client.post("/api/settings", json={"kill_switch": False}).status_code == 200
+    assert client.post("/api/settings", json={"live_enabled": True}).status_code == 400, "live cannot be switched on under kill"
+    assert client.post("/api/kill/reset", json={"confirm": "RESUME"}).status_code == 200
     client.post("/api/jobs", json={"kind": "sleep"})
     hb = client.post(f"/api/v1/workers/{w.id}/heartbeat", json=heartbeat_body("backtest"), headers=w.headers).json()
     assert hb["kill"] is False and hb["claimed"][0]["lease_seconds"] == 45
 
 
 def test_pnl_and_audit_routes(client, make_worker):
-    """Step 2: /api/pnl is zeros keyed by worker until step 4; /api/audit is newest first."""
+    """Step 2: /api/pnl is zeros keyed by worker (and by mode from step 4); /api/audit is newest first."""
     a = make_worker("a")
     b = make_worker("b")
     r = client.get("/api/pnl")
     assert r.status_code == 200
-    assert r.json() == {"today_cents": 0, "all_time_cents": 0, "by_worker": {a.id: 0, b.id: 0}}
+    zero = {"today_cents": 0, "all_time_cents": 0}
+    assert r.json() == {**zero, "by_worker": {a.id: 0, b.id: 0}, "by_mode": {"paper": zero, "live": zero}}
     client.post(f"/api/workers/{a.id}/role", json={"role": "train"})
     client.post("/api/settings", json={"lease_seconds": 40})
     r = client.get("/api/audit")

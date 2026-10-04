@@ -1,6 +1,7 @@
 """Order rows, their state transitions and the order_events audit trail."""
 from __future__ import annotations
 
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable
 
 import psycopg
@@ -12,6 +13,18 @@ from host.trading import ledger
 ACTIVE_STATUSES = ("approved", "submitting", "open", "partial", "cancel_requested")
 OPEN_ON_EXCHANGE = ("submitting", "open", "partial")
 TERMINAL_STATUSES = ("rejected", "filled", "cancelled", "rejected_by_exchange", "expired")
+
+
+def cents(amount: Any) -> int:
+    """Dollars to whole cents, rounded half up (the same rule as SQL ROUND), exact
+    for the decimal prices the exchange quotes (0.985 is not a float boundary)."""
+    return int((Decimal(str(amount)) * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def fill_cost_cents(price: Any, size: int) -> int:
+    """price * size in cents, rounded half up: the one rounding used by fills, the
+    ledger, settlement and the paper simulator."""
+    return cents(Decimal(str(price)) * int(size))
 
 
 def get_order(conn: psycopg.Connection, order_id: Any, for_update: bool = False) -> dict[str, Any]:
@@ -137,7 +150,7 @@ def record_fill(
         """,
         (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id),
     )
-    cost_cents = int(round(float(price) * size * 100))
+    cost_cents = fill_cost_cents(price, size)
     if order.get("assignment_id") is not None:
         bank = ledger.bankroll_for_assignment(conn, order["assignment_id"])
         ledger.fill(conn, bank["id"], cost_cents, fee_cents, order_id)
@@ -158,9 +171,10 @@ def record_fill(
 
 
 def sum_consumed(conn: psycopg.Connection, order_id: Any) -> int:
-    """Cents moved out of the reservation by this order's fills (cost + fees)."""
+    """Cents moved out of the reservation by this order's fills (cost + fees), read
+    from the ledger's `fill` rows so it can never disagree with what was posted."""
     row = conn.execute(
-        "SELECT COALESCE(SUM(ROUND(price * size * 100) + fee_cents), 0) AS s FROM fills WHERE order_id = %s",
-        (order_id,),
+        "SELECT COALESCE(SUM(-d_reserved), 0) AS s FROM ledger WHERE ref_type = 'order' AND ref_id = %s AND kind = 'fill'",
+        (str(order_id),),
     ).fetchone()
     return int(row["s"])

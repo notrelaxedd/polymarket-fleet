@@ -1,8 +1,14 @@
 <span class="pill {{ 'live' if topbar.live else 'paper' }}">{{ 'LIVE' if topbar.live else 'PAPER' }}</span>
-<span class="pnl muted">today {{ topbar.pnl_today | money }} &middot; all {{ topbar.pnl_all | money }}</span>
+<span class="pnl muted">paper today {{ topbar.pnl.paper.today_cents | money }} &middot; all {{ topbar.pnl.paper.all_time_cents | money }}{% if topbar.live %} <span class="nowrap">&middot; live today {{ topbar.pnl.live.today_cents | money }} &middot; all {{ topbar.pnl.live.all_time_cents | money }}</span>{% endif %}</span>
 {% if topbar.killed %}
 <span class="chip chip-killed" data-killed="1" aria-disabled="true">KILLED</span>
 <a class="killed-text" href="/settings#kill">TRADING KILLED. Reset in Settings.</a>
 {% else %}
 <a class="btn btn-kill" href="/kill/confirm" data-kill="1">KILL</a>
+{% endif %}
+{% if topbar.exchange_down %}
+<a class="banner banner-down" href="/trading#exchange" data-banner="exchange-down" role="alert">EXCHANGE DOWN</a>
+{% endif %}
+{% if topbar.unattended %}
+<a class="banner banner-warn" href="/trading#assignments" data-banner="unattended" role="alert">{{ topbar.unattended }} assignment{{ '' if topbar.unattended == 1 else 's' }} unattended</a>
 {% endif %}

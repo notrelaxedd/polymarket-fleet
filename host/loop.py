@@ -1,26 +1,54 @@
-"""The background reaper + dispatcher loop."""
+"""The background reaper + dispatcher + orphan-order loop."""
 from __future__ import annotations
 
 import logging
 import threading
 from typing import Any
 
+import psycopg
 from psycopg_pool import ConnectionPool
 
 from host import queue
+from host.settings import get_int_setting
+from host.trading import orders
 
 log = logging.getLogger(__name__)
+ORPHAN_ACTOR = "orphan"
+
+
+def cancel_orphan_orders(conn: psycopg.Connection) -> list[dict[str, Any]]:
+    """The orphan rule of docs/TRADING.md: a worker silent for `orphan_cancel_after_s`
+    with active orders gets them cancelled the same way a release would (paper at
+    once, live `cancel_requested`); its trade jobs follow the normal lease expiry."""
+    after = get_int_setting(conn, "orphan_cancel_after_s", 30)
+    rows = conn.execute(
+        """
+        SELECT o.id, o.worker_id FROM orders o
+          JOIN workers w ON w.id = o.worker_id
+         WHERE o.status IN ('approved', 'submitting', 'open', 'partial')
+           AND (w.last_heartbeat_at IS NULL OR w.last_heartbeat_at < now() - make_interval(secs => %s))
+         ORDER BY o.created_at
+        """,
+        (after,),
+    ).fetchall()
+    out = []
+    for row in rows:
+        status = orders.cancel_order(conn, row["id"], ORPHAN_ACTOR, "worker silent")
+        out.append({"id": str(row["id"]), "worker_id": row["worker_id"], "status": status})
+    return out
 
 
 def run_once(pool: ConnectionPool) -> dict[str, Any]:
-    """One reaper pass then one dispatcher pass, each in its own transaction."""
+    """One reaper pass, one dispatcher pass, one orphan pass, each in its own transaction."""
     with pool.connection() as conn:
         reaped = queue.reap(conn)
     with pool.connection() as conn:
         dispatched = queue.dispatch(conn)
-    if reaped or dispatched:
-        log.info("loop: reaped=%d dispatched=%d", len(reaped), len(dispatched))
-    return {"reaped": len(reaped), "dispatched": len(dispatched)}
+    with pool.connection() as conn:
+        orphaned = cancel_orphan_orders(conn)
+    if reaped or dispatched or orphaned:
+        log.info("loop: reaped=%d dispatched=%d orphaned=%d", len(reaped), len(dispatched), len(orphaned))
+    return {"reaped": len(reaped), "dispatched": len(dispatched), "orphaned": len(orphaned)}
 
 
 class LoopThread(threading.Thread):

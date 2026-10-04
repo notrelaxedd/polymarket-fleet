@@ -149,6 +149,18 @@ def signed_pct(value: Any, digits: int = 1) -> str:
         return "-"
 
 
+def price(value: Any) -> str:
+    """A contract price: 0.52 -> "0.52", 0.525 -> "0.525"; "-" when missing."""
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        text = f"{float(value):.4f}".rstrip("0")
+    except (TypeError, ValueError):
+        return "-"
+    whole, _, frac = text.partition(".")
+    return f"{whole}.{frac.ljust(2, '0')}"
+
+
 def season_span(seasons: Any) -> str:
     """[2010, ..., 2025] -> "2010-2025"; "-" when empty."""
     if isinstance(seasons, (list, tuple)) and seasons:
@@ -162,7 +174,7 @@ def make_env() -> Environment:
     env.filters.update(
         {"money": format_cents, "dollars": cents_to_dollars, "pct": pct, "pct1": pct1, "gb": gb, "ago": ago,
          "ts": ts, "pretty_json": pretty_json, "compact_json": compact_json, "short": short,
-         "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span}
+         "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span, "price": price}
     )
     return env
 

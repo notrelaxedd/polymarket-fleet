@@ -1,0 +1,51 @@
+{
+  "markets": [
+    {
+      "id": "pmus-kc-lv-kc",
+      "event_id": "pmus-ev-1",
+      "title": "Kansas City Chiefs to win vs Las Vegas Raiders",
+      "home_team": "Las Vegas Raiders",
+      "away_team": "Kansas City Chiefs",
+      "outcome": "Kansas City Chiefs",
+      "start_time": "2026-10-05T20:15:00Z",
+      "tick_size": "0.01",
+      "min_order_size": 5,
+      "status": "open"
+    },
+    {
+      "id": "pmus-kc-lv-lv",
+      "event_id": "pmus-ev-1",
+      "title": "Las Vegas Raiders to win vs Kansas City Chiefs",
+      "home_team": "LV",
+      "away_team": "KC",
+      "outcome": "LV",
+      "start_time": "2026-10-05T20:15:00Z",
+      "tick_size": 0.01,
+      "min_order_size": "5"
+    },
+    {
+      "id": "pmus-title-only",
+      "title": "Will the Philadelphia Eagles beat the Dallas Cowboys?",
+      "start_time": 1791232500
+    },
+    {
+      "id": "pmus-no-teams",
+      "title": "Super Bowl LXI winner: AFC",
+      "start_time": "not a date",
+      "tick_size": "huge",
+      "min_order_size": null
+    },
+    {
+      "title": "market without an id is skipped"
+    },
+    "not an object",
+    {
+      "id": "pmus-bad-fields",
+      "home_team": {"abbreviation": "GB"},
+      "away_team": {"name": "Chicago Bears"},
+      "outcome": {"code": "CHI"},
+      "start_time": "2026-10-04T17:00:00+00:00",
+      "tick_size": 7
+    }
+  ]
+}

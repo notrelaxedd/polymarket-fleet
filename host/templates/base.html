@@ -15,7 +15,7 @@
       <a href="/"{% if path == '/' %} class="active"{% endif %}>Fleet</a>
       <a href="/jobs"{% if path.startswith('/jobs') %} class="active"{% endif %}>Jobs</a>
       <a href="/models"{% if path.startswith('/models') %} class="active"{% endif %}>Models</a>
-      <span class="disabled" aria-disabled="true" title="comes with step 4">Trading<small class="soon">step 4</small></span>
+      <a href="/trading"{% if path.startswith('/trading') %} class="active"{% endif %}>Trading</a>
       <a href="/settings"{% if path.startswith('/settings') %} class="active"{% endif %}>Settings</a>
     </nav>
     <div id="topbar-status" class="status">

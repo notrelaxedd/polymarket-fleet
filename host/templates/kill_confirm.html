@@ -7,7 +7,7 @@
   <p>Trading is already killed. Reset it in <a href="/settings#kill">Settings</a>.</p>
   <p><a class="btn" href="/">Back</a></p>
   {% else %}
-  <p>Trade workers stop proposing, their open orders are cancelled (step 4) and no trade claim is granted until you reset the switch in Settings by typing RESUME. Backtests, model searches and training keep running.</p>
+  <p>Trade workers stop proposing, their open orders are cancelled, every assignment is halted and no trade claim is granted until you reset the switch in Settings by typing RESUME. Backtests, model searches and training keep running.</p>
   <form method="post" action="/kill">
     <button type="submit" class="btn btn-kill big">KILL TRADING</button>
     <a class="btn" href="/">Cancel</a>

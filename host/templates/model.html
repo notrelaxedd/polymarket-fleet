@@ -12,10 +12,11 @@
     <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
     <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
     <dt>shrunk ROI</dt><dd>{{ model.score | signed_pct(2) }} <span class="muted small">ROI x bets / (bets + 100)</span></dd>
+    <dt>paper record</dt><dd>{% if model.paper.games %}{{ model.paper.games }} games &middot; {{ model.paper.bets }} bets &middot; {{ model.paper.pnl_cents | money }} &middot; ROI {{ model.paper.roi | signed_pct }} &middot; CLV {{ model.paper.avg_clv | fixed }} <span class="muted small">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
   </dl>
   <div class="actions">
     <a class="btn" href="/jobs?train_model={{ model.id }}#train">Train</a>
-    <button type="button" class="btn soon" disabled title="comes with step 4">Assign <small>step 4</small></button>
+    {% if model.status != 'retired' %}<a class="btn" href="/trading?model={{ model.id }}#assign">Assign</a>{% endif %}
     {% if model.status != 'retired' %}
     <form method="post" action="/models/{{ model.id }}/retire" class="inline" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
       <input type="hidden" name="next" value="/models/{{ model.id }}">

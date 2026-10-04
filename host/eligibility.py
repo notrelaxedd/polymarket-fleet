@@ -17,6 +17,8 @@ from typing import Any
 
 import psycopg
 
+from host.events import add_audit
+
 DEFAULT_THRESHOLDS: dict[str, Any] = {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.30}
 
 
@@ -87,4 +89,101 @@ def recompute_all(conn: psycopg.Connection) -> int:
     rows = conn.execute("SELECT DISTINCT lineage_id FROM models").fetchall()
     for row in rows:
         recompute_lineage(conn, row["lineage_id"], limits)
+    return len(rows)
+
+
+# ------------------------------------------------------------ step 4: paper gate
+
+DEFAULT_PAPER_THRESHOLDS: dict[str, Any] = {
+    "min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1,
+}
+
+
+def paper_thresholds(conn: psycopg.Connection) -> dict[str, Any]:
+    """`settings.thresholds_paper` (read FOR SHARE) with defaults for missing keys."""
+    row = conn.execute("SELECT value FROM settings WHERE key = 'thresholds_paper' FOR SHARE").fetchone()
+    value = None if row is None else row["value"]
+    out = dict(DEFAULT_PAPER_THRESHOLDS)
+    if isinstance(value, dict):
+        out.update({k: v for k, v in value.items() if k in out and v is not None})
+    return out
+
+
+def paper_stats(conn: psycopg.Connection, lineage_id: Any, now: Any = None) -> dict[str, Any]:
+    """The lineage's pooled paper record: distinct games (one game traded by several
+    models of the lineage counts once; a settled game with no bet still counts) and
+    bets from model_scores, stake weighted CLV, P&L and days since its first paper bet."""
+    row = conn.execute(
+        """
+        SELECT count(DISTINCT game_id) AS games, COALESCE(SUM(n_bets), 0) AS bets, COALESCE(SUM(pnl_cents), 0) AS pnl_cents,
+               SUM(CASE WHEN avg_clv IS NOT NULL THEN avg_clv * stake_cents END) AS clv_weight,
+               SUM(CASE WHEN avg_clv IS NOT NULL THEN stake_cents END) AS clv_stake
+          FROM model_scores WHERE lineage_id = %s AND mode = 'paper'
+        """,
+        (lineage_id,),
+    ).fetchone()
+    first = conn.execute(
+        "SELECT MIN(settled_at) AS first FROM bets WHERE lineage_id = %s AND mode = 'paper'", (lineage_id,)
+    ).fetchone()["first"]
+    days = 0.0
+    if first is not None:
+        current = now or conn.execute("SELECT now() AS now").fetchone()["now"]
+        days = max(0.0, (current - first).total_seconds() / 86400.0)
+    stake = float(row["clv_stake"] or 0)
+    avg_clv = float(row["clv_weight"]) / stake if stake > 0 else None
+    return {
+        "games": int(row["games"]), "bets": int(row["bets"]), "pnl_cents": int(row["pnl_cents"]),
+        "avg_clv": avg_clv, "days": days,
+    }
+
+
+def meets_paper_thresholds(stats: dict[str, Any], limits: dict[str, Any]) -> bool:
+    """games, bets, days, avg_clv and pnl each at or above its threshold; a lineage
+    with no CLV yet never passes."""
+    if stats.get("avg_clv") is None:
+        return False
+    return (
+        stats["games"] >= int(limits["min_games"])
+        and stats["bets"] >= int(limits["min_bets"])
+        and stats["days"] >= float(limits["min_days"])
+        and float(stats["avg_clv"]) >= float(limits["min_clv"])
+        and stats["pnl_cents"] >= int(limits["min_pnl_cents"])
+    )
+
+
+def recompute_paper(conn: psycopg.Connection, lineage_id: Any, actor: str | None = "settle") -> str | None:
+    """After settlement: the backtest gate first, then `paper_ok -> live_eligible`
+    when the pooled paper scores meet `thresholds_paper` and `live_eligible ->
+    paper_ok` (live assignments halted, their orders cancelled) when they stop
+    meeting them. The status, or None for an unknown lineage."""
+    paper_limits = paper_thresholds(conn)
+    current = recompute_lineage(conn, lineage_id)
+    if current is None:
+        return None
+    meets = meets_paper_thresholds(paper_stats(conn, lineage_id), paper_limits)
+    new = current
+    if current == "paper_ok" and meets:
+        new = "live_eligible"
+    elif current == "live_eligible" and not meets:
+        new = "paper_ok"
+    if new != current:
+        conn.execute(
+            "UPDATE models SET status = %s, updated_at = now() WHERE lineage_id = %s AND status <> %s",
+            (new, lineage_id, new),
+        )
+        add_audit(conn, "eligibility_changed", str(lineage_id), actor, {"status": current}, {"status": new})
+        if new == "paper_ok":
+            halt_live_assignments(conn, lineage_id, actor, "lineage no longer live_eligible")
+    return new
+
+
+def halt_live_assignments(conn: psycopg.Connection, lineage_id: Any, actor: str | None, reason: str) -> int:
+    """Halt every active live assignment of the lineage (orders cancelled by halt)."""
+    from host.trading import assignments
+
+    rows = conn.execute(
+        "SELECT id FROM assignments WHERE lineage_id = %s AND mode = 'live' AND status = 'active'", (lineage_id,)
+    ).fetchall()
+    for row in rows:
+        assignments.halt_assignment(conn, row["id"], actor, reason)
     return len(rows)

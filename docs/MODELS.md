@@ -152,12 +152,15 @@ Per lineage, recomputed whenever a model row is created or its backtest metrics 
 `candidate -> paper_ok` when the root model's backtest has `n_bets >= min_bets`,
 `roi >= min_roi` and `max_drawdown <= max_drawdown` (settings `thresholds_backtest`,
 defaults `{"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.30}`); otherwise it stays
-or returns to `candidate`. `paper_ok -> live_eligible` is step 4 (paper thresholds). Status
-is held on every row of the lineage.
+or returns to `candidate`. `paper_ok -> live_eligible` (and back) is decided after every
+settlement from the lineage's pooled paper record against `thresholds_paper`
+(docs/TRADING.md, "Settlement, bets, scoring, eligibility"). Status is held on every row
+of the lineage.
 
 ## Leaderboard (step 3 scope)
 
 One row per lineage, using the root model's backtest metrics: rank by shrunk ROI
 (`roi * n_bets / (n_bets + 100)`), tie-break log-loss; ranked only if `n_bets >= 50`,
 otherwise listed below as unranked. Columns: status, family, short params, ROI, bets,
-log-loss vs market, max drawdown, seasons, summary. Paper and live columns arrive in step 4.
+log-loss vs market, max drawdown, seasons, summary. Step 4 adds the paper (and later
+live) record per lineage and the paper rank mode (docs/TRADING.md, "Leaderboard and P&L").

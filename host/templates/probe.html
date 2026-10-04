@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Market probe{% endblock %}
+{% block content %}
+<p><a href="/trading#exchange">&larr; Trading</a></p>
+<h1>Market probe <span class="params">{{ probe.source }}</span></h1>
+<div class="card">
+  <dl class="props">
+    <dt>url</dt><dd><code>{{ probe.url or '-' }}</code></dd>
+    <dt>status</dt><dd>{{ probe.status if probe.status is not none else '-' }}</dd>
+    {% if probe.error %}<dt>error</dt><dd class="error">{{ probe.error }}</dd>{% endif %}
+  </dl>
+  <p class="muted small">The raw markets payload of the configured source, truncated to 64 KiB. Paste it back when the parser needs fixing.</p>
+  <button type="button" class="btn small js-only" data-copy="payload">Copy</button>
+  <pre id="payload">{{ probe.payload if probe.payload is string else probe.payload | pretty_json }}</pre>
+</div>
+{% endblock %}

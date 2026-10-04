@@ -286,10 +286,25 @@ def validate_settings(updates: dict[str, Any], current: dict[str, Any]) -> None:
         raise BadRequest("invalid settings: " + "; ".join(problems))
 
 
+def guarded_problems(updates: dict[str, Any], current: dict[str, Any]) -> list[str]:
+    """Keys the generic settings write must not touch. `kill_switch` only moves through
+    the kill transaction (cancel-all, halts, audit) and the RESUME reset; and live
+    trading cannot be switched on while the fleet is killed."""
+    problems = []
+    if "kill_switch" in updates:
+        problems.append("kill_switch is read-only here: use /api/kill or /api/kill/reset")
+    if updates.get("live_enabled") is True and current.get("kill_switch") is True:
+        problems.append("live_enabled cannot be turned on while kill_switch is on")
+    return problems
+
+
 def set_settings(conn: psycopg.Connection, updates: dict[str, Any], actor: str | None = None) -> dict[str, Any]:
     """Validate and store the given keys; one audit row per changed key."""
     before = get_settings(conn)
     validate_settings(updates, before)
+    guarded = guarded_problems(updates, before)
+    if guarded:
+        raise BadRequest("invalid settings: " + "; ".join(guarded))
     for key, value in updates.items():
         if before[key] == value:
             continue

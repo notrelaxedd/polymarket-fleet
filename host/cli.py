@@ -12,7 +12,10 @@ from host.api.owner import install_command
 from host.api.serialize import jsonable
 from host.config import Config
 from host.errors import QueueError
-from host.settings import get_setting
+from host.money import cents_to_dollars, dollars_to_cents
+from host.settings import get_int_setting, get_setting
+from host.trading import assignments, ledger
+from host.trading import views as trading_views
 
 ROLETEST_SLEEP_SECONDS = 120
 ROLETEST_LIMIT_SECONDS = 10.0
@@ -179,6 +182,81 @@ def cmd_models(config: Config, _: argparse.Namespace) -> None:
     print_table(rows, ["rank", "id", "status", "family", "params", "roi", "bets", "log_loss", "market", "drawdown", "seasons", "rows"])
 
 
+def cmd_assign(config: Config, args: argparse.Namespace) -> None:
+    """Create an assignment (bankroll and max bet in dollars)."""
+    with db.connect(config.database_url) as conn:
+        bankroll = get_int_setting(conn, "default_bankroll_cents", 10_000)
+        if args.bankroll:
+            bankroll = dollars_to_cents(args.bankroll, "bankroll")
+        max_bet = dollars_to_cents(args.max_bet, "max bet") if args.max_bet else None
+        row = assignments.create_assignment(conn, args.game_id, args.model_id, args.mode, bankroll, "cli", max_bet)
+    print(f"assignment {row['id']} game={row['game_id']} model={str(row['model_id'])[:8]} mode={row['mode']} "
+          f"bankroll=${cents_to_dollars(row['bankroll']['available_cents'])} job={row['job_id']}")
+
+
+def cmd_assignments(config: Config, args: argparse.Namespace) -> None:
+    with db.connect(config.database_url) as conn:
+        rows = assignments.list_assignments(conn, args.status)
+    flat = []
+    for r in rows:
+        b = r["bankroll"]
+        flat.append({
+            "id": str(r["id"])[:8], "game": r["game_id"], "model": str(r["model_id"])[:8], "mode": r["mode"],
+            "status": r["status"], "available": cents_to_dollars(b["available_cents"]),
+            "reserved": cents_to_dollars(b["reserved_cents"]), "open": cents_to_dollars(b["open_cost_cents"]),
+            "realized": cents_to_dollars(b["realized_pnl_cents"]), "open_orders": r["open_orders"],
+            "job": r["job"]["status"], "kickoff": r["game"]["kickoff_at"],
+        })
+    print_table(flat, ["id", "game", "model", "mode", "status", "available", "reserved", "open", "realized",
+                       "open_orders", "job", "kickoff"])
+
+
+def cmd_orders(config: Config, args: argparse.Namespace) -> None:
+    with db.connect(config.database_url) as conn:
+        rows = trading_views.list_orders(conn, args.status, args.limit)
+    for r in rows:
+        r["id"] = str(r["id"])[:8]
+        r["cost"] = cents_to_dollars(r["cost_cents"])
+        r["market"] = f"{r['game_id']} {r['side']}"
+    print_table(rows, ["id", "mode", "status", "reject_reason", "market", "price", "size", "filled_size", "cost",
+                       "worker_id", "created_at"])
+
+
+def cmd_cancel_all(config: Config, args: argparse.Namespace) -> None:
+    with db.connect(config.database_url) as conn:
+        result = kill.cancel_all(conn, "cli", args.mode)
+    print(f"cancelled={result['cancelled']} requested={result['requested']}")
+
+
+def cmd_ledger_check(config: Config, _: argparse.Namespace) -> None:
+    """Replay every bankroll's ledger against its cached columns; exit 1 on a mismatch."""
+    with db.connect(config.database_url, autocommit=True) as conn:
+        n = conn.execute("SELECT count(*) AS n FROM bankrolls").fetchone()["n"]
+        problems = ledger.replay_problems(conn)
+    for problem in problems:
+        print(problem)
+    if problems:
+        raise QueueError(f"ledger replay found {len(problems)} problem(s) across {n} bankroll(s)")
+    print(f"ledger ok: {n} bankroll(s) replay to their cached columns")
+
+
+def cmd_exchange_state(config: Config, _: argparse.Namespace) -> None:
+    with db.connect(config.database_url, autocommit=True) as conn:
+        state = trading_views.exchange_state(conn)
+    print(json.dumps(jsonable(state), indent=2, sort_keys=True))
+
+
+def cmd_simulate_final(config: Config, args: argparse.Namespace) -> None:
+    """Set a final score for testing (market_source sim or FLEET_DEV), then settle."""
+    try:
+        from host.exchange.settle import simulate_final
+    except ImportError:
+        raise QueueError("exchange module not available") from None
+    with db.connect(config.database_url) as conn:
+        result = simulate_final(conn, args.game_id, args.home, args.away, "cli")
+    print(json.dumps(jsonable(result), sort_keys=True))
+
+
 def cmd_run_loop(config: Config, _: argparse.Namespace) -> None:
     pool = db.make_pool(config.database_url, max_size=2)
     try:
@@ -225,6 +303,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("worker")
     p.add_argument("--timeout", type=float, default=30.0, help="seconds to wait for each ack")
     p.set_defaults(func=cmd_roletest)
+    p = sub.add_parser("assign", help="create an assignment: game, model, mode, bankroll dollars")
+    p.add_argument("game_id")
+    p.add_argument("model_id")
+    p.add_argument("--mode", default="paper", choices=("paper", "live"))
+    p.add_argument("--bankroll", default=None, help="dollars (default: default_bankroll_cents)")
+    p.add_argument("--max-bet", default=None, help="dollars, lowers the global max bet for this assignment")
+    p.set_defaults(func=cmd_assign)
+    p = sub.add_parser("assignments", help="list assignments")
+    p.add_argument("--status", default=None)
+    p.set_defaults(func=cmd_assignments)
+    p = sub.add_parser("orders", help="list orders, newest first")
+    p.add_argument("--status", default=None, help="one status, or active")
+    p.add_argument("--limit", type=int, default=50)
+    p.set_defaults(func=cmd_orders)
+    p = sub.add_parser("cancel-all", help="cancel every active order without a kill")
+    p.add_argument("--mode", default=None, choices=("paper", "live"))
+    p.set_defaults(func=cmd_cancel_all)
+    sub.add_parser("ledger-check", help="replay every bankroll's ledger").set_defaults(func=cmd_ledger_check)
+    sub.add_parser("exchange-state", help="the exchange process state").set_defaults(func=cmd_exchange_state)
+    p = sub.add_parser("simulate-final", help="set a final score for a game (sim source or FLEET_DEV)")
+    p.add_argument("game_id")
+    p.add_argument("--home", type=int, required=True)
+    p.add_argument("--away", type=int, required=True)
+    p.set_defaults(func=cmd_simulate_final)
     return parser
 
 

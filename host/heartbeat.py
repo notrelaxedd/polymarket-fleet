@@ -9,7 +9,7 @@ import psycopg
 from host import auth
 from host.errors import Unauthorized
 from host.events import add_audit
-from host.leases import claim, job_payload, lease_seconds, release, renew
+from host.leases import claim_many, job_payload, lease_seconds, release, renew
 from host.recovery import held_jobs, orphan_jobs
 from host.scheduling import auto_return_to_idle
 from host.settings import BATCH_ROLES, get_int_setting, get_setting
@@ -163,22 +163,44 @@ def _preempt_ids(conn: psycopg.Connection, worker_id: str) -> tuple[list[str], l
     return preempt, cancel
 
 
-def _may_claim(worker: dict[str, Any], body: dict[str, Any], kill: bool) -> bool:
-    """Step 6 preconditions.
+MAX_TRADE_SLOTS = 100
 
-    The kill flag refuses trade claims only: batch roles (backtest, model_search,
-    train) keep claiming under kill, a stopped backtest hides research for no
-    safety gain. Trade claims arrive in step 4; the rule is already in place.
+
+def _claim_slots(worker: dict[str, Any], body: dict[str, Any], kill: bool) -> int:
+    """Step 6 preconditions: how many jobs this heartbeat may claim.
+
+    Batch roles (backtest, model_search, train) claim one job when `want_job` is set
+    and keep claiming under kill: a stopped backtest hides research for no safety
+    gain. A trade worker asks for its free slots with `want_jobs` (int) and gets
+    nothing under kill.
     """
     role = worker["desired_role"]
-    return (
-        not (kill and role == "trade")
-        and bool(worker["enabled"])
-        and bool(body.get("want_job"))
+    settled = (
+        bool(worker["enabled"])
         and worker["reported_role"] == worker["desired_role"]
         and worker["acked_epoch"] == worker["role_epoch"]
-        and role in BATCH_ROLES
     )
+    if not settled:
+        return 0
+    if role in BATCH_ROLES:
+        return 1 if body.get("want_job") else 0
+    if role == "trade" and not kill:
+        wanted = body.get("want_jobs")
+        if isinstance(wanted, bool) or not isinstance(wanted, int):
+            return 0
+        return max(0, min(wanted, MAX_TRADE_SLOTS))
+    return 0
+
+
+def _trade_slots_left(conn: psycopg.Connection, worker_id: str) -> int:
+    """The host-side cap on trade claims: `trade_max_games` minus the trade jobs this
+    worker already holds, so a worker's `want_jobs` can never exceed the setting."""
+    cap = get_int_setting(conn, "trade_max_games", 6)
+    held = conn.execute(
+        "SELECT count(*) AS n FROM jobs WHERE lease_worker_id = %s AND kind = 'trade' AND status IN ('leased', 'cancel_requested')",
+        (worker_id,),
+    ).fetchone()["n"]
+    return max(0, cap - int(held))
 
 
 def _reported_ids(body: dict[str, Any]) -> list[str]:
@@ -216,16 +238,18 @@ def process_heartbeat(
     worker = auto_return_to_idle(conn, worker_id) or worker
     kill = kill_switch(conn)
     claimed: list[dict[str, Any]] = []
-    if _may_claim(worker, body, kill):
+    slots = _claim_slots(worker, body, kill)
+    if slots > 0 and worker["desired_role"] == "trade":
+        slots = min(slots, _trade_slots_left(conn, worker_id))
+    if slots > 0:
         # A lease this worker holds but did not report (its claim reply was lost) is
         # handed back first; nothing new is claimed while one exists.
         orphans = orphan_jobs(conn, worker_id, _reported_ids(body), lease)
         if orphans:
             claimed = [job_payload(row, lease) for row in orphans]
         else:
-            row = claim(conn, worker_id, worker["desired_role"], lease)
-            if row is not None:
-                claimed.append(job_payload(row, lease))
+            rows = claim_many(conn, worker_id, worker["desired_role"], lease, slots)
+            claimed = [job_payload(row, lease) for row in rows]
     reply = _common_reply(conn, worker)
     reply.update({"kill": kill, "preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed})
     return reply
