@@ -18,6 +18,12 @@ Both are free. The honest caveats come first.
 
 ## Live game state
 
+The feed ingests plays, not just scores: the ESPN summary endpoint publishes the drive
+and play list as the game goes (`drives.current.plays[]` with the clock, down, distance,
+yard line, play text and the score after the play). Each new play becomes a `game_state`
+row, so the in-game model sees the exact situation it was trained on; the scoreboard
+endpoint is the fallback when the summary has no plays yet.
+
 `host/exchange/gamestate.py` polls ESPN for every game with an active assignment from
 kickoff until final: scoreboard for status, period, clock and scores; the summary endpoint
 (`.../summary?event=<espn id>`) for `situation` (possession, down, distance, yard line,
