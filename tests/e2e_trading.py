@@ -131,16 +131,16 @@ def rows(host: Any, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, An
         return [jsonable(dict(r)) for r in conn.execute(sql, params).fetchall()]
 
 
-def shifted_game_csv(directory: Path, source_game: str = SOURCE_GAME, game_id: str = GAME_ID) -> tuple[Path, dict[str, Any]]:
-    """The fixture's BUF @ NYJ row (or `source_game`) shifted to 2026 week 5, two days
-    ahead, unplayed, as `game_id`."""
+def shifted_game_csv(directory: Path, source_game: str = SOURCE_GAME, game_id: str = GAME_ID, days_ahead: int = 2) -> tuple[Path, dict[str, Any]]:
+    """The fixture's BUF @ NYJ row (or `source_game`) shifted to 2026 (the week in
+    `game_id`), `days_ahead` days ahead, unplayed, as `game_id`."""
     with open(FIXTURE_GAMES, newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         header = list(reader.fieldnames or [])
         source = next(r for r in reader if r["game_id"] == source_game)
-    gameday = (datetime.now(EASTERN) + timedelta(days=2)).strftime("%Y-%m-%d")
+    gameday = (datetime.now(EASTERN) + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
     row = dict(source)
-    row.update({"game_id": game_id, "season": "2026", "week": "5", "gameday": gameday, "gametime": "13:00",
+    row.update({"game_id": game_id, "season": "2026", "week": game_id.split("_")[1].lstrip("0"), "gameday": gameday, "gametime": "13:00",
                 "home_score": "", "away_score": "", "result": "", "total": "", "overtime": "", "old_game_id": "",
                 "gsis": "", "pfr": "", "espn": "", "ftn": ""})
     path = directory / f"shifted_{game_id}.csv"

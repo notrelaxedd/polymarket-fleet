@@ -3,7 +3,9 @@ host, the real agent in the trade role and the real exchange loop (sim market so
 whose live gateway is the scripted FakeLiveGateway (tests/fake_gateway.py), injected
 through ExchangeLoop(gateway_factory=...).
 
-A second shifted game goes in through the ingest CLI; the exchange starts with
+A second shifted game (the same BUF @ NYJ matchup the step 4 phase traded, where the
+trained model holds an edge against the sim book, as a week 6 game five days out so the
+mapper cannot confuse it with the settled one) goes in through the ingest CLI; the exchange starts with
 "credentials", its auth probe reads the fake balance into exchange_state; the owner
 enables live through the Settings form (a wrong phrase first: 400 with the error
 inline, then the exact dated phrase); the trained lineage is forced live_eligible in
@@ -38,8 +40,8 @@ from tests.e2e_trading import (
 )
 from tests.fake_gateway import FakeCredentials, FakeLiveGateway
 
-SOURCE_GAME = "2025_02_NYG_DAL"
-LIVE_GAME = "2026_05_NYG_DAL"
+SOURCE_GAME = "2025_02_BUF_NYJ"
+LIVE_GAME = "2026_06_BUF_NYJ"
 BANKROLL_CENTS = 20_000
 BALANCE_CENTS = 100_000
 LIVE_SETTINGS = {"open_orders_audit_s": 5, "live_fills_poll_s": 1, "auth_probe_interval_s": 10, "min_edge": 1.0}
@@ -57,10 +59,23 @@ def live_state(host: Any) -> dict[str, Any]:
     return host.get("/api/live")
 
 
+def _wait_order(host: Any, state_dir: str, gw: FakeLiveGateway, wait_for: Callable[..., Any], aid: str, status: str,
+                exclude: set[str], what: str) -> dict[str, Any]:
+    """The newest order of the assignment in `status`; the failure names what the
+    worker, the exchange and the gateway were doing."""
+    try:
+        return wait_for(order_in(host, aid, status, exclude=exclude), what, timeout=15.0)
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{exc}; orders={orders_of(host, aid)!r}; trade={trade_status(state_dir)!r}; "
+            f"exchange={host.get('/api/exchange')!r}; live={live_state(host)!r}; calls={dict(gw.calls)!r}"
+        ) from None
+
+
 def phase_live(host: Any, state_dir: str, worker_id: str, agent: Any, models: dict[str, Any], tmp_path: Path,
                monkeypatch: Any, wait_for: Callable[..., Any], settled: Callable[..., Any]) -> None:
     started = time.monotonic()
-    csv_path, game = shifted_game_csv(tmp_path, SOURCE_GAME, LIVE_GAME)
+    csv_path, game = shifted_game_csv(tmp_path, SOURCE_GAME, LIVE_GAME, days_ahead=5)
     out = run_cli(["ingest-games", "--file", str(csv_path)])
     assert "1 inserted" in out, out
     host.post("/api/settings", LIVE_SETTINGS)
@@ -116,7 +131,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     created = host.post("/api/assignments", {"game_id": LIVE_GAME, "model_id": model_id, "mode": "live", "bankroll_cents": BANKROLL_CENTS}, expect=201)
     aid, job_id = created["id"], created["job_id"]
     assert created["mode"] == "live" and created["status"] == "active" and created["bankroll"]["available_cents"] == BANKROLL_CENTS
-    assert 'class="is-live' in host.client.get("/trading").text or "is-live" in host.client.get("/trading").text
+    assert "is-live" in host.client.get("/trading").text, "the live assignment row is tinted"
 
     # The worker claims the live trade job; the approval passes buying power; the
     # executor places on the fake gateway and records the exchange id.
@@ -124,11 +139,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     wait_for(settled(host, worker_id, "trade"), "worker in the trade role")
     wait_for(lambda: (j := host.job(job_id))["status"] == "leased" and j["lease_worker_id"] == worker_id, "live trade job claimed")
     set_min_edge(host, 0.0)
-    try:
-        first = wait_for(order_in(host, aid, "open"), "first live order placed and open", timeout=15.0)
-    except AssertionError as exc:
-        raise AssertionError(f"{exc}; orders={orders_of(host, aid)!r}; trade={trade_status(state_dir)!r}; "
-                             f"exchange={host.get('/api/exchange')!r}; live={live_state(host)!r}; calls={dict(gw.calls)!r}") from None
+    first = _wait_order(host, state_dir, gw, wait_for, aid, "open", set(), "first live order placed and open")
     set_min_edge(host, 1.0)
     assert first["mode"] == "live" and first["exchange_order_id"] == "ex-1" and first["worker_id"] == worker_id
     assert gw.placed == [first["client_request_id"]] and [o["client_order_id"] for o in gw.open_orders()] == [first["client_request_id"]]
@@ -151,9 +162,10 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
 
     # The second place times out after the exchange accepted it: the row stays
     # submitting and is reconciled from open_orders() (exchange id adopted).
+    host.post("/api/settings", {"kelly_fraction": 1.0})  # the filled order sits at the target: make room
     gw.place_mode = "timeout"
     set_min_edge(host, 0.0)
-    second = wait_for(order_in(host, aid, "submitting", exclude={first["id"]}), "second live order left submitting", timeout=15.0)
+    second = _wait_order(host, state_dir, gw, wait_for, aid, "submitting", {first["id"]}, "second live order left submitting")
     set_min_edge(host, 1.0)
     gw.place_mode = "ok"
     assert second["exchange_order_id"] is None and gw.placed[-1] == second["client_request_id"]
@@ -198,20 +210,21 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     finally:
         pool.close()
     assert smoke["approved"] and smoke["status"] == "cancelled" and smoke["size"] == 1, smoke
-    assert smoke["price"] == max(0.01, round(float(away["best_bid"]) - 0.05, 2)) or smoke["price"] < float(away["best_bid"])
+    assert smoke["price"] == round(max(0.01, float(away["best_bid"]) - 0.05), 2), "5 cents under the bid: it rests"
     assert [e["to_status"] for e in smoke["timeline"]] == ["approved", "submitting", "open", "cancel_requested", "cancelled"]
     assert smoke["exchange_order_id"] in gw.cancelled and gw.remote == {}
     smoke_row = host.get(f"/api/orders/{smoke['order_id']}")
     assert smoke_row["kind"] == "smoke" and smoke_row["mode"] == "live" and smoke_row["assignment_id"] is None
     assert "chip-smoke" in host.client.get("/trading").text
-    assert host.get("/api/audit?limit=20")[0]["action"] == "smoke_order" or any(a["action"] == "smoke_order" for a in host.get("/api/audit?limit=20"))
+    smoke_audit = next(a for a in host.get("/api/audit?limit=20") if a["action"] == "smoke_order")
+    assert smoke_audit["confirmation_text"] == "SMOKE " + phrase[-10:] and smoke_audit["actor"] == "cli"
 
     # The assignment is activated again; a third order rests on the exchange when the
     # loop stops; cancel-all --direct (the CLI entry point) cancels it on the exchange
     # and closes the row.
     assert host.post(f"/api/assignments/{aid}/activate")["status"] == "active"
     set_min_edge(host, 0.0)
-    third = wait_for(order_in(host, aid, "open", exclude={first["id"], second["id"]}), "third live order open", timeout=15.0)
+    third = _wait_order(host, state_dir, gw, wait_for, aid, "open", {first["id"], second["id"]}, "third live order open")
     set_min_edge(host, 1.0)
     assert third["exchange_order_id"] in gw.remote
     exchange.close()

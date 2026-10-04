@@ -33,13 +33,20 @@ field name is configurable in `settings.market_source_config.polymarket_us.auth`
 `base_url https://api.polymarket.us`, `place POST /v1/orders`, `cancel DELETE
 /v1/orders/{order_id}`, `cancel_all null` (list-open-then-cancel-each when null), `open GET
 /v1/orders/open`, `order GET /v1/order/{order_id}`, `fills GET /v1/fills?since=...`,
-`balance GET /v1/balance`. Requests: `place` sends `{client_order_id: orders.id, market_id:
-market_ref, side: "BUY", price, size, time_in_force: "GTD", expires_at: gtd_at}` (field
-names configurable); returns the exchange order id. Responses are parsed defensively with
+`balance GET /v1/balance`. Requests: `place` sends `{client_order_id:
+orders.client_request_id, market_id: market_ref, side: "BUY", price, size, time_in_force:
+"GTD", expires_at: gtd_at}` (field names configurable; `live.client_id_field` picks the
+row column sent as the client id, `client_request_id` by default because that is what the
+executor and the audit reconcile on); returns the exchange order id. The executor attaches
+`markets.market_ref` to the row it hands over (the gateway has no database access). Responses are parsed defensively with
 configurable field names; unknown shapes raise `SourceError` with the truncated payload in
 the message (logged at DEBUG), 401/403 raise `AuthError`, 429 raises `RateLimited`. Every
 call takes a token from the fleet-wide limiter by category (`orders`, `cancels`,
-`account`). `probe()` performs the balance call and returns status + raw payload.
+`account`). `probe_account()` performs the balance call and returns status + raw payload
+(truncated, the key and passphrase replaced by `***<hint>`); it is what the exchange
+container's `probe-account` CLI prints. The host's `POST /api/exchange/probe-account` holds
+no key, so it answers with what the exchange process recorded (`payload: null`) and names
+that CLI command.
 
 ## Authentication probe and auto-kill
 
@@ -49,18 +56,24 @@ auth_checked_at, credentials_present`. A failure increments `auth_failures` and 
 `last_auth_error`; success resets it. Auto-kill (`host/kill.auto_kill(conn, reason,
 detail)`: `set_kill` with actor `auto:<reason>` and an `auto_kill` audit row; the top bar
 shows the reason until reset) fires on: `auth_failures` reaching `auto_kill.auth_failures`
-(3); clock skew over the limit; an open order on the exchange that is not ours (open-order
-audit); a fill for a client id we do not know; an ambiguous reconciliation (two remote
-orders for one client id). Reset is the normal `RESUME`; live stays off until re-enabled.
+(3); clock skew over the limit (`clock_skew`); an open order on the exchange that is not
+ours (open-order audit, `unknown_order`); a fill for a client id we do not know
+(`unknown_fill`); an ambiguous reconciliation (two remote orders for one client id,
+`ambiguous_reconciliation`). A trigger fires only while the kill switch is off; a condition
+that persists after the reset kills again on the next pass. Reset is the normal `RESUME`;
+live stays off until re-enabled.
 
 ## Live switch
 
-- `POST /live` (owner, also the Settings form): body `{"confirm": "ENABLE LIVE TRADING
-  YYYY-MM-DD"}` with today's date in the owner's time zone, exact match. Requires kill
+- `POST /live` (owner, JSON; the Settings form posts the same phrase to
+  `POST /settings/live`, which re-renders the page with the error inline): body
+  `{"confirm": "ENABLE LIVE TRADING YYYY-MM-DD"}` with today's date in the owner's time
+  zone, exact match. Requires kill
   off, credentials present, `auth_ok` with `auth_checked_at` within 10 minutes, and
   clock skew within limits. Sets `live_enabled=true`, audit `live_on` with the
   confirmation text and the actor. The form shows the exact phrase to type.
-- `POST /live/off` (owner): immediate; `live_enabled=false`, live assignments halted,
+- `POST /live/off` (owner; the Settings "Disable live" button posts to
+  `POST /settings/live/off`): immediate; `live_enabled=false`, live assignments halted,
   live orders cancelled through the exchange, audit `live_off`.
 - `live_enabled` can no longer be written through `/api/settings` (400: use /live). The
   kill switch and the live daily-loss trip also turn it off. Default at install: off.
@@ -83,7 +96,7 @@ same three gates; turning live off or demoting a lineage halts them.
   with the ledger release. Never resubmit blind.
 - Fills task every `live_fills_poll_s` (2) while live orders are active: `fills(since last
   seen - 60 s)` -> `orders.record_fill` with `exchange_fill_id` idempotency; a fill whose
-  client id is unknown -> auto-kill `unknown_order`.
+  client id is unknown -> auto-kill `unknown_fill`.
 - Open-order audit every `open_orders_audit_s` (60) and at start: remote open orders not
   in our active set -> cancel them and auto-kill `unknown_order`; our active orders missing
   remotely -> check fills, then `cancelled`/`filled`/`expired` accordingly with release.
