@@ -69,7 +69,9 @@ else
   HOST_URL="$DEFAULT_HOST_URL"
   [ -n "${POSITIONAL[0]:-}" ] && ENROLL_TOKEN="${POSITIONAL[0]}"
 fi
-[ "$HOST_URL" != "__FLEET_HOST_URL__" ] || usage
+# The host substitutes the placeholder when it serves this file, so never compare against
+# the literal placeholder: a real host URL is anything that starts with http(s)://.
+[[ "$HOST_URL" == http://* || "$HOST_URL" == https://* ]] || usage
 HOST_URL="${HOST_URL%/}"
 if [ -n "$TOKEN_FILE" ]; then
   [ -r "$TOKEN_FILE" ] || die "cannot read token file $TOKEN_FILE"
