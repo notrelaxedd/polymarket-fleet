@@ -309,3 +309,31 @@ cadence, retention/bars, rate limiter, heartbeat, orphan rule), `test_adapters.p
 determinism; polymarket_us and polymarket_clob parsers against fixture JSON, including
 malformed payloads), `test_trade_worker.py` (tick maths, proposals, cancels, kill, release
 handshake), dashboard tests for `/trading`, and the e2e extension.
+
+## Selling (step 6 Part B): mark-to-model
+
+The buy rule gets its mirror image. Orders gain `side` (`buy` | `sell`); every existing
+order is a buy. On each tick, for every market where the assignment holds contracts:
+- `p_side` from the model; `proceeds = bid`; `fee = taker_rate * bid * (1 - bid)`;
+  `sell_edge = bid - fee - p_side`. If `sell_edge >= min_edge`, propose a limit SELL at the
+  bid for `min(position size - open sell size, participation * bid depth at or above the
+  price)` contracts. Never more than the position (no shorting); one open sell per market.
+- Approval for sells: kill, lease, assignment active, market confirmed and unresolved,
+  mode gate, stale book, participation (bid side), price band (`>= bid - 0.05`), size
+  within the position; no reservation (a sell frees money) and no daily-loss check, but
+  the order and its events are logged like any other.
+- Paper fills for sells walk bid levels at or above the limit with the same participation
+  rule; resting sells fill when a later bid crosses. Live sells go through the same
+  gateway with `side: SELL`.
+- Ledger on a sell fill: `basis = avg_cost * size * 100`; `-basis open, +(proceeds - fee)
+  available, +(proceeds - fee - basis) realized`. Positions use average cost; a full sale
+  closes the position.
+- Scoring: a sell order gets its own `bets` row with `result = "sold"` and `pnl = proceeds
+  - fee - basis`; at settlement each buy row's pnl covers only the contracts it still holds
+  (pro rata of the remaining position). CLV stays defined for buys only. `model_scores.pnl`
+  includes sells; `n_bets` counts buys.
+- Dashboard: sells shown with a `sell` chip and their realized P&L; positions show size,
+  average cost, current bid and unrealized P&L.
+- Tests: sell maths by hand, no-shorting, one open sell per market, ledger invariants after
+  partial and full sales, settlement after a partial sale, kill cancels open sells, the
+  worker proposes a sell when the market overshoots the model and not otherwise.
