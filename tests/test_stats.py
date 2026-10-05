@@ -159,10 +159,12 @@ def test_brier_decomposition_identity_with_bucket_constant_forecasts() -> None:
     parts = brier_decomposition(p, y)
     brier = sum((pi - yi) ** 2 for pi, yi in zip(p, y)) / len(p)
     assert parts["reliability"] - parts["resolution"] + parts["uncertainty"] == pytest.approx(brier, abs=1e-12)
+    assert parts["within_variance"] == pytest.approx(0.0, abs=1e-15) and parts["within_covariance"] == pytest.approx(0.0, abs=1e-15)
     o_bar = sum(y) / len(y)
     assert parts["uncertainty"] == pytest.approx(o_bar * (1 - o_bar))
     assert parts["reliability"] < 0.005 and parts["resolution"] > 0.05
-    assert brier_decomposition([], []) == {"reliability": 0.0, "resolution": 0.0, "uncertainty": 0.0}
+    assert brier_decomposition([], []) == {"reliability": 0.0, "resolution": 0.0, "uncertainty": 0.0,
+                                           "within_variance": 0.0, "within_covariance": 0.0}
 
 
 def test_brier_decomposition_flags_a_miscalibrated_model() -> None:

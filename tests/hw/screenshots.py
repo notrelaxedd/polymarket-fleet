@@ -203,6 +203,29 @@ def check_phone_layout(page: Any, name: str, problems: list[str]) -> None:
         problems.append(f"{name}: {tag} '{text}' is {height:.0f} px tall (< {MIN_TAP_PX})")
 
 
+def check_models_desktop(page: Any, problems: list[str]) -> None:
+    """At 1280 px the Models table keeps every summary at least 200 px wide and every
+    action button inside its table's visible box (the table scrolls inside .table-wrap,
+    so the page-level scroll check would not see a squeezed column)."""
+    found = page.evaluate(
+        """() => {
+             const narrow = Array.from(document.querySelectorAll('table.models td.c-summary'))
+               .map(td => td.getBoundingClientRect().width).filter(w => w < 200);
+             const hidden = Array.from(document.querySelectorAll('table.models td.c-actions .btn')).filter(btn => {
+               const wrap = btn.closest('.table-wrap');
+               return wrap && btn.getBoundingClientRect().right > wrap.getBoundingClientRect().right + 1;
+             }).length;
+             const buttons = document.querySelectorAll('table.models td.c-actions .btn').length;
+             return [narrow, hidden, buttons];
+           }"""
+    )
+    narrow, hidden, buttons = found
+    if narrow:
+        problems.append(f"models at 1280: {len(narrow)} summary cells narrower than 200 px ({[round(w) for w in narrow]})")
+    if hidden or not buttons:
+        problems.append(f"models at 1280: {hidden} of {buttons} action buttons outside the visible table")
+
+
 def check_refresh_counter(page: Any, problems: list[str]) -> None:
     """The footer counts up, a fragment refresh resets it."""
     page.wait_for_function("/^updated [3-9] s ago$/.test(document.getElementById('updated').textContent)", timeout=12_000)
@@ -236,6 +259,8 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
                 check_phone_layout(page, name, problems)
                 if name == "fleet":
                     check_refresh_counter(page, problems)
+            if name == "models" and width == "1280" and scheme == "light":
+                check_models_desktop(page, problems)
             context.close()
 
         def shoot_all(captures: list[tuple[str, str]]) -> None:

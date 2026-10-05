@@ -12,12 +12,12 @@
     {% if m.members > 1 %}<span class="chip">{{ m.members }} rows</span>{% endif %}
   </td>
   <td class="nowrap c-vroi"><span class="k">validation ROI</span> {% if v %}{{ v.roi | signed_pct if v.n_bets else '-' }}{% if v.n_bets and v.ci and v.ci.roi %} <span class="range">{{ v.ci.roi[0] | signed_pct }} to {{ v.ci.roi[1] | signed_pct }}</span>{% endif %}{% else %}-{% endif %}</td>
-  <td class="nowrap c-market"><span class="k">beats market</span> {% if v and v.market_p is not none %}{% if v.beats_market %}<span class="chip chip-beats">yes</span>{% else %}no{% endif %} <span class="muted small">p {{ v.market_p | fixed }}</span>{% else %}-{% endif %}</td>
+  <td class="nowrap c-market"><span class="k">beats market</span> {% if v and v.market_p is not none %}{% if v.beats_market %}<span class="chip chip-beats">yes</span>{% else %}no{% endif %} <span class="muted small">{{ v.market_p | pvalue }}</span>{% else %}-{% endif %}</td>
   <td class="nowrap c-bets"><span class="k">bets</span> {% if v %}{{ v.n_bets }}{% else %}-{% endif %} <span class="muted small">search {{ m.metrics.n_bets if m.metrics.n_bets is not none else '-' }}</span></td>
   <td class="nowrap c-roi"><span class="k">search ROI</span> {{ m.metrics.roi | signed_pct if m.metrics.n_bets else '-' }}</td>
   <td class="nowrap c-ll"><span class="k">log-loss</span> {% if v %}{{ v.log_loss | fixed }} <span class="muted">vs {{ v.market_log_loss | fixed }}</span>{% else %}{{ m.metrics.log_loss | fixed }} <span class="muted">vs {{ m.metrics.market_log_loss | fixed }}</span>{% endif %}</td>
   <td class="nowrap c-dd"><span class="k">drawdown</span> {{ (v.max_drawdown if v else m.metrics.max_drawdown) | pct1 }}</td>
-  <td class="nowrap c-paper"><span class="k">paper</span> {% if m.paper.games %}{{ m.paper.games }} g &middot; {{ m.paper.bets }} bets &middot; {{ m.paper.pnl_cents | money }} &middot; ROI {{ m.paper.roi | signed_pct }} &middot; CLV {{ m.paper.avg_clv | fixed }}{% if m.paper_ci and m.paper_ci.ci %} <span class="range paper-ci">{{ m.paper_ci.ci[0] | fixed }} to {{ m.paper_ci.ci[1] | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
+  <td class="c-paper"><span class="k">paper</span> {% if m.paper.games %}{{ m.paper.games }} g &middot; {{ m.paper.bets }} bets &middot; {{ m.paper.pnl_cents | money }} &middot; ROI {{ m.paper.roi | signed_pct }} &middot; CLV {{ m.paper.avg_clv | fixed }}{% if m.paper_ci and m.paper_ci.ci %} <span class="range paper-ci">{{ m.paper_ci.ci[0] | fixed }} to {{ m.paper_ci.ci[1] | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
   <td class="wide c-summary">
     <p class="summary">{{ m.summary or 'No summary yet.' }}</p>
     <details class="edit">

@@ -14,6 +14,7 @@ from fleet.sim.odds import clamp_prob, devig, expit, logit
 
 PARAM_KEYS = ("k", "hfa", "regress", "rest_per_day", "mov_scale", "min_edge", "kelly_fraction")
 FEW_BETS = 50  # below the leaderboard's ranking gate the summary says so
+MARKET_BEATEN_P = 0.05  # the market test level at which the summary says "beats the closing line"
 DEFAULT_PARAMS: dict[str, Any] = {
     "k": 24.0, "hfa": 55.0, "regress": 0.33, "rest_per_day": 1.0, "mov_scale": 1,
     "min_edge": 0.03, "kelly_fraction": 0.25,
@@ -174,8 +175,13 @@ def build_summary(params: dict[str, Any], metrics: dict[str, Any]) -> str:
                   f"{100 * _num(metrics, 'avg_edge'):.1f}% and returned {100 * _num(metrics, 'roi'):+.1f}% on stake "
                   f"with {dd_text} max drawdown{note}.")
     ll, mll = _num(metrics, "log_loss"), _num(metrics, "market_log_loss")
-    if metrics.get("n_games", 0) and ll < mll - 0.002:
+    market_p = metrics.get("market_p")
+    market_p = float(market_p) if isinstance(market_p, (int, float)) and not isinstance(market_p, bool) else None
+    if metrics.get("n_games", 0) and ll < mll - 0.002 and (market_p is None or market_p < MARKET_BEATEN_P):
         verdict = "it beats the closing line on calibration, but treat the edge as unproven"
+    elif metrics.get("n_games", 0) and ll < mll - 0.002:
+        verdict = (f"it is ahead of the closing line but not significantly (market test p {market_p:.2f}), "
+                   "so treat the edge as unproven")
     else:
         verdict = "it leans on the market and adds little, so treat the edge as unproven"
     third = (f"Log-loss {ll:.3f} against the market's {mll:.3f}; {verdict} until paper trading "

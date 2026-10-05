@@ -11,7 +11,9 @@ on workers (the host may use pandas/pyarrow for ingest).
 
 - Settings: `backtest_seasons [2010, 2021]` (the search era keeps this existing key; it is
   not renamed) and `validation_seasons [2022, null]` (null = last complete season). The two must not
-  overlap; validation must come after search.
+  overlap; validation must come after search (with a null last search season, after the
+  first search season, so the capped search era is never empty). A job whose eras do not
+  resolve cleanly is refused at creation, never run on a fallback era (`host/eras.py`).
 - `model_search` evaluates every candidate on the search era only and keeps `top_k` by
   the search score. It then runs the kept candidates on the validation era and stores
   both: `backtest_metrics` (search era, as today) and `validation_metrics` (validation
@@ -19,12 +21,18 @@ on workers (the host may use pandas/pyarrow for ingest).
 - `validate` is a new job kind (`{"model_id"}`; role `backtest`): validation-era
   backtest plus A2 and A3, storing `validation_metrics` and `stress_metrics` on the whole
   lineage. The search runs it inline for its top models; the owner can run it from the
-  Jobs page for any model.
+  Jobs page for any model whose search era ended before the validation era starts. A
+  model whose lineage was searched on a validation-era season (the step 3 default
+  `[2010, null]` searched through 2025) is refused (400; the worker refuses it too): its
+  validation would be in-sample, so it must be searched again. A `backtest` of a stored
+  model, whose result becomes the lineage's search-era metrics, must also end before the
+  validation era, so the overfit check below always compares two disjoint eras.
 - Overfit flag (stored in `validation_metrics.flags`): `overfit` when the search-era
   shrunk ROI exceeds the validation shrunk ROI by more than 0.03, or when the search era
   beats the market on log-loss (A2 p-value < 0.1) and the validation era does not.
 - Leaderboard ranks by the validation era (shrunk ROI then log-loss gain); models without
-  validation numbers are listed unranked with "not validated".
+  validation numbers are listed unranked with "not validated", whatever their paper
+  record.
 
 ### A2. Confidence intervals and the market test
 
@@ -36,7 +44,9 @@ Computed inside `validate` (and for the search era too, cheaply):
 - Market test: per scored game `d = ll_market - ll_model`; `mean_ll_gain = mean(d)`;
   `market_p` = sign-flip permutation p-value (10 000 flips) for `mean(d) > 0`. A model
   "beats the market" when `market_p < 0.05`.
-- Calibration: Brier decomposition (reliability, resolution, uncertainty) and a logistic
+- Calibration: Brier decomposition (reliability, resolution, uncertainty, plus the
+  within-bucket variance and covariance of Stephenson et al. 2008 so that brier =
+  reliability - resolution + uncertainty + within_variance - within_covariance exactly) and a logistic
   recalibration fit (`calib_slope`, `calib_intercept`), with the ten-bucket table kept.
 - Paper: the same bootstrap over a lineage's paper bets gives `paper_ci.avg_clv`.
 
@@ -53,8 +63,12 @@ All on the validation era, each a full backtest with one change:
   gain.
 - Flags: `fragile` when the +0.02 spread run keeps fewer than half the base bets or turns
   a positive base ROI negative, or when the neighbourhood median shrunk ROI is below zero
-  while the base is above; `regime_dependent` when one regime holds more than 80% of the
-  profit and is negative elsewhere.
+  while the base is above; `regime_dependent` when, in some regime pair with a positive
+  total, one side makes the profit and the other side, holding at least 20% of the
+  pair's bets, gives back more than half of it (the winning side earns more than twice
+  the pair's net). A literal "one regime holds more than 80% of the profit and is
+  negative elsewhere" is met by any losing side at all, which flagged nearly every
+  profitable model, so the rule asks for a material loss on a material regime.
 - Model page: a "Robustness" section with the CI line, the market test, the stress table,
   the neighbourhood summary and the regime table; flags shown as chips on the leaderboard.
 
@@ -65,17 +79,26 @@ All on the validation era, each a full backtest with one change:
   `min_bets` applies to the validation era and defaults to 50 (the era is ~4 seasons).
 - `thresholds_paper` gains `clv_ci_excludes_zero true` (paper CLV 5th percentile above
   0 over at least `min_bets` bets).
-- Eligibility recomputes on every validation and settlement; demotion as before.
+- Eligibility recomputes on every validation and settlement, and for every lineage once
+  at host startup after the migrations (so a gate made stricter by a migration demotes
+  existing lineages, and halts their live assignments, on the first boot); demotion as
+  before.
 
 ### A5. Multi-core search
 
-- `search_workers` setting: `"auto"` (cpu_count - 1, minimum 1) or an integer. The
-  search runner evaluates candidates with `multiprocessing` (fork, stdlib), in index order
-  through `imap` so checkpoints and resume stay exact: a candidate is the unit, the
-  checkpoint advances only through completed indices in order. Each worker process loads
-  the games cache once. SIGTERM terminates the pool; at most `search_workers` in-flight
-  candidates are repeated on resume. `OMP_NUM_THREADS=1` stays. The memory watchdog
-  already measures the whole process group.
+- `search_workers` setting: `"auto"` (the CPUs this process may run on, from the
+  scheduler affinity mask, minus one, minimum 1) or an integer. The search runner
+  evaluates candidates in forked worker processes (`multiprocessing`, stdlib) and hands
+  results on in index order, so checkpoints and resume stay exact: a candidate is the
+  unit, the checkpoint advances only through completed indices in order. An index is
+  handed out only while it is less than `search_workers` past the first unfinished one,
+  so at most `search_workers` candidates (running, or finished out of order) are
+  repeated on resume after a SIGTERM. Each worker process inherits the games list
+  through the fork. A worker that dies (SIGKILL from the OOM killer, a crash) fails the
+  job with "search worker died" instead of leaving it waiting forever; a worker whose
+  parent dies is killed by the kernel (`PR_SET_PDEATHSIG`), and the agent's SIGKILL of a
+  runner reaches every process of its session. `OMP_NUM_THREADS=1` stays. The memory
+  watchdog already measures the whole session.
 - `validate` and `backtest` stay single-process (short).
 
 ## Part B

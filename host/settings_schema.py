@@ -188,13 +188,16 @@ def timing_problems(settings: dict[str, Any]) -> list[str]:
 
 def season_problems(settings: dict[str, Any]) -> list[str]:
     """Cross-field rule over the two eras: the validation era must start after the
-    search era ends (`backtest_seasons[1]`, when it is set; a null last season is
-    capped below the validation era when a job is created, host/jobparams.py)."""
+    search era ends. With a set last search season, after that season; with a null
+    one (capped below the validation era when a job is created, host/eras.py), after
+    the first search season, so the capped search era is never empty."""
     search, validation = settings.get("backtest_seasons"), settings.get("validation_seasons")
     if _seasons(search) or _seasons(validation):
         return []
     if search[1] is not None and validation[0] <= search[1]:
         return [f"validation_seasons must start after the search era ends ({search[1]}): backtest_seasons is {search}"]
+    if search[1] is None and validation[0] <= search[0]:
+        return [f"validation_seasons must start after the first search season ({search[0]}): backtest_seasons is {search}"]
     return []
 
 

@@ -120,13 +120,14 @@ lineage has no validation-era metrics and one amber chip per flag (`overfit` red
 `fragile`, `regime-dependent`; the title holds the one-line meaning), a "N rows" chip when
 the lineage has children, (step 6) the validation ROI (signed percent, "-" without bets)
 with its 90% range muted beside it ("-1.2% to +9.4%", the bootstrap 5th and 95th
-percentiles), "beats market" as a green "yes" chip or "no" with "p 0.012" (the sign-flip
-p; yes below 0.05), the validation bets with the search bets muted ("130, search 400"),
+percentiles), "beats market" as a green "yes" chip or "no" with "p = 0.012" (the sign-flip
+p, "p < 0.001" below 0.001; yes below 0.05), the validation bets with the search bets muted ("130, search 400"),
 the search ROI, the validation log-loss "vs" the market's (the search era's when not
 validated), max drawdown (one decimal, "-" when null), (changed: step 4) a paper column
 "5 g · 30 bets · $27.95 · ROI +6.2% · CLV 0.013" pooled from `model_scores` ("-" without
-paper games) followed (step 6) by the cached paper CLV 90% range when one exists, the
-summary text with an "Edit summary" `<details>` holding a textarea (maxlength 600) and
+paper games) followed (step 6) by the cached paper CLV 90% range when one exists (the
+paper cell wraps and the buttons stack in a narrow column, so at 1280 px the summary
+column keeps at least 14rem and the buttons stay inside the table), the summary text with an "Edit summary" `<details>` holding a textarea (maxlength 600) and
 Save, a Train button (links to the jobs page with the train form prefilled), (step 6) a
 Validate button (links to the jobs page with the validate form prefilled; hidden on a
 retired lineage) and an Assign button (links to `/trading?model=<id>#assign`, which
@@ -135,7 +136,8 @@ step 4) Ranking follows docs/TRADING.md: a lineage with at least 5 paper games a
 paper bets ranks on shrunk CLV (`avg_clv * bets / (bets + 25)`, ties by paper ROI) ahead
 of the others and wears a green "paper" chip next to its rank; (changed: step 6) the
 rest rank on the validation era, shrunk ROI then the log-loss gain over the market, and
-a lineage without validation metrics is unranked ("not validated"). When no lineage is
+a lineage without validation metrics is unranked ("not validated") whatever its paper
+record. When no lineage is
 ranked the page says so in one line instead of drawing an empty table: "No lineage is
 validated yet, so none is ranked." above the unranked list, or "No models yet. Send a
 model search from the Jobs page." when there are none. On a phone the row stacks: the
@@ -158,9 +160,11 @@ backtest: the flag chips (or a green "no flags" chip) and a "beats market" chip,
 line per flag with its meaning, the CI line ("Validation ROI +4.1% (90% range -1.2% to
 +9.4%) over 130 bets, shrunk +2.32%" then hit rate, average edge, max drawdown and CLV
 each with its range), the market test sentence ("Beats the market on log-loss: mean
-gain +0.0021 per game, p = 0.012 ..." or "Does not beat ..."), labelled pairs with the
+gain +0.0021 per game, p = 0.012 ..." or "Does not beat ..."; a p below 0.001 prints as
+"p < 0.001", here and on the Models row), labelled pairs with the
 log-loss vs market, calibration slope and intercept, brier and its reliability,
-resolution and uncertainty, the price stress table (base, spread+0.01, spread+0.02, fee
+resolution and uncertainty and the within-bucket term that makes them add up to the
+brier exactly, the price stress table (base, spread+0.01, spread+0.02, fee
 x1.5: bets, ROI, log-loss, log-loss gain), the neighbourhood summary sentence (median and
 10th percentile of shrunk ROI and log-loss gain over the 10 perturbations), the regime
 table in its five pairs (games, bets, ROI, P&L, log-loss gain), the validation
@@ -190,7 +194,8 @@ validation keep working:
   lineage's status), (changed: step 6) Seasons and search (search first and last season,
   blank last = the season before the validation era; validation first and last season,
   blank last = last complete; search workers, "auto" = cores minus one or 1..64; an
-  overlapping era is an inline error), nflverse games (refresh hours, the
+  overlapping era, or a validation era that starts on or before the first search season
+  when the search's last season is blank, is an inline error), nflverse games (refresh hours, the
   games.csv URL, the row count and last complete season in the heading, a line with the
   last refresh outcome of this host process: time and counts including skipped records,
   or "Last refresh failed <time>: <error>" in red, and a "Refresh now" button that

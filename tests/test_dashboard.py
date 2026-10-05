@@ -427,13 +427,13 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     assert "K 20 · HFA 50 · MOV on" in ranked and "K 30 · HFA 60 · MOV off" in ranked
     first = re.search(rf'<tr class="model-row" data-model="{best["id"]}">.*?</tr>', html, re.S).group(0)
     assert '<span class="k">validation ROI</span> +4.1% <span class="range">-1.2% to +9.4%</span>' in first, "the validation ROI with its 90% range"
-    assert '<span class="k">beats market</span> <span class="chip chip-beats">yes</span> <span class="muted small">p 0.012</span>' in first
+    assert '<span class="k">beats market</span> <span class="chip chip-beats">yes</span> <span class="muted small">p = 0.012</span>' in first
     assert '<span class="k">bets</span> 130 <span class="muted small">search 400</span>' in first and '<span class="k">search ROI</span> +5.0%' in first
     assert "0.651" in first and "vs 0.658" in first and '<span class="k">drawdown</span> 9.0%' in first and "chip-flag" not in first
     assert "Best lineage." in first and '<span class="chip">2 rows</span>' in first and "not validated" not in first
     row2 = re.search(rf'<tr class="model-row" data-model="{second["id"]}">.*?</tr>', html, re.S).group(0)
     assert '<span class="chip chip-flag chip-overfit"' in row2 and '>overfit</span>' in row2 and '>fragile</span>' in row2 and '>regime-dependent</span>' in row2
-    assert '<span class="k">beats market</span> no <span class="muted small">p 0.310</span>' in row2
+    assert '<span class="k">beats market</span> no <span class="muted small">p = 0.310</span>' in row2
     unranked = html.split('id="unranked"')[1]
     assert unranked.count("not validated</span>") == 2 and "<th>validation ROI" in html and "<th>beats market</th>" in html
     assert '<span class="k">validation ROI</span> -' in unranked and '<span class="k">beats market</span> -' in unranked
@@ -1053,11 +1053,14 @@ def test_pnl_maths(client, conn, make_worker):
 
 
 def test_leaderboard_paper_columns_and_ranking(client, conn):
-    """A lineage with 5 paper games and 30 paper bets ranks on shrunk CLV ahead of the
-    backtest-ranked ones; the others keep the step 3 order; paper columns show per row."""
+    """A validated lineage with 5 paper games and 30 paper bets ranks on shrunk CLV ahead
+    of the validation-ranked ones; an unvalidated one never ranks, whatever its paper
+    record (review 6A); paper columns show per row."""
     backtested = insert_validated_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05), validation=validation_metrics(n_bets=400, roi=0.05), status="paper_ok")
-    papered = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="paper_ok")
-    better = insert_model(conn, params={"k": 31.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="live_eligible")
+    papered = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="paper_ok",
+                           validation=validation_metrics(n_bets=60, roi=0.01))
+    better = insert_model(conn, params={"k": 31.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="live_eligible",
+                          validation=validation_metrics(n_bets=60, roi=0.01))
     almost = insert_model(conn, params={"k": 32.0}, metrics=backtest_metrics(n_bets=10, roi=0.01))
     retired = insert_model(conn, params={"k": 33.0}, status="retired")
     for i in range(5):
@@ -1080,9 +1083,12 @@ def test_leaderboard_paper_columns_and_ranking(client, conn):
     assert unranked[str(almost["id"])]["paper"]["games"] == 4 and unranked[str(almost["id"])]["rank_mode"] == "validation", "4 games: not yet"
     assert unranked[str(almost["id"])]["unranked_reason"] == "not validated"
     assert unranked[str(retired["id"])]["paper"]["games"] == 5, "retired lineages are never ranked, however good"
-    # ties on shrunk CLV break on paper ROI
+    # a fifth paper game does not rank a lineage the validation era has not judged
     _score(conn, almost, "2026_05_A_B", 10, 1000, 1000, 0.06)
-    assert client.get("/api/models").json()["ranked"][0]["id"] == str(almost["id"])
+    still = {m["id"]: m for m in client.get("/api/models").json()["unranked"]}[str(almost["id"])]
+    assert still["rank_mode"] == "paper" and still["unranked_reason"] == "not validated"
+    conn.execute("UPDATE models SET validation_metrics = %s WHERE lineage_id = %s", (__import__("psycopg").types.json.Jsonb(validation_metrics()), almost["lineage_id"]))
+    assert client.get("/api/models").json()["ranked"][0]["id"] == str(almost["id"]), "validated, it ranks first on paper CLV"
     html = client.get("/models").text
     first = re.search(rf'<tr class="model-row" data-model="{almost["id"]}">.*?</tr>', html, re.S).group(0)
     assert '<span class="rank">#1</span><span class="chip chip-paper" title="ranked on paper CLV">paper</span>' in first
@@ -1462,7 +1468,7 @@ def test_model_page_robustness_section_renders_every_element(client, conn, make_
     assert '<section class="robustness" id="robustness">' in html
     assert '<span class="chip chip-flag chip-overfit" title="the search era looked better' in html and '<span class="chip chip-flag chip-regime_dependent"' in html
     assert "<strong>overfit</strong>: the search era looked better than the held-out era" in html
-    assert "<strong>regime-dependent</strong>: one game regime" in html
+    assert "<strong>regime-dependent</strong>: in one regime pair" in html
     assert 'Validation ROI <strong>+4.1%</strong> <span class="range">(90% range -1.2% to +9.4%)</span> over 130 bets, shrunk +2.32%.' in html
     assert "Hit rate 52.0% <span class=\"range\">(49.0% to 56.0%)</span>" in html and "average edge +3.4%" in html
     assert "CLV range <span class=\"range\">0.000 to 0.000</span>" in html

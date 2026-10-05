@@ -24,7 +24,8 @@ PRICE_STRESSES: tuple[tuple[str, dict[str, float]], ...] = (
 )
 NEIGHBOURHOOD_N = 10
 FRAGILE_BET_FRACTION = 0.5
-REGIME_PROFIT_SHARE = 0.8
+REGIME_MIN_BET_SHARE = 0.2  # the losing side must hold at least this share of the pair's bets
+REGIME_LOSS_SHARE = 0.5  # and give back more than this share of the winning side's profit
 
 
 def stressed_rule(params: dict[str, Any], limits: dict[str, Any], change: dict[str, float]) -> BetRule:
@@ -102,15 +103,22 @@ def fragile_flag(base: dict[str, Any], prices: list[dict[str, Any]], neighbourho
 
 
 def regime_dependent_flag(regimes: dict[str, dict[str, Any]]) -> bool:
-    """One regime holds more than 80% of the profit while the rest of its dimension
-    loses money (checked per dimension on a positive total)."""
+    """In some regime pair with a positive total, one side makes the profit while the
+    other side, holding at least 20% of the pair's bets, gives back more than half of
+    it (so the winning side earns more than twice the pair's net profit). A small
+    loss, or a loss on a side with few bets, does not flag. A literal "one regime holds
+    more than 80% of the profit and the rest loses" is met by any losing side at all,
+    so it would flag nearly every profitable model."""
     for pair in REGIME_DIMENSIONS:
-        pnls = [int(regimes.get(name, {}).get("pnl_cents", 0)) for name in pair]
-        total = sum(pnls)
-        if total <= 0:
+        rows = [regimes.get(name, {}) for name in pair]
+        pnls = [int(r.get("pnl_cents", 0)) for r in rows]
+        bets = [int(r.get("n_bets", 0)) for r in rows]
+        if sum(pnls) <= 0 or sum(bets) <= 0:
             continue
-        for mine, other in ((pnls[0], pnls[1]), (pnls[1], pnls[0])):
-            if mine > REGIME_PROFIT_SHARE * total and other < 0:
+        for win, lose in ((0, 1), (1, 0)):
+            if pnls[lose] >= 0:
+                continue
+            if bets[lose] >= REGIME_MIN_BET_SHARE * sum(bets) and -pnls[lose] > REGIME_LOSS_SHARE * pnls[win]:
                 return True
     return False
 

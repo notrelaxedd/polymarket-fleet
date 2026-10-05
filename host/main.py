@@ -1,11 +1,11 @@
-"""Host entry point: migrate, start the loop thread, serve the API."""
+"""Host entry point: migrate, recompute lineage statuses, start the loop thread, serve the API."""
 from __future__ import annotations
 
 import logging
 
 import uvicorn
 
-from host import db
+from host import db, startup
 from host.api.app import create_app
 from host.config import Config
 from host.data_refresh import DataRefreshThread
@@ -20,6 +20,7 @@ def main() -> None:
     config = Config.from_env()
     applied = db.migrate(config.database_url)
     log.info("migrations applied: %s", applied or "none")
+    startup.run(config.database_url)  # re-judge every lineage against the gates in force
     app = create_app(config)
     loop_pool = db.make_pool(config.database_url, min_size=1, max_size=3)
     loop = LoopThread(loop_pool, config.loop_seconds)

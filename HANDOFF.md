@@ -50,8 +50,7 @@ per-step test walkthroughs.
 ## 3. State of the repository
 
 Branches on `origin` (tags do not survive the git proxy; publish branches):
-- `step4` (ff6ed16) and `step5` (6cc3818): stable installs. The owner should run
-  `step5` until step 6 lands.
+- `step4` (ff6ed16), `step5` (6cc3818) and `step6a`: stable installs, newest last.
 - `main`: step 5 final is 4478bb7; the docs commit 6cc3818 adds the selling rule and
   the in-game spec; the commits after that are work-in-progress snapshots of step 6
   Part A, ending with the handoff commit that had one green full-suite run.
@@ -68,51 +67,24 @@ Steps 1 to 5 are complete and were verified with two full-suite runs each
   bankrolls, append-only ledger, approval with reason codes, kill switch, paper fill
   simulator, settlement with CLV, scores, eligibility, live adapter behind the switch.
 
-### Step 6 Part A (robustness) is built but not integrated
+### Step 6 Part A (robustness): done, branch `step6a`
 
-Three build agents finished on 2026-10-04 and their output is on `main`:
-- Worker side: `fleet/sim/{stats,robust,stress,validate,parallel,records}.py`, changes
-  to `backtest.py`, `search.py`, `metrics.py`; `fleet/worker/context.py` gained the
-  `validate` kind in `CONTEXT_KINDS` (keep it). Its tests
-  (`tests/test_stats.py`, `test_stress.py`, `test_validation.py`,
-  `test_search_parallel.py`, plus additions in `test_backtest.py`,
-  `test_search_train.py`, `test_agent.py`) were reported green three times in
-  isolation (182 tests in those files).
-- Host side: `host/migrations/0006_robustness.sql` (`models.validation_metrics`,
-  `models.stress_metrics`, `lineage_paper_ci`), `host/stats.py`, `host/paper_gate.py`,
-  `host/model_validation.py`, `host/model_owner.py`, `host/settings_schema.py`,
-  `host/api/robustness.py`, `host/templates/_robustness.html`, the validate job form,
-  the Models page columns and chips, settings keys, `tests/hw/seed_step6.py`.
-- Docs: `docs/ROBUSTNESS.md`, README "Reading a model" and "How to test step 6A",
-  `docs/PROTOCOL.md` and `docs/DASHBOARD.md` additions.
-
-The integration pass was interrupted twice (once by the weekly subagent limit, once
-by this handoff). Before handing off, the previous session ran the suite itself on
-2026-10-05: 632 tests passed outside the end-to-end test, and the end-to-end test
-passed after two stale assertions were updated (`tests/e2e_validation.py` line 128,
-a markup check on the Models row; `tests/e2e_trading.py` line 391, which expected
-the old `backtest` rank mode where the leaderboard now says `validation`). So the
-head of `main` had one green run of all 633 tests. `compileall` is clean. The
-integrate agent had also added a "jobs-validate" capture to
-`tests/hw/screenshots.py`; whether the screenshot tool passes end to end is recorded
-in the commit message of the handoff commit.
-
-Remaining work for Part A, in order:
-1. Two more full-suite runs from a clean database to confirm nothing is flaky.
-2. Check `tests/e2e_validation.py` against the integrate brief in
-   `tools/workflows/step6a-build.js` (a pooled search with a held-out era, the
-   single-process rerun giving the same numbers, a validate job on an older model,
-   the Models page columns and chips, the stricter gates with a forced pass and a
-   forced demotion). Most of it exists; add what is missing.
-3. Serial versus parallel is covered by the e2e (workers 2 then workers 1) and by
-   `tests/test_search_parallel.py`; confirm the SIGTERM-and-resume case is there.
-4. Screenshots: models, model detail (Robustness section), jobs (validate form),
-   settings at 390 and 1280, light and dark, with the layout assertions in
-   `tests/hw/screenshots.py`.
-5. Three adversarial reviews (statistics, parallel search, gates and UI) and a fix
-   pass; the lens texts are in `tools/workflows/step6a-build.js`.
-6. Two clean full-suite runs by the orchestrator, commit "Step 6 Part A", push,
-   publish branch `step6a`, send the owner the screenshots and a short handoff.
+Finished on 2026-10-05 by the session that took over (workflow
+`tools/workflows/step6a-finish.js`: integrate, three adversarial reviews, a fix pass,
+then two clean full-suite runs by the orchestrator). The review found and fixed 15
+issues, among them two validation leaks: a backtest of a stored model on
+validation-era seasons could overwrite its search-era metrics and clear the overfit
+flag (now refused on the host and on the worker), and a validate job was accepted for
+models searched on the validation seasons (now refused; models from steps 3 to 5 were
+searched on 2010 to the last complete season and must be searched again before they
+can be validated). Also: `regime_dependent` no longer fires on every profitable model
+(`REGIME_LOSS_SHARE` in `fleet/sim/stress.py`), the pool search no longer hangs when a
+worker dies and `Runner.kill()` reaps pool workers, unvalidated lineages are always
+unranked, every lineage's status is recomputed at host start (`host/startup.py`), and
+the Models table is usable at 1280 px. New e2e coverage: the not-validated chip and a
+validate job that ranks the lineage, and the paper CLV interval gate
+(`tests/e2e_paper_gate.py`). The screenshot tool needs `playwright==1.56.0` (the
+release that matches the sandbox's Chromium build 1194).
 
 ### Step 6 Part B: not started
 
