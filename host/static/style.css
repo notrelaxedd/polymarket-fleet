@@ -169,14 +169,15 @@ a.row-main:hover .row-title { text-decoration: underline; }
 .row-title, .row-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-title { font-weight: 600; line-height: 1.3; }
 .row-title .chip { margin-left: var(--s1); vertical-align: 1px; }
-/* A title holding a chip is one flex line where the text gives way and the chips keep
-   their width, so a state word is never cut: a span (the params) shrinks with an
-   ellipsis, bare text wraps at a word and its second line stays hidden (max-height);
-   when one long word still leaves no room, the last chip sticks to the right edge. */
-.row-title:has(> .chip) { display: flex; align-items: flex-start; column-gap: 0.3em; white-space: normal; max-height: 1.3em; }
-.row-title:has(> .chip) > :not(.chip) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-title:has(> .chip) > .chip, .row-title:has(> .chip) > .rank { flex: none; margin: 0; }
-.row-title:has(> .chip) > .chip:last-child { position: sticky; right: 0; }
+/* A title holding a chip and a text span (the params, an order line) is one flex line
+   where the span gives way (ellipsis) and the chips keep their width, so a state word is
+   never cut; when the bare name before it still leaves no room, the last chip sticks to
+   the right edge. A title of bare text and chips keeps the plain ellipsis (the name
+   matters more there). */
+.row-title:has(> .chip):has(> span:not(.chip)) { display: flex; align-items: center; column-gap: 0.3em; }
+.row-title:has(> .chip):has(> span:not(.chip)) > span:not(.chip) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.row-title:has(> .chip):has(> span:not(.chip)) > .chip, .row-title:has(> .chip) > .rank { flex: none; margin: 0; }
+.row-title:has(> .chip):has(> span:not(.chip)) > .chip:last-child { position: sticky; right: 0; }
 .row-meta { font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; }
 /* the in-game models row's second grey line is its status reason, a sentence: it wraps, never cut */
 .ingame-row .row-meta2 { white-space: normal; }

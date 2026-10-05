@@ -10,8 +10,8 @@ Every check returns a list of problems in words (empty when the page passes):
 - `tap_targets`: visible buttons, row links (and a row number or card header that is a
   link), selects, inputs, textareas, menu items and every summary (menus, disclosures,
   the intro) are at least 44 px tall (phone width);
-- `chips_whole`: no chip in a row title, a row's flag line or the row itself is cut by
-  an ancestor that clips (the state word is always readable);
+- `chips_whole`: no chip in a row title whose text is a span (params, an order line), a
+  row's flag line or the row itself is cut by an ancestor that clips;
 - `menus_on_top`: each "..." menu, opened, is the topmost thing under the centre of every
   item (a dimmed card or region makes a stacking context; the next card must not paint
   over the list); `dimmed=True` runs it with body.conn-lost as when the connection is lost.
@@ -28,10 +28,11 @@ TAP_TARGETS = (
     "button, a.row-main, a.row-value, .card-head > a, select, input:not([type=hidden]):not([type=checkbox]), textarea, label.check, "
     ".menu-item, details > summary"
 )
-# chips that must never be cut: in a title (it flexes so the text gives way), on the flag
-# line under it (it wraps) and directly in the row; a chip at the end of a one-line
-# .row-meta is not covered (that line ellipsises)
-WHOLE_CHIPS = ".row-title .chip, .row-flags .chip, .row > .chip"
+# chips the row layout keeps whole: in a title whose text is a span (it flexes so the span
+# gives way), on the flag line under the title (it wraps) and directly in the row; a chip
+# after bare title text or at the end of a one-line .row-meta is not covered (those lines
+# ellipsise)
+WHOLE_CHIPS = ".row-title:has(> span:not(.chip)) > .chip, .row-flags .chip, .row > .chip"
 
 
 def overflow(page: Any, name: str) -> list[str]:
