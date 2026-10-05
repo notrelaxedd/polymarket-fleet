@@ -119,6 +119,14 @@ Delivered in step 6B (host side of B1):
   result's `avg_clv`; when a result does not report one, the middle of `ci.avg_clv` is
   used (`clv_estimated: true`).
 - Eligibility does not read snapshot metrics in this step.
+- Seasons: a snapshot backtest whose last season is null (in the request or in settings
+  `backtest_seasons`) replays through the latest season in `games`, the season in
+  progress included (its played games are scored), not only the last complete one; no
+  validation-era cap applies, since a replay selects nothing. The worker plans the same
+  way (`season_plan(..., through_latest=True)`) and only replays seasons with at least
+  one recorded market.
+- The result carries a top-level `avg_clv` (the plain mean CLV over its bets) next to
+  `ci.avg_clv`, plus `price_source: "snapshots"`, `platform` and `n_unscored_no_prices`.
 
 ### B2. Richer signals
 

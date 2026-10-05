@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -56,8 +57,8 @@ def _book(conn: psycopg.Connection) -> dict[str, Any]:
     """A held home position partly sold, an open sell, and a big losing away position.
 
     home: buy 30 @ 0.40 (basis $12.00), sell 10 @ 0.60 fee $0.24 removing basis $4.00
-    (realized +$1.76), held 20 at avg 0.40, latest bid 0.55 -> unrealized +$3.00.
-    away: buy 5,000 @ 0.50 (basis $2,500.00), latest bid 0.20 -> unrealized -$1,500.00.
+    (realized +$1.76), held 20 at avg 0.40, latest bid 0.55 -> unrealized +$2.75 (value $11.00 - sale fee $0.25 - basis $8.00).
+    away: buy 5,000 @ 0.50 (basis $2,500.00), latest bid 0.20 -> unrealized -$1,540.00 (sale fee $40.00).
     """
     setup = trade_setup(conn)
     home = setup.market
@@ -120,12 +121,12 @@ def test_positions_table_per_assignment_values_at_the_bid(client, conn):
     assert '<span class="k">size</span> 20</td>' in home
     assert '<span class="k">avg cost</span> 0.40 <span class="muted small">$8.00</span>' in home
     assert '<span class="k">bid</span> 0.55</td>' in home
-    assert '<span class="pnl pnl-pos">+$3.00</span>' in home and "home wins" in home
+    assert '<span class="pnl pnl-pos">+$2.75</span>' in home and "home wins" in home
     away = _row(positions, "data-market", b["away"]["id"])
     assert '<span class="k">size</span> 5000</td>' in away and "$2,500.00" in away and '<span class="k">bid</span> 0.20' in away
-    assert '<span class="pnl pnl-neg">-$1,500.00</span>' in away, "money as $1,234.56 with the sign"
+    assert '<span class="pnl pnl-neg">-$1,540.00</span>' in away, "money as $1,234.56 with the sign, net of the sale fee"
     total = re.search(r'<span class="positions-total">unrealized (.*?)</span></h3>', positions, re.S).group(1)
-    assert total == '<span class="pnl pnl-neg">-$1,497.00</span>'
+    assert total == '<span class="pnl pnl-neg">-$1,537.25</span>'
 
 
 def test_position_sold_out_or_resolved_disappears(client, conn):
@@ -151,6 +152,9 @@ def test_position_without_any_bid_is_not_valued(conn):
     assert row["bid"] is None and row["unrealized_cents"] is None and row["size"] == 7 and row["basis_cents"] == 210
     valued = value_at_bid({"size": 3, "basis_cents": 100}, None)
     assert valued["value_cents"] is None and valued["unrealized_cents"] is None
+    priced = value_at_bid({"size": 20, "basis_cents": 800}, Decimal("0.55"), {"taker_rate": 0.05})
+    assert priced["value_cents"] == 1100 and priced["sell_fee_cents"] == 25 and priced["unrealized_cents"] == 275
+    assert value_at_bid({"size": 20, "basis_cents": 800}, Decimal("0.55"), {"taker_rate": 0.0})["unrealized_cents"] == 300
 
 
 def test_latest_snapshot_bid_wins_over_the_market_row(conn):
@@ -173,9 +177,9 @@ def test_fragment_refresh_carries_positions_and_sell_chips(client, conn):
     assert r.status_code == 200
     fragment = r.text
     assert "<html" not in fragment and 'id="trading-live"' not in fragment and 'id="assign"' not in fragment
-    assert 'id="positions"' in fragment and '<span class="pnl pnl-pos">+$3.00</span>' in fragment
+    assert 'id="positions"' in fragment and '<span class="pnl pnl-pos">+$2.75</span>' in fragment
     assert fragment.count('<span class="chip chip-sell">sell</span>') == 4, "open sell, two recent sells, one sell fill"
-    assert fragment.count("<section") == 8, "positions is a card div, the section count stays"
+    assert fragment.count("<section") == 9, "positions is a card section (step 4 had 8)"
     page = client.get("/trading").text
     assert page.split('id="trading-live">')[1].count('id="positions"') == 1
 

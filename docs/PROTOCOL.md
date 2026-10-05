@@ -717,7 +717,8 @@ trade job this worker holds: `{"id", "job_id", "lease_token", "status", "mode",
 "open_cost_cents", "realized_pnl_cents"}, "markets": [{"id", "side", "bid", "ask", "mid",
 "tick", "min_size", "snapshot_id", "snapshot_at", "liquidity_usd_cents", "ask_depth",
 "status"}], "open_orders": [{"id", "market_id", "price", "size", "filled_size", "status"}],
-"positions": [{"market_id", "side", "size", "avg_price"}]}`. Markets below the liquidity
+"positions": [{"market_id", "side", "size", "basis_cents", "avg_cost"}]}` (step 6 Part B
+renamed `avg_price` to `avg_cost`; see "Selling" below). Markets below the liquidity
 floor are included but flagged `"below_floor": true`. (changed: detail) Only markets with a
 confirmed mapping are listed; `game` is the games row without `raw`; `positions` entries
 also carry `basis_cents`; `open_orders` entries also carry `snapshot_id` and `created_at`;
@@ -1028,3 +1029,24 @@ is `validation_seasons`.
   CSV, or CSV.gz for play-by-play). One line per season (`pbp:2023: R rows, I inserted,
   C changed, S skipped`); exit 1 when any season failed (the others are still loaded) or
   when neither `--season` nor `--file` is given.
+
+### Selling (Part B, docs/TRADING.md "Selling")
+- `GET /api/v1/trade/state`: each market also carries `bid_depth` (the latest snapshot's
+  `[[price, size], ...]` bid levels, best first); each open order carries `side`
+  (`"buy"` | `"sell"`, the order side, not the team side); positions are signed (buys
+  minus sells) rows `{"market_id", "side", "size", "basis_cents", "avg_cost"}` with
+  `avg_cost = basis_cents / (size * 100)`, and a position sold down to zero disappears;
+  `game` carries `signals` and `team_stats` as described under "Data for workers" above.
+- `POST /api/v1/orders/request` takes an optional `"order_side": "buy"` (default) |
+  `"sell"` (any other value is 400). The existing `side` key, when sent, is still the
+  team side and is ignored. A buy's `client_request_id` keeps the step 4 formula; a
+  sell's is `sha256(assignment|market|snapshot_id|price|size|sell)[:32]`. A sell is
+  approved by `host/trading/sells.py` `approve_sell`: kill, lease, assignment, market,
+  kickoff, mode, stale book, participation on the bid side, price band (`price >= bid -
+  0.05`), then `no_position`, `sell_exceeds_position` (size above the position minus the
+  open sells) and `open_sell_exists` (at most one open sell per market). A sell reserves
+  nothing (`cost_cents` 0) and skips the money checks. A sell may coexist with an open
+  buy on the same market.
+- The owner's kill cancels open sells like buys. Fills of a sell carry
+  `fills.basis_cents` (the basis the sale removed) and post a ledger `sell` row; settled
+  sells get their own `bets` row (`order_side` sell, `result` sold, `stake_cents` 0).

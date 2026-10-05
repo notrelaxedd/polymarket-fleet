@@ -21,6 +21,8 @@ BOUNDS: dict[str, dict[str, tuple[float, float]]] = {
         "rest_per_day": (0.0, 4.0),
         "min_edge": (0.01, 0.08),
         "kelly_fraction": (0.1, 0.5),
+        "qb_change_penalty": (0.0, 80.0),
+        "out_penalty_per_player": (0.0, 15.0),
     },
 }
 FIXED: dict[str, tuple[str, ...]] = {"elo_blend": ("mov_scale",)}

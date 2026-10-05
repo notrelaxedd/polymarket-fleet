@@ -1477,6 +1477,9 @@ def test_lost_trade_job_is_dropped_and_reclaimed(host: FakeHost, enrolled: str, 
     host.expire_lease(job_id)
     host.wait_for(lambda: any(job_id in hb["response"]["lost"] for hb in host.heartbeats), timeout=8.0)
     host.wait_for(lambda: host.job(job_id)["status"] == "leased" and host.job(job_id)["lease_token"] != token, timeout=8.0)
+    # The host grants the new lease in a heartbeat response the agent applies just after;
+    # wait for the agent to have taken it rather than racing the response handling.
+    host.wait_for(lambda: job_id in dict(trader.agent.trade_jobs), timeout=8.0)
     assert list(trader.agent.trade_jobs) == [job_id] and trader.agent.trade_jobs[job_id]["lease_token"] == host.job(job_id)["lease_token"]
 
 

@@ -11,7 +11,7 @@ import pytest
 
 from fleet.models.elo import expected_home
 from fleet.models.elo_blend import DEFAULT_PARAMS, PARAM_KEYS, SIGNAL_DEFAULTS, EloBlend, signal_adjustment
-from fleet.models.search_space import bounds_of, perturb_params
+from fleet.models.search_space import bounds_of, clip_params, perturb_params
 from fleet.sim.backtest import run_fold
 from fleet.sim.data import load_games
 from fleet.sim.odds import devig
@@ -48,8 +48,12 @@ def test_defaults_are_zero_and_keys_known() -> None:
     # An existing model's params are not widened (its neighbourhood draws stay the same).
     assert EloBlend(PARAMS).params == {**DEFAULT_PARAMS, **PARAMS}
     assert signal_adjustment({}, {"home_qb_changed": 1, "home_out_count": 5}) == 0.0
-    # Not in the clip bounds: tests/test_stress.py expects every bounded key in every params dict.
-    assert "qb_change_penalty" not in bounds_of("elo_blend")
+    # In the clip bounds (the search space), so a stress perturbation never leaves it;
+    # clip_params skips a bounded key a model does not carry, so old params stay narrow.
+    assert bounds_of("elo_blend")["qb_change_penalty"] == (0.0, 80.0)
+    assert bounds_of("elo_blend")["out_penalty_per_player"] == (0.0, 15.0)
+    assert set(clip_params("elo_blend", dict(PARAMS))) == set(PARAMS), "no penalty keys added to old params"
+    assert clip_params("elo_blend", {"qb_change_penalty": 88.0, "out_penalty_per_player": -1.0}) == {"qb_change_penalty": 80.0, "out_penalty_per_player": 0.0}
 
 
 @pytest.mark.parametrize("season", [2021, 2025])
@@ -118,7 +122,7 @@ def test_search_draws_keep_the_old_params_for_old_seeds() -> None:
         assert list(new)[-2:] == ["qb_change_penalty", "out_penalty_per_player"]
     perturbed = perturb_params("elo_blend", {**PARAMS, "qb_change_penalty": 79.0, "out_penalty_per_player": 0.0},
                                random.Random("x"))
-    assert 71.1 - 1e-9 <= perturbed["qb_change_penalty"] <= 86.9 + 1e-9 and perturbed["out_penalty_per_player"] == 0.0
+    assert 71.1 - 1e-9 <= perturbed["qb_change_penalty"] <= 80.0 and perturbed["out_penalty_per_player"] == 0.0
 
 
 def test_summary_mentions_nonzero_penalties_and_stays_three_sentences() -> None:

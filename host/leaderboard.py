@@ -113,6 +113,13 @@ def short_params(family: str, params: dict[str, Any] | None) -> str:
             "MOV on" if params.get("mov_scale") else "MOV off",
         ]
         return " · ".join(parts)
+    if family == "epa_blend":
+        window, shrink, l2 = _num(params.get("window")), _num(params.get("shrink")), _num(params.get("l2"))
+        return " · ".join([
+            f"window {round(window)}" if window is not None else "window ?",
+            f"shrink {shrink:.1f}" if shrink is not None else "shrink ?",
+            f"L2 {l2:.2f}" if l2 is not None else "L2 ?",
+        ])
     parts = []
     for key in sorted(params)[:3]:
         value = params[key]

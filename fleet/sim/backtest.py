@@ -31,7 +31,7 @@ from fleet.sim.prices import Replay, p_market_of
 from fleet.sim.fills import BetRule
 from fleet.sim.metrics import empty_stats, merge_stats, metrics_from_stats, record_game
 from fleet.sim.odds import devig
-from fleet.sim.records import build_record, build_snapshot_record, pack_probs, unpack_probs
+from fleet.sim.records import bet_rows, build_record, build_snapshot_record, pack_probs, unpack_probs
 from fleet.sim.robust import robust_fields
 
 MIN_HISTORY_SEASONS = 3
@@ -44,10 +44,15 @@ Emit = Callable[[dict[str, Any], float], None]
 ShouldStop = Callable[[], bool]
 
 
-def season_plan(games: list[dict[str, Any]], seasons: list[int | None] | tuple[int | None, int | None] | None) -> list[int]:
-    """The seasons a backtest over [first, last] evaluates (last None = last complete)."""
+def season_plan(games: list[dict[str, Any]], seasons: list[int | None] | tuple[int | None, int | None] | None,
+                through_latest: bool = False) -> list[int]:
+    """The seasons a backtest over [first, last] evaluates (last None = last complete,
+    or with `through_latest` (a snapshot replay) the latest season present, the season
+    in progress included)."""
     first, last = (seasons or DEFAULT_SEASONS)[:2] if seasons else DEFAULT_SEASONS
     present = sorted({g["season"] for g in games})
+    if last is None and through_latest:
+        last = present[-1] if present else None
     if last is None:
         complete = complete_seasons(games)
         if not complete:
@@ -206,6 +211,8 @@ def assemble(games: list[dict[str, Any]], family: str, params: dict[str, Any], p
         result["price_source"] = PRICE_SOURCE_SNAPSHOTS
         result["platform"] = replay.platform
         result["n_unscored_no_prices"] = sum(int(e.get("n_unscored_no_prices", 0)) for e in per_season)
+        clvs = [row[4] for row in bet_rows([r for season in records for r in season])]
+        result["avg_clv"] = sum(clvs) / len(clvs) if clvs else None  # plain mean over bets
     return result
 
 
@@ -235,7 +242,7 @@ def run_seasons(games: list[dict[str, Any]], family: str, params: dict[str, Any]
     """The per-season checkpoint entries of a backtest (run or resumed), the raw form
     the validation needs for its base run."""
     get_family(family)
-    plan = season_plan(games, seasons)
+    plan = season_plan(games, seasons, through_latest=replay is not None)
     if replay is not None:
         recorded = {g["season"] for g in games if replay.has_game(g["game_id"])}
         plan = [season for season in plan if season in recorded]

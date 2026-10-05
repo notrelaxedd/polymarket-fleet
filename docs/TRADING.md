@@ -325,10 +325,13 @@ the assignment holds contracts:
   bid for `min(position size - open sell size, participation * bid depth at or above the
   price)` contracts. Never more than the position (no shorting); one open sell per market.
 - Approval for sells (`host/trading/sells.py`): kill, lease, assignment active, market
-  confirmed and unresolved, mode gate, stale book, participation (bid side), price band
-  (`>= bid - 0.05`), size within the position; no reservation (`orders.cost_cents = 0`,
-  no ledger row) and no daily-loss check, but the order and its events are logged like
-  any other.
+  confirmed and unresolved, kickoff (the same hard cutoff as buys), mode gate, stale
+  book, participation (bid side), price band (`>= bid - 0.05`), size within the position
+  minus open sells (`no_position`, `sell_exceeds_position`), one open sell per market
+  (`open_sell_exists`); no reservation (`orders.cost_cents = 0`, no ledger row) and no
+  daily-loss check, but the order and its events are logged like any other. A sell may
+  coexist with an open buy on the same market (the worker cancels that buy as stale
+  once its edge is gone).
 
 Money side, as built:
 
@@ -383,7 +386,8 @@ Money side, as built:
   open P&L is the realized gain of the sales plus the mark-to-mid of what is still
   held; after settlement the `sold` bets row carries it.
 - Dashboard: sells shown with a `sell` chip and their realized P&L; positions show size,
-  average cost, current bid and unrealized P&L.
+  average cost, current bid and unrealized P&L at that bid net of the taker fee a sale
+  would pay.
 - Tests: `tests/test_sell_ledger.py` (sell maths by hand, ledger invariants after
   partial and full sales, no shorting, P&L), `tests/test_sell_paper.py` (marketable and
   resting sells, shared participation with a buy on the same snapshot),

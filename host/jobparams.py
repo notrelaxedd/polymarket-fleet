@@ -28,7 +28,7 @@ from host.leases import as_uuid
 from host.models import known_family
 from host.nflverse import last_complete_season
 from host.settings import FIRST_SEASON, LAST_SEASON, get_setting
-from host.snapshot_store import PRICE_SOURCES, snapshot_settings
+from host.snapshot_store import PRICE_SOURCES, SNAPSHOTS, latest_season, snapshot_settings
 
 COPIED_SETTINGS = ("fee_model", "default_bankroll_cents", "max_bet_cents", "trade_max_games")
 SEARCH_DEFAULTS = {"n": 200, "seed": 0, "top_k": 5}
@@ -168,13 +168,16 @@ def _backtest(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
         out["params"] = _model_params(params.get("params"), out["family"])
     else:
         raise BadRequest("backtest needs model_id or family + params")
-    if "seasons" in params:
-        out["seasons"] = resolve_seasons(conn, params["seasons"])
-        check_testable(conn, out["seasons"])
     if "price_source" in params:  # absent means closing_line (the worker's default too)
         if params["price_source"] not in PRICE_SOURCES:
             raise BadRequest(f"price_source must be one of {', '.join(PRICE_SOURCES)}")
         out["price_source"] = params["price_source"]
+    if "seasons" in params:
+        seasons = params["seasons"]
+        if out.get("price_source") == SNAPSHOTS and isinstance(seasons, list) and len(seasons) == 2 and seasons[1] is None:
+            seasons = [seasons[0], latest_season(conn)]  # a replay runs through the season in progress
+        out["seasons"] = resolve_seasons(conn, seasons)
+        check_testable(conn, out["seasons"])
     return out
 
 
@@ -259,8 +262,19 @@ def copied_settings(conn: psycopg.Connection, kind: str = "backtest") -> dict[st
 
 
 def _snapshot_copies(conn: psycopg.Connection, kind: str, out: dict[str, Any]) -> dict[str, Any]:
-    """The replay settings a snapshot backtest carries ({} for any other job)."""
-    return snapshot_settings(conn) if kind == "backtest" and out.get("price_source") == "snapshots" else {}
+    """The replay settings a snapshot backtest carries ({} for any other job), and its
+    backtest_seasons with a null last resolved to the latest season in games (the
+    season in progress included; no validation cap, a replay selects nothing)."""
+    if kind != "backtest" or out.get("price_source") != SNAPSHOTS:
+        return {}
+    copies = snapshot_settings(conn)
+    seasons = get_setting(conn, "backtest_seasons", [2010, None])
+    if isinstance(seasons, list) and len(seasons) == 2 and seasons[1] is None and latest_season(conn) is not None:
+        try:
+            copies["backtest_seasons"] = resolve_seasons(conn, [seasons[0], latest_season(conn)], "backtest_seasons")
+        except BadRequest:
+            pass  # keep the closing-line copy
+    return copies
 
 
 def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) -> dict[str, Any]:

@@ -339,22 +339,28 @@ def test_clock_skew_auto_kills_and_stops_placing(pool, conn, gw):
     assert gw.calls["place"] == 2 and order_row(conn, row["id"])["status"] == "open"
 
 
+def wall() -> datetime:
+    """The clock now: approval judges buying power age against the database clock, and
+    NOW (fixed at import) can be minutes old by the time a long suite gets here."""
+    return datetime.now(timezone.utc)
+
+
 def test_buying_power_stale_rejects(conn, live):
     assert approve(conn, live, size=1)["status"] == "approved"
-    auth_state(conn, balance_checked_at=NOW - timedelta(seconds=301))
+    auth_state(conn, balance_checked_at=wall() - timedelta(seconds=301))
     assert approve(conn, live, size=1)["reason"] == "buying_power", "older than buying_power_max_age_s"
     set_setting(conn, "buying_power_max_age_s", 600)
     assert approve(conn, live, size=1)["status"] == "approved"
     auth_state(conn, balance_checked_at=None)
     assert approve(conn, live, size=1)["reason"] == "buying_power"
-    auth_state(conn, balance_checked_at=NOW, buying_power_cents=None)
+    auth_state(conn, balance_checked_at=wall(), buying_power_cents=None)
     assert approve(conn, live, size=1)["reason"] == "buying_power", "a missing figure rejects"
     paper = trade_setup(conn)
     assert approve(conn, paper, size=1)["status"] == "approved", "paper never looks at buying power"
 
 
 def test_buying_power_counts_reserved_live(conn, live):
-    auth_state(conn, buying_power_cents=1100, balance_checked_at=NOW)
+    auth_state(conn, buying_power_cents=1100, balance_checked_at=wall())
     first = approved_order(conn, live, size=10)
     assert first["cost_cents"] == 532 == bankroll_of(conn, live.assignment)["reserved_cents"]
     assert approve(conn, live, size=10)["status"] == "approved", "532 + 532 <= 1100"

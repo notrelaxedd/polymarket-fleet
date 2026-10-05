@@ -9,7 +9,9 @@ before; snapshot metrics land in `models.snapshot_metrics` on the whole lineage,
 touch `backtest_metrics` and leave the status alone (eligibility does not read them in
 this step). The metrics' own `price_source` must agree with the job's (400), so a
 snapshot run can never overwrite the closing-line numbers the gate judges, nor the
-other way round.
+other way round. A snapshot backtest whose last season is null (in the request or in
+settings backtest_seasons) replays through the latest season in games, the season in
+progress included, not only the last complete one.
 """
 from __future__ import annotations
 
@@ -51,6 +53,14 @@ def snapshot_settings(conn: psycopg.Connection) -> dict[str, Any]:
         "price_platform": platform if isinstance(platform, str) and platform else DEFAULT_PLATFORM,
         "participation": float(participation),
     }
+
+
+def latest_season(conn: psycopg.Connection) -> int | None:
+    """The newest season in the games table (the season in progress included), None
+    when it is empty. A snapshot backtest with no explicit last season replays through
+    it: its played games are scored, its unplayed ones are skipped."""
+    row = conn.execute("SELECT max(season) AS season FROM games").fetchone()
+    return None if row is None or row["season"] is None else int(row["season"])
 
 
 def job_price_source(job: dict[str, Any]) -> str:

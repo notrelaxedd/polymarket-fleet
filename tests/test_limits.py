@@ -430,7 +430,7 @@ def test_ledger_replay_matches_columns_with_open_positions(conn):
     orders.set_status(conn, row["id"], "open", "executor", expected=("approved",))
     orders.record_fill(conn, row["id"], 0.52, 4, 10, "paper", "paper-sim", snapshot_id=s.snapshot["id"])
     pos = positions.positions(conn, s.assignment["id"])
-    assert pos == [{"market_id": s.market["id"], "side": "home", "size": 4, "avg_price": 0.52, "basis_cents": 208}]
+    assert pos == [{"market_id": s.market["id"], "side": "home", "size": 4, "basis_cents": 208, "avg_cost": 0.52}]
     assert ledger.replay_problems(conn) == []
     bank = bankroll_of(conn, s.assignment)
     assert bank["open_cost_cents"] == 208 and bank["realized_pnl_cents"] == -10

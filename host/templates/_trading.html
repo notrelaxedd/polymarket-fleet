@@ -1,9 +1,9 @@
 {# Inner HTML of #trading-live: assignments, positions, orders, fills, markets, exchange
    state and the ledger check. Every table stacks on a phone; the lead cell goes first and
    the action cell sits at its right. A sell order or fill carries a `sell` chip; a sell's
-   realized P&L (proceeds - fee - basis) follows its fill. Positions is a card div and its
-   tables lead with data-assignment, and an order's side sits on its order cell, so the
-   step 4 markup the older tests match stays as it was. #}
+   realized P&L (proceeds - fee - basis) follows its fill. Positions is a card section
+   whose tables lead with data-assignment, and an order's side sits on its order cell,
+   so the step 4 table markup the older tests match stays as it was. #}
 {% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{% if cents > 0 %}+{% endif %}{{ cents | money }}</span>{% endmacro %}
 <section class="card group" id="assignments">
 <h2>Assignments <span class="muted small">{{ assignments | length }}</span></h2>
@@ -45,13 +45,13 @@
 </div>
 </section>
 
-<div class="card group positions" id="positions">
+<section class="card group positions" id="positions">
 <h2>Positions <span class="muted small">{{ positions | length }} assignment{{ '' if positions | length == 1 else 's' }} holding</span></h2>
 {% for p in positions %}
 <h3 class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong> <span class="chip mode-{{ p.mode }}">{{ p.mode }}</span> <span class="muted small">{{ p.family or 'model' }} {{ p.model_id | short }} &middot; {{ p.game_id }}</span> <span class="positions-total">unrealized {{ pnl(p.unrealized_cents) }}</span></h3>
 <div class="table-wrap">
 <table data-assignment="{{ p.assignment_id }}" class="positions stack">
-  <thead><tr><th>market</th><th>size</th><th>avg cost</th><th>bid</th><th>unrealized at bid</th></tr></thead>
+  <thead><tr><th>market</th><th>size</th><th>avg cost</th><th>bid</th><th>unrealized at bid, net of sale fee</th></tr></thead>
   <tbody>
   {% for r in p.rows %}
   <tr class="position-row{% if p.mode == 'live' %} is-live{% endif %}" data-market="{{ r.market_id }}">
@@ -68,7 +68,7 @@
 {% else %}
 <p class="muted">No open positions. Contracts held after a buy fills show here until they are sold or the market resolves.</p>
 {% endfor %}
-</div>
+</section>
 
 <section class="card group" id="open-orders">
 <h2>Open orders <span class="muted small">{{ open_orders | length }}</span></h2>

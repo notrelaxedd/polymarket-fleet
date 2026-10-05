@@ -305,6 +305,17 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
     ("worker cancel", "kill", "drain", "owner cancel", "kickoff", "gtd expired"), the
     edge with "my 0.61 vs 0.57", the rationale line and the worker with the model.
   - Fills (`#fills`, last 50): time, market, "18 @ 0.58 of 30 @ 0.58", fee, worker.
+  - (step 6 Part B) Sells: a `sell` chip on sell orders in the open and recent order
+    lists and on sell fills; a sell order reads "sell N @ p" with its realized P&L in
+    place of a cost, a sell fill "sold N @ p" with the realized P&L and the basis it
+    removed (the fills table gains a realized column). The reject reasons `no_position`,
+    `sell_exceeds_position` and `open_sell_exists` have plain-word texts.
+  - (step 6 Part B) Positions (`#positions`, after Assignments): one table per
+    assignment that holds contracts, with market and side, size, average cost with the
+    basis, the current bid (latest snapshot, fallback the market row's best bid) and the
+    unrealized P&L at that bid net of the taker fee a sale would pay
+    (`bid*size*100 - fee - basis`), plus a total per assignment; "no bid" when there is
+    none, and "No open positions." when nothing is held.
   - Unmatched markets (`#unmatched`): title, platform and reference, the mapper's guess
     with its confidence, the book and snapshot age, and a link form (game select over
     every upcoming game, home/away wins, Link) posting to `POST /markets/{id}/link`; on a

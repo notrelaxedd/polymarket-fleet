@@ -376,12 +376,12 @@ def test_existing_position_at_target_means_no_proposal() -> None:
     edge = 0.57 - cost
     target = math.floor(0.25 * 10000 * edge / (1 - cost))
     assert target == 200
-    held = _assignment(positions=[{"market_id": "m-home", "side": "home", "size": 3, "avg_price": 0.52, "basis_cents": 200}])
+    held = _assignment(positions=[{"market_id": "m-home", "side": "home", "size": 3, "avg_cost": 0.6667, "basis_cents": 200}])
     assert plan_proposals(held, SETTINGS, model=Fixed(0.57), now=NOW) == [], "at target: nothing to add"
-    part = _assignment(positions=[{"market_id": "m-home", "side": "home", "size": 1, "avg_price": 0.52, "basis_cents": 52}])
+    part = _assignment(positions=[{"market_id": "m-home", "side": "home", "size": 1, "avg_cost": 0.52, "basis_cents": 52}])
     out = plan_proposals(part, SETTINGS, model=Fixed(0.57), now=NOW)
     assert len(out) == 1 and out[0]["stake_cents"] == 200 - 52 and out[0]["size"] == math.floor(148 / (cost * 100)) == 2
-    other = _assignment(positions=[{"market_id": "m-away", "side": "away", "size": 9, "avg_price": 0.5, "basis_cents": 450}])
+    other = _assignment(positions=[{"market_id": "m-away", "side": "away", "size": 9, "avg_cost": 0.5, "basis_cents": 450}])
     assert plan_proposals(other, SETTINGS, model=Fixed(0.57), now=NOW)[0]["stake_cents"] == 200, "a position elsewhere does not count"
 
 
@@ -390,7 +390,7 @@ def test_equity_includes_reserved_and_open_cost_so_fills_do_not_shrink_the_targe
     edge = 0.57 - cost
     a = _assignment(available=9800)
     a["bankroll"].update({"reserved_cents": 0, "open_cost_cents": 200})
-    a["positions"] = [{"market_id": "m-home", "side": "home", "size": 3, "avg_price": 0.52, "basis_cents": 200}]
+    a["positions"] = [{"market_id": "m-home", "side": "home", "size": 3, "avg_cost": 0.6667, "basis_cents": 200}]
     assert plan_proposals(a, SETTINGS, model=Fixed(0.57), now=NOW) == [], "equity is still 10000: the position is the target"
     # the loop of the finding: feeding each fill back no longer re-buys the same edge
     a = _assignment(available=10000)
@@ -404,7 +404,7 @@ def test_equity_includes_reserved_and_open_cost_so_fills_do_not_shrink_the_targe
         spent = math.floor(p["size"] * 0.52 * 100)
         a["bankroll"]["available_cents"] -= spent
         a["bankroll"]["open_cost_cents"] += spent
-        a["positions"] = [{"market_id": "m-home", "side": "home", "size": held, "avg_price": 0.52, "basis_cents": held * 52}]
+        a["positions"] = [{"market_id": "m-home", "side": "home", "size": held, "avg_cost": 0.52, "basis_cents": held * 52}]
     target = math.floor(0.25 * 10000 * (0.60 - cost) / (1 - cost))
     assert held * 52 <= target < 10000 * 0.1, "about a quarter-Kelly target, not most of the bankroll"
     assert a["bankroll"]["available_cents"] > 9000

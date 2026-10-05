@@ -198,3 +198,11 @@ def test_job_page_shows_a_snapshot_result(client, conn, make_worker):
     html = client.get(f"/jobs/{job['id']}").text
     assert "Replayed on recorded <strong>polymarket_us</strong> prices: 80 games scored, 40 bets" in html
     assert "<strong>0.018</strong> per contract" in html, "no avg_clv reported: the middle of the range"
+
+
+def test_short_params_label_for_epa_blend() -> None:
+    from host.leaderboard import short_params
+
+    assert short_params("epa_blend", {"window": 8, "shrink": 3.0, "l2": 1.0, "min_edge": 0.03}) == "window 8 · shrink 3.0 · L2 1.00"
+    assert short_params("epa_blend", {}) == "window ? · shrink ? · L2 ?"
+    assert short_params("elo_blend", PARAMS) == "K 24 · HFA 55 · MOV on", "elo_blend keeps its label"

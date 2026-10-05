@@ -7,8 +7,8 @@ diff (clamped to +-3 days, divided by 3), qb_changed diff, out_count diff, divis
 (0/1), market logit. Every diff is home minus away.
 
 Rolling EPA: the mean of a team's last `window` team_stats rows (all strictly before
-the game), shrunk toward the league mean by n / (n + shrink). The league mean comes
-from LeagueMean, which only ever sees rows attached to games already processed, so a
+the game), shrunk toward the league mean by n / (n + shrink). The league mean is kept
+by LeagueMean, which only ever sees rows attached to games already processed, so a
 prediction never uses anything from the predicted game or later.
 """
 

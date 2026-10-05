@@ -6,8 +6,10 @@ The rows come from host.trading.positions.positions (the signed sum of fills: bu
 add, sells subtract their removed basis). The current bid is the bid of the market's
 latest price snapshot, falling back to the best bid mirrored on the market row; a
 position without any bid shows no unrealized figure rather than a made-up one.
-Unrealized P&L at the bid is `round(bid * size * 100) - basis_cents`, before the
-taker fee a sale would pay.
+Unrealized P&L at the bid is `round(bid * size * 100) - fee - basis_cents`, where fee
+is the taker fee a sale of the whole position at that bid would pay (the paper
+simulator's fee rule on settings fee_model), so the figure is what selling now would
+realize.
 """
 from __future__ import annotations
 
@@ -16,6 +18,8 @@ from typing import Any
 
 import psycopg
 
+from host.exchange.paper import fee_cents
+from host.settings import get_setting
 from host.trading import positions as positions_mod
 from host.trading.orders import fill_cost_cents
 
@@ -48,17 +52,22 @@ def latest_bids(conn: psycopg.Connection, market_ids: list[Any]) -> dict[Any, di
     return out
 
 
-def value_at_bid(position: dict[str, Any], bid: Decimal | None) -> dict[str, Any]:
-    """A position row plus `bid`, `value_cents` and `unrealized_cents` (None without a bid)."""
+def value_at_bid(position: dict[str, Any], bid: Decimal | None, fee_model: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A position row plus `bid`, `value_cents` (gross, at the bid), `sell_fee_cents`
+    and `unrealized_cents` (value - fee - basis); all None without a bid."""
     row = dict(position)
     row["bid"] = None if bid is None else float(bid)
     if bid is None:
         row["value_cents"] = None
+        row["sell_fee_cents"] = None
         row["unrealized_cents"] = None
     else:
-        value = fill_cost_cents(bid, int(row["size"]))
+        size = int(row["size"])
+        value = fill_cost_cents(bid, size)
+        fee = fee_cents(float(bid), size, fee_model)
         row["value_cents"] = value
-        row["unrealized_cents"] = value - int(row["basis_cents"])
+        row["sell_fee_cents"] = fee
+        row["unrealized_cents"] = value - fee - int(row["basis_cents"])
     return row
 
 
@@ -70,6 +79,8 @@ def assignment_positions(conn: psycopg.Connection, assignments: list[dict[str, A
     held = [(a, positions_mod.positions(conn, a["id"])) for a in assignments]
     market_ids = sorted({p["market_id"] for _, rows in held for p in rows}, key=str)
     bids = latest_bids(conn, market_ids)
+    fee_model = get_setting(conn, "fee_model")
+    fee_model = fee_model if isinstance(fee_model, dict) else None
     out = []
     for a, rows in held:
         if not rows:
@@ -77,7 +88,7 @@ def assignment_positions(conn: psycopg.Connection, assignments: list[dict[str, A
         valued = []
         for p in rows:
             info = bids.get(p["market_id"], {})
-            row = value_at_bid(p, info.get("bid"))
+            row = value_at_bid(p, info.get("bid"), fee_model)
             row["market_title"] = info.get("title") or str(p["market_id"])
             row["platform"] = info.get("platform")
             row["bid_ts"] = info.get("bid_ts")

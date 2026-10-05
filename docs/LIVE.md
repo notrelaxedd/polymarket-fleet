@@ -53,8 +53,11 @@ field name is configurable in `settings.market_source_config.polymarket_us.auth`
 /v1/orders/{order_id}`, `cancel_all null` (list-open-then-cancel-each when null), `open GET
 /v1/orders/open`, `order GET /v1/order/{order_id}`, `fills GET /v1/fills?since=...`,
 `balance GET /v1/balance`. Requests: `place` sends `{client_order_id:
-orders.client_request_id, market_id: market_ref, side: "BUY", price, size, time_in_force:
-"GTD", expires_at: gtd_at}` (field names configurable; `live.client_id_field` picks the
+orders.client_request_id, market_id: market_ref, side, price, size, time_in_force:
+"GTD", expires_at: gtd_at}` where `side` is `live.side_buy` (default `"BUY"`) for a buy order
+and `live.side_sell` (default `"SELL"`) for a sell order (step 6 Part B, docs/TRADING.md
+"Selling"; a null `side_buy` or `side_sell` raises `NotConfigured` before any request
+is sent) (field names configurable; `live.client_id_field` picks the
 row column sent as the client id, `client_request_id` by default because that is what the
 executor and the audit reconcile on); returns the exchange order id. The executor attaches
 `markets.market_ref` to the row it hands over (the gateway has no database access). Every nested config block
