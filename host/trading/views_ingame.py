@@ -19,6 +19,7 @@ from host.exchange.feedlag import lag_status
 from host.exchange.gamestate import latest_state
 from host.leaderboard import short_params
 from host.settings import get_setting
+from host.trading.ingame import model_retired
 from host.web import ago
 
 INGAME_FAMILY = "ingame_wp"
@@ -145,7 +146,7 @@ def assignment_ingame(conn: psycopg.Connection, a: dict[str, Any], markets: list
         "model_id": str(model_id) if model_id else None,
         "model_label": short_params(INGAME_FAMILY, loaded["row"]["params"]) if loaded else None,
         "trade_ingame": bool(flags and flags["trade_ingame"]),
-        "enabled": bool(flags and flags["trade_ingame"] and model_id),
+        "enabled": bool(flags and flags["trade_ingame"] and model_id) and not model_retired(conn, model_id),
         "state": None, "label": None, "line": None, "age_s": None, "stale": False, "source": None,
         "p_home": None, "mid_home": home_mid(markets, a["game_id"]), "pregame_p_home": None,
     }
@@ -186,7 +187,9 @@ def feed_block(conn: psycopg.Connection) -> dict[str, Any]:
     min_events = int(_number(conn, "ingame_lag_min_events", DEFAULT_LAG_MIN_EVENTS))
     max_lag = _number(conn, "ingame_max_lag_s", 20.0)
     sources = []
-    for source, summary in sorted((lag.get("by_source") or {}).items()):
+    order = list(SOURCE_NAMES)  # ESPN, then its scoreboard fallback, then Yahoo; unknown names last
+    by_source = lag.get("by_source") or {}
+    for source, summary in sorted(by_source.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else len(order), kv[0])):
         name = SOURCE_NAMES.get(source, source)
         sources.append({"source": source, "name": name, "text": lag_text(name, summary, min_events),
                         "short": lag_short(name, summary, min_events), "suspended": bool(summary.get("suspended"))})

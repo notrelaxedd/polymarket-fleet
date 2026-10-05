@@ -3,7 +3,10 @@
 An assignment carries its pre-game model (`model_id`) and optionally an in-game model
 (`ingame_model_id`, an `ingame_wp` model whose lineage is not retired) plus the switch
 `trade_ingame` (default: settings.trade_ingame). In-game trading is on when both are
-set. In-game orders are paper-only in this step, so `trade_ingame` cannot be turned on
+set and the in-game lineage is not retired: once it is retired, approval rejects its
+requests `ingame_disabled`, `turn_off_retired` (every executor tick) turns trade_ingame
+off, and the current (retired) model can still be re-sent with trade_ingame false.
+In-game orders are paper-only in this step, so `trade_ingame` cannot be turned on
 for a live assignment (the approval's "ingame_paper_only" stays the second guard).
 
 The owner toggles them with `set_ingame` (POST /api/assignments/{id}/ingame, audited
@@ -99,6 +102,33 @@ def cancel_ingame_orders(conn: psycopg.Connection, assignment_id: Any, actor: st
     return len(rows)
 
 
+def _same_model(given: Any, current: Any) -> bool:
+    """The request names the assignment's current in-game model (which is kept as it
+    is, retired or not, so the dashboard form can switch trading off)."""
+    if current is None or given is None or given == "":
+        return False
+    return str(given).strip().lower() == str(current).lower()
+
+
+def turn_off_retired(conn: psycopg.Connection, actor: str | None, lineage_id: Any = None) -> list[str]:
+    """trade_ingame off (open in-game orders cancelled, audited as assignment_ingame)
+    on every active or halted assignment that has it on with an in-game model whose
+    lineage is retired (only `lineage_id`'s when given); the assignment ids touched.
+    The executor runs it every tick; retiring a lineage may call it with `lineage_id`
+    to switch at once."""
+    rows = conn.execute(
+        """
+        SELECT a.id FROM assignments a JOIN models m ON m.id = a.ingame_model_id
+         WHERE a.trade_ingame AND a.status IN ('active', 'halted')
+           AND (%s::uuid IS NULL OR m.lineage_id = %s::uuid)
+           AND EXISTS (SELECT 1 FROM models r WHERE r.lineage_id = m.lineage_id AND r.status = 'retired')
+         ORDER BY a.created_at
+        """,
+        (lineage_id, lineage_id),
+    ).fetchall()
+    return [str(set_ingame(conn, r["id"], actor, {"trade_ingame": False})["id"]) for r in rows]
+
+
 def set_ingame(conn: psycopg.Connection, assignment_id: Any, actor: str | None, changes: dict[str, Any]) -> dict[str, Any]:
     """Set `ingame_model_id` and/or `trade_ingame` (only the keys present in `changes`)
     on an active or halted assignment; the updated row plus "orders_cancelled".
@@ -116,7 +146,7 @@ def set_ingame(conn: psycopg.Connection, assignment_id: Any, actor: str | None, 
     if row["status"] not in ("active", "halted"):
         raise Conflict(f"assignment is {row['status']}")
     model_id = row["ingame_model_id"]
-    if "ingame_model_id" in changes:
+    if "ingame_model_id" in changes and not _same_model(changes["ingame_model_id"], model_id):
         model = ingame_model(conn, changes["ingame_model_id"])
         model_id = None if model is None else model["id"]
     trade = row["trade_ingame"]
@@ -126,6 +156,8 @@ def set_ingame(conn: psycopg.Connection, assignment_id: Any, actor: str | None, 
         trade = changes["trade_ingame"]
     if trade and row["mode"] == "live":
         raise Conflict(PAPER_ONLY)
+    if trade and model_id is not None and str(model_id) == str(row["ingame_model_id"]):
+        ingame_model(conn, model_id)  # the kept model must still be usable to switch trading on
     if str(model_id) != str(row["ingame_model_id"]) and _has_ingame_orders(conn, row["id"]):
         raise Conflict("the assignment has in-game orders of its in-game model; turn trade_ingame off instead")
     was_on = bool(row["trade_ingame"] and row["ingame_model_id"] is not None)

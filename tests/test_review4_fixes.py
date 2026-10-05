@@ -146,16 +146,20 @@ def test_resting_pregame_order_never_fills_in_game_and_is_cancelled_at_kickoff(c
     assert ledger.replay_problems(conn) == []
 
 
-def test_kickoff_cutoff_is_off_when_not_pregame_only(conn):
+def test_kickoff_cutoff_holds_when_not_pregame_only(conn):
+    """Step 6C review: trade_pregame_only off no longer lets an order approved before
+    kickoff rest into the game in play (only orders approved under the in-game rules
+    trade it), so the GTD cap, the paper kickoff bound and the kickoff cancel apply."""
     set_setting(conn, "trade_pregame_only", False)
     s = trade_setup(conn, kickoff_in_s=120)
     o = approved_order(conn, s, size=10)
     Executor().tick(conn)
-    assert order_row(conn, o["id"])["gtd_at"] > s.game["kickoff_at"]
+    assert order_row(conn, o["id"])["gtd_at"] == s.game["kickoff_at"], "gtd_at is capped at kickoff"
     conn.execute("UPDATE games SET kickoff_at = now() - interval '5 minutes' WHERE game_id = %s", (s.game["game_id"],))
     insert_snapshot(conn, s.market["id"], ask=0.50, bid=0.48)
-    assert paper.process(conn) >= 1 and order_row(conn, o["id"])["filled_size"] == 10
-    assert Executor().tick(conn)["kickoff"] == 0
+    assert paper.process(conn) == 0 and order_row(conn, o["id"])["filled_size"] == 0
+    assert Executor().tick(conn)["kickoff"] == 1
+    assert order_row(conn, o["id"])["status"] == "cancelled"
 
 
 # ------------------------------------------------------------- kill flag is read-only

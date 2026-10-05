@@ -1,8 +1,9 @@
 """Settlement with in-game orders (contract section 11, docs/TRADING.md "In-game trading
-(step 6 Part C)"): the money splits as for any order (checked to the cent), an in-game
-row carries ingame, a null CLV and the game state at entry, and is attributed to the
-assignment's in-game model, so model_scores and eligibility cover both lineages; CLV
-and the paper gate never see in-game rows; the ledger identity holds."""
+(step 6 Part C)"): the money splits to the cent, a contract belonging to the model that
+bought it (host/exchange/settle_owners.py), an in-game row carries ingame, a null CLV
+and the game state at entry, and is attributed to the assignment's in-game model, so
+model_scores and eligibility cover both lineages; CLV and the paper gate never see
+in-game rows; the ledger identity holds."""
 from __future__ import annotations
 
 import itertools
@@ -80,40 +81,44 @@ def test_ingame_buy_and_sell_settle_to_the_cent_and_score_both_lineages(conn):
     in_buy = mark_ingame(conn, bought(conn, a, home, 0.60, 5, 6), NOW - timedelta(minutes=7))
     in_sell = mark_ingame(conn, sold(conn, a, home, 0.70, 6, 7), NOW - timedelta(minutes=2))
     result = settle.settle_game(conn, GAME, "test")
-    # 15 bought (basis 700), 6 sold at average cost 280; 9 held (basis 420) win 900:
-    # basis split 240/180 by bought basis, payout 600/300 by bought contracts.
+    # A contract belongs to the model that bought it (host/exchange/settle_owners.py):
+    # the in-game sell of 6 closes the in-game model's 5 (own basis 300) and 1 of the
+    # pre-game model's 10 (basis 40 at its 0.40 average). Proceeds 420 and fee 7 split
+    # by contracts with the residual on the seller's part: 350/6 own, 70/1 pre-game.
+    # Held: 9 pre-game contracts (basis 360) win 900; the in-game model holds none.
     rows = bets_by_order(conn, a)
     p, i, s = rows[pre_buy["id"]], rows[in_buy["id"]], rows[in_sell["id"]]
     assert (p["ingame"], p["model_id"], p["lineage_id"], p["state_at_entry"]) == (False, pre["id"], pre["lineage_id"], None)
-    assert (p["cost_cents"], p["stake_cents"], p["pnl_cents"]) == (240, 412, 600 - 240 - 12)
+    assert (p["cost_cents"], p["fee_cents"], p["stake_cents"], p["pnl_cents"]) == (400, 13, 412, 900 + 70 - 400 - 13)
     assert p["clv"] == pytest.approx(0.15)
     assert (i["ingame"], i["model_id"], i["lineage_id"], i["clv"]) == (True, wp["id"], wp["lineage_id"], None)
-    assert (i["order_side"], i["result"], i["cost_cents"], i["stake_cents"], i["pnl_cents"]) == ("buy", "win", 180, 306, 300 - 180 - 6)
+    assert (i["order_side"], i["result"], i["cost_cents"], i["stake_cents"], i["pnl_cents"]) == ("buy", "win", 0, 306, -6)
     assert i["state_at_entry"] == {"period": 3, "clock_seconds": 252, "home_score": 17, "away_score": 14, "possession": "home"}
     assert (s["ingame"], s["model_id"], s["lineage_id"], s["clv"]) == (True, wp["id"], wp["lineage_id"], None)
-    assert (s["order_side"], s["result"], s["cost_cents"], s["stake_cents"], s["pnl_cents"]) == ("sell", "sold", 280, 0, 420 - 7 - 280)
+    assert (s["order_side"], s["result"], s["cost_cents"], s["fee_cents"], s["stake_cents"], s["pnl_cents"]) == (
+        "sell", "sold", 300, 6, 0, 350 - 6 - 300)
     assert s["state_at_entry"] == {"period": 4, "clock_seconds": 600, "home_score": 24, "away_score": 14, "possession": "away"}
-    total = 348 + 114 + 133
+    total = 557 - 6 + 44
     bank = bankroll(conn, a)
     assert bank["realized_pnl_cents"] == total == sum(r["pnl_cents"] for r in rows.values()), "bets add up to the ledger"
     assert (bank["available_cents"], bank["open_cost_cents"], bank["reserved_cents"]) == (10_000 + total, 0, 0)
     assert ledger.replay_problems(conn) == []
     ps, ws = score(conn, pre), score(conn, wp)
-    assert (ps["n_bets"], ps["stake_cents"], ps["pnl_cents"], ps["ingame_n_bets"], ps["ingame_pnl_cents"]) == (1, 412, 348, 0, 0)
+    assert (ps["n_bets"], ps["stake_cents"], ps["pnl_cents"], ps["ingame_n_bets"], ps["ingame_pnl_cents"]) == (1, 412, 557, 0, 0)
     assert ps["avg_clv"] == pytest.approx(0.15, abs=1e-6) and ps["lineage_id"] == pre["lineage_id"]
-    assert (ws["n_bets"], ws["stake_cents"], ws["pnl_cents"], ws["ingame_n_bets"], ws["ingame_pnl_cents"]) == (1, 306, 247, 1, 247)
+    assert (ws["n_bets"], ws["stake_cents"], ws["pnl_cents"], ws["ingame_n_bets"], ws["ingame_pnl_cents"]) == (1, 306, 38, 1, 38)
     assert ws["avg_clv"] is None and ws["lineage_id"] == wp["lineage_id"], "CLV excludes in-game rows"
     assert result["bets"] == 2 and result["pnl_cents"] == total
     assert {x["lineage_id"] for x in result["lineages"]} == {str(pre["lineage_id"]), str(wp["lineage_id"])}
     job = conn.execute("SELECT status, result FROM jobs WHERE id = %s", (a["job_id"],)).fetchone()
     assert job["status"] == "succeeded"
     assert {k: job["result"][k] for k in ("n_bets", "pnl_cents", "ingame_n_bets", "ingame_pnl_cents")} == {
-        "n_bets": 2, "pnl_cents": total, "ingame_n_bets": 1, "ingame_pnl_cents": 247}
+        "n_bets": 2, "pnl_cents": total, "ingame_n_bets": 1, "ingame_pnl_cents": 38}
     # The pre-game lineage's paper record and CLV interval never see the in-game rows.
     stats = eligibility.paper_stats(conn, pre["lineage_id"])
-    assert (stats["bets"], stats["pnl_cents"]) == (1, 348) and stats["avg_clv"] == pytest.approx(0.15, abs=1e-6)
+    assert (stats["bets"], stats["pnl_cents"]) == (1, 557) and stats["avg_clv"] == pytest.approx(0.15, abs=1e-6)
     in_stats = eligibility.paper_stats(conn, wp["lineage_id"])
-    assert (in_stats["bets"], in_stats["pnl_cents"], in_stats["avg_clv"]) == (1, 247, None)
+    assert (in_stats["bets"], in_stats["pnl_cents"], in_stats["avg_clv"]) == (1, 38, None)
     n_clv = conn.execute("SELECT count(*) AS n FROM bets WHERE lineage_id = %s AND clv IS NOT NULL", (wp["lineage_id"],)).fetchone()
     assert n_clv["n"] == 0
 

@@ -143,7 +143,9 @@ assignment, job or game those have just closed. Checks, in order, each with a st
    time (heartbeat `released[]`, the reaper, `/trade/release`) is waited for and its
    queued row is what the check sees.
 4. `assignment`: active; `market`: mapped to the assignment's game, confirmed, unresolved;
-   `kickoff`: game not started when `trade_pregame_only`.
+   `kickoff`: game not started. With `trade_pregame_only` off, a request on a game in
+   play is not rejected here but runs the in-game checks instead (see "In-game trading
+   (step 6 Part C)"): after kickoff nothing is approved outside the in-game rules.
 5. `mode`: live needs `live_enabled`, lineage `live_eligible`, `exchange_state.auth_ok`
    and a market on the live platform (the current `market_source`, never
    `polymarket_clob`; step 5).
@@ -192,12 +194,14 @@ Nothing fills while the kill switch is on.
 immediate, done by whoever requested it, host or exchange; live: by the exchange with
 retry 1,2,4,8 s forever, after its fills were read). Orders expire at `gtd_seconds`
 after submission (paper at once; a live row through the cancel path, closing as
-`expired` once the exchange no longer lists it). With
-`trade_pregame_only`, kickoff is a hard cutoff: `gtd_at` is capped at the game's
-`kickoff_at`, an executor pass cancels every active order of a game that has kicked off
-(actor `exchange`, reason `kickoff`; live rows become `cancel_requested`), and the paper
-simulator never uses a snapshot taken at or after kickoff, so no in-game book can fill a
-pregame order and CLV is always measured against the pre-kickoff closing price.
+`expired` once the exchange no longer lists it). Kickoff is a
+hard cutoff for a pre-game order, whatever `trade_pregame_only` says (step 6C review):
+`gtd_at` is capped at the game's `kickoff_at`, an executor pass cancels every active
+pre-game order of a game that has kicked off (actor `exchange`, reason `kickoff`; live
+rows become `cancel_requested`), and the paper simulator never uses a snapshot taken at
+or after kickoff, so no in-game book can fill a pregame order and CLV is always measured
+against the pre-kickoff closing price. Orders approved under the in-game rules are the
+exception (see "In-game trading (step 6 Part C)").
 
 ## Kill switch (full)
 
@@ -345,7 +349,8 @@ the assignment holds contracts:
   it can still fill and the host counts it too. `approve_order` hands a request with
   `order_side` "sell" to `approve_sell`.
 - Approval for sells (`host/trading/sells.py`): kill, lease, assignment active, market
-  confirmed and unresolved, kickoff (the same hard cutoff as buys; added as built, the
+  confirmed and unresolved, kickoff (the same hard cutoff as buys, with the same in-game
+  rules in its place after kickoff when `trade_pregame_only` is off; added as built, the
   first version of this text did not list it), mode gate, stale book, participation (bid
   side), price band (0.01 to 0.99, on the tick, and `>= bid - 0.05`), size within the
   position minus open sells (`no_position`, `sell_exceeds_position`), one open sell per
@@ -439,6 +444,13 @@ Assignments (`host/trading/assignments_ingame.py`, migration `0009_ingame.sql`):
 - `ingame_model_id` must be an existing `ingame_wp` model whose lineage is not retired
   (400 otherwise). It needs no eligibility for paper, like a pre-game paper assignment.
   An `ingame_wp` model cannot be the pre-game `model_id` (400): it has no pre-game rule.
+- Retiring the in-game model's lineage stops in-game trading: approval rejects its
+  requests `ingame_disabled`, the trade state reports the in-game block disabled, and
+  `assignments_ingame.turn_off_retired` (run by every executor tick) turns
+  `trade_ingame` off on every active or halted assignment using it, audited as
+  `assignment_ingame` with its open in-game orders cancelled. The toggle accepts the
+  assignment's current in-game model unchanged even when retired, so the dashboard form
+  can switch trading off; switching it back on with a retired model is a 400.
 - `trade_ingame` left out of a new assignment takes `settings.trade_ingame` (default
   false); a live assignment gets false, and an explicit true on a live assignment is a
   409 ("in-game trading is paper-only in this step"). Approval still rejects a live
@@ -463,6 +475,15 @@ Orders (`host/trading/ingame.py`, `host/exchange/executor.py`, `host/exchange/pa
   `ingame_cutoff`, and `ingame_lag_suspended` for buys; order and boundaries in
   docs/INGAME.md), then the usual buy or sell checks, with `max_bet` also capped by
   `ingame_max_bet_cents`.
+- After kickoff (game kicked off, not final) the host decides what is in play, not the
+  request: a request without `"ingame": true` is rejected `kickoff` while
+  `trade_pregame_only` is on, and with it off runs the same in-game checks (the
+  `trade_ingame` switch, paper-only, stale, quiet, cutoff, lag, the in-game max bet).
+  Such an order is the pre-game model's decision, so it keeps `orders.ingame` false and
+  is scored on the pre-game lineage; its approval event carries `"in_play": true` with
+  `state_at_entry` and `gtd_seconds`, and the executor and the paper simulator treat it
+  like an in-game order (`host.trading.orders.in_play_order`). A live order is therefore
+  never approved in play.
 - The order row has `orders.ingame` true; its first `order_events` detail carries
   `ingame`, `state_at_entry`, `gtd_seconds` and `gtd_seconds_requested`.
 - The executor gives an in-game order `gtd_at = submitted + ingame_gtd_seconds` with no
@@ -470,17 +491,33 @@ Orders (`host/trading/ingame.py`, `host/exchange/executor.py`, `host/exchange/pa
   fills them on snapshots taken after kickoff (`kickoff_bound` is none for them).
 
 Settlement (`host/exchange/settle.py`, `host/exchange/settle_sells.py`):
-- The money is split exactly as before (buy rows pro rata over the contracts still
-  held, a sell gets its own `sold` row), so the bets of an assignment still add up to
-  its ledger `realized` and the replay identity holds; an in-game order is just an order.
+- On a market only one of the assignment's two models traded, the money is split
+  exactly as before (buy rows pro rata over the contracts still held, a sell gets its
+  own `sold` row); an in-game order is just an order.
+- Who owns a sold contract (`host/exchange/settle_owners.py`, step 6C review): on a
+  market both models traded, a contract belongs to the model that bought it. The
+  market's fills are walked in order, keeping each model's own sub-position at its own
+  average cost; a sell closes its own model's contracts first, then the other model's.
+  The sell's row keeps only its own part (cost = the own basis it closed, proceeds and
+  fee pro rata by contracts with the rounding residual on its own part, so an in-game
+  sell of the pre-game pick alone has cost, fee and pnl 0); the part that closed the
+  other model's contracts is realized on that model's buy rows (pro rata by contracts
+  over its buys since its sub-position was last flat: their cost and fee include it,
+  their pnl its proceeds). What each model still holds is split over its own buys as
+  before. So each lineage's paper record carries exactly the contracts it bought, and
+  an in-game exit can neither launder a losing pre-game pick out of the pre-game record
+  nor strip a winner from it. The ledger `settle` row still moves the pooled
+  average-cost position (the buy rows carry their share as `settle_basis_cents` and
+  `settle_payout_cents`; a push pays the pooled basis back, split by each row's
+  remaining basis), so the bets of an assignment still add up to its ledger `realized`
+  to the cent and the replay identity holds.
 - The `bets` row of an in-game order (`orders.ingame`) has `ingame = true`, `clv = null`
   (CLV excludes in-game rows: the closing price is a pre-game price) and
   `state_at_entry` = `{period, clock_seconds, home_score, away_score, possession}`: the
   state the order's approval event recorded, else the newest `game_state` row of the
   game at or before the order's `created_at`, null when there was none. It is attributed to the assignment's in-game
   model: `model_id` and `lineage_id` are the `ingame_model_id`'s, so the `ingame_wp`
-  lineage gets its own paper record. That includes an in-game sell of contracts a
-  pre-game buy bought: the in-game model chose the sale, so its realized P&L is its.
+  lineage gets its own paper record (of the contracts it bought, as above).
 - `model_scores` is upserted per `(model, game, mode)` for every model the assignment's
   rows are attributed to (the pre-game model always, the in-game model when it has
   rows), each recomputed from all bets of that key (two paper assignments may share one
@@ -497,4 +534,8 @@ Settlement (`host/exchange/settle.py`, `host/exchange/settle_sells.py`):
   cancelling open in-game orders, kill cancels in-game orders),
   `tests/test_ingame_settlement.py` (in-game buys and sells settled to the cent, the
   attribution to both lineages, `state_at_entry`, CLV and the paper gate excluding
-  in-game rows, a shared in-game model, the ledger identity).
+  in-game rows, a shared in-game model, the ledger identity),
+  `tests/test_review6c_trading.py` (a retired in-game lineage stops trading and can be
+  switched off from the form; the in-game rules after kickoff whatever the flag, live
+  never; pre-kickoff orders bounded by kickoff; who owns a sold contract, push
+  included; order rows naming the in-game model).

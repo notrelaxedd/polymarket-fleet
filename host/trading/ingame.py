@@ -1,11 +1,19 @@
 """In-game approval (docs/INGAME.md "In-game trade rules", step 6C contract section 10).
 
 A request with `ingame` true is dispatched here from host.trading.limits (buys) and
-host.trading.sells (sells). It runs under the same lock and transaction as any other
-approval and keeps every limit; only the pre-game `kickoff` rejection is replaced by
-the in-game checks, in this order after `killed`, `lease`, `assignment`, `market`:
+host.trading.sells (sells). So is a request without the flag once the assignment's game
+has kicked off (and is not final) while settings.trade_pregame_only is false: the host,
+not the request, decides what is in play, so a pre-game model never trades a game in
+progress outside these rules (with trade_pregame_only on it is rejected `kickoff`).
+Such an order keeps orders.ingame false (it is the pre-game model's decision and is
+scored on its lineage) and its approval event carries `"in_play": true`, which the
+executor and the paper simulator treat like the ingame flag. It runs under the same
+lock and transaction as any other approval and keeps every limit; only the pre-game
+`kickoff` rejection is replaced by the in-game checks, in this order after `killed`,
+`lease`, `assignment`, `market`:
 
-1. `ingame_disabled`: the assignment has trade_ingame off or no in-game model;
+1. `ingame_disabled`: the assignment has trade_ingame off or no in-game model, or the
+   in-game model or its lineage is retired;
 2. `ingame_paper_only`: a live assignment (in-game orders are paper-only in this step);
 3. `ingame_stale`: no game state, a state older than ingame_max_state_age_s (exactly
    at the age still passes), a state that does not show the game in progress (status
@@ -35,7 +43,7 @@ from host.trading import limits, sells
 
 __all__ = [
     "REASONS", "BUY_CHECKS", "SELL_CHECKS", "seconds_remaining", "entry_state", "state_problem", "prepare",
-    "gtd_seconds",
+    "gtd_seconds", "in_play", "route", "model_retired",
 ]
 
 REASONS = (
@@ -114,9 +122,45 @@ def prepare(conn: psycopg.Connection, ctx: dict[str, Any]) -> None:
     ctx["extra_max_bet_cents"] = int(setting(ctx["settings"], "ingame_max_bet_cents"))
 
 
+def in_play(game: dict[str, Any] | None, now: datetime) -> bool:
+    """The game has kicked off and is not final."""
+    return (game is not None and game.get("status") != "final" and game.get("kickoff_at") is not None
+            and game["kickoff_at"] <= now)
+
+
+def route(conn: psycopg.Connection, ctx: dict[str, Any], checks: tuple[tuple[str, Check], ...]) -> tuple[tuple[str, Check], ...]:
+    """The checks an approval runs: `checks` (BUY_CHECKS or SELL_CHECKS) for an in-game
+    request, and for a request without the flag on a game in play when
+    trade_pregame_only is false (marked ctx["in_play"]); () otherwise (the caller keeps the
+    pre-game list, whose `kickoff` check rejects a game in play)."""
+    tagged = bool(ctx["req"].get("ingame"))
+    promoted = (not tagged and ctx["settings"].get("trade_pregame_only", True) is False
+                and in_play(ctx.get("game"), ctx["now"]))
+    if not (tagged or promoted):
+        return ()
+    ctx["in_play"] = promoted
+    prepare(conn, ctx)
+    return checks
+
+
+def model_retired(conn: psycopg.Connection, model_id: Any) -> bool:
+    """The model is retired or any model of its lineage is (a retired lineage trades nothing)."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM models m WHERE m.id = %s
+           AND (m.status = 'retired' OR EXISTS (SELECT 1 FROM models r WHERE r.lineage_id = m.lineage_id
+                                                 AND r.status = 'retired'))
+        """,
+        (model_id,),
+    ).fetchone()
+    return row is not None
+
+
 def _check_disabled(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
     a = ctx["assignment"]
-    return not a.get("trade_ingame") or a.get("ingame_model_id") is None
+    if not a.get("trade_ingame") or a.get("ingame_model_id") is None:
+        return True
+    return model_retired(conn, a["ingame_model_id"])
 
 
 def _check_paper_only(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:

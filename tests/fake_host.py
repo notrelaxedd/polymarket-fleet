@@ -27,7 +27,9 @@ Step 4: the trade role. A trade worker's heartbeat claims up to want_jobs queued
 jobs (none under kill). TradeStore holds assignments (game, model, bankroll, two
 markets with a snapshot each), orders and the trade settings behind
 GET /api/v1/trade/state, POST /api/v1/orders/request (a small approval: duplicate,
-killed, lease, assignment, market, kickoff (not for "ingame" requests), bankroll;
+killed, lease, assignment, market, kickoff (not for "ingame" requests; with
+trade_pregame_only off an untagged request after kickoff needs the in-game switch, else
+ingame_disabled), bankroll;
 approved orders are paper and open at once with the reservation taken, and echo
 "ingame"; an assignment given an "ingame" block serves it in the state), POST /api/v1/orders/{id}/cancel and
 POST /api/v1/trade/release (cancels the orders, requeues the jobs). Controls:
@@ -309,9 +311,14 @@ class TradeStore:
                 return self._reject(w, body, "assignment", cost)
             if market["assignment_id"] != a["id"]:
                 return self._reject(w, body, "market", cost)
-            if (self.settings.get("trade_pregame_only") and not body.get("ingame")
-                    and _parse_iso(a["game"]["kickoff_at"]) <= time.time()):
-                return self._reject(w, body, "kickoff", cost)
+            if not body.get("ingame") and _parse_iso(a["game"]["kickoff_at"]) <= time.time():
+                # After kickoff the host decides what is in play: with trade_pregame_only
+                # on an untagged request is `kickoff`; off, it runs the in-game rules, of
+                # which this double keeps only the switch (`ingame_disabled`).
+                if self.settings.get("trade_pregame_only"):
+                    return self._reject(w, body, "kickoff", cost)
+                if not (a.get("ingame") or {}).get("enabled"):
+                    return self._reject(w, body, "ingame_disabled", cost)
             if cost > a["bankroll"]["available_cents"]:
                 return self._reject(w, body, "bankroll", cost)
             a["bankroll"]["available_cents"] -= cost

@@ -43,8 +43,10 @@ def list_orders(
     assignment_id: Any = None,
     worker_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Newest orders first with the market, game, mode and worker name; `status`
-    may be one status or "active" (approved .. cancel_requested)."""
+    """Newest orders first with the market, game, mode, worker name and the model that
+    placed the order (`model_id`, `family`: the assignment's in-game model for an
+    in-game order, else its pre-game model); `status` may be one status or "active"
+    (approved .. cancel_requested)."""
     if status and status != "active" and status not in ORDER_STATUSES:
         raise BadRequest(f"unknown status: {status!r}")
     clauses, params = ["true"], []
@@ -64,7 +66,8 @@ def list_orders(
     rows = conn.execute(
         f"""
         SELECT o.*, o.side AS order_side, m.title AS market_title, m.side, m.game_id, m.platform, w.name AS worker_name,
-               a.model_id, a.max_bet_cents AS assignment_max_bet_cents, mo.family,
+               COALESCE(CASE WHEN o.ingame THEN a.ingame_model_id END, a.model_id) AS model_id,
+               a.max_bet_cents AS assignment_max_bet_cents, mo.family,
                CASE WHEN o.side = 'sell' THEN
                  (SELECT SUM({FILL_REALIZED})::bigint FROM fills f WHERE f.order_id = o.id) END AS realized_cents,
                (SELECT e.detail ->> 'reason' FROM order_events e WHERE e.order_id = o.id
@@ -74,7 +77,7 @@ def list_orders(
           JOIN markets m ON m.id = o.market_id
           LEFT JOIN workers w ON w.id = o.worker_id
           LEFT JOIN assignments a ON a.id = o.assignment_id
-          LEFT JOIN models mo ON mo.id = a.model_id
+          LEFT JOIN models mo ON mo.id = COALESCE(CASE WHEN o.ingame THEN a.ingame_model_id END, a.model_id)
          WHERE {' AND '.join(clauses)}
          ORDER BY o.created_at DESC, o.id LIMIT %s
         """,

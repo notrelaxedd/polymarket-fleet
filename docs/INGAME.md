@@ -263,10 +263,21 @@ in-game assignment is live the trade loop ticks at the shorter of `trade_tick_s`
   `ingame-` plus 32 hex characters, so it never matches a pre-game id.
 
 Approval (`host/trading/ingame.py`) checks every rule again under the same lock and
-transaction as any order. The pre-game `kickoff` rejection does not apply; after
-`killed`, `lease`, `assignment` and `market` come, in order:
+transaction as any order. After kickoff the host, not the request, decides what is in
+play (`ingame.route`): a request without `"ingame": true` on a game in play is rejected
+`kickoff` while `trade_pregame_only` is on, and with it off runs these same in-game
+checks (it stays the pre-game model's order, scored on its lineage), so nothing is
+approved after kickoff outside the in-game rules and no live order is approved in play.
+A pre-game order is always bounded by kickoff, whatever `trade_pregame_only` says: its
+GTD ends at kickoff, the executor cancels it at kickoff and the paper simulator never
+fills it on a snapshot taken at or after kickoff (docs/TRADING.md). For an in-game
+request the pre-game `kickoff` rejection does not apply; after `killed`, `lease`,
+`assignment` and `market` come, in order:
 
-1. `ingame_disabled`: `trade_ingame` off or no in-game model;
+1. `ingame_disabled`: `trade_ingame` off, no in-game model, or an in-game model whose
+   lineage is retired (retiring the lineage also switches `trade_ingame` off at once,
+   audited, cancelling the open in-game orders; the executor catches any it missed on
+   every tick);
 2. `ingame_paper_only`: a live assignment;
 3. `ingame_stale`: no game state, one older than `ingame_max_state_age_s` (exactly at
    the age passes), a status other than "in", a missing period or clock, or a final game;
@@ -297,7 +308,10 @@ Settlement (docs/TRADING.md, "In-game trading") writes the `bets` row of an in-g
 with `ingame` true, `clv` null (CLV excludes in-game rows) and `state_at_entry`
 `{period, clock_seconds, home_score, away_score, possession}` (the state its approval
 recorded, else the newest `game_state` row at or before the order), attributed to the
-assignment's in-game model, so the ingame_wp lineage gets its own paper record.
+assignment's in-game model, so the ingame_wp lineage gets its own paper record. A sold
+contract belongs to the model that bought it: when both of an assignment's models trade
+the same market, a sale is matched to the buys it closes and each model's P&L carries
+its own contracts (`host/exchange/settle_owners.py`).
 `model_scores` gain `ingame_n_bets` and `ingame_pnl_cents`; `n_bets` and `pnl_cents`
 keep counting every bet.
 
