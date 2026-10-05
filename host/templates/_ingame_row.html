@@ -20,7 +20,7 @@
 {% if g.line %}{% if g.stale %}{{ ui.chip('warn', 'state stale', key='state-stale', extra='state-stale') }} <span class="game-line is-stale">{{ g.line }}</span>{% else %}<span class="game-line">{{ g.line }}</span>{% endif %}
 {% elif g.enabled %}<span class="game-line">no game state yet</span>{% endif %}
 {% if g.p_home is not none %} &middot; <span class="ingame-p{{ ' muted is-stale' if g.stale }}" data-p-home="{{ g.p_home | fixed(3) }}" title="the in-game model's home win probability next to the home market mid">model {{ a.game.home_team }} {{ g.p_home | prob }} &middot; mid {{ g.mid_home | prob }}{% if g.stale %} (from the stale state, not traded){% endif %}</span>{% endif %}
- {% if g.enabled %}{{ ui.chip('ok', 'in-game on', key='ingame-on', extra='chip-ingame') }}{% else %}{{ ui.chip('muted', 'in-game off', key='ingame-off') }}{% endif %}
+{{ ' ' }}{% if g.enabled %}{{ ui.chip('ok', 'in-game on', key='ingame-on', extra='chip-ingame') }}{% else %}{{ ui.chip('muted', 'in-game off', key='ingame-off') }}{% endif %}
 {%- endif %}
 {%- endmacro %}
 
