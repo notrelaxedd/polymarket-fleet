@@ -372,9 +372,13 @@ Money side, as built:
 - Sell basis (`positions.sell_basis_cents`): `remaining basis * size / remaining size`
   rounded half up to the cent, and exactly the remaining basis when the sale closes the
   position, so a position sold in any number of steps ends at zero open cost. A sell
-  fill larger than the position is refused (`orders.record_fill` raises; the live path
-  then auto-kills `late_fill` as for any fill the books cannot take). The bankroll row
-  is locked before the position is read.
+  fill larger than the position, or on a market already resolved (settlement paid the
+  position out), is refused (`orders.record_fill` raises; the live path then auto-kills
+  `late_fill` as for any fill the books cannot take). The bankroll row is locked before
+  the position is read. `record_fill` runs the fills INSERT, the ledger post and the
+  order update in one savepoint (and the fills poll wraps each fill in another), so a
+  fill the ledger refuses leaves no fills row behind and the next poll reports it
+  `late` again, killing again after a reset.
 - Paper fills for sells (`host/exchange/paper.py`) walk the bid levels at or above the
   limit with `fleet.sim.book.walk(side="sell")` and the same participation rule; a sell
   whose first snapshot after submission had its bid below the limit rests and fills at
@@ -393,9 +397,11 @@ Money side, as built:
   row (`order_side` sell, `result` sold, `entry_price` = average sell price,
   `cost_cents` = basis sold, `stake_cents` 0, `pnl_cents` = proceeds - fee - basis,
   `clv` null). Each filled buy row covers only the contracts still held: per market the
-  remaining basis is split over the buy rows by their bought basis and the payout by
-  their bought contracts, floor shares with the rounding residual on the last row, so
-  the rows add up to the ledger `settle` row exactly; `pnl = payout - basis - buy fee`,
+  remaining basis is split over the buy rows by the basis they bought since the
+  position was last flat and the payout by the contracts they bought since then (a buy
+  sold out before a re-buy gets 0 and 0, so its pnl is minus its fee), floor shares
+  with the rounding residual on the last row with a share, so the rows add up to the
+  ledger `settle` row exactly; `pnl = payout - basis - buy fee`,
   `stake_cents` stays the whole bought basis plus fee, CLV against the buy VWAP. A
   fully sold position settles with no `settle` row and its buy rows carry only their
   fees. `model_scores.pnl` includes sells; `n_bets` counts buys; CLV stays
@@ -412,5 +418,8 @@ Money side, as built:
   resting sells, shared participation with a buy on the same snapshot),
   `tests/test_sell_settlement.py` (exact totals after a partial sale, loss, push, a full
   sale), `tests/test_sell_kill_live.py` (kill cancels open sells, the live gateway and
-  executor send SELL, a live sell fill); the worker rule and the approval have their
-  own tests.
+  executor send SELL, a live sell fill), `tests/test_sell_worker.py` (the worker rule:
+  sell maths, no shorting, one open sell per market, stale sells, the id formulas) and
+  `tests/test_sell_approval.py` (every reason code, no reservation, idempotency, an
+  oversell race between threads), plus the end-to-end phase `tests/e2e_sells.py` (run by
+  `tests/e2e_signals.py`).

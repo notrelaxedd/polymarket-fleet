@@ -5,8 +5,9 @@ A lineage with `snapshot_metrics` (a backtest replayed on recorded prices, store
 host/snapshot_store.py) shows a "snapshot" group: games, bets, ROI and CLV with its
 90% range. The rank basis of a lineage is, in order: paper (the existing rule: 5 paper
 games and 30 paper bets, by shrunk paper CLV), snapshot (at least SNAPSHOT_RANK_BETS
-snapshot-scored bets, by shrunk snapshot CLV `clv * bets / (bets + 25)`, ties by the
-snapshot ROI), then validation. CLV is the frozen closing price minus the entry price,
+snapshot-scored bets on a real platform, by shrunk snapshot CLV `clv * bets / (bets +
+25)`, ties by the snapshot ROI), then validation. A replay on simulated prices
+(platform "sim") is shown with its platform tag but never ranks. CLV is the frozen closing price minus the entry price,
 so a positive number means the price moved the model's way after it bought.
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 SNAPSHOT_RANK_BETS, CLV_SHRINK = 30, 25
+SIM_PLATFORM = "sim"
 RANK_MODES = ("paper", "snapshot", "validation")
 
 
@@ -86,8 +88,12 @@ def snapshot_summary(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def snapshot_ranked(summary: dict[str, Any] | None) -> bool:
-    """True once a lineage has SNAPSHOT_RANK_BETS snapshot-scored bets with a CLV."""
-    return bool(summary) and summary["n_bets"] >= SNAPSHOT_RANK_BETS and summary["avg_clv"] is not None
+    """True once a lineage has SNAPSHOT_RANK_BETS snapshot-scored bets with a CLV on
+    real recorded prices. A replay on simulated prices (platform "sim", allowed only
+    for testing) is shown but never sets the rank basis: its CLV is measured against
+    made-up prices."""
+    return (bool(summary) and summary["n_bets"] >= SNAPSHOT_RANK_BETS and summary["avg_clv"] is not None
+            and summary.get("platform") != SIM_PLATFORM)
 
 
 def rank_mode(paper_is_ranked: bool, snapshot: dict[str, Any] | None) -> str:

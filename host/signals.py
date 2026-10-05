@@ -10,10 +10,10 @@ gives the signals alone (every game when game_ids is None, for the games feed).
 - home_out_qb / away_out_qb, home_out_count / away_out_count: `injuries` rows of the
   game's (season, game_type, week, team) with report_status Out whose date_modified is
   strictly before the decision time (kickoff minus the decision_minutes_before_kickoff
-  setting). A row modified at or after it, or without a date, never counts, so a
+  setting, or the minutes a snapshot backtest asks the games feed for). A row modified at or after it, or without a date, never counts, so a
   backtest cannot see a report written after the bet would have been placed.
-- team_stats: the team's team_game_stats rows strictly before this game's kickoff,
-  oldest first, at most TEAM_STATS_LIMIT.
+- team_stats: the team's team_game_stats rows strictly before this game's kickoff
+  with both EPA values, oldest first, at most TEAM_STATS_LIMIT.
 
 The rules are the pure functions of fleet.sim.signals, so the host and the sim agree.
 """
@@ -29,7 +29,7 @@ from fleet.sim.signals import decision_time, empty_signals, injury_signals, qb_c
 from host.settings import get_int_setting
 
 TEAM_STATS_LIMIT = 16
-DEFAULT_DECISION_MINUTES = 60
+DEFAULT_DECISION_MINUTES, MAX_DECISION_MINUTES = 60, 300
 STATS_COLUMNS = ("game_id", "season", "week", "team", "kickoff_at", "off_epa_per_play", "def_epa_per_play",
                  "pass_rate", "plays", "success_rate")
 STATS_SELECT = (
@@ -53,7 +53,7 @@ def stats_row(row: dict[str, Any]) -> dict[str, Any]:
 
 def decision_minutes(conn: psycopg.Connection) -> int:
     """The decision_minutes_before_kickoff setting (0..300, default 60)."""
-    return max(0, min(300, get_int_setting(conn, "decision_minutes_before_kickoff", DEFAULT_DECISION_MINUTES)))
+    return max(0, min(MAX_DECISION_MINUTES, get_int_setting(conn, "decision_minutes_before_kickoff", DEFAULT_DECISION_MINUTES)))
 
 
 def _games(conn: psycopg.Connection, game_ids: list[str] | None) -> list[dict[str, Any]]:
@@ -94,15 +94,19 @@ def _qb_input(row: dict[str, Any]) -> dict[str, Any]:
     return {**row, "kickoff_at": iso(row["kickoff_at"])}
 
 
-def signals_for(conn: psycopg.Connection, game_ids: list[str] | None = None) -> dict[str, dict[str, int]]:
-    """{game_id: signals} for the given games (every game when game_ids is None)."""
+def signals_for(
+    conn: psycopg.Connection, game_ids: list[str] | None = None, minutes: int | None = None
+) -> dict[str, dict[str, int]]:
+    """{game_id: signals} for the given games (every game when game_ids is None), with
+    injury reports cut at kickoff minus `minutes` (the setting when None)."""
     games = _games(conn, game_ids)
     if not games:
         return {}
     history = games if game_ids is None else _team_history(conn, games)
     qb = qb_changed_map(_qb_input(g) for g in history)
     outs = _out_rows(conn, None if game_ids is None else games)
-    minutes = decision_minutes(conn)
+    if minutes is None:
+        minutes = decision_minutes(conn)
     result: dict[str, dict[str, int]] = {}
     for game in games:
         decide = decision_time(game["kickoff_at"], minutes)
@@ -116,11 +120,15 @@ def signals_for(conn: psycopg.Connection, game_ids: list[str] | None = None) -> 
 
 
 def team_stats_before(conn: psycopg.Connection, team: str, kickoff: Any, limit: int = TEAM_STATS_LIMIT) -> list[dict[str, Any]]:
-    """The team's stats rows strictly before `kickoff`, oldest first, at most `limit`."""
+    """The team's stats rows strictly before `kickoff`, oldest first, at most `limit`.
+    A row without both EPA values is skipped, as the worker's games cache drops it
+    (fleet.sim.data.normalise_stat_row), so live and backtested rolling EPA average the
+    same games."""
     if kickoff is None:
         return []
     rows = conn.execute(
         f"SELECT * FROM ({STATS_SELECT}) x WHERE x.team = %s AND x.kickoff_at < %s"
+        " AND x.off_epa_per_play IS NOT NULL AND x.def_epa_per_play IS NOT NULL"
         " ORDER BY x.kickoff_at DESC, x.game_id DESC LIMIT %s",
         (team, kickoff, limit),
     ).fetchall()

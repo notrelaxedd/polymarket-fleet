@@ -41,12 +41,17 @@ def _conditional(request: Request, etag: str, body: Any) -> Response:
 
 @worker_router.get("/games")
 def get_games(
-    request: Request, token: str = Depends(bearer), conn: psycopg.Connection = DB
+    request: Request,
+    decision_minutes: str | None = Query(None),
+    token: str = Depends(bearer),
+    conn: psycopg.Connection = DB,
 ) -> Response:
     """Every game in kickoff order with its signals, plus the team-game stats; 304 when
-    the client's ETag still matches."""
+    the client's ETag still matches. `decision_minutes` (0..300) sets the injury cutoff
+    (a snapshot backtest passes its own); the setting applies without it."""
     auth.worker_for_token(conn, token)
-    return _conditional(request, games_feed.feed_etag(conn), lambda: games_feed.dumps_feed(conn))
+    minutes = games_feed.parse_minutes(decision_minutes)
+    return _conditional(request, games_feed.feed_etag(conn, minutes), lambda: games_feed.dumps_feed(conn, minutes))
 
 
 @worker_router.get("/prices")

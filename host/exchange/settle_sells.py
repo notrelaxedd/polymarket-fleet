@@ -7,8 +7,10 @@ Per market the assignment traded:
   its fills' `basis_cents`), pnl = proceeds - fee - basis, stake 0, clv null;
 - every filled buy order gets a row that covers only the contracts still held: the
   remaining position (bought minus sold contracts, and its remaining basis) is split
-  pro rata over the buy orders, the basis by each order's bought basis and the payout
-  by its bought contracts, with the rounding residual on the last row so the rows add
+  pro rata over the buy fills since the position was last flat, the basis by each
+  order's basis bought since then and the payout by its contracts bought since then
+  (a buy sold out before a re-buy gets basis 0 and payout 0, so pnl = -fee), with
+  the rounding residual on the last row so the rows add
   up to exactly what the ledger `settle` row moves; pnl = payout - basis - buy fee,
   stake = the order's whole bought basis plus fee, CLV against the entry VWAP
   (bought basis / (contracts * 100), as before).
@@ -28,16 +30,19 @@ FILLS_SQL = "SELECT price, size, fee_cents, basis_cents FROM fills WHERE order_i
 
 
 def split(total: int, weights: list[int]) -> list[int]:
-    """`total` cents split by `weights`: each row but the last gets floor(total * w /
-    sum), the last gets the residual, so the parts add up to `total` exactly. Equal
-    shares when every weight is zero."""
+    """`total` cents split by `weights`: each row gets floor(total * w / sum) and the
+    last row with a nonzero weight also gets the residual, so the parts add up to
+    `total` exactly and a zero weight gets exactly 0. Equal shares when every weight
+    is zero."""
     if not weights:
         return []
     if sum(weights) <= 0:
         weights = [1] * len(weights)
     whole = sum(weights)
-    parts = [int(total) * int(w) // whole for w in weights[:-1]]
-    return parts + [int(total) - sum(parts)]
+    parts = [int(total) * int(w) // whole for w in weights]
+    last = max(i for i, w in enumerate(weights) if w > 0)
+    parts[last] += int(total) - sum(parts)
+    return parts
 
 
 def outcome(market: dict[str, Any], winner: str | None) -> str:
@@ -85,6 +90,31 @@ def sell_bet(order: dict[str, Any], totals: dict[str, Any], market: dict[str, An
     }
 
 
+def current_lot(conn: psycopg.Connection, market_orders: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
+    """{buy order id: (contracts, basis)} bought since the position on this market was
+    last flat, walking the market's fills in time order. A buy whose contracts were
+    all sold before a later re-buy has no share of what is still held."""
+    ids = [o["id"] for o in market_orders]
+    sides = {str(o["id"]): o.get("side") for o in market_orders}
+    rows = conn.execute(
+        "SELECT order_id, price, size, basis_cents FROM fills WHERE order_id = ANY(%s) ORDER BY id", (ids,)
+    ).fetchall()
+    lot: dict[str, tuple[int, int]] = {}
+    position = 0
+    for r in rows:
+        oid, size = str(r["order_id"]), int(r["size"])
+        if sides.get(oid) == "sell":
+            position -= size
+            if position <= 0:
+                position, lot = 0, {}
+            continue
+        basis = int(r["basis_cents"]) if r["basis_cents"] is not None else orders.fill_cost_cents(r["price"], size)
+        size_so_far, basis_so_far = lot.get(oid, (0, 0))
+        lot[oid] = (size_so_far + size, basis_so_far + basis)
+        position += size
+    return lot
+
+
 def market_bets(
     conn: psycopg.Connection, market_orders: list[dict[str, Any]], market: dict[str, Any],
     assignment: dict[str, Any], game: dict[str, Any], winner: str | None,
@@ -98,9 +128,10 @@ def market_bets(
     held = max(0, bought - sold)
     basis_left = sum(totals[str(o["id"])]["basis"] for o in buys) - sum(totals[str(o["id"])]["basis"] for o in sells)
     result = outcome(market, winner)
-    basis_parts = split(basis_left, [totals[str(o["id"])]["basis"] for o in buys])
+    lot = current_lot(conn, market_orders)
+    basis_parts = split(basis_left, [lot.get(str(o["id"]), (0, 0))[1] for o in buys])
     if result == "win":
-        payout_parts = split(held * 100, [totals[str(o["id"])]["size"] for o in buys])
+        payout_parts = split(held * 100, [lot.get(str(o["id"]), (0, 0))[0] for o in buys])
     elif result == "push":
         payout_parts = list(basis_parts)
     else:

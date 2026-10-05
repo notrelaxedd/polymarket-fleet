@@ -299,9 +299,21 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
 
 /* step 6 Part B: sells and positions. The sell chip reuses the accent fill/text pair
    (AA in both schemes); a loss is the red text token, a gain only gets its sign. */
-.chip.chip-sell { background: var(--accent-fill); color: var(--accent-text); font-weight: 600; }
-/* the snapshot replay chip (Jobs list, leaderboard rank basis) on the same AA pair */
-.chip.chip-snapshot { background: var(--accent-fill); color: var(--accent-text); }
+/* the sell chip (orders and fills) and the snapshot replay chip (Jobs list, leaderboard
+   rank basis) are outlines in the link colour (the accent on card and on live rows pairs),
+   so they never read as a blue status badge */
+.chip.chip-sell { background: transparent; color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
+.chip.chip-snapshot { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+/* the Models table fits a 1280 screen: the metric cells wrap between their parts (a
+   value, its muted note, its range each stay whole), the paper and snapshot records
+   wrap into a few lines, the action buttons stack, and the summary keeps a readable
+   width (one unbreakable line per cell pushed the summary and the actions off screen) */
+table.models td.nowrap { white-space: normal; }
+table.models td .muted, table.models td .range { white-space: nowrap; }
+table.models td.c-paper, table.models td.c-snapshot { min-width: 9rem; }
+table.models td.c-summary { min-width: 12rem; }
+table.models td.c-actions { white-space: normal; }
+table.models td.c-actions .btn { margin: 0 0 0.3rem; }
 .pnl { font-weight: 600; white-space: nowrap; }
 .pnl.pnl-neg { color: var(--red-fg); }
 .positions-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem; }

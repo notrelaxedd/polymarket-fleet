@@ -201,6 +201,18 @@ def check_phone_layout(page: Any, name: str, problems: list[str]) -> None:
         problems.append(f"{name}: {tag} '{text}' is {height:.0f} px tall (< {MIN_TAP_PX})")
 
 
+def check_desktop_tables(page: Any, name: str, problems: list[str]) -> None:
+    """At desktop width every table fits its wrapper: no table-wrap scrolls sideways
+    (the document check alone misses a wrapper that scrolls inside itself)."""
+    wide = page.evaluate(
+        """() => Array.from(document.querySelectorAll('.table-wrap'))
+             .filter(el => el.scrollWidth > el.clientWidth + 1)
+             .map(el => [el.scrollWidth, el.clientWidth])"""
+    )
+    for scroll_w, client_w in wide:
+        problems.append(f"{name}: a table-wrap scrolls sideways at desktop width ({scroll_w} > {client_w})")
+
+
 def check_refresh_counter(page: Any, problems: list[str]) -> None:
     """The footer counts up, a fragment refresh resets it."""
     page.wait_for_function("/^updated [3-9] s ago$/.test(document.getElementById('updated').textContent)", timeout=12_000)
@@ -234,6 +246,8 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
                 check_phone_layout(page, name, problems)
                 if name == "fleet":
                     check_refresh_counter(page, problems)
+            if width == "1280" and scheme == "light" and name.startswith("models"):
+                check_desktop_tables(page, name, problems)
             context.close()
 
         def shoot_all(captures: list[tuple[str, str]]) -> None:
