@@ -1,0 +1,255 @@
+{
+ "boxscore": {
+  "teams": [
+   {
+    "team": {
+     "id": "13",
+     "uid": "s:20~l:28~t:13",
+     "abbreviation": "LV",
+     "displayName": "Las Vegas Raiders",
+     "location": "Las Vegas",
+     "name": "Raiders",
+     "color": "000000"
+    },
+    "statistics": []
+   },
+   {
+    "team": {
+     "id": "12",
+     "uid": "s:20~l:28~t:12",
+     "abbreviation": "KC",
+     "displayName": "Kansas City Chiefs",
+     "location": "Kansas City",
+     "name": "Chiefs",
+     "color": "e31837"
+    },
+    "statistics": []
+   }
+  ]
+ },
+ "gameInfo": {
+  "venue": {
+   "id": "4815",
+   "fullName": "Allegiant Stadium"
+  }
+ },
+ "leaders": [],
+ "broadcasts": [],
+ "pickcenter": [],
+ "news": {},
+ "article": {},
+ "standings": {},
+ "header": {
+  "id": "401800001",
+  "uid": "s:20~l:28~e:401800001",
+  "season": {
+   "year": 2026,
+   "type": 2
+  },
+  "week": 5,
+  "timeValid": true,
+  "competitions": [
+   {
+    "id": "401800001",
+    "uid": "s:20~l:28~e:401800001~c:401800001",
+    "date": "2026-10-05T20:15Z",
+    "neutralSite": false,
+    "conferenceCompetition": false,
+    "boxscoreAvailable": true,
+    "status": {
+     "clock": 372.0,
+     "displayClock": "6:12",
+     "period": 5,
+     "type": {
+      "id": "2",
+      "name": "STATUS_IN_PROGRESS",
+      "state": "in",
+      "completed": false,
+      "description": "In Progress",
+      "detail": "6:12 - OT",
+      "shortDetail": "6:12 - OT"
+     }
+    },
+    "competitors": [
+     {
+      "id": "13",
+      "uid": "s:20~l:28~t:13",
+      "order": 0,
+      "homeAway": "home",
+      "team": {
+       "id": "13",
+       "uid": "s:20~l:28~t:13",
+       "abbreviation": "LV",
+       "displayName": "Las Vegas Raiders",
+       "location": "Las Vegas",
+       "name": "Raiders",
+       "color": "000000"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "2-2"
+       }
+      ],
+      "score": "24",
+      "possession": false
+     },
+     {
+      "id": "12",
+      "uid": "s:20~l:28~t:12",
+      "order": 1,
+      "homeAway": "away",
+      "team": {
+       "id": "12",
+       "uid": "s:20~l:28~t:12",
+       "abbreviation": "KC",
+       "displayName": "Kansas City Chiefs",
+       "location": "Kansas City",
+       "name": "Chiefs",
+       "color": "e31837"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "3-1"
+       }
+      ],
+      "score": "24",
+      "possession": false
+     }
+    ]
+   }
+  ],
+  "league": {
+   "id": "28",
+   "abbreviation": "NFL"
+  }
+ },
+ "situation": {
+  "down": 2,
+  "yardLine": 49,
+  "distance": 1,
+  "downDistanceText": "2nd & 1 at KC 49",
+  "possessionText": "KC 49",
+  "isRedZone": false,
+  "homeTimeouts": 2,
+  "awayTimeouts": 1,
+  "possession": "13"
+ },
+ "drives": {
+  "previous": [],
+  "current": {
+   "id": "4018000031",
+   "team": {
+    "id": "13",
+    "uid": "s:20~l:28~t:13",
+    "abbreviation": "LV",
+    "displayName": "Las Vegas Raiders",
+    "location": "Las Vegas",
+    "name": "Raiders",
+    "color": "000000"
+   },
+   "plays": [
+    {
+     "id": "401800001501",
+     "sequenceNumber": "501",
+     "type": {
+      "id": "24",
+      "text": "Kickoff"
+     },
+     "text": "(10:00) H.Butker kicks 65 yards from KC 35 to end zone, Touchback.",
+     "awayScore": 24,
+     "homeScore": 24,
+     "period": {
+      "number": 5
+     },
+     "clock": {
+      "displayValue": "10:00"
+     },
+     "scoringPlay": false,
+     "priority": false,
+     "modified": "2026-10-05T23:58:02Z",
+     "wallclock": "2026-10-05T23:58:02Z",
+     "teamParticipants": [],
+     "start": {
+      "down": 0,
+      "distance": 0,
+      "yardLine": 35,
+      "yardsToEndzone": 65,
+      "team": {
+       "id": "12"
+      },
+      "downDistanceText": "0 & 0"
+     },
+     "statYardage": 0
+    },
+    {
+     "id": "401800001502",
+     "sequenceNumber": "502",
+     "type": {
+      "id": "24",
+      "text": "Pass Reception"
+     },
+     "text": "(10:00) (Shotgun) A.O'Connell pass short right to B.Bowers to LV 42 for 12 yards.",
+     "awayScore": 24,
+     "homeScore": 24,
+     "period": {
+      "number": 5
+     },
+     "clock": {
+      "displayValue": "10:00"
+     },
+     "scoringPlay": false,
+     "priority": false,
+     "modified": "2026-10-05T23:58:40Z",
+     "wallclock": "2026-10-05T23:58:40Z",
+     "teamParticipants": [],
+     "start": {
+      "down": 1,
+      "distance": 10,
+      "yardLine": 70,
+      "yardsToEndzone": 70,
+      "team": {
+       "id": "13"
+      },
+      "downDistanceText": "1 & 10"
+     },
+     "statYardage": 0
+    },
+    {
+     "id": "401800001503",
+     "sequenceNumber": "503",
+     "type": {
+      "id": "24",
+      "text": "Rush"
+     },
+     "text": "(9:21) A.Jeanty right end to KC 49 for 9 yards.",
+     "awayScore": 24,
+     "homeScore": 24,
+     "period": {
+      "number": 5
+     },
+     "clock": {
+      "displayValue": "9:21"
+     },
+     "scoringPlay": false,
+     "priority": false,
+     "modified": "2026-10-05T23:59:30Z",
+     "wallclock": "2026-10-05T23:59:30Z",
+     "teamParticipants": [],
+     "start": {
+      "down": 1,
+      "distance": 10,
+      "yardLine": 58,
+      "yardsToEndzone": 58,
+      "team": {
+       "id": "13"
+      },
+      "downDistanceText": "1 & 10"
+     },
+     "statYardage": 0
+    }
+   ]
+  }
+ }
+}

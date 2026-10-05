@@ -7,7 +7,7 @@ import sys
 import time
 from typing import Any, Sequence
 
-from host import auth, db, kill, leaderboard, nflverse, queue, views
+from host import auth, cli_ingame, db, kill, leaderboard, nflverse, queue, views
 from host.api.owner import install_command
 from host.api.serialize import jsonable
 from host.config import Config
@@ -327,6 +327,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--home", type=int, required=True)
     p.add_argument("--away", type=int, required=True)
     p.set_defaults(func=cmd_simulate_final)
+    cli_ingame.add_parsers(sub)
     return parser
 
 

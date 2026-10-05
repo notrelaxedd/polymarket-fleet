@@ -6,9 +6,11 @@ probe (`auth_probe_interval_s`, and at start), market discovery (5 min), snapsho
 (the poller applies its own cadences and a 5 s budget per pass), the open-order audit
 (`open_orders_audit_s`, and at start), the executor outbox (250 ms), paper fills
 (1 s), live fills (`live_fills_poll_s`, only while live orders are active), the
-scores poll (60 s), settlement (30 s) and retention (nightly). Every task runs in its
-own transaction and an exception, or a soft error a task reports, is logged and
-remembered as `last_error` without stopping the loop. With credentials the loop runs
+game-state feed (every second, right after snapshots, with its own per-game cadence
+and rate cap inside: host/exchange/gamestate.py), the scores poll (60 s), settlement
+(30 s) and retention (nightly). Every task runs in its own transaction and an
+exception, or a soft error a task reports, is logged and remembered as `last_error`
+without stopping the loop. With credentials the loop runs
 the auth probe, the reconciliation of `submitting` rows and the open-order audit
 before anything is submitted. A clock skew over `auto_kill.clock_skew_ms`, seen by
 the auth probe or on any other live answer, pauses live placements (`live_paused`,
@@ -30,7 +32,7 @@ from psycopg_pool import ConnectionPool
 
 from host import db
 from host.config import Config
-from host.exchange import live_sync, mapping, paper, retention, scores, settle, snapshots, state
+from host.exchange import gamestate, live_sync, mapping, paper, retention, scores, settle, snapshots, state
 from host.exchange.adapters import make_source
 from host.exchange.adapters.base import MarketSource, OrderGateway, PaperGateway, utcnow
 from host.exchange.adapters.sim import SimSource
@@ -42,11 +44,11 @@ from host.settings import get_int_setting, get_setting
 log = logging.getLogger(__name__)
 
 INTERVALS: dict[str, float] = {
-    "heartbeat": 5.0, "auth": 300.0, "discover": 300.0, "snapshots": 1.0, "open_orders_audit": 60.0,
+    "heartbeat": 5.0, "auth": 300.0, "discover": 300.0, "snapshots": 1.0, "gamestate": 1.0, "open_orders_audit": 60.0,
     "executor": 0.25, "fills": 1.0, "live_fills": 2.0, "scores": 60.0, "settle": 30.0, "retention": 60.0,
 }
-ORDER = ("heartbeat", "auth", "discover", "snapshots", "open_orders_audit", "executor", "fills", "live_fills",
-         "scores", "settle", "retention")
+ORDER = ("heartbeat", "auth", "discover", "snapshots", "gamestate", "open_orders_audit", "executor", "fills",
+         "live_fills", "scores", "settle", "retention")
 LIVE_TASKS = ("open_orders_audit", "live_fills")
 SETTING_INTERVALS = {"auth": "auth_probe_interval_s", "open_orders_audit": "open_orders_audit_s", "live_fills": "live_fills_poll_s"}
 LOOP_SLEEP = 0.25
@@ -76,6 +78,7 @@ class ExchangeLoop:
         self.last_run: dict[str, float] = {}
         self.errors: dict[str, str] = {}
         self.retention_day: Any = None
+        self.gamestate_poller = gamestate.PollerState()
 
     @property
     def last_error(self) -> str | None:
@@ -180,6 +183,9 @@ class ExchangeLoop:
     def task_snapshots(self, conn: Any, now: datetime) -> Any:
         source = self.source or self.refresh_source(conn, now)
         return snapshots.poll(conn, source, self.limiter, now)
+
+    def task_gamestate(self, conn: Any, now: datetime) -> Any:
+        return gamestate.poll(conn, now, state=self.gamestate_poller)
 
     def task_open_orders_audit(self, conn: Any, now: datetime) -> Any:
         if not self.credentials_present:

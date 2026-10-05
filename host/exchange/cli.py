@@ -8,6 +8,7 @@ exchange-smoke --confirm "SMOKE YYYY-MM-DD"  the smoke order (docs/LIVE.md), [--
 cancel-all --direct                          live off, then list and cancel the open orders on the exchange, close the rows
 probe-account                                the balance call's status and raw payload (key redacted)
 auth-check                                   one auth probe written to exchange_state
+probe-gamestate --event ID [--yahoo]         one game-state request: status, payload, parsed ([--url U])
 
 The live commands load the credentials from the environment (exchange.env) the way
 the exchange process does; the key and secret are never printed. A malformed secret
@@ -155,6 +156,28 @@ def cmd_auth_check(config: Config, _: argparse.Namespace) -> None:
     _print(result)
 
 
+def cmd_probe_gamestate(config: Config, args: argparse.Namespace) -> None:
+    """Never raises: without a database the default ESPN template is used."""
+    try:
+        with db.connect(config.database_url) as conn:
+            result = probe.probe_gamestate(conn, args.event, args.yahoo, args.url)
+    except Exception as exc:  # noqa: BLE001 - the probe must work without the database
+        result = probe.probe_gamestate(None, args.event, args.yahoo, args.url)
+        result["database"] = f"not reachable ({exc.__class__.__name__}); settings defaults used"
+    print_probe_gamestate(result)
+
+
+def print_probe_gamestate(result: dict[str, Any]) -> None:
+    for key in ("source", "event_id", "game_id", "url", "status", "error", "database"):
+        if key in result:
+            print(f"{key}: {result[key] if result[key] is not None else '-'}")
+    print("--- payload (first 64 KiB) ---")
+    print(result.get("payload") or "")
+    print("--- parsed ---")
+    parsed = result.get("parsed")
+    print(parsed if isinstance(parsed, str) else json.dumps(jsonable(parsed), indent=2, default=str))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m host.exchange.cli", description="fleet exchange operator CLI")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -178,6 +201,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_cancel_all)
     sub.add_parser("probe-account", help="the balance call's status and raw payload (key redacted)").set_defaults(func=cmd_probe_account)
     sub.add_parser("auth-check", help="one auth probe written to exchange_state").set_defaults(func=cmd_auth_check)
+    p = sub.add_parser("probe-gamestate", help="one game-state request: HTTP status, payload and what the parser extracted")
+    p.add_argument("--event", required=True, help="the ESPN event id (games.raw->>'espn')")
+    p.add_argument("--yahoo", action="store_true", help="probe yahoo_pbp_url instead of the ESPN summary")
+    p.add_argument("--url", default=None, help="a URL template to probe instead of the setting ({event_id} is filled in)")
+    p.set_defaults(func=cmd_probe_gamestate)
     return parser
 
 

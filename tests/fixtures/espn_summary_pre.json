@@ -1,0 +1,126 @@
+{
+ "boxscore": {
+  "teams": [
+   {
+    "team": {
+     "id": "13",
+     "uid": "s:20~l:28~t:13",
+     "abbreviation": "LV",
+     "displayName": "Las Vegas Raiders",
+     "location": "Las Vegas",
+     "name": "Raiders",
+     "color": "000000"
+    },
+    "statistics": []
+   },
+   {
+    "team": {
+     "id": "12",
+     "uid": "s:20~l:28~t:12",
+     "abbreviation": "KC",
+     "displayName": "Kansas City Chiefs",
+     "location": "Kansas City",
+     "name": "Chiefs",
+     "color": "e31837"
+    },
+    "statistics": []
+   }
+  ]
+ },
+ "gameInfo": {
+  "venue": {
+   "id": "4815",
+   "fullName": "Allegiant Stadium"
+  }
+ },
+ "leaders": [],
+ "broadcasts": [],
+ "pickcenter": [],
+ "news": {},
+ "article": {},
+ "standings": {},
+ "header": {
+  "id": "401800001",
+  "uid": "s:20~l:28~e:401800001",
+  "season": {
+   "year": 2026,
+   "type": 2
+  },
+  "week": 5,
+  "timeValid": true,
+  "competitions": [
+   {
+    "id": "401800001",
+    "uid": "s:20~l:28~e:401800001~c:401800001",
+    "date": "2026-10-05T20:15Z",
+    "neutralSite": false,
+    "conferenceCompetition": false,
+    "boxscoreAvailable": true,
+    "status": {
+     "clock": 0.0,
+     "displayClock": "0:00",
+     "period": 0,
+     "type": {
+      "id": "1",
+      "name": "STATUS_SCHEDULED",
+      "state": "pre",
+      "completed": false,
+      "description": "Scheduled",
+      "detail": "Mon, October 5th at 4:15 PM EDT",
+      "shortDetail": "Mon, October 5th at 4:15 PM EDT"
+     }
+    },
+    "competitors": [
+     {
+      "id": "13",
+      "uid": "s:20~l:28~t:13",
+      "order": 0,
+      "homeAway": "home",
+      "team": {
+       "id": "13",
+       "uid": "s:20~l:28~t:13",
+       "abbreviation": "LV",
+       "displayName": "Las Vegas Raiders",
+       "location": "Las Vegas",
+       "name": "Raiders",
+       "color": "000000"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "2-2"
+       }
+      ],
+      "possession": false
+     },
+     {
+      "id": "12",
+      "uid": "s:20~l:28~t:12",
+      "order": 1,
+      "homeAway": "away",
+      "team": {
+       "id": "12",
+       "uid": "s:20~l:28~t:12",
+       "abbreviation": "KC",
+       "displayName": "Kansas City Chiefs",
+       "location": "Kansas City",
+       "name": "Chiefs",
+       "color": "e31837"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "3-1"
+       }
+      ],
+      "possession": false
+     }
+    ]
+   }
+  ],
+  "league": {
+   "id": "28",
+   "abbreviation": "NFL"
+  }
+ }
+}

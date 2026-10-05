@@ -1,0 +1,364 @@
+{
+ "boxscore": {
+  "teams": [
+   {
+    "team": {
+     "id": "13",
+     "uid": "s:20~l:28~t:13",
+     "abbreviation": "LV",
+     "displayName": "Las Vegas Raiders",
+     "location": "Las Vegas",
+     "name": "Raiders",
+     "color": "000000"
+    },
+    "statistics": []
+   },
+   {
+    "team": {
+     "id": "12",
+     "uid": "s:20~l:28~t:12",
+     "abbreviation": "KC",
+     "displayName": "Kansas City Chiefs",
+     "location": "Kansas City",
+     "name": "Chiefs",
+     "color": "e31837"
+    },
+    "statistics": []
+   }
+  ]
+ },
+ "gameInfo": {
+  "venue": {
+   "id": "4815",
+   "fullName": "Allegiant Stadium"
+  }
+ },
+ "leaders": [],
+ "broadcasts": [],
+ "pickcenter": [],
+ "news": {},
+ "article": {},
+ "standings": {},
+ "header": {
+  "id": "401800001",
+  "uid": "s:20~l:28~e:401800001",
+  "season": {
+   "year": 2026,
+   "type": 2
+  },
+  "week": 5,
+  "timeValid": true,
+  "competitions": [
+   {
+    "id": "401800001",
+    "uid": "s:20~l:28~e:401800001~c:401800001",
+    "date": "2026-10-05T20:15Z",
+    "neutralSite": false,
+    "conferenceCompetition": false,
+    "boxscoreAvailable": true,
+    "status": {
+     "clock": 512.0,
+     "displayClock": "8:32",
+     "period": 3,
+     "type": {
+      "id": "2",
+      "name": "STATUS_IN_PROGRESS",
+      "state": "in",
+      "completed": false,
+      "description": "In Progress",
+      "detail": "8:32 - 3rd Quarter",
+      "shortDetail": "8:32 - 3rd Quarter"
+     }
+    },
+    "competitors": [
+     {
+      "id": "13",
+      "uid": "s:20~l:28~t:13",
+      "order": 0,
+      "homeAway": "home",
+      "team": {
+       "id": "13",
+       "uid": "s:20~l:28~t:13",
+       "abbreviation": "LV",
+       "displayName": "Las Vegas Raiders",
+       "location": "Las Vegas",
+       "name": "Raiders",
+       "color": "000000"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "2-2"
+       }
+      ],
+      "score": "17",
+      "possession": false
+     },
+     {
+      "id": "12",
+      "uid": "s:20~l:28~t:12",
+      "order": 1,
+      "homeAway": "away",
+      "team": {
+       "id": "12",
+       "uid": "s:20~l:28~t:12",
+       "abbreviation": "KC",
+       "displayName": "Kansas City Chiefs",
+       "location": "Kansas City",
+       "name": "Chiefs",
+       "color": "e31837"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "3-1"
+       }
+      ],
+      "score": "20",
+      "possession": false
+     }
+    ]
+   }
+  ],
+  "league": {
+   "id": "28",
+   "abbreviation": "NFL"
+  }
+ },
+ "situation": {
+  "$ref": "http://sports.core.api.espn.com/v2/sports/football/leagues/nfl/events/401800001/competitions/401800001/situation",
+  "lastPlay": {
+   "id": "401800001105",
+   "type": {
+    "id": "5",
+    "text": "Rush"
+   },
+   "text": "(9:05) I.Pacheco up the middle to LV 38 for 3 yards (R.Spillane)."
+  },
+  "down": 2,
+  "yardLine": 38,
+  "distance": 7,
+  "downDistanceText": "2nd & 7 at LV 38",
+  "shortDownDistanceText": "2nd & 7",
+  "possessionText": "LV 38",
+  "isRedZone": false,
+  "homeTimeouts": 2,
+  "awayTimeouts": 3,
+  "possession": "12"
+ },
+ "drives": {
+  "previous": [
+   {
+    "id": "x1",
+    "team": {
+     "id": "12",
+     "uid": "s:20~l:28~t:12",
+     "abbreviation": "KC",
+     "displayName": "Kansas City Chiefs",
+     "location": "Kansas City",
+     "name": "Chiefs",
+     "color": "e31837"
+    },
+    "plays": []
+   },
+   {
+    "id": "4018000017",
+    "description": "6 plays, 31 yards, 3:12",
+    "team": {
+     "id": "13",
+     "uid": "s:20~l:28~t:13",
+     "abbreviation": "LV",
+     "displayName": "Las Vegas Raiders",
+     "location": "Las Vegas",
+     "name": "Raiders",
+     "color": "000000"
+    },
+    "result": "Punt",
+    "displayResult": "Punt",
+    "plays": [
+     {
+      "id": "401800001101",
+      "sequenceNumber": "101",
+      "type": {
+       "id": "24",
+       "text": "Pass Incompletion"
+      },
+      "text": "(11:02) (Shotgun) A.O'Connell pass incomplete short left to D.Adams.",
+      "awayScore": 20,
+      "homeScore": 17,
+      "period": {
+       "number": 3
+      },
+      "clock": {
+       "displayValue": "11:02"
+      },
+      "scoringPlay": false,
+      "priority": false,
+      "modified": "2026-10-05T22:38:40Z",
+      "wallclock": "2026-10-05T22:38:40Z",
+      "teamParticipants": [],
+      "start": {
+       "down": 3,
+       "distance": 4,
+       "yardLine": 70,
+       "yardsToEndzone": 70,
+       "team": {
+        "id": "13"
+       },
+       "downDistanceText": "3 & 4"
+      },
+      "statYardage": 0
+     },
+     {
+      "id": "401800001102",
+      "sequenceNumber": "102",
+      "type": {
+       "id": "24",
+       "text": "Punt"
+      },
+      "text": "(10:57) A.Cole punts 47 yards to KC 23, Center-J.Hlavaty. R.Rice to KC 25 for 2 yards.",
+      "awayScore": 20,
+      "homeScore": 17,
+      "period": {
+       "number": 3
+      },
+      "clock": {
+       "displayValue": "10:57"
+      },
+      "scoringPlay": false,
+      "priority": false,
+      "modified": "2026-10-05T22:39:31Z",
+      "wallclock": "2026-10-05T22:39:31Z",
+      "teamParticipants": [],
+      "start": {
+       "down": 4,
+       "distance": 4,
+       "yardLine": 70,
+       "yardsToEndzone": 70,
+       "team": {
+        "id": "13"
+       },
+       "downDistanceText": "4 & 4"
+      },
+      "statYardage": 0
+     }
+    ]
+   }
+  ],
+  "current": {
+   "id": "4018000018",
+   "description": "3 plays, 37 yards, 2:30",
+   "team": {
+    "id": "12",
+    "uid": "s:20~l:28~t:12",
+    "abbreviation": "KC",
+    "displayName": "Kansas City Chiefs",
+    "location": "Kansas City",
+    "name": "Chiefs",
+    "color": "e31837"
+   },
+   "plays": [
+    {
+     "id": "401800001103",
+     "sequenceNumber": "103",
+     "type": {
+      "id": "24",
+      "text": "Pass Reception"
+     },
+     "text": "(10:47) P.Mahomes pass short right to T.Kelce to KC 45 for 20 yards (M.Koonce).",
+     "awayScore": 20,
+     "homeScore": 17,
+     "period": {
+      "number": 3
+     },
+     "clock": {
+      "displayValue": "10:47"
+     },
+     "scoringPlay": false,
+     "priority": false,
+     "modified": "2026-10-05T22:40:58Z",
+     "wallclock": "2026-10-05T22:40:58Z",
+     "teamParticipants": [],
+     "start": {
+      "down": 1,
+      "distance": 10,
+      "yardLine": 25,
+      "yardsToEndzone": 75,
+      "team": {
+       "id": "12"
+      },
+      "downDistanceText": "1 & 10"
+     },
+     "statYardage": 0
+    },
+    {
+     "id": "401800001104",
+     "sequenceNumber": "104",
+     "type": {
+      "id": "24",
+      "text": "Pass Reception"
+     },
+     "text": "(10:09) P.Mahomes pass short middle to X.Worthy to LV 41 for 14 yards.",
+     "awayScore": 20,
+     "homeScore": 17,
+     "period": {
+      "number": 3
+     },
+     "clock": {
+      "displayValue": "10:09"
+     },
+     "scoringPlay": false,
+     "priority": false,
+     "modified": "2026-10-05T22:41:44Z",
+     "wallclock": "2026-10-05T22:41:44Z",
+     "teamParticipants": [],
+     "start": {
+      "down": 1,
+      "distance": 10,
+      "yardLine": 45,
+      "yardsToEndzone": 55,
+      "team": {
+       "id": "12"
+      },
+      "downDistanceText": "1 & 10"
+     },
+     "statYardage": 0
+    },
+    {
+     "id": "401800001105",
+     "sequenceNumber": "105",
+     "type": {
+      "id": "24",
+      "text": "Rush"
+     },
+     "text": "(9:05) I.Pacheco up the middle to LV 38 for 3 yards (R.Spillane).",
+     "awayScore": 20,
+     "homeScore": 17,
+     "period": {
+      "number": 3
+     },
+     "clock": {
+      "displayValue": "9:05"
+     },
+     "scoringPlay": false,
+     "priority": false,
+     "modified": "2026-10-05T22:43:10Z",
+     "wallclock": "2026-10-05T22:43:10Z",
+     "teamParticipants": [],
+     "start": {
+      "down": 1,
+      "distance": 10,
+      "yardLine": 59,
+      "yardsToEndzone": 41,
+      "team": {
+       "id": "12"
+      },
+      "downDistanceText": "1 & 10"
+     },
+     "statYardage": 0
+    }
+   ]
+  }
+ },
+ "scoringPlays": []
+}

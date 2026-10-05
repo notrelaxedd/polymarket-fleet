@@ -1,0 +1,213 @@
+{
+ "boxscore": {
+  "teams": [
+   {
+    "team": {
+     "id": "13",
+     "uid": "s:20~l:28~t:13",
+     "abbreviation": "LV",
+     "displayName": "Las Vegas Raiders",
+     "location": "Las Vegas",
+     "name": "Raiders",
+     "color": "000000"
+    },
+    "statistics": []
+   },
+   {
+    "team": {
+     "id": "12",
+     "uid": "s:20~l:28~t:12",
+     "abbreviation": "KC",
+     "displayName": "Kansas City Chiefs",
+     "location": "Kansas City",
+     "name": "Chiefs",
+     "color": "e31837"
+    },
+    "statistics": []
+   }
+  ]
+ },
+ "gameInfo": {
+  "venue": {
+   "id": "4815",
+   "fullName": "Allegiant Stadium"
+  }
+ },
+ "leaders": [],
+ "broadcasts": [],
+ "pickcenter": [],
+ "news": {},
+ "article": {},
+ "standings": {},
+ "header": {
+  "id": "401800001",
+  "uid": "s:20~l:28~e:401800001",
+  "season": {
+   "year": 2026,
+   "type": 2
+  },
+  "week": 5,
+  "timeValid": true,
+  "competitions": [
+   {
+    "id": "401800001",
+    "uid": "s:20~l:28~e:401800001~c:401800001",
+    "date": "2026-10-05T20:15Z",
+    "neutralSite": false,
+    "conferenceCompetition": false,
+    "boxscoreAvailable": true,
+    "status": {
+     "clock": 0.0,
+     "displayClock": "0:00",
+     "period": 4,
+     "type": {
+      "id": "3",
+      "name": "STATUS_FINAL",
+      "state": "post",
+      "completed": true,
+      "description": "Final",
+      "detail": "Final",
+      "shortDetail": "Final"
+     }
+    },
+    "competitors": [
+     {
+      "id": "13",
+      "uid": "s:20~l:28~t:13",
+      "order": 0,
+      "homeAway": "home",
+      "team": {
+       "id": "13",
+       "uid": "s:20~l:28~t:13",
+       "abbreviation": "LV",
+       "displayName": "Las Vegas Raiders",
+       "location": "Las Vegas",
+       "name": "Raiders",
+       "color": "000000"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "2-2"
+       }
+      ],
+      "score": "23",
+      "possession": false
+     },
+     {
+      "id": "12",
+      "uid": "s:20~l:28~t:12",
+      "order": 1,
+      "homeAway": "away",
+      "team": {
+       "id": "12",
+       "uid": "s:20~l:28~t:12",
+       "abbreviation": "KC",
+       "displayName": "Kansas City Chiefs",
+       "location": "Kansas City",
+       "name": "Chiefs",
+       "color": "e31837"
+      },
+      "record": [
+       {
+        "type": "total",
+        "summary": "3-1"
+       }
+      ],
+      "score": "27",
+      "possession": false
+     }
+    ]
+   }
+  ],
+  "league": {
+   "id": "28",
+   "abbreviation": "NFL"
+  }
+ },
+ "drives": {
+  "previous": [
+   {
+    "id": "4018000029",
+    "team": {
+     "id": "12",
+     "uid": "s:20~l:28~t:12",
+     "abbreviation": "KC",
+     "displayName": "Kansas City Chiefs",
+     "location": "Kansas City",
+     "name": "Chiefs",
+     "color": "e31837"
+    },
+    "result": "End of Game",
+    "plays": [
+     {
+      "id": "401800001401",
+      "sequenceNumber": "401",
+      "type": {
+       "id": "24",
+       "text": "Rush"
+      },
+      "text": "(0:38) P.Mahomes kneels to KC 30 for -1 yards.",
+      "awayScore": 27,
+      "homeScore": 23,
+      "period": {
+       "number": 4
+      },
+      "clock": {
+       "displayValue": "0:38"
+      },
+      "scoringPlay": false,
+      "priority": false,
+      "modified": "2026-10-05T23:41:12Z",
+      "wallclock": "2026-10-05T23:41:12Z",
+      "teamParticipants": [],
+      "start": {
+       "down": 1,
+       "distance": 10,
+       "yardLine": 31,
+       "yardsToEndzone": 69,
+       "team": {
+        "id": "12"
+       },
+       "downDistanceText": "1 & 10"
+      },
+      "statYardage": 0
+     },
+     {
+      "id": "401800001402",
+      "sequenceNumber": "402",
+      "type": {
+       "id": "24",
+       "text": "End of Game"
+      },
+      "text": "END GAME",
+      "awayScore": 27,
+      "homeScore": 23,
+      "period": {
+       "number": 4
+      },
+      "clock": {
+       "displayValue": "0:00"
+      },
+      "scoringPlay": false,
+      "priority": false,
+      "modified": "2026-10-05T23:41:55Z",
+      "wallclock": "2026-10-05T23:41:55Z",
+      "teamParticipants": [],
+      "start": {
+       "down": 0,
+       "distance": 0,
+       "yardLine": 30,
+       "yardsToEndzone": 70,
+       "team": {
+        "id": "12"
+       },
+       "downDistanceText": "0 & 0"
+      },
+      "statYardage": 0
+     }
+    ]
+   }
+  ]
+ }
+}
