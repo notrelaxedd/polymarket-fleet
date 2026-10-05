@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 FEW_BETS = 50  # below the leaderboard's ranking gate the summary says so
+MARKET_BEATEN_P = 0.05  # the market test level at which the summary says "beats the closing line"
 
 
 def num(metrics: dict[str, Any], key: str) -> float:
@@ -40,8 +41,13 @@ def bets_sentence(params: dict[str, Any], metrics: dict[str, Any]) -> str:
 def calibration_sentence(metrics: dict[str, Any]) -> str:
     """Log-loss against the market and the plain verdict."""
     ll, mll = num(metrics, "log_loss"), num(metrics, "market_log_loss")
-    if metrics.get("n_games", 0) and ll < mll - 0.002:
+    market_p = metrics.get("market_p")
+    market_p = float(market_p) if isinstance(market_p, (int, float)) and not isinstance(market_p, bool) else None
+    if metrics.get("n_games", 0) and ll < mll - 0.002 and (market_p is None or market_p < MARKET_BEATEN_P):
         verdict = "it beats the closing line on calibration, but treat the edge as unproven"
+    elif metrics.get("n_games", 0) and ll < mll - 0.002:
+        verdict = (f"it is ahead of the closing line but not significantly (market test p {market_p:.2f}), "
+                   "so treat the edge as unproven")
     else:
         verdict = "it leans on the market and adds little, so treat the edge as unproven"
     return (f"Log-loss {ll:.3f} against the market's {mll:.3f}; {verdict} until paper trading "

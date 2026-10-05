@@ -15,7 +15,7 @@ from typing import Any, Callable
 from fleet.models.base import Model
 from fleet.models.blend_fit import fit_blend
 from fleet.models.elo import Elo
-from fleet.models.summary_text import FEW_BETS, bets_sentence, calibration_sentence
+from fleet.models.summary_text import FEW_BETS, MARKET_BEATEN_P, bets_sentence, calibration_sentence
 from fleet.sim.control import check_stop
 from fleet.sim.data import game_key, has_moneylines, outcome_of
 from fleet.sim.odds import clamp_prob, devig, expit, logit

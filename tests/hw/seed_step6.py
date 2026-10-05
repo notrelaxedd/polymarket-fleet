@@ -9,12 +9,15 @@ the captures show every element of the Robustness section.
 """
 from __future__ import annotations
 
+import random
 from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from fleet.sim.backtest import season_entry
+from fleet.sim.stress import NEIGHBOURHOOD_N
 from host import eligibility
 from tests.conftest import insert_job, stress_metrics, validation_metrics
 
@@ -34,6 +37,28 @@ def _per_season(base_roi: float) -> list[dict[str, Any]]:
 def _validation(roi: float, n_bets: int, ci: tuple[float, float], market_p: float, gain: float, flags: list[str]) -> dict[str, Any]:
     return validation_metrics(n_bets=n_bets, roi=roi, ci_roi=ci, market_p=market_p, mean_ll_gain=gain, flags=flags,
                               seasons=list(range(VALIDATION_SEASONS[0], VALIDATION_SEASONS[1] + 1)), per_season=_per_season(roi))
+
+
+def _validate_checkpoint() -> dict[str, Any]:
+    """The last checkpoint a finished validate job leaves (fleet/sim/validate.py): the
+    stage is the run index after the last neighbourhood run (an int), `base` holds the
+    base run's season entries, `runs` the ten neighbourhood summaries. Constructed
+    from a few synthetic games per season, seeded, so the raw view looks real."""
+    rng = random.Random("seed_step6:checkpoint")
+    base = []
+    for season in range(VALIDATION_SEASONS[0], VALIDATION_SEASONS[1] + 1):
+        records = []
+        for _ in range(12):
+            market = round(rng.uniform(0.3, 0.7), 4)
+            p = min(max(market + rng.uniform(-0.06, 0.06), 0.02), 0.98)
+            outcome = 1.0 if rng.random() < market else 0.0
+            bet = {"stake_cents": 1200, "edge": round(p - market, 4)} if p - market > 0.03 else None
+            pnl = (int(1200 * (1 - market) / market) if outcome else -1200) if bet else 0
+            records.append({"p": p, "p_market": market, "outcome": outcome, "bet": bet, "pnl_cents": pnl})
+        base.append(season_entry(season, records, {"a": 0.62, "b": 0.31, "c": 0.04}))
+    runs = [{"shrunk_roi": round(0.02 + rng.uniform(-0.01, 0.01), 4), "mean_ll_gain": round(rng.uniform(-0.001, 0.003), 5)}
+            for _ in range(NEIGHBOURHOOD_N)]
+    return {"stage": NEIGHBOURHOOD_N + 1, "base": base, "runs": runs, "current": {}}
 
 
 PROFILES = [
@@ -62,7 +87,7 @@ def seed_validation(url: str, worker_id: str) -> dict[str, str]:
             params=Jsonb({"model_id": str(first["id"]), "seed": 1, "validation_seasons": VALIDATION_SEASONS, "workers": "auto",
                           "backtest_seasons": [2010, 2021], "fee_model": {"taker_rate": 0.05, "half_spread": 0.01},
                           "default_bankroll_cents": 10000, "max_bet_cents": 2500, "trade_max_games": 6}),
-            checkpoint=Jsonb({"stage": "regimes"}),
+            checkpoint=Jsonb(_validate_checkpoint()),
             result=Jsonb({"validation_metrics": PROFILES[0][0], "stress_metrics": PROFILES[0][1]}),
         )
         conn.execute(

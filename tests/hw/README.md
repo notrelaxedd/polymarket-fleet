@@ -15,8 +15,8 @@ When to run it: after installing a new worker, after changing the agent, the dra
 ## screenshots.py
 
 ```bash
-.venv/bin/python -m pip install "playwright==1.56.0"   # the python package only; no "playwright install"
-PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers .venv/bin/python tests/hw/screenshots.py /tmp/screenshots-step6b
+.venv/bin/python -m pip install "playwright==1.56.0"   # the python package only (1.56 pairs with Chromium build 1194); no "playwright install"
+PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers .venv/bin/python tests/hw/screenshots.py /tmp/screenshots
 ```
 
 A dev tool, not a pytest test (`tests/hw/conftest.py` keeps it out of collection). It seeds a throwaway database with three workers (running, switching, offline) and a few jobs, then:

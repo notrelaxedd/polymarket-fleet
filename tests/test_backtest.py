@@ -241,7 +241,7 @@ def test_backtest_result_has_the_robustness_fields(games: list[dict]) -> None:
     assert set(result["ci"]) == {"roi", "avg_clv", "max_drawdown", "hit_rate", "avg_edge"}
     assert result["shrunk_roi"] == pytest.approx(result["roi"] * result["n_bets"] / (result["n_bets"] + 100))
     assert result["mean_ll_gain"] == pytest.approx(result["market_log_loss"] - result["log_loss"])
-    assert 0 < result["market_p"] <= 1 and set(result["brier_decomposition"]) == {"reliability", "resolution", "uncertainty"}
+    assert 0 < result["market_p"] <= 1 and set(result["brier_decomposition"]) == {"reliability", "resolution", "uncertainty", "within_variance", "within_covariance"}
     assert isinstance(result["calib_slope"], float) and isinstance(result["calib_intercept"], float)
     validation = run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: None, lambda: False, era="validation", seed=9)
     assert validation["era"] == "validation"

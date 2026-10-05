@@ -296,6 +296,15 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
 .market-line.beats { color: var(--green-fill); }
 .validate-form { display: inline; }
 .validate-form .btn { min-height: 36px; }
+/* the paper cell wraps (its ranges stay whole) so the summary keeps a readable width
+   and the action buttons stay inside the table at 1280 px */
+@media (min-width: 701px) {
+  table.models td.c-summary { min-width: 14rem; }
+  table.models td.c-paper { min-width: 7rem; max-width: 9rem; }
+  /* the three buttons stack in a narrow column instead of one wide row */
+  table.models td.c-actions { white-space: normal; width: 1%; }
+  table.models td.c-actions .btn { display: flex; padding: 0 0.6rem; margin: 0 0 0.3rem; }
+}
 
 /* step 6 Part B: sells and positions. The sell chip reuses the accent fill/text pair
    (AA in both schemes); a loss is the red text token, a gain only gets its sign. */
