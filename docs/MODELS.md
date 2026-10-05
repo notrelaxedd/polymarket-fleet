@@ -13,6 +13,25 @@ total_line, home_rest, away_rest, div_game, roof, surface, temp, wind`. Team cod
 normalised for continuity: `OAK -> LV`, `SD -> LAC`, `STL -> LA`. Games without both
 moneylines are used for Elo updates but never bet on or scored.
 
+Signals (step 6B, docs/ROBUSTNESS.md B2). Every game row also carries `signals`:
+`{"home_qb_changed", "away_qb_changed", "home_out_qb", "away_out_qb", "home_out_count",
+"away_out_count"}` (ints; all 0 when absent). `qb_changed` is 1 when the team's starting
+quarterback for this game differs from its last known starter (across seasons; the
+first game of a team and a game whose starter is unknown, such as an unplayed one, read
+0). `out_qb` / `out_count` come from the nflverse injury reports: players listed `Out`
+whose report was modified before the game's decision time (kickoff minus
+`decision_minutes_before_kickoff`; kickoff when unknown); `out_qb` is 1 when one of them
+is a quarterback. The host serves them in the games feed; the worker's games.csv
+adapter derives the quarterback flags from `home_qb_id` / `away_qb_id` itself (no
+injuries there). The pure helpers live in `fleet/sim/signals.py`.
+
+Team stats: the games feed also has a top-level `team_game_stats` list (one row per
+team and played game: `game_id, season, week, team, kickoff_at, off_epa_per_play,
+def_epa_per_play, pass_rate, plays, success_rate`, from nflverse play-by-play).
+`load_games` attaches to every game `team_stats = {"home": [...], "away": [...]}`: that
+team's rows with a strictly earlier kickoff, oldest first, at most 16. A cache without
+the list (or a plain list of games) loads with empty lists.
+
 Odds: American `o` to implied probability: `|o| / (|o| + 100)` when `o < 0`, else
 `100 / (o + 100)`. Devig: `p_home_market = imp_home / (imp_home + imp_away)`.
 
@@ -34,8 +53,11 @@ class Model:
     @staticmethod
     def summary(params, metrics) -> str   # exactly three sentences, plain text
 ```
-`fleet/models/registry.py`: `FAMILIES = {"elo_blend": EloBlend}`. `features` is a dict
-with `home_rest, away_rest, div_game, roof, surface, temp, wind, week, season, game_type`.
+`fleet/models/registry.py`: `FAMILIES = {"elo_blend": EloBlend, "epa_blend": EpaBlend}`.
+`features` (`fleet.sim.data.features_of`) is a dict with `home_rest, away_rest, div_game,
+roof, surface, temp, wind, week, season, game_type`, plus `signals` (the dict above, all
+zeros by default) and `team_stats` (`{"home": [], "away": []}` by default). The trade
+worker builds it with the same function from the trade state's game.
 
 ## First family: `elo_blend`
 
@@ -60,6 +82,19 @@ Params and search space (uniform draws unless noted):
 `k [10, 40]`, `hfa [20, 90]`, `regress [0.1, 0.6]`, `rest_per_day [0, 4]`,
 `mov_scale {0, 1}` (coin flip), `min_edge [0.01, 0.08]`, `kelly_fraction [0.1, 0.5]`.
 `min_edge` and `kelly_fraction` do not change predictions, only the betting rule.
+
+Signal penalties (step 6B): `qb_change_penalty [0, 80]` Elo points subtracted from a team
+whose `qb_changed` is 1, and `out_penalty_per_player [0, 15]` Elo points per player it
+lists Out. Their sum enters the home side's pre-game edge (`rest_adj + shift`) in the
+expectation the blend is fitted on, in `predict` and in the rating update, so fit and
+predict apply the same shift. Both default to 0 and are read with a default rather than
+merged into a model's params, so an existing model keeps its params dict and predicts
+exactly as before. The search draws them after the original seven draws, so a seed
+reproduces the same earlier params. Their search ranges are also clip bounds
+(`fleet/models/search_space.py`), so the neighbourhood stress never perturbs a penalty
+outside [0, 80] or [0, 15]; a model without the keys is not given them. The summary's
+first sentence names them when they are not zero ("QB change costs 40 points, 5.0
+points per player Out").
 `params_hash` = sha256 of the canonical JSON (sorted keys, 6 decimals), first 16 hex.
 
 Artifact: `{"ratings": {team: float}, "blend": {"a", "b", "c"}, "through": [season, week],
@@ -69,10 +104,60 @@ games yet), so a reloaded model applies the between-season regression exactly on
 `from_json` falls back to `through[0]` for an artifact without it. `games_seen` counts
 played games only (a schedule row without scores is not learned from).
 
+## Second family: `epa_blend` (step 6B)
+
+`fleet/models/epa_blend.py` with the features in `fleet/models/epa_features.py`. A
+logistic regression `logit(p) = w . x` on, per game (every diff is home minus away):
+
+| name | feature |
+|---|---|
+| `intercept` | 1 |
+| `elo` | Elo rating diff / 400 (no home edge; the intercept carries it) |
+| `off_epa` | rolling offensive EPA per play diff |
+| `def_epa` | rolling defensive EPA allowed per play diff |
+| `rest` | `clamp(home_rest - away_rest, -3, 3) / 3` (0 when unknown) |
+| `qb_change` | `home_qb_changed - away_qb_changed` |
+| `outs` | `home_out_count - away_out_count` |
+| `divisional` | `div_game` (0/1) |
+| `market` | logit of the devigged home price |
+
+Rolling EPA: the mean of the team's last `window` rows of `team_stats`, shrunk toward the
+league mean by `n / (n + shrink)` (`n` rows used; the league mean itself without rows).
+The league mean averages every team-game row seen so far in the current and the
+previous season; a row is seen once it appears in the `team_stats` of a game already
+processed, so it only ever holds games before the predicted one. Elo runs inside the
+family with fixed constants (K 20, home edge 55 for its own updates, regress 0.33,
+margin scaling on, no rest term).
+
+Fit: the finished moneyline games up to and including `through`, each row built before
+that game is learned from, by `fleet.models.newton.fit_logistic` (start: zeros with the
+market coefficient at 1; at most 50 iterations, tolerance 1e-9) with the L2 penalty
+`l2 * sum w_j^2` on every coefficient except the intercept and the market logit, so a
+large `l2` shrinks the model toward "the closing line alone". `predict` without a
+market price returns the Elo expectation with its home edge.
+
+Params and search space: `window` int [4, 12], `shrink` [0, 8], `l2` [0.01, 10]
+log-uniform, `min_edge` [0.01, 0.08], `kelly_fraction` [0.1, 0.5] (defaults 8, 3, 1,
+0.03, 0.25). The backtest's `blend` metric of a fold is the coefficient dict by feature
+name. Artifact: `{"features": [...], "coef": [...], "ratings", "season", "games_seen",
+"league": {"seasons": {season: [rows, off sum, def sum]}, "last": {team: [kickoff_at,
+game_id]}}, "n_train", "through"}`; `from_json(params, to_json())` predicts identically.
+
+Summary: "EPA blend (8-game window, shrink 3.0, L2 1.00, market weight 0.92); the
+signals that carried it were offensive EPA (0.16), Elo (0.08) and quarterback change
+(0.05) in log-odds per typical gap." A signal carried the result when its coefficient
+times a typical home-minus-away gap (100 Elo points, 0.1 EPA per play, 3 days of rest,
+one quarterback change, 3 players Out, a divisional game) is at least 0.03 in
+log-odds; at most three are named, largest first. Without one it reads "no signal moved
+the price by 0.03 in log-odds, so it is close to the closing line alone". The second
+and third sentences are the elo_blend ones.
+
 ## Backtest (`fleet/sim/backtest.py`)
 
-Walk-forward by season over `seasons = [first, last]` (settings `backtest_seasons`,
-default `[2010, <last complete season>]`). For each test season `S`:
+Walk-forward by season over `seasons = [first, last]` (settings `backtest_seasons`; the
+step 3 default `[2010, <last complete season>]` became `[2010, 2021]` in step 6A, and a
+null last season resolves to the last complete season, capped before the validation era,
+docs/ROBUSTNESS.md A1). For each test season `S`:
 1. Replay Elo from 1999 through the end of season `S - 1` (cheap; no stored state needed).
 2. Fit the blend on all moneyline games in seasons `< S` (at least 3 seasons of history,
    otherwise skip `S`).
@@ -93,7 +178,7 @@ Betting rule ("closing-line fill", the only price we have for history):
   wins (ties: stake returned), else 0; `pnl = payout - stake`, rounded to cents.
 - CLV is 0 by construction here (entry at the close). Backtests on sportsbook closing lines
   measure calibration and discipline, not true edge; the paper phase on live Polymarket
-  prices (step 4) is where CLV is measured.
+  prices (step 4) and, from step 6B, the snapshot replay below are where CLV is measured.
 
 Metrics (whole backtest and per season): `n_games, n_bets, total_stake_cents, pnl_cents,
 roi = pnl / total_stake (0 if no bets), hit_rate, avg_edge, avg_stake_cents, log_loss`
@@ -107,6 +192,28 @@ eligibility gate), `seasons` (list), `blend` (the fitted `{a, b, c}` of that
 season's fold; the whole-backtest value is the last fold's, so `summary` can state the
 closing-line weight from params and metrics alone). `n_games` counts scored games (both
 moneylines present). Deterministic: no randomness anywhere.
+
+### Snapshot replay (step 6B, `price_source` "snapshots")
+
+A backtest job with `params.price_source = "snapshots"` runs the same walk-forward on
+the prices the host recorded instead of the closing line (docs/ROBUSTNESS.md B1 has the
+full rule and its deviations; `fleet/sim/prices.py`):
+- The worker reads the recorded markets of `params.price_platform` from the context's
+  `prices_path` (platform `sim` only with `allow_sim_prices`). A null last season replays
+  through the latest season present, the season in progress included, and only seasons
+  with a recorded market are planned.
+- A played game is scored only when a side's confirmed market has a bar within the 30
+  minutes before or at the decision time (kickoff minus
+  `decision_minutes_before_kickoff`). `p_market` is the devigged decision-time mid;
+  the model predicts with it as usual.
+- The bet buys the side with the larger edge at its recorded ask (`cost = ask + fee`,
+  no `half_spread`, since the ask already holds the spread), Kelly-sized as above but in
+  whole contracts, filled on the recorded book (depth within 2 minutes, at most
+  `participation` of each level, never above the ask) or at the ask capped by the bar's
+  liquidity. CLV = the bought side's frozen closing price minus the average entry price.
+- The result is the same metrics object plus `price_source: "snapshots"`, `platform`,
+  `n_unscored_no_prices` and a top-level `avg_clv`; the host stores it in
+  `models.snapshot_metrics`, never in `backtest_metrics`, and eligibility ignores it.
 
 ## Model search (`fleet/sim/search.py`)
 
@@ -164,3 +271,8 @@ One row per lineage, using the root model's backtest metrics: rank by shrunk ROI
 otherwise listed below as unranked. Columns: status, family, short params, ROI, bets,
 log-loss vs market, max drawdown, seasons, summary. Step 4 adds the paper (and later
 live) record per lineage and the paper rank mode (docs/TRADING.md, "Leaderboard and P&L").
+Step 6A ranks on the validation era (docs/ROBUSTNESS.md A1); step 6B adds a snapshot
+column group and the snapshot rank mode between paper and validation (at least 30
+replayed bets, by shrunk snapshot CLV `clv * bets / (bets + 25)`, ties by snapshot ROI;
+`host/leaderboard_snapshot.py`, docs/ROBUSTNESS.md B1). The short params of an
+`epa_blend` lineage read "window 8 · shrink 3.0 · L2 1.00".

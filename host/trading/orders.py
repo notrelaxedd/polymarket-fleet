@@ -9,6 +9,7 @@ from psycopg.types.json import Jsonb
 
 from host.errors import Conflict, NotFound
 from host.trading import ledger
+from host.trading.positions import held, sell_basis_cents
 
 ACTIVE_STATUSES = ("approved", "submitting", "open", "partial", "cancel_requested")
 OPEN_ON_EXCHANGE = ("submitting", "open", "partial")
@@ -136,8 +137,12 @@ def record_fill(
     snapshot_id: int | None = None,
     exchange_fill_id: str | None = None,
 ) -> dict[str, Any]:
-    """Append a fill, move money (`ledger.fill`), update filled_size/avg price and the
-    status (`partial` or `filled`). Idempotent on `exchange_fill_id`."""
+    """Append a fill, move money, update filled_size/avg price and the status (`partial`
+    or `filled`). Idempotent on `exchange_fill_id`. A buy posts `ledger.fill` and
+    records `basis_cents = price * size * 100`; a sell (orders.side 'sell') posts
+    `ledger.sell` with the average-cost basis it removes from the position, records that
+    basis, and never touches a reservation (a sell has none). A sell fill larger than
+    the position is refused (no shorting)."""
     if exchange_fill_id is not None:
         seen = conn.execute("SELECT 1 FROM fills WHERE exchange_fill_id = %s", (exchange_fill_id,)).fetchone()
         if seen:
@@ -148,31 +153,52 @@ def record_fill(
     remaining = int(order["size"]) - int(order["filled_size"])
     if size <= 0 or size > remaining:
         raise Conflict(f"fill of {size} exceeds the {remaining} unfilled contracts of order {order_id}")
+    is_sell = order.get("side") == "sell"
+    cost_cents = fill_cost_cents(price, size)
+    bank = None
+    if order.get("assignment_id") is not None:
+        # Lock the bankroll before reading the position, so the basis a sale removes
+        # is computed from a position no other fill is changing.
+        bank = ledger.bankroll_for_assignment(conn, order["assignment_id"], for_update=True)
+    basis = _sell_basis(conn, order, size) if is_sell else cost_cents
     conn.execute(
         """
-        INSERT INTO fills (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        INSERT INTO fills (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id, basis_cents)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id),
+        (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id, basis),
     )
-    cost_cents = fill_cost_cents(price, size)
-    if order.get("assignment_id") is not None:
-        bank = ledger.bankroll_for_assignment(conn, order["assignment_id"])
+    if bank is not None and is_sell:
+        ledger.sell(conn, bank["id"], basis, cost_cents, fee_cents, order_id)
+    elif bank is not None:
         ledger.fill(conn, bank["id"], cost_cents, fee_cents, order_id)
     filled = int(order["filled_size"]) + size
     prev_avg = float(order["avg_fill_price"] or 0.0)
     avg = (prev_avg * int(order["filled_size"]) + float(price) * size) / filled
     new_status = "filled" if filled >= int(order["size"]) else ("partial" if order["status"] != "cancel_requested" else "cancel_requested")
+    detail: dict[str, Any] = {"price": float(price), "size": size, "fee_cents": fee_cents}
+    if is_sell:
+        detail.update(side="sell", basis_cents=basis, realized_cents=cost_cents - fee_cents - basis)
     row = set_status(
-        conn, order_id, new_status, actor,
-        {"fill": {"price": float(price), "size": size, "fee_cents": fee_cents}},
+        conn, order_id, new_status, actor, {"fill": detail},
         filled_size=filled, avg_fill_price=round(avg, 6),
     )
-    if new_status == "filled":
+    if new_status == "filled" and not is_sell:
         # Fees were estimated at approval; whatever reservation is left after the last
         # fill goes back to the bankroll.
         release_unfilled(conn, row, note="reservation surplus after fills")
     return row
+
+
+def _sell_basis(conn: psycopg.Connection, order: dict[str, Any], size: int) -> int:
+    """The average-cost basis a sell fill of `size` removes; Conflict when the
+    assignment holds fewer contracts than that on the market."""
+    if order.get("assignment_id") is None:
+        return 0
+    held_size, held_basis = held(conn, order["assignment_id"], order["market_id"])
+    if size > held_size:
+        raise Conflict(f"sell fill of {size} exceeds the {held_size} contracts held by order {order['id']}'s assignment")
+    return sell_basis_cents(held_size, held_basis, size)
 
 
 def sum_consumed(conn: psycopg.Connection, order_id: Any) -> int:

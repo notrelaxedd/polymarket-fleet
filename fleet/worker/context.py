@@ -10,6 +10,12 @@ merges into the job's params as params["_context"].
 A games fetch that fails falls back to the cached file when there is one (with a
 warning); without one, or when the model fetch fails, ContextError names the cause
 and the agent fails the job.
+
+A backtest with params.price_source "snapshots" (docs/ROBUSTNESS.md B1) also gets
+"prices_path": the recorded prices of params.price_platform, refreshed the same way
+(<state>/cache/prices-<platform>.json with its ETag, conditional
+GET /api/v1/data/prices?since=...&platform=...). Platform sim without
+params.allow_sim_prices is not fetched: the job itself refuses it.
 """
 
 from __future__ import annotations
@@ -17,14 +23,18 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any
+from urllib.parse import urlencode
 
 from fleet.common import http
+from fleet.sim.prices import DEFAULT_PLATFORM, SIM_PLATFORM
 from fleet.worker import config
 
 log = logging.getLogger("fleet.context")
 
 CONTEXT_KINDS = ("backtest", "model_search", "train", "validate")
 GAMES_PATH = "/api/v1/data/games"
+PRICES_PATH = "/api/v1/data/prices"
+PRICES_SINCE = "2000-01-01"
 
 
 class ContextError(Exception):
@@ -108,6 +118,50 @@ def refresh_games(host_url: str, token: str, state_dir: str, timeout: float) -> 
     return path
 
 
+def refresh_prices(host_url: str, token: str, state_dir: str, platform: str, timeout: float) -> str:
+    """Refresh one platform's prices cache with a conditional GET and return its path;
+    same fallbacks as refresh_games."""
+    path = config.prices_cache_path(state_dir, platform)
+    etag_path = config.prices_etag_path(state_dir, platform)
+    cached = os.path.isfile(path)
+    etag = _read_etag(etag_path) if cached else None
+    url = f"{host_url}{PRICES_PATH}?{urlencode({'since': PRICES_SINCE, 'platform': platform})}"
+    try:
+        resp = http.get_json_etag(url, token=token, etag=etag, timeout=timeout)
+    except (http.HttpError, http.HttpConnectionError) as exc:
+        if cached:
+            log.warning("prices refresh failed (%s); using the cached %s", exc, path)
+            return path
+        raise ContextError(f"prices data unavailable and no cached copy at {path}: {exc}") from None
+    if resp.status == 304:
+        return path
+    if not isinstance(resp.body, dict) or not isinstance(resp.body.get("markets"), list):
+        raise ContextError(f"GET {PRICES_PATH}: unexpected body shape ({type(resp.body).__name__})")
+    try:
+        os.makedirs(config.cache_dir(state_dir), exist_ok=True)
+        config.write_json_atomic(path, {"markets": resp.body["markets"], "count": len(resp.body["markets"])})
+        _write_etag(etag_path, resp.etag)
+    except OSError as exc:
+        if cached:
+            log.warning("cannot rewrite the prices cache (%s); using the existing %s", exc, path)
+            return path
+        raise ContextError(f"cannot write the prices cache {path}: {exc}") from None
+    log.info("prices cache refreshed: %d markets on %s, etag %s", len(resp.body["markets"]), platform, resp.etag)
+    return path
+
+
+def snapshot_platform(job: dict[str, Any]) -> str | None:
+    """The price platform a job needs fetched: a snapshot backtest's params.price_platform
+    (sim only with params.allow_sim_prices); None for every other job."""
+    params = job.get("params") if isinstance(job.get("params"), dict) else {}
+    if job.get("kind") != "backtest" or params.get("price_source") != "snapshots":
+        return None
+    platform = str(params.get("price_platform") or DEFAULT_PLATFORM)
+    if platform == SIM_PLATFORM and params.get("allow_sim_prices") is not True:
+        return None
+    return platform
+
+
 def fetch_model(host_url: str, token: str, model_id: str, timeout: float) -> dict[str, Any]:
     """GET /api/v1/models/{id}; ContextError on any failure or a non-object answer."""
     url = f"{host_url}/api/v1/models/{model_id}"
@@ -128,11 +182,16 @@ def build_context(
     timeout: float,
     data_timeout: float,
 ) -> dict[str, Any]:
-    """{"games_path", "model"} for one job; ContextError when it cannot be built."""
+    """{"games_path", "model"} for one job (plus "prices_path" for a snapshot
+    backtest); ContextError when it cannot be built."""
     params = job.get("params") if isinstance(job.get("params"), dict) else {}
     games_path = refresh_games(host_url, token, state_dir, data_timeout)
     model = None
     model_id = params.get("model_id")
     if model_id:
         model = fetch_model(host_url, token, str(model_id), timeout)
-    return {"games_path": games_path, "model": model}
+    out: dict[str, Any] = {"games_path": games_path, "model": model}
+    platform = snapshot_platform(job)
+    if platform is not None:
+        out["prices_path"] = refresh_prices(host_url, token, state_dir, platform, data_timeout)
+    return out

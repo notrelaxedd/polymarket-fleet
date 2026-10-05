@@ -5,7 +5,9 @@ neighbourhood backtests themselves are run by fleet.sim.validate.
 
 Price stress: the fee model only enters the fill rule (model probabilities never see
 it), so re-planning every bet of the base run's records under the changed rule is the
-same backtest as a full re-run with the changed fee model, without the replay.
+same backtest as a full re-run with the changed fee model, without the replay. A
+snapshot replay record is filled again on its stored price facts with the spread
+change added to the entry price (fleet.sim.prices).
 """
 
 from __future__ import annotations
@@ -28,13 +30,16 @@ REGIME_PROFIT_SHARE = 0.8
 
 
 def stressed_rule(params: dict[str, Any], limits: dict[str, Any], change: dict[str, float]) -> BetRule:
-    """The fill rule with half_spread raised by, or taker_rate multiplied by, the change."""
+    """The fill rule with half_spread raised by, or taker_rate multiplied by, the change.
+    The spread change also becomes price_bump, which a snapshot replay record adds to
+    every entry price (its recorded ask already holds the spread)."""
     base = BetRule.build(params, limits)
     return BetRule(
         taker_rate=base.taker_rate * change.get("taker_rate", 1.0),
         half_spread=base.half_spread + change.get("half_spread", 0.0),
         min_edge=base.min_edge, kelly_fraction=base.kelly_fraction,
         bankroll_cents=base.bankroll_cents, max_bet_cents=base.max_bet_cents,
+        participation=base.participation, price_bump=base.price_bump + change.get("half_spread", 0.0),
     )
 
 

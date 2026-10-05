@@ -87,8 +87,13 @@ replay asserts `initial + realized = available + reserved + open_cost`):
 - `reserve` (approval): `-cost available, +cost reserved` where `cost = size * (price + fee) * 100`.
 - `release` (cancel, expiry, rejection by the exchange, unfilled remainder): the reverse for
   the unfilled part.
-- `fill`: `-(price*size + fee)*100 reserved, +price*size*100 open, -fee*100 realized`.
-- `settle`: `-basis open, +payout available, +(payout - basis) realized`; payout is
+- `fill` (a buy fill): `-(price*size + fee)*100 reserved, +price*size*100 open, -fee*100
+  realized`; `fills.basis_cents = price*size*100`.
+- `sell` (a sell fill, step 6 Part B): `-basis open, +(proceeds - fee) available,
+  +(proceeds - fee - basis) realized` with `proceeds = price*size*100` and `basis` the
+  average-cost basis the sale removes (`fills.basis_cents`); no reservation is touched.
+- `settle`: `-basis open, +payout available, +(payout - basis) realized` over the
+  contracts still held (the remaining basis after any sales); payout is
   `size * 100` on the winning side, 0 on the losing side, `basis` on a push (tie).
 - `adjust`: owner correction with a note (audit row).
 
@@ -98,8 +103,9 @@ A worker in the `trade` role claims up to `trade_max_games` trade jobs (heartbea
 `want_jobs = free slots`). Every `trade_tick_s` (5) it calls `GET /api/v1/trade/state` and,
 per active assignment whose game has not kicked off (when `trade_pregame_only`):
 1. `market_p_home` = devig of the two markets' mids (one market: its mid for that side);
-   `features` from the game row; `my_p = model.predict(game, market_p_home, features)` using
-   the artifact from the state payload (cached by model id).
+   `features` from the game row (`fleet.sim.data.features_of`, so from step 6B they include
+   the game's `signals` and `team_stats`); `my_p = model.predict(game, market_p_home,
+   features)` using the artifact from the state payload (cached by model id).
 2. For each market (side): `p_side`, `price = ask`, `fee = taker_rate * price * (1 - price)`,
    `cost = price + fee`, `edge = p_side - cost`. If `edge >= min_edge`, no open order on that
    market, and `available > 0`: the Kelly stake is a target position,
@@ -110,13 +116,17 @@ per active assignment whose game has not kicked off (when `trade_pregame_only`):
    state payload); `size = min(floor(stake / (cost * 100)), floor(participation * depth at
    or below the ask))` contracts; propose when `stake > 0` and `size >= min_size`. A filled
    position therefore stops the worker re-buying the same edge every tick.
-   `client_request_id = sha256(assignment|market|snapshot_id|price|size)[:32]`.
-3. Cancel its own open orders whose edge at the current ask is below 0.
+   `client_request_id = sha256(assignment|market|snapshot_id|price|size)[:32]`. An open
+   order of either side (a buy or, from step 6B, a sell) on a market blocks a new buy there.
+2b. (step 6B) Sells for the markets where the assignment holds contracts, after the buys
+   (`fleet/worker/sell.py`, see "Selling" below).
+3. Cancel its own open buys whose edge at the current ask is below 0, and (step 6B) its
+   open sells whose sell edge at the current bid is below 0.
 4. Under `kill`, or when the assignment is halted, or after kickoff: propose nothing.
 Rationale text (one line: "my 0.57 vs ask 0.52, fee 0.012, edge 0.038") travels with the
 request and is shown on `/trading`.
 
-## Approval (`host/limits.py`, `approve_order`, one transaction)
+## Approval (`host/trading/limits.py`, `approve_order`, one transaction)
 
 `pg_advisory_xact_lock(hashtext('approve:' || mode))` serialises approvals and the kill
 per mode; the bankroll row is `FOR UPDATE`. Everything that halts, releases or settles
@@ -224,7 +234,8 @@ later. With `market_source = sim`, `host.cli simulate-final <game_id> --home N -
 sets a final for testing (refused for other sources unless `FLEET_DEV`).
 On final, for every assignment of the game not yet settled: resolve the markets (winner
 YES, loser NO; tie: push), settle positions (`ledger settle`), cancel open orders with
-release, write one `bets` row per filled order (entry = VWAP, fee, cost, my_p, market_p,
+release, write one `bets` row per filled order (from step 6B buy rows cover only the
+contracts still held and a sell gets its own row; see "Selling") (entry = VWAP, fee, cost, my_p, market_p,
 edge, stake, `closing_price`, `clv = closing_price - entry_price`, result win/loss/push,
 pnl), upsert `model_scores (model_id, game_id, mode)` with `n_bets, stake_cents, pnl_cents,
 avg_clv` (stake-weighted), mark the assignment `settled`, complete the trade job
@@ -245,7 +256,9 @@ mid-settlement waits instead of deadlocking.
 Leaderboard rows gain paper (and later live) columns from `model_scores` pooled per
 lineage: games, bets, P&L, ROI, avg CLV. Rank mode: paper when a lineage has `>= 5` paper
 games and `>= 30` paper bets, by shrunk CLV `avg_clv * bets / (bets + 25)` (tie-break ROI);
-otherwise the step 3 backtest ranking. `GET /api/pnl` becomes real: today = `bets.pnl`
+otherwise the step 3 backtest ranking (from step 6A the validation era; from step 6B a
+lineage with `>= 30` snapshot replay bets ranks on shrunk snapshot CLV between the two,
+docs/ROBUSTNESS.md B1). `GET /api/pnl` becomes real: today = `bets.pnl`
 settled today (owner tz) + mark-to-mid change of open positions since the later of day
 start and entry; all-time = all settled `bets.pnl` + unrealized; per worker = the same
 restricted to orders that worker requested; per mode.
@@ -263,7 +276,8 @@ restricted to orders that worker requested; per mode.
   `default_bankroll_cents`); "Activate all paper" after a kill reset; open orders (cancel
   button); last 50 orders with reject reasons and rationale; fills; unmatched markets with a
   link-to-game form; snapshot ages per market; exchange state (heartbeat age, source, last
-  error); ledger replay status.
+  error); ledger replay status; (step 6B) a positions table per assignment and a `sell`
+  chip on sell orders and fills (see "Selling").
 - Fleet cards: today's P&L per worker. Models page: Assign enabled (opens the form
   prefilled). Settings: a Trading group with every new key.
 
@@ -312,28 +326,91 @@ handshake), dashboard tests for `/trading`, and the e2e extension.
 
 ## Selling (step 6 Part B): mark-to-model
 
-The buy rule gets its mirror image. Orders gain `side` (`buy` | `sell`); every existing
-order is a buy. On each tick, for every market where the assignment holds contracts:
+The buy rule gets its mirror image. Orders gain `side` (`buy` | `sell`, migration
+`0008_sells.sql`); every existing order is a buy. On each tick, for every market where
+the assignment holds contracts:
 - `p_side` from the model; `proceeds = bid`; `fee = taker_rate * bid * (1 - bid)`;
   `sell_edge = bid - fee - p_side`. If `sell_edge >= min_edge`, propose a limit SELL at the
   bid for `min(position size - open sell size, participation * bid depth at or above the
   price)` contracts. Never more than the position (no shorting); one open sell per market.
-- Approval for sells: kill, lease, assignment active, market confirmed and unresolved,
-  mode gate, stale book, participation (bid side), price band (`>= bid - 0.05`), size
-  within the position; no reservation (a sell frees money) and no daily-loss check, but
-  the order and its events are logged like any other.
-- Paper fills for sells walk bid levels at or above the limit with the same participation
-  rule; resting sells fill when a later bid crosses. Live sells go through the same
-  gateway with `side: SELL`.
-- Ledger on a sell fill: `basis = avg_cost * size * 100`; `-basis open, +(proceeds - fee)
-  available, +(proceeds - fee - basis) realized`. Positions use average cost; a full sale
-  closes the position.
-- Scoring: a sell order gets its own `bets` row with `result = "sold"` and `pnl = proceeds
-  - fee - basis`; at settlement each buy row's pnl covers only the contracts it still holds
-  (pro rata of the remaining position). CLV stays defined for buys only. `model_scores.pnl`
-  includes sells; `n_bets` counts buys.
+  As built (`fleet/worker/sell.py`): the request is the buy body plus `"order_side":
+  "sell"`, its `client_request_id` is `sha256(assignment|market|snapshot_id|price|size|sell)[:32]`
+  (buys keep the old formula); a sell smaller than the market's `min_size` is not sent;
+  nothing is proposed for a halted assignment, after kickoff (`trade_pregame_only`) or
+  under kill; a sell in `cancel_requested` still counts as open on the worker, because
+  it can still fill and the host counts it too. `approve_order` hands a request with
+  `order_side` "sell" to `approve_sell`.
+- Approval for sells (`host/trading/sells.py`): kill, lease, assignment active, market
+  confirmed and unresolved, kickoff (the same hard cutoff as buys; added as built, the
+  first version of this text did not list it), mode gate, stale book, participation (bid
+  side), price band (0.01 to 0.99, on the tick, and `>= bid - 0.05`), size within the
+  position minus open sells (`no_position`, `sell_exceeds_position`), one open sell per
+  market (`open_sell_exists`), checked in that order; no liquidity floor, max bet,
+  bankroll, exposure or buying-power check; no reservation (`orders.cost_cents = 0`, no ledger row) and no
+  daily-loss check, but the order and its events are logged like any other. A sell may
+  coexist with an open buy on the same market (the worker cancels that buy as stale
+  once its edge is gone).
+
+Money side, as built:
+
+| Event | Ledger kind | d_available | d_reserved | d_open | d_realized | fills.basis_cents |
+|---|---|---|---|---|---|---|
+| buy approved | `reserve` | `-cost` | `+cost` | 0 | 0 | |
+| buy fill | `fill` | 0 | `-(notional + fee)` | `+notional` | `-fee` | `notional` |
+| sell approved | none | | | | | |
+| sell fill | `sell` | `+(proceeds - fee)` | 0 | `-basis` | `+(proceeds - fee - basis)` | `basis` |
+| sell cancelled, expired or killed | none (nothing reserved) | | | | | |
+| settlement | `settle` | `+payout` | 0 | `-remaining basis` | `+(payout - remaining basis)` | |
+
+`notional = proceeds = price * size * 100` rounded half up (`orders.fill_cost_cents`).
+
+- Positions (`host/trading/positions.py`) are signed sums over fills: `size = bought -
+  sold`, `basis_cents = sum(buy basis) - sum(sell basis)`, `avg_cost = basis_cents /
+  (size * 100)`; rows `{"market_id", "side", "size", "basis_cents", "avg_cost"}`
+  (`mark_positions` adds `mark_cents` and `unrealized_cents` at the mid for the P&L). A
+  position sold down to zero disappears.
+- Sell basis (`positions.sell_basis_cents`): `remaining basis * size / remaining size`
+  rounded half up to the cent, and exactly the remaining basis when the sale closes the
+  position, so a position sold in any number of steps ends at zero open cost. A sell
+  fill larger than the position is refused (`orders.record_fill` raises; the live path
+  then auto-kills `late_fill` as for any fill the books cannot take). The bankroll row
+  is locked before the position is read.
+- Paper fills for sells (`host/exchange/paper.py`) walk the bid levels at or above the
+  limit with `fleet.sim.book.walk(side="sell")` and the same participation rule; a sell
+  whose first snapshot after submission had its bid below the limit rests and fills at
+  its limit when a later bid crosses. Each snapshot level is shared by all paper orders
+  on the market per side: bid levels among sells, ask levels among buys. Paper fill ids
+  are `paper:{order}:{snapshot}:b{level}` for bid levels (ask levels keep
+  `paper:{order}:{snapshot}:{level}`). A paper sell never fills more than the
+  assignment holds.
+- Live sells go through the same gateway: `market_source_config.polymarket_us.live`
+  gains `side_sell` (default `"SELL"`), sent for a sell order (`side_buy` for a buy); a
+  null side refuses the place (`NotConfigured`, rejected by the exchange). Live fills
+  of sells are booked by the same `record_fill`.
+- Kill and cancels: a kill cancels open sells exactly like buys (paper at once, live
+  `cancel_requested`); there is nothing to release. Positions stay.
+- Settlement (`host/exchange/settle_sells.py`): a filled sell order gets its own `bets`
+  row (`order_side` sell, `result` sold, `entry_price` = average sell price,
+  `cost_cents` = basis sold, `stake_cents` 0, `pnl_cents` = proceeds - fee - basis,
+  `clv` null). Each filled buy row covers only the contracts still held: per market the
+  remaining basis is split over the buy rows by their bought basis and the payout by
+  their bought contracts, floor shares with the rounding residual on the last row, so
+  the rows add up to the ledger `settle` row exactly; `pnl = payout - basis - buy fee`,
+  `stake_cents` stays the whole bought basis plus fee, CLV against the buy VWAP. A
+  fully sold position settles with no `settle` row and its buy rows carry only their
+  fees. `model_scores.pnl` includes sells; `n_bets` counts buys; CLV stays
+  stake-weighted over buys. Bets P&L summed per assignment equals its ledger realized.
+- P&L (`host/pnl.py`): before settlement a sell fill counts `proceeds - fee - mark` of
+  its contracts (today: the same when it filled today, else `-(mark - start mark)`), so
+  open P&L is the realized gain of the sales plus the mark-to-mid of what is still
+  held; after settlement the `sold` bets row carries it.
 - Dashboard: sells shown with a `sell` chip and their realized P&L; positions show size,
-  average cost, current bid and unrealized P&L.
-- Tests: sell maths by hand, no-shorting, one open sell per market, ledger invariants after
-  partial and full sales, settlement after a partial sale, kill cancels open sells, the
-  worker proposes a sell when the market overshoots the model and not otherwise.
+  average cost, current bid and unrealized P&L at that bid net of the taker fee a sale
+  would pay.
+- Tests: `tests/test_sell_ledger.py` (sell maths by hand, ledger invariants after
+  partial and full sales, no shorting, P&L), `tests/test_sell_paper.py` (marketable and
+  resting sells, shared participation with a buy on the same snapshot),
+  `tests/test_sell_settlement.py` (exact totals after a partial sale, loss, push, a full
+  sale), `tests/test_sell_kill_live.py` (kill cancels open sells, the live gateway and
+  executor send SELL, a live sell fill); the worker rule and the approval have their
+  own tests.

@@ -30,17 +30,21 @@ def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse
 
 @router.get("/models/{model_id}", response_class=HTMLResponse)
 def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """One model: params, the robustness section (validation era, stress tests),
-    search-era metrics (overall and per season), calibration, lineage, jobs."""
+    """One model: params, the robustness section (validation era, stress tests), the
+    snapshot replay (step 6 B1), search-era metrics (overall and per season),
+    calibration, lineage, jobs."""
     model = leaderboard.model_detail(conn, model_id)
     metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else {}
     validation = model.get("validation_metrics") if isinstance(model.get("validation_metrics"), dict) else None
+    snapshot = model.get("snapshot_metrics") if isinstance(model.get("snapshot_metrics"), dict) else None
     return page(
         request, conn, "model.html", model=model, metrics=metrics,
         per_season=[s for s in (metrics.get("per_season") or []) if isinstance(s, dict)],
         calibration=calibration_rows(metrics), attribution=NFLVERSE_ATTRIBUTION,
         robustness=robustness_context(validation, model.get("stress_metrics")),
         validation_per_season=[s for s in ((validation or {}).get("per_season") or []) if isinstance(s, dict)],
+        snapshot_metrics=snapshot,
+        snapshot_per_season=[s for s in ((snapshot or {}).get("per_season") or []) if isinstance(s, dict)],
     )
 
 

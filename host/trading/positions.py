@@ -1,9 +1,13 @@
 """Open positions, mark-to-mid valuation, the owner's day and losses_today.
 
-A position is the sum of an assignment's fills on a market that is not resolved yet;
-once the market resolves the ledger `settle` row moves the money to realized and the
-position disappears. The mark is the mid of the market's latest snapshot (fallback:
-the best bid/ask mirrored on the market row; no mark at all means mark = basis).
+A position is the signed sum of an assignment's fills on a market that is not resolved
+yet: buys add their size and `fills.basis_cents`, sells subtract theirs (the basis a
+sale removed, docs/TRADING.md "Selling"), so `size = buys - sells`, `basis_cents =
+sum(buy basis) - sum(sell basis)` and `avg_cost = basis_cents / (size * 100)`. A
+position sold down to zero disappears; once the market resolves the ledger `settle` row
+moves the money to realized and the position disappears too. The mark is the mid of
+the market's latest snapshot (fallback: the best bid/ask mirrored on the market row; no
+mark at all means mark = basis).
 """
 from __future__ import annotations
 
@@ -16,13 +20,15 @@ import psycopg
 from host.settings import get_setting
 from host.trading import ledger
 
-UNRESOLVED_SQL = """
-    SELECT o.market_id, m.side, SUM(f.size) AS size,
-           SUM(ROUND(f.price * f.size * 100)) AS basis_cents
+SIGNED_SIZE = "CASE WHEN o.side = 'sell' THEN -f.size ELSE f.size END"
+SIGNED_BASIS = "CASE WHEN o.side = 'sell' THEN -1 ELSE 1 END * COALESCE(f.basis_cents, ROUND(f.price * f.size * 100))"
+
+UNRESOLVED_SQL = f"""
+    SELECT o.market_id, m.side, SUM({SIGNED_SIZE}) AS size, SUM({SIGNED_BASIS}) AS basis_cents
       FROM fills f
       JOIN orders o ON o.id = f.order_id
       JOIN markets m ON m.id = o.market_id
-     WHERE m.status <> 'resolved' AND {where}
+     WHERE m.status <> 'resolved' AND {{where}}
      GROUP BY o.market_id, m.side
      ORDER BY o.market_id
 """
@@ -79,15 +85,43 @@ def _rows_to_positions(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "market_id": row["market_id"],
                 "side": row["side"],
                 "size": size,
-                "avg_price": round(basis / (size * 100), 6),
                 "basis_cents": basis,
+                "avg_cost": round(basis / (size * 100), 6),
             }
         )
     return out
 
 
+def held(conn: psycopg.Connection, assignment_id: Any, market_id: Any) -> tuple[int, int]:
+    """(size, basis_cents) the assignment holds on one market, signed over every fill
+    whatever the market's status (what a sell fill draws its basis from)."""
+    row = conn.execute(
+        f"""
+        SELECT COALESCE(SUM({SIGNED_SIZE}), 0) AS size, COALESCE(SUM({SIGNED_BASIS}), 0) AS basis_cents
+          FROM fills f JOIN orders o ON o.id = f.order_id
+         WHERE o.assignment_id = %s AND o.market_id = %s
+        """,
+        (assignment_id, market_id),
+    ).fetchone()
+    return int(row["size"]), int(row["basis_cents"])
+
+
+def sell_basis_cents(held_size: int, held_basis: int, size: int) -> int:
+    """The basis a sale of `size` contracts removes from a position of `held_size`
+    contracts with `held_basis` cents of basis (average cost): held_basis * size /
+    held_size rounded half up, and exactly the remaining basis when the sale closes
+    the position."""
+    if size <= 0 or held_size <= 0:
+        return 0
+    if size >= held_size:
+        return int(held_basis)
+    if held_basis <= 0:
+        return 0
+    return (2 * int(held_basis) * int(size) + int(held_size)) // (2 * int(held_size))
+
+
 def positions(conn: psycopg.Connection, assignment_id: Any) -> list[dict[str, Any]]:
-    """Open positions of one assignment: {market_id, side, size, avg_price, basis_cents}."""
+    """Open positions of one assignment: {market_id, side, size, basis_cents, avg_cost}."""
     rows = conn.execute(UNRESOLVED_SQL.format(where="o.assignment_id = %s"), (assignment_id,)).fetchall()
     return _rows_to_positions(rows)
 

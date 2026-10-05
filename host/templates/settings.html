@@ -140,6 +140,17 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
+<form class="card group" method="post" action="/settings/replay" id="replay">
+  <h2>Snapshot replay <span class="muted small">backtests on the prices the host recorded</span></h2>
+  {% if errors.replay %}<p class="error inline-error">{{ errors.replay }}</p>{% endif %}
+  <p class="muted small">A backtest with price source "snapshots" buys at the recorded ask at the decision time, walks the recorded book (participation from the Trading group) and measures CLV against the frozen closing price. It replays the market source chosen in the Trading group.</p>
+  <div class="fields">
+    {{ field('decision_minutes_before_kickoff', 'Decision minutes before kickoff', '0..300; the replay bets this long before kickoff, on prices recorded within 30 minutes before that', 'numeric') }}
+    {{ check('allow_sim_prices', 'Allow sim prices', 'testing only: sim prices are made up, so a replay on them proves nothing') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
 <form class="card group" method="post" action="/settings/nflverse" id="nflverse">
   <h2>nflverse games <span class="muted small">{{ games_count }} rows{% if last_complete_season %}, last complete season {{ last_complete_season }}{% endif %}</span></h2>
   {% if errors.nflverse %}<p class="error inline-error">{{ errors.nflverse }}</p>{% endif %}
@@ -157,6 +168,17 @@
   </div>
   <button type="submit" class="btn primary">Save</button>
   <button type="submit" class="btn" formaction="/data/refresh">Refresh now</button>
+</form>
+
+<form class="card group" method="post" action="/settings/signals" id="signals">
+  <h2>nflverse signals <span class="muted small">injury reports and play-by-play, free</span></h2>
+  {% if errors.signals %}<p class="error inline-error">{{ errors.signals }}</p>{% endif %}
+  <div class="fields">
+    {{ field('signals_refresh_hours', 'Refresh every (hours)', '1..168', 'numeric') }}
+    {{ field('nflverse_injuries_url', 'Injuries URL', 'one file per season; must contain {season}') }}
+    {{ field('nflverse_pbp_url', 'Play-by-play URL', 'one CSV.gz per season; must contain {season}') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
 </form>
 
 <form class="card group" method="post" action="/enroll-token" id="enroll">

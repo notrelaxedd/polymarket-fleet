@@ -1,18 +1,23 @@
 """Paper fill simulation (docs/TRADING.md, "Executor and paper fills").
 
 For every open or partial paper order and every snapshot of its market newer than the
-order's submission (and newer than the last snapshot that filled it): walk the ask
-levels with `price <= order.price`, fill `min(remaining, participation * level_size)`
-per level, fee per contract from `fee_model`, one fills row per level through
-`orders.record_fill` (idempotent on the paper fill id). A fill never consumes more than
-what is left of the order's reservation.
+order's submission (and newer than the last snapshot that filled it): a buy walks the
+ask levels with `price <= order.price`, a sell (step 6 Part B) the bid levels with
+`price >= order.price`, filling `min(remaining, participation * level_size)` per level
+(fleet.sim.book.walk), fee per contract from `fee_model`, one fills row per level
+through `orders.record_fill` (idempotent on the paper fill id). A buy fill never
+consumes more than what is left of the order's reservation; a sell fill never sells
+more than the assignment holds.
 
 Three rules keep the simulation honest:
-- A resting bid (the first snapshot after submission had its ask above the limit)
-  fills at the order's own limit price when a later ask crosses it, as a resting
-  limit order does on a real book; a marketable order takes the ask levels as they are.
+- A resting order (the first snapshot after submission did not cross its limit: a
+  buy's ask above it, a sell's bid below it) fills at the order's own limit price when
+  a later book crosses it, as a resting limit order does on a real book; a marketable
+  order takes the levels as they are.
 - One snapshot's level offers `participation * size` contracts to all paper orders on
-  the market together, in submission order, not to each order separately.
+  the market together, in submission order, not to each order separately; ask levels
+  (buys) and bid levels (sells) are shared separately. The paper fill id is
+  `paper:{order}:{snapshot}:{level}` for an ask level and `...:b{level}` for a bid level.
 - With `trade_pregame_only`, snapshots taken at or after the game's kickoff never fill
   anything (the executor cancels what is still open at kickoff).
 
@@ -28,7 +33,7 @@ import psycopg
 
 from fleet.sim import book
 from host.settings import get_setting
-from host.trading import orders
+from host.trading import orders, positions
 from host.trading.orders import cents, fill_cost_cents
 
 log = logging.getLogger(__name__)
@@ -67,14 +72,28 @@ def simulate(
     resting: bool = False,
     taken: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """The fills one snapshot gives a buy order: [{level, price, size, fee_cents}].
-    `resting` fills at the order's limit; `taken` is what other orders already took
-    from each level of this snapshot. The walk itself is fleet.sim.book.walk, shared
-    with the snapshot replay backtests."""
+    """The fills one snapshot gives an order: [{level, price, size, fee_cents}]. A buy
+    walks `ask_depth`, a sell (`order["side"] == "sell"`) walks `bid_depth`. `resting`
+    fills at the order's limit; `taken` is what other orders on the same side already
+    took from each level of this snapshot. The walk itself is fleet.sim.book.walk,
+    shared with the snapshot replay backtests."""
     limit = float(order["price"])
+    side = side_of(order)
     left = int(order["size"]) - int(order["filled_size"]) if remaining is None else int(remaining)
-    fills = book.walk(snapshot.get("ask_depth"), limit, left, participation, taken, "buy", resting)
+    levels = snapshot.get("bid_depth" if side == "sell" else "ask_depth")
+    fills = book.walk(levels, limit, left, participation, taken, side, resting)
     return [{**f, "fee_cents": fee_cents(f["price"], f["size"], fee_model)} for f in fills]
+
+
+def side_of(order: dict[str, Any]) -> str:
+    """'sell' for a sell order, 'buy' otherwise (every order before step 6 Part B)."""
+    return "sell" if order.get("side") == "sell" else "buy"
+
+
+def fill_id(order_id: Any, snapshot_id: Any, level: int, side: str) -> str:
+    """The paper fill id: ask levels `paper:{order}:{snapshot}:{level}`, bid levels
+    `paper:{order}:{snapshot}:b{level}`."""
+    return f"paper:{order_id}:{snapshot_id}:{'b' if side == 'sell' else ''}{level}"
 
 
 def kickoff_bound(conn: psycopg.Connection, order: dict[str, Any]) -> datetime | None:
@@ -108,28 +127,37 @@ def pending_snapshots(conn: psycopg.Connection, order: dict[str, Any]) -> list[d
 
 
 def is_resting(conn: psycopg.Connection, order: dict[str, Any]) -> bool:
-    """True when the first snapshot after submission could not fill the order: its ask
-    was above the limit (or missing). Such an order later fills at its limit."""
+    """True when the first snapshot after submission could not fill the order: a buy's
+    ask above the limit, a sell's bid below it (or the touch missing). Such an order
+    later fills at its limit."""
     row = conn.execute(
-        "SELECT ask FROM price_snapshots WHERE market_id = %s AND ts > %s ORDER BY ts, id LIMIT 1",
+        "SELECT bid, ask FROM price_snapshots WHERE market_id = %s AND ts > %s ORDER BY ts, id LIMIT 1",
         (order["market_id"], order["submitted_at"]),
     ).fetchone()
     if row is None:
         return False
-    return row["ask"] is None or float(row["ask"]) > float(order["price"]) + EPS
+    limit = float(order["price"])
+    if side_of(order) == "sell":
+        return row["bid"] is None or float(row["bid"]) < limit - EPS
+    return row["ask"] is None or float(row["ask"]) > limit + EPS
 
 
-def taken_from(conn: psycopg.Connection, snapshot_id: int) -> dict[int, int]:
-    """Contracts other paper orders already took from each level of a snapshot (the
-    level index is the last field of the paper fill id)."""
+def taken_from(conn: psycopg.Connection, snapshot_id: int, side: str = "buy") -> dict[int, int]:
+    """Contracts other paper orders already took from each level of one side of a
+    snapshot: the last field of the paper fill id is the ask level index, or `b` plus
+    the bid level index."""
     rows = conn.execute(
         "SELECT exchange_fill_id, size FROM fills WHERE snapshot_id = %s AND mode = 'paper'", (snapshot_id,)
     ).fetchall()
     out: dict[int, int] = {}
     for row in rows:
+        last = str(row["exchange_fill_id"]).rsplit(":", 1)[-1]
+        is_bid = last.startswith("b")
+        if is_bid != (side == "sell"):
+            continue
         try:
-            level = int(str(row["exchange_fill_id"]).rsplit(":", 1)[1])
-        except (IndexError, ValueError):
+            level = int(last[1:] if is_bid else last)
+        except ValueError:
             continue
         out[level] = out.get(level, 0) + int(row["size"])
     return out
@@ -141,31 +169,43 @@ def _fee_so_far(conn: psycopg.Connection, order_id: Any, fee_model: dict[str, An
 
 
 def fill_order(conn: psycopg.Connection, order: dict[str, Any], participation: float, fee_model: dict[str, Any] | None) -> int:
-    """Apply every pending snapshot to one order; the number of fills recorded."""
+    """Apply every pending snapshot to one order; the number of fills recorded. A buy
+    is capped by its reservation, a sell by the contracts its assignment holds."""
     recorded = 0
+    side = side_of(order)
     resting = is_resting(conn, order)
     for snapshot in pending_snapshots(conn, order):
         current = orders.get_order(conn, order["id"])
         if current["status"] not in ("open", "partial"):
             break
-        reservation = orders.remaining_reservation_cents(conn, current)
+        cap = _sell_cap(conn, current) if side == "sell" else orders.remaining_reservation_cents(conn, current)
         remaining = int(current["size"]) - int(current["filled_size"])
         fee_before = _fee_so_far(conn, order["id"], fee_model)
-        taken = taken_from(conn, int(snapshot["id"]))
+        taken = taken_from(conn, int(snapshot["id"]), side)
         for fill in simulate(current, snapshot, participation, fee_model, remaining, resting, taken):
-            size = _fit_reservation(fill["price"], fill["size"], reservation, fee_model, fee_before)
+            if side == "sell":
+                size = min(fill["size"], cap)
+            else:
+                size = _fit_reservation(fill["price"], fill["size"], cap, fee_model, fee_before)
             if size <= 0:
                 continue
             fee = fee_increment_cents(fill["price"], size, fee_model, fee_before)
-            fill_id = f"paper:{order['id']}:{snapshot['id']}:{fill['level']}"
             orders.record_fill(
                 conn, order["id"], fill["price"], size, fee, "paper", ACTOR,
-                snapshot_id=int(snapshot["id"]), exchange_fill_id=fill_id,
+                snapshot_id=int(snapshot["id"]), exchange_fill_id=fill_id(order["id"], snapshot["id"], fill["level"], side),
             )
-            reservation -= cost_cents(fill["price"], size) + fee
+            cap -= size if side == "sell" else cost_cents(fill["price"], size) + fee
             fee_before += fee_per_contract(fill["price"], fee_model) * size
             recorded += 1
     return recorded
+
+
+def _sell_cap(conn: psycopg.Connection, order: dict[str, Any]) -> int:
+    """Contracts a sell may still fill: what its assignment holds on the market (no
+    shorting, whatever the approval saw)."""
+    if order.get("assignment_id") is None:
+        return 0
+    return max(0, positions.held(conn, order["assignment_id"], order["market_id"])[0])
 
 
 def _fit_reservation(price: float, size: int, reservation: int, fee_model: dict[str, Any] | None, fee_before: float = 0.0) -> int:

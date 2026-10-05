@@ -3,7 +3,8 @@
 Pure helpers, unit-testable without HTTP: market_p_home() devigs the two markets'
 mids, plan_proposals() turns one assignment of the GET /api/v1/trade/state payload
 into order requests (edge, Kelly stake, size, client_request_id, rationale) and
-stale_orders() names the open orders whose edge at the current ask is below zero.
+stale_orders() names the open buy orders whose edge at the current ask is below zero.
+fleet.worker.sell mirrors both for selling a held position (plan_sells, stale_sells).
 Models come from fleet.models.registry, rebuilt from the payload's artifact and
 cached by model id.
 
@@ -142,9 +143,14 @@ def side_edge(p_side: float, ask: float, taker_rate: float) -> tuple[float, floa
     return fee, cost, p_side - cost
 
 
-def client_request_id(assignment_id: Any, market_id: Any, snapshot_id: Any, price: float, size: int) -> str:
-    """sha256(assignment|market|snapshot_id|price|size)[:32]."""
+def client_request_id(
+    assignment_id: Any, market_id: Any, snapshot_id: Any, price: float, size: int, order_side: str = "buy"
+) -> str:
+    """sha256(assignment|market|snapshot_id|price|size)[:32] for a buy (the step 4
+    formula, so in-flight ids never change); a sell appends |order_side to the text."""
     text = f"{assignment_id}|{market_id}|{snapshot_id}|{price:.4f}|{size}"
+    if order_side != "buy":
+        text += f"|{order_side}"
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
@@ -256,8 +262,9 @@ def plan_proposals(
 
 
 def stale_orders(assignment: dict[str, Any], settings: Any, model: Model | None = None) -> list[str]:
-    """Ids of the assignment's open orders whose edge at the market's current ask is below 0."""
-    orders = _open_orders(assignment)
+    """Ids of the assignment's open buy orders whose edge at the market's current ask is
+    below 0 (open sells are fleet.worker.sell.stale_sells' business)."""
+    orders = [o for o in _open_orders(assignment) if o.get("side", "buy") != "sell"]
     if not orders:
         return []
     markets = {str(m.get("id")): m for m in assignment.get("markets") or [] if isinstance(m, dict)}
@@ -332,8 +339,10 @@ class TradeLoop:
         return self.tick(state) if state is not None else []
 
     def tick(self, state: dict[str, Any]) -> list[dict[str, Any]]:
-        """Propose, then cancel stale orders, per assignment; returns the posted requests
-        with the host's answer under "result"."""
+        """Propose (buys, then sells), then cancel stale orders, per assignment; returns
+        the posted requests with the host's answer under "result"."""
+        from fleet.worker.sell import plan_sells, stale_sells  # sell builds on this module
+
         self.ticks += 1
         self.settings = trade_settings(state.get("settings"))
         killed = bool(state.get("kill")) or bool(getattr(self.agent, "kill", False))
@@ -348,9 +357,9 @@ class TradeLoop:
             if killed:
                 continue
             model = load_model(a.get("model"), self._models)
-            for proposal in plan_proposals(a, self.settings, model, now):
+            for proposal in plan_proposals(a, self.settings, model, now) + plan_sells(a, self.settings, model, now):
                 posted.append(self._request(proposal))
-            for order_id in stale_orders(a, self.settings, model):
+            for order_id in stale_orders(a, self.settings, model) + stale_sells(a, self.settings, model):
                 if self._cancel(order_id):
                     cancelled.append(order_id)
         approved = sum(1 for p in posted if (p.get("result") or {}).get("status") == "approved")
@@ -379,7 +388,8 @@ class TradeLoop:
         except (http.HttpError, http.HttpConnectionError) as exc:
             log.warning("order request %s failed: %s", proposal["client_request_id"], exc)
             result = {"status": "error", "order_id": None, "reason": str(exc)}
-        log.info("proposal %s %s x%d: %s (%s)", proposal.get("side"), proposal["price"], proposal["size"],
+        log.info("proposal %s %s %s x%d: %s (%s)", proposal.get("order_side", "buy"), proposal.get("side"),
+                 proposal["price"], proposal["size"],
                  result.get("status"), result.get("reason") or proposal["rationale"])
         return dict(proposal, result=result)
 

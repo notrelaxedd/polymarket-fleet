@@ -49,8 +49,15 @@
     <label>Family {{ family_select() }}</label>
     <label>Params <span class="muted small">JSON</span><textarea name="params" rows="2">{{ values.params }}</textarea></label>
     {{ seasons_fields() }}
+    <label>Price source
+      <select name="price_source">
+        {% for source in price_sources %}<option value="{{ source }}"{% if values.price_source == source %} selected{% endif %}>{{ 'closing line (every game, CLV 0)' if source == 'closing_line' else 'snapshots (recorded prices, real CLV)' }}</option>{% endfor %}
+      </select>
+    </label>
     {{ target_select() }}
   </div>
+  <p class="muted small replay-hint">Snapshots replay the prices the host recorded on <strong>{{ replay.price_platform }}</strong>, {{ replay.decision_minutes_before_kickoff }} minutes before kickoff, taking at most {{ replay.participation }} of the book; games without recorded prices are skipped. The result is stored apart from the closing-line numbers and never changes a model's status. Change these in <a href="/settings#replay">Settings</a>.</p>
+  {% if replay.sim_refused %}<p class="error small replay-sim">The market source is sim and sim prices are not allowed, so a snapshot backtest will fail on the worker. Allow sim prices in <a href="/settings#replay">Settings</a> (testing only) or switch the market source.</p>{% endif %}
   <button type="submit" class="btn primary">Send backtest</button>
   </form>
 </details>
@@ -121,7 +128,7 @@
   {% set worker = j.lease_worker_id or j.target_worker_id %}
   <tr>
     <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
-    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% elif j.kind == 'validate' and j.params.model_id %} <span class="muted small">{{ j.params.model_id | short }}</span>{% endif %}</td>
+    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} <span class="chip chip-snapshot">snapshots</span>{% endif %}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% elif j.kind == 'validate' and j.params.model_id %} <span class="muted small">{{ j.params.model_id | short }}</span>{% endif %}</td>
     <td class="c-status">
       <span class="badge st-{{ j.status }}">{{ j.status.replace('_', ' ') }}</span>
       {% if j.status == 'queued' and not j.target_worker_id %}<span class="badge st-waiting">waiting for an idle worker</span>{% endif %}

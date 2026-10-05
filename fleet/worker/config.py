@@ -14,6 +14,7 @@ PENDING_POSTS_NAME = "pending_posts.json"
 CACHE_DIR_NAME = "cache"
 GAMES_CACHE_NAME = "games.json"
 GAMES_ETAG_NAME = "games.etag"
+PRICES_CACHE_PREFIX = "prices-"
 
 
 class ConfMissing(Exception):
@@ -53,6 +54,22 @@ def games_cache_path(directory: str) -> str:
 def games_etag_path(directory: str) -> str:
     """<state>/cache/games.etag: the ETag of the cached games.json."""
     return os.path.join(cache_dir(directory), GAMES_ETAG_NAME)
+
+
+def _platform_slug(platform: str) -> str:
+    slug = "".join(c if c.isalnum() or c in "_-" else "_" for c in str(platform))
+    return slug or "default"
+
+
+def prices_cache_path(directory: str, platform: str) -> str:
+    """<state>/cache/prices-<platform>.json: the recorded prices of one platform
+    (GET /api/v1/data/prices), handed to snapshot backtests as prices_path."""
+    return os.path.join(cache_dir(directory), f"{PRICES_CACHE_PREFIX}{_platform_slug(platform)}.json")
+
+
+def prices_etag_path(directory: str, platform: str) -> str:
+    """<state>/cache/prices-<platform>.etag: the ETag of that cached prices file."""
+    return os.path.join(cache_dir(directory), f"{PRICES_CACHE_PREFIX}{_platform_slug(platform)}.etag")
 
 
 def _write_private_json(path: str, data: Any, mode: int) -> None:

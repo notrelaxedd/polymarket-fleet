@@ -74,6 +74,7 @@ LIVE_DEFAULTS: dict[str, Any] = {
     "fills": {"method": "GET", "path": "/v1/fills", "since_param": "since", "since_format": "iso"},
     "balance": {"method": "GET", "path": "/v1/balance"},
     "side_buy": "BUY",
+    "side_sell": "SELL",
     "time_in_force": "GTD",
     "client_id_field": "client_request_id",
     "money_unit": "dollars",

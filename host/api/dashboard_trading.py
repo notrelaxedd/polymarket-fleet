@@ -24,6 +24,7 @@ from host.money import cents_to_dollars, dollars_to_cents
 from host.settings import get_int_setting, get_setting, get_settings
 from host.trading import assignments, ledger, orders
 from host.trading import views as trading_views
+from host.trading.views_positions import assignment_positions
 
 router = APIRouter(tags=["dashboard-trading"], dependencies=[Depends(require_owner)])
 
@@ -51,6 +52,8 @@ REASON_TEXT = {
     "mode": "live not allowed", "stale_book": "cited book too old", "liquidity": "book below the liquidity floor",
     "price_band": "price outside the band", "bankroll": "cost over available", "daily_loss": "daily loss limit",
     "exposure": "exposure limit", "buying_power": "buying power",
+    "no_position": "nothing held to sell", "sell_exceeds_position": "sell larger than the position",
+    "open_sell_exists": "a sell is already open on this market",
 }
 
 
@@ -103,6 +106,7 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
         "live_cancel_pending": live_orders["cancel_pending"],
         "smoke_orders": live_orders["smoke"],
         "assignments": rows,
+        "positions": assignment_positions(conn, rows),
         "killed": killed,
         "halted_paper": 0 if killed else views.halted_paper_count(conn),
         "open_orders": trading_views.list_orders(conn, "active", 200),

@@ -1,5 +1,9 @@
 """Read-only JSON views for the owner trading API and the /trading dashboard:
-orders, fills, markets (and the owner's link-by-hand) and the exchange state."""
+orders, fills, markets (and the owner's link-by-hand) and the exchange state.
+
+Orders and fills carry `order_side` ('buy' | 'sell', orders.side; `side` stays the
+market's team side) and, for sells, `realized_cents` = proceeds - fee - basis
+removed, summed per fill with the ledger's rounding (docs/TRADING.md "Selling")."""
 from __future__ import annotations
 
 import uuid
@@ -16,6 +20,9 @@ ORDER_STATUSES = (
     "rejected_by_exchange", "expired",
 )
 ACTIVE = ("approved", "submitting", "open", "partial", "cancel_requested")
+# A sell fill's realized P&L, exactly as host.trading.ledger.sell posts it (ROUND on
+# numeric rounds half away from zero, the same as half up for positive proceeds).
+FILL_REALIZED = "ROUND(f.price * f.size * 100)::bigint - f.fee_cents - COALESCE(f.basis_cents, 0)"
 
 
 def _limit(limit: int, cap: int = 500) -> int:
@@ -56,8 +63,10 @@ def list_orders(
     params.append(_limit(limit))
     rows = conn.execute(
         f"""
-        SELECT o.*, m.title AS market_title, m.side, m.game_id, m.platform, w.name AS worker_name,
+        SELECT o.*, o.side AS order_side, m.title AS market_title, m.side, m.game_id, m.platform, w.name AS worker_name,
                a.model_id, a.max_bet_cents AS assignment_max_bet_cents, mo.family,
+               CASE WHEN o.side = 'sell' THEN
+                 (SELECT SUM({FILL_REALIZED})::bigint FROM fills f WHERE f.order_id = o.id) END AS realized_cents,
                (SELECT e.detail ->> 'reason' FROM order_events e WHERE e.order_id = o.id
                   AND e.to_status IN ('cancelled', 'cancel_requested', 'expired', 'rejected_by_exchange')
                  ORDER BY e.id DESC LIMIT 1) AS last_reason
@@ -89,7 +98,8 @@ def order_with_events(conn: psycopg.Connection, order_id: Any) -> dict[str, Any]
 
 
 def list_fills(conn: psycopg.Connection, limit: int = 50, assignment_id: Any = None) -> list[dict[str, Any]]:
-    """Newest fills first with their order, market and assignment."""
+    """Newest fills first with their order, market and assignment (sell fills with
+    their realized P&L)."""
     clauses, params = ["true"], []
     if assignment_id is not None:
         clauses.append("o.assignment_id = %s")
@@ -98,6 +108,7 @@ def list_fills(conn: psycopg.Connection, limit: int = 50, assignment_id: Any = N
     rows = conn.execute(
         f"""
         SELECT f.*, o.assignment_id, o.worker_id, o.market_id, o.price AS order_price, o.size AS order_size,
+               o.side AS order_side, CASE WHEN o.side = 'sell' THEN {FILL_REALIZED} END AS realized_cents,
                m.title AS market_title, m.side, m.game_id
           FROM fills f
           JOIN orders o ON o.id = f.order_id

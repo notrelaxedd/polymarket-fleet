@@ -1,9 +1,10 @@
 {# One leaderboard row: `m` is a lineage entry from host.leaderboard (`rank` set for ranked ones,
    `unranked_reason` for the others). The validation era leads; the search era follows muted. #}
 {% set v = m.validation %}
+{% set snap = m.snapshot %}
 <tr class="model-row" data-model="{{ m.id }}">
   <td class="lead c-name">
-    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% if m.rank_mode == 'paper' %}<span class="chip chip-paper" title="ranked on paper CLV">paper</span>{% endif %}{% endif %}
+    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% if m.rank_mode == 'paper' %}<span class="chip chip-paper" title="ranked on paper CLV">paper</span>{% elif m.rank_mode == 'snapshot' %}<span class="chip chip-snapshot" title="ranked on snapshot replay CLV">snapshot</span>{% endif %}{% endif %}
     <a href="/models/{{ m.id }}"><strong>{{ m.family }}</strong> <span class="params">{{ m.short_params }}</span></a>
     <span class="badge st-{{ m.status }}">{{ m.status.replace('_', ' ') }}</span>
     {% if not m.validated %}<span class="chip chip-unvalidated" title="no validation-era metrics yet: send a validate job">not validated</span>{% endif %}
@@ -18,6 +19,7 @@
   <td class="nowrap c-ll"><span class="k">log-loss</span> {% if v %}{{ v.log_loss | fixed }} <span class="muted">vs {{ v.market_log_loss | fixed }}</span>{% else %}{{ m.metrics.log_loss | fixed }} <span class="muted">vs {{ m.metrics.market_log_loss | fixed }}</span>{% endif %}</td>
   <td class="nowrap c-dd"><span class="k">drawdown</span> {{ (v.max_drawdown if v else m.metrics.max_drawdown) | pct1 }}</td>
   <td class="nowrap c-paper"><span class="k">paper</span> {% if m.paper.games %}{{ m.paper.games }} g &middot; {{ m.paper.bets }} bets &middot; {{ m.paper.pnl_cents | money }} &middot; ROI {{ m.paper.roi | signed_pct }} &middot; CLV {{ m.paper.avg_clv | fixed }}{% if m.paper_ci and m.paper_ci.ci %} <span class="range paper-ci">{{ m.paper_ci.ci[0] | fixed }} to {{ m.paper_ci.ci[1] | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
+  <td class="nowrap c-snapshot"><span class="k">snapshot</span> {% if snap %}{{ snap.n_games }} games &middot; {{ snap.n_bets }} bets &middot; ROI {{ snap.roi | signed_pct if snap.n_bets else '-' }} &middot; <span title="closing price minus the price paid, per contract">CLV {{ snap.avg_clv | fixed }}</span>{% if snap.clv_ci %} <span class="range snapshot-ci">{{ snap.clv_ci[0] | fixed }} to {{ snap.clv_ci[1] | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
   <td class="wide c-summary">
     <p class="summary">{{ m.summary or 'No summary yet.' }}</p>
     <details class="edit">

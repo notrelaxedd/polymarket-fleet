@@ -1,8 +1,9 @@
 """Model rows: creation (idempotent, lineage inheritance), metrics, summary, retire.
 
 A root model is its own lineage (`lineage_id = id`); a child created by training
-inherits the parent's lineage, status, backtest, validation and stress metrics
-(step 6: the validation write itself is host/model_validation.py). Every write that can
+inherits the parent's lineage, status, backtest, validation, stress and snapshot metrics
+(step 6: the validation write is host/model_validation.py, the snapshot replay routing
+host/snapshot_store.py). Every write that can
 move a lineage's status reads the thresholds first (host.eligibility.thresholds,
 FOR SHARE) and ends in recompute_lineage. The job a worker names must be bound to
 the write: a root comes from a model_search job, a child from the train job whose
@@ -25,6 +26,7 @@ from host.eligibility import recompute_lineage, thresholds
 from host.errors import BadRequest, Conflict, NotFound
 from host.events import add_job_event
 from host.leases import as_uuid
+from host.snapshot_store import SNAPSHOTS, backtest_route, store_snapshot_result
 
 STATUSES = ("candidate", "paper_ok", "live_eligible", "retired")
 MAX_SUMMARY = 600
@@ -247,22 +249,23 @@ def create_model(
         lineage_id, status = parent["lineage_id"], parent["status"]
         metrics = {key: parent[key] for key in METRIC_FIELDS}
         parent_uuid: uuid.UUID | None = parent["id"]
+        snapshot = parent.get("snapshot_metrics")  # the lineage's snapshot replay numbers too
     else:
-        lineage_id, status, parent_uuid = model_id, "candidate", None
+        lineage_id, status, parent_uuid, snapshot = model_id, "candidate", None, None
         metrics = {key: fields[key] for key in METRIC_FIELDS}
     row = conn.execute(
         """
         INSERT INTO models (id, lineage_id, family, params, params_hash, artifact, parent_model_id,
                             trained_through, summary, status, backtest_metrics, validation_metrics, stress_metrics,
-                            created_by_job_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                            snapshot_metrics, created_by_job_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
         """,
         (
             model_id, lineage_id, fields["family"], Jsonb(fields["params"]), fields["params_hash"],
             Jsonb(fields["artifact"]) if fields["artifact"] is not None else None, parent_uuid,
             Jsonb(fields["trained_through"]) if fields["trained_through"] is not None else None,
             fields["summary"], status, *(Jsonb(metrics[key]) if metrics[key] is not None else None for key in METRIC_FIELDS),
-            job["id"],
+            Jsonb(snapshot) if snapshot is not None else None, job["id"],
         ),
     ).fetchone()
     new_status = recompute_lineage(conn, lineage_id, limits)
@@ -274,13 +277,17 @@ def create_model(
 def set_backtest_metrics(
     conn: psycopg.Connection, model_id: Any, metrics: Any, job_id: Any, worker_id: str
 ) -> dict[str, Any]:
-    """POST /api/v1/models/{id}/backtest: metrics on the whole lineage, then eligibility."""
+    """POST /api/v1/models/{id}/backtest: metrics on the whole lineage, then eligibility;
+    a snapshot replay result goes to snapshot_metrics instead (host.snapshot_store)."""
     job = job_leased_by(conn, job_id, worker_id)
     if not isinstance(metrics, dict):
         raise BadRequest("backtest_metrics must be an object")
     _finite(metrics, "backtest_metrics")
     model = get_model(conn, model_id)
     require_job(job, "backtest", model["id"])
+    if backtest_route(job, metrics) == SNAPSHOTS:
+        store_snapshot_result(conn, get_model(conn, model_id, for_update=True), metrics, job, worker_id)
+        return get_model(conn, model_id)
     limits = thresholds(conn)
     model = get_model(conn, model_id, for_update=True)
     _store_metrics(conn, model["lineage_id"], metrics)

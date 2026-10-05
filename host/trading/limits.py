@@ -4,7 +4,9 @@
 the bankroll row, runs the checks and writes an `orders` row either `approved` (with
 the ledger reservation) or `rejected` (with the stable reason code and an
 order_events row). The cost is computed here from settings.fee_model; whatever limit
-or cost fields the worker sent are ignored.
+or cost fields the worker sent are ignored. A request with `order_side` "sell" is
+decided by host.trading.sells.approve_sell (docs/TRADING.md "Selling"); every buy
+check below is unchanged.
 """
 from __future__ import annotations
 
@@ -26,7 +28,9 @@ __all__ = ["approve_order", "approve_smoke", "losses_today", "positions", "order
 REASONS = (
     "duplicate", "killed", "lease", "assignment", "market", "kickoff", "mode", "stale_book", "liquidity",
     "participation", "price_band", "max_bet", "bankroll", "daily_loss", "exposure", "buying_power",
+    "no_position", "sell_exceeds_position", "open_sell_exists",
 )
+ORDER_SIDES = ("buy", "sell")
 ACTIVE_LIST = "', '".join(orders.ACTIVE_STATUSES)
 MAX_SIZE = 1_000_000
 
@@ -67,6 +71,10 @@ def _parse(body: dict[str, Any]) -> dict[str, Any]:
     if isinstance(snapshot_id, bool) or not isinstance(snapshot_id, int):
         snapshot_id = None
     rationale = body.get("rationale")
+    order_side = body.get("order_side")
+    order_side = "buy" if order_side is None else order_side
+    if order_side not in ORDER_SIDES:
+        raise BadRequest("order_side must be buy or sell")
     return {
         "client_request_id": crid,
         "job_id": as_uuid(body.get("job_id")),
@@ -80,6 +88,7 @@ def _parse(body: dict[str, Any]) -> dict[str, Any]:
         "market_p": _number(body.get("market_p")),
         "edge": _number(body.get("edge")),
         "rationale": str(rationale)[:512] if rationale is not None else None,
+        "order_side": order_side,
     }
 
 
@@ -341,16 +350,20 @@ def _insert(conn: psycopg.Connection, ctx: dict[str, Any], status: str, reason: 
     row = conn.execute(
         """
         INSERT INTO orders (client_request_id, assignment_id, worker_id, job_id, market_id, mode, price, size,
-                            cost_cents, fee_cents_est, snapshot_id, status, reject_reason, my_p, market_p, edge, rationale)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                            cost_cents, fee_cents_est, snapshot_id, status, reject_reason, my_p, market_p, edge, rationale,
+                            side)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
         """,
         (
             req["client_request_id"], a["id"] if a else None, ctx["worker"]["id"], job["id"] if job else None,
             ctx["market"]["id"], ctx["mode"], req["price"], req["size"], ctx["cost"], ctx["fee"],
             cited["id"] if cited else None, status, reason, req["my_p"], req["market_p"], req["edge"], req["rationale"],
+            req.get("order_side", "buy"),
         ),
     ).fetchone()
     detail = {"reason": reason} if reason else {"cost_cents": ctx["cost"], "fee_cents_est": ctx["fee"]}
+    if req.get("order_side") == "sell":
+        detail["order_side"] = "sell"
     orders.add_order_event(conn, row["id"], None, status, ctx["worker"]["id"], detail)
     return dict(row)
 
@@ -402,7 +415,12 @@ def approve_smoke(conn: psycopg.Connection, market: dict[str, Any], price: float
 
 
 def approve_order(conn: psycopg.Connection, worker: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
-    """Decide one order request: {"status": "approved"|"rejected", "order_id", "reason"}."""
+    """Decide one order request: {"status": "approved"|"rejected", "order_id", "reason"}.
+    A sell (`order_side` "sell") goes to host.trading.sells.approve_sell."""
+    if body.get("order_side") == "sell":
+        from host.trading.sells import approve_sell  # sells builds on this module
+
+        return approve_sell(conn, worker, body)
     req = _parse(body)
     stored = _stored_decision(conn, req["client_request_id"])
     if stored is not None:

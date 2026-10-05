@@ -4,7 +4,9 @@
 A record is a dict: game_id, season, p (model P(home)), p_market, outcome, bet (None or
 {"side", "stake_cents", "edge", "clv", ...}), pnl_cents, ll_model, ll_market, lean (the
 side with the larger edge, "home" or "away", whether or not it was bet), div_game,
-hour_et (kickoff hour, US Eastern), temp, wind, outdoor.
+hour_et (kickoff hour, US Eastern), temp, wind, outdoor; a snapshot replay record
+(build_snapshot_record) also carries "prices", the game's price facts
+(fleet.sim.prices), which a checkpoint stores next to the packed probabilities.
 
 Everything in a record but `p` is a function of the game, the outcome and the fill
 rule, so a checkpoint carries only the model probabilities of a season's scored games
@@ -24,6 +26,7 @@ from typing import Any
 from fleet.sim.data import _eastern
 from fleet.sim.fills import BetRule, best_side, plan_bet, settle
 from fleet.sim.metrics import log_loss
+from fleet.sim.prices import lean_of, p_market_of, plan_replay_bet
 
 INDOOR_ROOFS = ("dome", "closed")
 _TZ = _eastern()
@@ -35,11 +38,8 @@ def kickoff_hour_et(kickoff_at: str) -> int:
     return moment.astimezone(_TZ).hour
 
 
-def build_record(game: dict[str, Any], p: float, p_market: float, outcome: float, rule: BetRule) -> dict[str, Any]:
-    """Score one game under the fill rule: plan the bet, settle it, keep the regime features."""
-    bet = plan_bet(p, p_market, rule)
-    if bet is not None:
-        bet["clv"] = 0.0  # entry at the close (docs/MODELS.md); snapshot replay fills a real value
+def _record(game: dict[str, Any], p: float, p_market: float, outcome: float, bet: dict[str, Any] | None,
+            lean: str) -> dict[str, Any]:
     pnl = settle(bet, outcome)[1] if bet else 0
     roof = (game.get("roof") or "").lower()
     return {
@@ -52,7 +52,7 @@ def build_record(game: dict[str, Any], p: float, p_market: float, outcome: float
         "pnl_cents": pnl,
         "ll_model": log_loss(p, outcome),
         "ll_market": log_loss(p_market, outcome),
-        "lean": best_side(p, p_market, rule)["side"],
+        "lean": lean,
         "div_game": int(game.get("div_game") or 0),
         "hour_et": kickoff_hour_et(game["kickoff_at"]),
         "temp": game.get("temp"),
@@ -61,12 +61,44 @@ def build_record(game: dict[str, Any], p: float, p_market: float, outcome: float
     }
 
 
+def build_record(game: dict[str, Any], p: float, p_market: float, outcome: float, rule: BetRule) -> dict[str, Any]:
+    """Score one game under the fill rule: plan the bet, settle it, keep the regime features."""
+    bet = plan_bet(p, p_market, rule)
+    if bet is not None:
+        bet["clv"] = 0.0  # entry at the close (docs/MODELS.md); snapshot replay fills a real value
+    return _record(game, p, p_market, outcome, bet, best_side(p, p_market, rule)["side"])
+
+
+def snapshot_lean(p: float, p_market: float, facts: dict[str, Any], rule: BetRule) -> str:
+    """The buyable side with the larger edge; without an ask on either side, the side
+    the model rates above the market."""
+    best = lean_of(p, facts, rule)
+    if best is not None:
+        return str(best["side"])
+    return "home" if p >= p_market else "away"
+
+
+def build_snapshot_record(game: dict[str, Any], p: float, facts: dict[str, Any], outcome: float,
+                          rule: BetRule) -> dict[str, Any]:
+    """Score one game on its recorded prices (fleet.sim.prices): p_market from the
+    decision-time mids, the bet filled on the recorded book; the record keeps the
+    facts under "prices" so the price stress can fill it again."""
+    p_market = p_market_of(facts)
+    record = _record(game, p, p_market, outcome, plan_replay_bet(p, facts, rule), snapshot_lean(p, p_market, facts, rule))
+    record["prices"] = facts
+    return record
+
+
 def replan(record: dict[str, Any], rule: BetRule) -> dict[str, Any]:
     """The same scored game under another fill rule (prices only enter the bet)."""
     out = dict(record)
-    bet = plan_bet(record["p"], record["p_market"], rule)
-    if bet is not None:
-        bet["clv"] = 0.0
+    facts = record.get("prices")
+    if facts is not None:
+        bet = plan_replay_bet(record["p"], facts, rule)
+    else:
+        bet = plan_bet(record["p"], record["p_market"], rule)
+        if bet is not None:
+            bet["clv"] = 0.0
     out["bet"] = bet
     out["pnl_cents"] = settle(bet, record["outcome"])[1] if bet else 0
     return out

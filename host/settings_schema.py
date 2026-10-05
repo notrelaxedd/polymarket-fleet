@@ -139,6 +139,11 @@ def _url(value: Any) -> str | None:
     return None
 
 
+def _season_url(value: Any) -> str | None:
+    """An http(s) URL template holding {season} (the nflverse per-season files)."""
+    return _url(value) or (None if "{season}" in value else "must contain {season}, such as .../injuries_{season}.csv")
+
+
 def _one_of(*choices: str) -> Validator:
     def check(value: Any) -> str | None:
         return None if value in choices else "must be one of " + ", ".join(choices)
@@ -272,4 +277,10 @@ SCHEMA: dict[str, Validator] = {
     "smoke_hold_seconds": _int_range(1, 600),
     "live_fills_poll_s": _int_range(1, 60),
     "open_orders_audit_s": _int_range(5, 3600),
+    # step 6 Part B: snapshot replay and the nflverse signals
+    "allow_sim_prices": _bool,
+    "decision_minutes_before_kickoff": _int_range(0, 300),
+    "nflverse_injuries_url": _season_url,
+    "nflverse_pbp_url": _season_url,
+    "signals_refresh_hours": _int_range(1, 168),
 }

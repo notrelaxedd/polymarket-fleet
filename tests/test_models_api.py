@@ -151,13 +151,15 @@ def test_backtest_metrics_update_runs_eligibility_lineage_wide(client, conn, mak
 def test_games_feed_with_etag(client, conn, make_worker):
     w = make_worker("box1")
     r = client.get("/api/v1/data/games", headers=w.headers)
-    assert r.status_code == 200 and r.json() == {"games": [], "count": 0} and r.headers["etag"] == '"0-0"'
+    assert r.status_code == 200 and r.json() == {"games": [], "count": 0, "team_game_stats": []}
+    assert r.headers["etag"] == '"0-0.0-0.0-0.d60"', "games, injuries and team_game_stats stamps plus the decision minutes"
     ingest_fixture(conn)
     r = client.get("/api/v1/data/games", headers=w.headers)
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 2761 and len(body["games"]) == 2761
     assert body["games"][0]["game_id"] == "2016_01_CAR_DEN" and body["games"][0]["kickoff_at"] == "2016-09-09T00:30:00Z"
+    assert set(body["games"][0]["signals"]) == {"home_qb_changed", "away_qb_changed", "home_out_qb", "away_out_qb", "home_out_count", "away_out_count"}
     etag = r.headers["etag"]
     assert etag.startswith('"2761-') and etag.endswith('"')
     for header in (etag, etag.strip('"'), f"W/{etag}", f'"other", {etag}', "*"):

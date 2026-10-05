@@ -32,6 +32,11 @@ open at once with the reservation taken), POST /api/v1/orders/{id}/cancel and
 POST /api/v1/trade/release (cancels the orders, requeues the jobs). Controls:
 add_assignment(), set_snapshot()/set_ask(), halt_assignment(), set_kickoff_past(),
 set_trade_settings(); orders() and trade_calls() expose the store and the calls.
+
+Step 6B: GET /api/v1/data/prices?since=&platform= serves the market rows given to
+set_prices() (confirmed rows of games with kickoff_at >= since; platform "sim" rows
+only when the query names platform=sim) as {"markets", "count"} with an ETag (304 on
+If-None-Match); prices_queries() lists the query strings received.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlsplit
 
 import fleet
 
@@ -380,6 +386,9 @@ class FakeHost:
         self._hold_event = threading.Event()
         self.games_rows: list[Any] = []
         self.games_etag = "0-0"
+        self.prices_rows: list[dict[str, Any]] = []
+        self.prices_etag = "p0"
+        self.prices_query_log: list[str] = []
         self.models_store: dict[str, dict[str, Any]] = {}
         self.model_calls: list[dict[str, Any]] = []
         self.trade = TradeStore(self)
@@ -478,6 +487,32 @@ class FakeHost:
             self.games_rows = list(rows)
             self.games_etag = "%d-%d" % (len(rows), int(time.time() * 1000))
             return self.games_etag
+
+    def set_prices(self, markets: list[dict[str, Any]]) -> str:
+        """Replace the market rows served by GET /api/v1/data/prices; returns the new ETag."""
+        with self.lock:
+            self.prices_rows = [dict(m) for m in markets]
+            self.prices_etag = "p%d-%d" % (len(markets), int(time.time() * 1000))
+            return self.prices_etag
+
+    def prices_queries(self) -> list[str]:
+        with self.lock:
+            return list(self.prices_query_log)
+
+    def prices(self, w: dict[str, Any], query: str, if_none_match: str | None) -> tuple[int, Any, str]:
+        """(status, body, etag) of the prices feed for one query string."""
+        args = {k: v[-1] for k, v in parse_qs(query).items()}
+        since, platform = args.get("since") or "", args.get("platform") or ""
+        etag = f"{self.prices_etag}-{since}-{platform}"
+        with self.lock:
+            self.prices_query_log.append(query)
+            if if_none_match and if_none_match.strip() == etag:
+                return 304, None, etag
+            rows = [dict(m) for m in self.prices_rows
+                    if m.get("confirmed") and str(m.get("kickoff_at") or "")[:10] >= since[:10]
+                    and (not platform or m.get("platform") == platform)
+                    and (m.get("platform") != "sim" or platform == "sim")]
+        return 200, {"markets": rows, "count": len(rows)}, etag
 
     def add_model(self, model: dict[str, Any] | None = None) -> str:
         """Seed a model row (defaults filled in); returns its id."""
@@ -1020,6 +1055,10 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send(200, None, raw=self.host.tarball())
             elif self.path == "/healthz":
                 self._send(200, {"ok": True, "db": True})
+            elif urlsplit(self.path).path == "/api/v1/data/prices":
+                w = self.host.auth_any_worker(self.headers.get("Authorization"))
+                status, body, etag = self.host.prices(w, urlsplit(self.path).query, self.headers.get("If-None-Match"))
+                self._send(status, body, etag=etag)
             elif parts == ["api", "v1", "data", "games"]:
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, body, etag = self.host.games(w, self.headers.get("If-None-Match"))

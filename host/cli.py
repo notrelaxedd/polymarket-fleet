@@ -165,6 +165,14 @@ def cmd_ingest_games(config: Config, args: argparse.Namespace) -> None:
           f"{result['changed']} changed; last complete season {last}")
 
 
+def cmd_ingest_signals(config: Config, args: argparse.Namespace) -> None:
+    """Load nflverse injuries or play-by-play: one season, every season (all) or a file."""
+    from host import data_refresh
+
+    for line in data_refresh.backfill(lambda: db.connect(config.database_url), args.kind, args.season, args.file):
+        print(line)
+
+
 def cmd_models(config: Config, _: argparse.Namespace) -> None:
     """The leaderboard as a table (ranked rows first, then unranked)."""
     with db.connect(config.database_url) as conn:
@@ -294,6 +302,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ingest-games", help="fetch nflverse games.csv (or read a file) into the games table")
     p.add_argument("--file", default=None, help="a local games.csv instead of the download")
     p.set_defaults(func=cmd_ingest_games)
+    for kind, name in (("injuries", "ingest-injuries"), ("pbp", "ingest-pbp")):
+        p = sub.add_parser(name, help=f"load nflverse {kind} for a season, every season (all) or a file")
+        p.add_argument("--season", default=None, help="a season year, or all for the full backfill")
+        p.add_argument("--file", default=None, help="a local file instead of the download")
+        p.set_defaults(func=cmd_ingest_signals, kind=kind)
     sub.add_parser("models", help="the model leaderboard").set_defaults(func=cmd_models)
     sub.add_parser("kill", help="raise the kill switch (trade role stops)").set_defaults(func=cmd_kill)
     p = sub.add_parser("kill-reset", help="clear the kill switch (prompts for RESUME)")

@@ -1,4 +1,11 @@
-"""The elo_blend family: Elo ratings blended with the closing line by a logistic fit."""
+"""The elo_blend family: Elo ratings blended with the closing line by a logistic fit.
+
+The signal penalties (docs/ROBUSTNESS.md B2) move the pre-game Elo edge: a team whose
+starting quarterback changed loses qb_change_penalty points and each player it lists
+Out costs out_penalty_per_player points. The same shift enters the expectation the
+blend is fitted on, the prediction and the rating update, so fit and predict agree;
+both default to 0, which leaves every earlier model's predictions unchanged.
+"""
 
 from __future__ import annotations
 
@@ -8,20 +15,39 @@ from typing import Any, Callable
 from fleet.models.base import Model
 from fleet.models.blend_fit import fit_blend
 from fleet.models.elo import Elo
+from fleet.models.summary_text import FEW_BETS, bets_sentence, calibration_sentence
 from fleet.sim.control import check_stop
 from fleet.sim.data import game_key, has_moneylines, outcome_of
 from fleet.sim.odds import clamp_prob, devig, expit, logit
+from fleet.sim.signals import normalise_signals
 
-PARAM_KEYS = ("k", "hfa", "regress", "rest_per_day", "mov_scale", "min_edge", "kelly_fraction")
-FEW_BETS = 50  # below the leaderboard's ranking gate the summary says so
+PARAM_KEYS = ("k", "hfa", "regress", "rest_per_day", "mov_scale", "min_edge", "kelly_fraction",
+              "qb_change_penalty", "out_penalty_per_player")
 DEFAULT_PARAMS: dict[str, Any] = {
     "k": 24.0, "hfa": 55.0, "regress": 0.33, "rest_per_day": 1.0, "mov_scale": 1,
     "min_edge": 0.03, "kelly_fraction": 0.25,
 }
+# The signal penalties default to 0 but are read with .get instead of being merged into
+# a model's params: an existing model's params dict (and so the order of the draws that
+# perturb it in the neighbourhood stress test) stays exactly what it was.
+SIGNAL_DEFAULTS: dict[str, float] = {"qb_change_penalty": 0.0, "out_penalty_per_player": 0.0}
+__all__ = ["EloBlend", "FEW_BETS", "SIGNAL_DEFAULTS", "build_summary", "signal_adjustment"]
 
 
 def _uniform(rng: random.Random, low: float, high: float) -> float:
     return round(low + (high - low) * rng.random(), 6)
+
+
+def signal_adjustment(params: dict[str, Any], signals: Any) -> float:
+    """Elo points added to the home side's pre-game edge by the signal penalties."""
+    qb = float(params.get("qb_change_penalty") or SIGNAL_DEFAULTS["qb_change_penalty"])
+    out = float(params.get("out_penalty_per_player") or SIGNAL_DEFAULTS["out_penalty_per_player"])
+    if qb == 0.0 and out == 0.0:
+        return 0.0
+    s = normalise_signals(signals)
+    home = qb * s["home_qb_changed"] + out * s["home_out_count"]
+    away = qb * s["away_qb_changed"] + out * s["away_out_count"]
+    return away - home
 
 
 class EloBlend(Model):
@@ -59,12 +85,13 @@ class EloBlend(Model):
                 check_stop(should_stop)
                 season = game["season"]
             outcome = outcome_of(game)
+            extra = signal_adjustment(p, game.get("signals"))
             if outcome is not None and has_moneylines(game):
-                p_elo = self.elo.expect(game)
+                p_elo = self.elo.expect(game, extra)
                 p_market = devig(game["home_moneyline"], game["away_moneyline"])
                 if p_market is not None:
                     rows.append((logit(p_elo), logit(p_market), outcome))
-            self.elo.update(game)
+            self.elo.update(game, extra)
             last_key = key
         if season is not None and on_season is not None:
             on_season(season)
@@ -73,7 +100,7 @@ class EloBlend(Model):
         self.through = through if through is not None else last_key
 
     def observe(self, game: dict[str, Any]) -> None:
-        self.elo.update(game)
+        self.elo.update(game, signal_adjustment(self.params, game.get("signals")))
 
     # prediction ---------------------------------------------------------
 
@@ -81,7 +108,8 @@ class EloBlend(Model):
         probe = dict(game)
         probe["home_rest"] = features.get("home_rest", game.get("home_rest"))
         probe["away_rest"] = features.get("away_rest", game.get("away_rest"))
-        p_elo = self.elo.expect(probe)
+        signals = features["signals"] if "signals" in features else game.get("signals")
+        p_elo = self.elo.expect(probe, signal_adjustment(self.params, signals))
         if market_p is None:
             return clamp_prob(p_elo)
         z = self.blend["a"] * logit(p_elo) + self.blend["b"] * logit(market_p) + self.blend["c"]
@@ -126,6 +154,9 @@ class EloBlend(Model):
             "mov_scale": 1 if rng.random() < 0.5 else 0,
             "min_edge": _uniform(rng, 0.01, 0.08),
             "kelly_fraction": _uniform(rng, 0.1, 0.5),
+            # Appended after the original draws so a seed reproduces the earlier params.
+            "qb_change_penalty": _uniform(rng, 0, 80),
+            "out_penalty_per_player": _uniform(rng, 0, 15),
         }
 
     @staticmethod
@@ -143,9 +174,16 @@ def _weight_text(blend: dict[str, Any]) -> str:
     return f"{round(100 * b / (a + b))}% weight on the closing line, "
 
 
-def _num(metrics: dict[str, Any], key: str) -> float:
-    value = metrics.get(key)
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+def _penalty_text(params: dict[str, Any]) -> str:
+    """", QB change costs 40 points, 5 points per player Out" for the nonzero penalties."""
+    qb = round(float(params.get("qb_change_penalty") or 0.0))
+    out = float(params.get("out_penalty_per_player") or 0.0)
+    parts = []
+    if qb > 0:
+        parts.append(f"QB change costs {qb} points")
+    if round(out, 1) > 0:
+        parts.append(f"{out:.1f} points per player Out")
+    return "".join(f", {part}" for part in parts)
 
 
 def build_summary(params: dict[str, Any], metrics: dict[str, Any]) -> str:
@@ -153,31 +191,5 @@ def build_summary(params: dict[str, Any], metrics: dict[str, Any]) -> str:
     weight = _weight_text(metrics.get("blend") or {})
     mov = "on" if params.get("mov_scale") else "off"
     first = (f"Elo blend (K {round(float(params.get('k', 0)))}, home edge "
-             f"{round(float(params.get('hfa', 0)))}, {weight}margin scaling {mov}).")
-    seasons = metrics.get("seasons") or []
-    if not seasons:
-        span = "no seasons"
-    elif seasons[0] == seasons[-1]:
-        span = str(seasons[0])
-    else:
-        span = f"{seasons[0]}-{seasons[-1]}"
-    n_bets = int(_num(metrics, "n_bets"))
-    if n_bets == 0:
-        min_edge = 100 * float(params.get("min_edge", 0.0))
-        second = (f"Across {span} it never found an edge above its {min_edge:.1f}% minimum after fees, "
-                  "so it placed no bets.")
-    else:
-        note = " (too few bets to judge)" if n_bets < FEW_BETS else ""
-        drawdown = metrics.get("max_drawdown")
-        dd_text = "an unknown" if drawdown is None else f"a {100 * _num(metrics, 'max_drawdown'):.0f}%"
-        second = (f"Across {span} it placed {n_bets} bets at an average edge of "
-                  f"{100 * _num(metrics, 'avg_edge'):.1f}% and returned {100 * _num(metrics, 'roi'):+.1f}% on stake "
-                  f"with {dd_text} max drawdown{note}.")
-    ll, mll = _num(metrics, "log_loss"), _num(metrics, "market_log_loss")
-    if metrics.get("n_games", 0) and ll < mll - 0.002:
-        verdict = "it beats the closing line on calibration, but treat the edge as unproven"
-    else:
-        verdict = "it leans on the market and adds little, so treat the edge as unproven"
-    third = (f"Log-loss {ll:.3f} against the market's {mll:.3f}; {verdict} until paper trading "
-             f"shows positive CLV.")
-    return f"{first} {second} {third}"
+             f"{round(float(params.get('hfa', 0)))}, {weight}margin scaling {mov}{_penalty_text(params)}).")
+    return f"{first} {bets_sentence(params, metrics)} {calibration_sentence(metrics)}"

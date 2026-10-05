@@ -118,10 +118,15 @@ def test_perturbation_is_deterministic_bounded_and_keeps_fixed_params() -> None:
     for i in range(50):
         p = perturb_params("elo_blend", base, random.Random(f"7:nbhd:{i}"))
         for name, (low, high) in bounds.items():
+            if name not in base:  # a bound for a param this model does not carry (step 6B penalties)
+                assert name not in p
+                continue
             assert low <= p[name] <= high, name
             assert 0.9 * base[name] - 1e-9 <= p[name] or p[name] == low
             assert p[name] <= 1.1 * base[name] + 1e-9 or p[name] == high
     assert clip_params("elo_blend", {"k": 100.0, "hfa": 0.0, "mov_scale": 1, "unknown": 5.0}) == {"k": 40.0, "hfa": 20.0, "mov_scale": 1, "unknown": 5.0}
+    penalised = perturb_params("elo_blend", {**base, "qb_change_penalty": 80.0, "out_penalty_per_player": 15.0}, random.Random("7:nbhd:3"))
+    assert penalised["qb_change_penalty"] <= 80.0 and penalised["out_penalty_per_player"] <= 15.0
 
 
 def test_neighbourhood_summary_percentiles() -> None:

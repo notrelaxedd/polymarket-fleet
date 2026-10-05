@@ -300,7 +300,7 @@ def test_settings_inputs_open_the_number_keyboard(client):
                "min_bets", "seasons_first", "seasons_last", "validation_first", "validation_last", "nflverse_refresh_hours",
                "book_max_age_s", "gtd_seconds", "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game",
                "market_lookahead_days", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days", "paper_min_games",
-               "paper_min_bets", "paper_min_days")
+               "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours")
     for name in decimal:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="decimal"', html), name
     for name in numeric:
@@ -750,11 +750,11 @@ def test_trading_page_empty_state_and_fragment(client, conn):
     assert "No upcoming game has a confirmed market yet" in html and "No model of a non-retired lineage" in html
     assert '<button type="submit" class="btn primary" disabled>Create assignment</button>' in html
     assert 'action="/assignments/activate-paper"' not in html and 'action="/cancel-all"' not in html
-    assert 'id="trading-live"' in html and html.count("<section") == 8
+    assert 'id="trading-live"' in html and html.count("<section") == 9
     fragment = client.get("/fragments/trading").text
     assert "<html" not in fragment and 'id="trading-live"' not in fragment and 'id="assignments"' in fragment
     assert 'id="assign"' not in fragment, "the create form stays out of the refreshed region"
-    assert fragment.count("<section") == 8
+    assert fragment.count("<section") == 9
 
 
 def test_trading_page_shows_assignments_orders_fills_markets_and_exchange(client, conn):
@@ -1406,7 +1406,7 @@ def test_trading_exchange_box_live_rows_and_smoke_flag(client, conn):
     assert "$1,234.56 &middot; buying power $1,000.00" in exchange
     assert '<dd class="c-live-orders">2 open <span class="chip chip-smoke">1 smoke</span></dd>' in exchange
     assert "last auth error" not in exchange
-    assert html.count("<section") == 8 and client.get("/fragments/trading").text.count("<section") == 8
+    assert html.count("<section") == 9 and client.get("/fragments/trading").text.count("<section") == 9
     # auth failing: the chip turns, the error shows; a cancelled smoke order leaves the count
     auth_state(conn, auth_ok=False, auth_failures=2, last_auth_error="401 unauthorized <i>")
     conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = %s", (smoke["id"],))

@@ -297,6 +297,17 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
 .validate-form { display: inline; }
 .validate-form .btn { min-height: 36px; }
 
+/* step 6 Part B: sells and positions. The sell chip reuses the accent fill/text pair
+   (AA in both schemes); a loss is the red text token, a gain only gets its sign. */
+.chip.chip-sell { background: var(--accent-fill); color: var(--accent-text); font-weight: 600; }
+/* the snapshot replay chip (Jobs list, leaderboard rank basis) on the same AA pair */
+.chip.chip-snapshot { background: var(--accent-fill); color: var(--accent-text); }
+.pnl { font-weight: 600; white-space: nowrap; }
+.pnl.pnl-neg { color: var(--red-fg); }
+.positions-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem; }
+.positions-head .positions-total { margin-left: auto; font-weight: 400; color: var(--text); }
+table.positions td.c-size, table.positions td.c-bid { font-variant-numeric: tabular-nums; }
+
 @media (max-width: 700px) {
   .banner { font-size: 0.85rem; }
   /* step 5: the phrase input takes the full width and the live buttons are full-width tap targets */
@@ -318,4 +329,8 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
   table.models td.c-vroi .range { white-space: normal; }
   .validate-form { display: block; flex: 1; }
   .validate-form .btn { width: 100%; min-height: var(--tap); }
+  /* step 6 Part B: a position's market wraps as text; the total drops under the label */
+  table.positions td.lead { display: block; padding-right: 0; min-height: 0; }
+  .positions-head .positions-total { margin-left: 0; flex-basis: 100%; }
+  table.fills td.c-realized:empty { display: none; }
 }

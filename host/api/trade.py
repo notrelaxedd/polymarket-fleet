@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, Literal
 
 import psycopg
 from fastapi import APIRouter, Depends
@@ -25,7 +25,9 @@ RELEASE_POLL_SECONDS = 0.1
 
 
 class OrderRequestBody(BaseModel):
-    """POST /api/v1/orders/request. Limit or cost fields the worker adds are ignored."""
+    """POST /api/v1/orders/request. Limit or cost fields the worker adds are ignored.
+    `order_side` is "buy" (default) or "sell" (docs/TRADING.md "Selling"); `side`, the
+    team side the worker may send, is ignored as before."""
 
     model_config = ConfigDict(extra="ignore")
     client_request_id: str = Field(min_length=1, max_length=64)
@@ -40,6 +42,7 @@ class OrderRequestBody(BaseModel):
     market_p: float | None = Field(default=None, allow_inf_nan=False)
     edge: float | None = Field(default=None, allow_inf_nan=False)
     rationale: str | None = Field(default=None, max_length=512)
+    order_side: Literal["buy", "sell"] = "buy"
 
 
 class ReleaseEntry(BaseModel):
