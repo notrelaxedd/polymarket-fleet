@@ -15,7 +15,8 @@ like a buy. Checks, in order, each with a stable reason code:
 6. `open_sell_exists`: one open sell per market.
 
 An in-game sell (`ingame` true) runs host.trading.ingame.SELL_CHECKS: the in-game
-checks replace `kickoff`, the lag suspension does not apply to sells.
+checks replace `kickoff`, the lag suspension does not apply to sells. So does a sell
+without the flag on a game in play when trade_pregame_only is false (ingame.route).
 
 A sell reserves nothing (orders.cost_cents = 0, no ledger row at approval) and skips
 the liquidity, max-bet, bankroll, daily-loss, exposure and buying-power checks: it
@@ -135,12 +136,9 @@ def approve_sell(conn: psycopg.Connection, worker: dict[str, Any], body: dict[st
     ctx = limits._load(conn, worker, req)
     ctx["cost"] = 0
     ctx["fee"] = sell_fee_cents(req["price"], req["size"], ctx["settings"].get("fee_model"))
-    checks = SELL_CHECKS
-    if req["ingame"]:
-        from host.trading import ingame  # ingame builds on this module
+    from host.trading import ingame  # ingame builds on this module
 
-        ingame.prepare(conn, ctx)
-        checks = ingame.SELL_CHECKS
+    checks = ingame.route(conn, ctx, ingame.SELL_CHECKS) or SELL_CHECKS
     reason = next((name for name, check in checks if check(conn, ctx)), None)
     if ctx["market"] is None:
         # orders.market_id is NOT NULL: a request for an unknown market cannot be stored.

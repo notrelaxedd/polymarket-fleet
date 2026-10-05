@@ -7,7 +7,9 @@ order_events row). The cost is computed here from settings.fee_model; whatever l
 or cost fields the worker sent are ignored. A request with `order_side` "sell" is
 decided by host.trading.sells.approve_sell (docs/TRADING.md "Selling"); every buy
 check below is unchanged. A request with `ingame` true runs host.trading.ingame's
-checks instead (the in-game checks replace `kickoff`; docs/INGAME.md).
+checks instead (the in-game checks replace `kickoff`; docs/INGAME.md), and so does any
+request on a game in play when trade_pregame_only is false (ingame.route): after
+kickoff nothing is approved outside the in-game rules.
 """
 from __future__ import annotations
 
@@ -173,11 +175,12 @@ def _check_market(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
 
 
 def _check_kickoff(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
+    """A pre-game request needs a game that has not kicked off. Whatever
+    trade_pregame_only says: with it off, a request on a game in play never reaches
+    this list but host.trading.ingame's (ingame.route)."""
     game = ctx["game"]
     if game is None or game["status"] == "final":
         return True
-    if ctx["settings"].get("trade_pregame_only", True) is False:
-        return False
     return game["kickoff_at"] is not None and game["kickoff_at"] <= ctx["now"]
 
 
@@ -368,11 +371,12 @@ def _insert(conn: psycopg.Connection, ctx: dict[str, Any], status: str, reason: 
     detail = {"reason": reason} if reason else {"cost_cents": ctx["cost"], "fee_cents_est": ctx["fee"]}
     if req.get("order_side") == "sell":
         detail["order_side"] = "sell"
-    if req.get("ingame"):
+    if req.get("ingame") or ctx.get("in_play"):
         from host.trading.ingame import entry_state, gtd_seconds
 
-        detail.update(ingame=True, state_at_entry=entry_state(ctx.get("game_state")),
+        detail.update(state_at_entry=entry_state(ctx.get("game_state")),
                       gtd_seconds=gtd_seconds(ctx["settings"]), gtd_seconds_requested=req.get("gtd_seconds"))
+        detail["ingame" if req.get("ingame") else "in_play"] = True
     orders.add_order_event(conn, row["id"], None, status, ctx["worker"]["id"], detail)
     return dict(row)
 
@@ -440,12 +444,9 @@ def approve_order(conn: psycopg.Connection, worker: dict[str, Any], body: dict[s
     if stored is not None:
         return stored
     ctx = _load(conn, worker, req)
-    checks = CHECKS
-    if req["ingame"]:
-        from host.trading import ingame  # ingame builds on this module
+    from host.trading import ingame  # ingame builds on this module
 
-        ingame.prepare(conn, ctx)
-        checks = ingame.BUY_CHECKS
+    checks = ingame.route(conn, ctx, ingame.BUY_CHECKS) or CHECKS
     reason = next((name for name, check in checks if check(conn, ctx)), None)
     if ctx["market"] is None:
         # orders.market_id is NOT NULL: a request for an unknown market cannot be stored.
