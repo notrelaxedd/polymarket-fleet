@@ -43,10 +43,11 @@ def short_params(params: dict[str, Any] | None) -> str:
 
 def ingame_records(conn: psycopg.Connection) -> dict[Any, dict[str, Any]]:
     """lineage_id -> {"games", "bets", "pnl_cents"} of its in-game bets (both modes),
-    only for lineages that have in-game bets."""
+    only for lineages that have in-game bets; a game is counted once however many of
+    the lineage's models traded it, as the paper gate counts games."""
     rows = conn.execute(
         """
-        SELECT lineage_id, count(*) FILTER (WHERE ingame_n_bets > 0) AS games,
+        SELECT lineage_id, count(DISTINCT game_id) FILTER (WHERE ingame_n_bets > 0) AS games,
                COALESCE(SUM(ingame_n_bets), 0) AS bets, COALESCE(SUM(ingame_pnl_cents), 0) AS pnl_cents
           FROM model_scores GROUP BY lineage_id HAVING COALESCE(SUM(ingame_n_bets), 0) > 0
         """
@@ -59,7 +60,7 @@ def lineage_ingame_record(conn: psycopg.Connection, lineage_id: Any) -> dict[str
     """The in-game record of one lineage (None without in-game bets)."""
     row = conn.execute(
         """
-        SELECT count(*) FILTER (WHERE ingame_n_bets > 0) AS games, COALESCE(SUM(ingame_n_bets), 0) AS bets,
+        SELECT count(DISTINCT game_id) FILTER (WHERE ingame_n_bets > 0) AS games, COALESCE(SUM(ingame_n_bets), 0) AS bets,
                COALESCE(SUM(ingame_pnl_cents), 0) AS pnl_cents FROM model_scores WHERE lineage_id = %s
         """,
         (lineage_id,),

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import psycopg
+
 from host.leaderboard import PAPER_RANK_BETS, PAPER_RANK_GAMES
 from host.web import pvalue, signed_money, signed_pct
 
@@ -21,6 +23,43 @@ SORT_LINE = (
     f"Best first: paper CLV after {PAPER_RANK_GAMES} paper games and {PAPER_RANK_BETS} paper bets, then snapshot CLV after "
     "30 bets replayed on recorded prices, else validation ROI; few bets are shrunk toward zero."
 )
+
+
+def counted(n: Any, word: str) -> str:
+    """"1 game", "3 games": a count with its noun in the right number."""
+    k = int(n or 0)
+    return f"{k} {word}{'' if k == 1 else 's'}"
+
+
+def distinct_games(conn: psycopg.Connection, lineage_id: Any = None) -> dict[tuple[str, str], int]:
+    """(lineage id, mode) -> the games of the lineage's record, each counted once, as
+    the paper gate counts them (host.paper_gate.paper_stats): two models of one lineage
+    trading the same game make one game. host.leaderboard's `games` counts model_scores
+    rows (one per model and game) and the paper rank threshold keeps reading it; the
+    pages show this count so the record agrees with the gate verdict."""
+    where, params = ("WHERE lineage_id = %s", (lineage_id,)) if lineage_id is not None else ("", ())
+    rows = conn.execute(
+        f"SELECT lineage_id, mode, count(DISTINCT game_id) AS games FROM model_scores {where} GROUP BY lineage_id, mode",
+        params,
+    ).fetchall()
+    return {(str(r["lineage_id"]), r["mode"]): int(r["games"]) for r in rows}
+
+
+def add_distinct_games(conn: psycopg.Connection, entries: list[dict[str, Any]], lineage_id: Any = None) -> None:
+    """Set `distinct_games` on the paper and live record of each entry (display only)."""
+    counts = distinct_games(conn, lineage_id)
+    for entry in entries:
+        for mode in ("paper", "live"):
+            record = entry.get(mode)
+            if isinstance(record, dict):
+                record["distinct_games"] = counts.get((str(entry.get("lineage_id")), mode), 0)
+
+
+def games_of(record: dict[str, Any] | None) -> int:
+    """The games of a paper or live record counted once each (`distinct_games`), else
+    the leaderboard's per-model count."""
+    record = record or {}
+    return int(record.get("distinct_games", record.get("games")) or 0)
 
 
 def status_state(status: Any) -> str:
@@ -72,18 +111,18 @@ def _record_line(entry: dict[str, Any]) -> str:
     validation = entry.get("validation")
     paper, snap = entry.get("paper") or {}, entry.get("snapshot") or {}
     if validation and mode == "paper":
-        parts = [f"{paper.get('games', 0)} games", f"{paper.get('bets', 0)} bets", signed_money(paper.get("pnl_cents"))]
+        parts = [counted(games_of(paper), "game"), counted(paper.get("bets"), "bet"), signed_money(paper.get("pnl_cents"))]
         ci = (entry.get("paper_ci") or {}).get("ci")
         if _range(ci):
             parts.append(f"range {_range(ci)}")
         return " · ".join(parts)
     if validation and mode == "snapshot":
-        parts = [f"{snap.get('n_games', 0)} games", f"{snap.get('n_bets', 0)} bets replayed"]
+        parts = [counted(snap.get("n_games"), "game"), f"{counted(snap.get('n_bets'), 'bet')} replayed"]
         if _range(snap.get("clv_ci")):
             parts.append(f"range {_range(snap.get('clv_ci'))}")
         return " · ".join(parts)
     if validation:
-        parts = [f"{validation.get('n_bets') or 0} held-out bets"]
+        parts = [counted(validation.get("n_bets"), "held-out bet")]
         if validation.get("n_bets") and _range((validation.get("ci") or {}).get("roi")):
             parts.append(f"range {_range(validation['ci']['roi'])}")
         if validation.get("market_p") is not None:
@@ -91,7 +130,7 @@ def _record_line(entry: dict[str, Any]) -> str:
         return " · ".join(parts)
     reason = entry.get("unranked_reason") or "not validated"
     bets = (entry.get("metrics") or {}).get("n_bets")
-    return f"{reason} · search era {bets if bets is not None else '-'} bets"
+    return f"{reason} · search era {counted(bets, 'bet') if bets is not None else '- bets'}"
 
 
 def shape_entry(entry: dict[str, Any]) -> dict[str, Any]:
@@ -119,6 +158,7 @@ def board_view(board: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
         "counts": {
             "ranked": len(ranked), "unranked": len(unranked),
             "live_eligible": sum(1 for e in every if e.get("status") == "live_eligible"),
-            "paper_ok": sum(1 for e in every if e.get("status") == "paper_ok"),
+            # the note under "Ranked": the ranked lineages that may paper trade (live eligible ones may too)
+            "cleared": sum(1 for e in ranked if e.get("status") in ("paper_ok", "live_eligible")),
         },
     }

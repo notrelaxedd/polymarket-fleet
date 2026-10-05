@@ -1,11 +1,10 @@
 """Step 6B review fixes on the host data side: a sim replay never ranks, the model-page
 replay runs through the latest season and an empty replay never wipes a good one, the
 games feed serves a snapshot backtest its own injury cutoff, the trade state's team
-stats skip rows without EPA like the worker's cache, and the Models rows wrap at
-desktop width."""
+stats skip rows without EPA like the worker's cache, and a long Models record never
+widens its row (step 7: the record line ellipsises, the chips wrap on their own line)."""
 from __future__ import annotations
 
-import re
 from datetime import timedelta
 
 from host import games_feed, signals
@@ -14,8 +13,10 @@ from host.snapshot_store import latest_season
 from tests.conftest import (
     ingest_fixture, insert_model, insert_validated_model, lease_job, model_row, set_setting,
 )
+from tests.pagecheck import page
 from tests.test_ingest_signals import load_injuries, load_pbp
 from tests.test_snapshot_board import snapshot_metrics, with_snapshot
+from tests.test_style import declarations
 
 LEAKY_GAME = "2023_03_CAR_SEA"
 
@@ -120,13 +121,21 @@ def test_team_stats_skip_rows_without_epa_like_the_worker_cache(conn):
     assert [r["game_id"] for r in kc] == ["2023_01_DET_KC"], "the worker's normalise_stat_row drops the null-EPA row too"
 
 
-# ------------------------------------------------------------------ Models rows wrap at desktop width
+# ------------------------------------------------------------------ a long Models record never widens its row
 
-def test_models_record_cells_can_wrap(client, conn):
-    model = with_snapshot(conn, insert_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30))
-    html = client.get("/models").text
-    row = re.search(rf'<tr class="model-row" data-model="{model["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<td class="c-paper">' in row and '<td class="c-snapshot">' in row, "no nowrap on the two long record cells"
+def test_models_record_line_never_widens_the_row(client, conn):
+    """The 6B fix let the paper and snapshot table cells wrap so a long record could not
+    push the summary and the actions off a 1280 screen. Step 7 has rows, not cells: the
+    record is the row's one grey .row-meta line inside a row-main that may shrink, so a
+    long record ends in an ellipsis and the number and the menu keep their place; the
+    chips that must stay whole sit on their own .row-flags line, which wraps instead."""
+    model = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30))
+    row = page(client.get("/models").text).row("model", str(model["id"]))
+    record = row.one("a.row-main .row-meta")
+    assert "30 bets replayed" in record.text and "range " in record.text, "the snapshot record on the grey line"
+    assert row.has(".row-value") and row.has("details.menu > summary") and not row.has(".row-title .chip")
     css = client.get("/static/style.css").text
-    assert "table.models td.c-paper, table.models td.c-snapshot { min-width: 8.5rem; }" in css, "8.5rem (6C) leaves the summary 200 px at 1280"
+    main, meta = declarations(".row-main", media="", css=css), declarations(".row-meta", media="", css=css)
+    assert "min-width: 0" in main and "overflow: hidden" in meta and "ellipsis" in meta and "nowrap" in meta
+    assert "flex-wrap: wrap" in declarations(".row-flags", css=css), "the chip line wraps rather than cutting a chip"
     assert ".chip.chip-snapshot { background: transparent; color: var(--accent); border: 1px solid var(--accent); }" in css

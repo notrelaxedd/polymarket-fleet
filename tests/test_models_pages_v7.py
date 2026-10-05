@@ -7,11 +7,12 @@ from typing import Any
 
 from host.api.model_view import backtest_misses, paper_misses
 from host.api.models_view import headline, meta_line
+from host.api.robustness import stress_reading
 from host.eligibility import DEFAULT_THRESHOLDS
 from host.paper_gate import DEFAULT_PAPER_THRESHOLDS
 from tests.conftest import (
-    backtest_metrics, flash_cookie, insert_game, insert_model, insert_validated_model, make_assignment, model_row,
-    stress_metrics, validation_metrics,
+    backtest_metrics, flash_cookie, insert_game, insert_model, insert_paper_bet, insert_validated_model, make_assignment,
+    model_row, set_setting, stress_metrics, validation_metrics,
 )
 from tests.pagecheck import page
 
@@ -119,8 +120,8 @@ def test_model_page_stats_verdict_and_disclosures(client, conn):
     verdict = head.one(".verdict")
     assert verdict.chip("paper_ok").text == "paper ok" and verdict.attr("data-verdict") == "warn"
     assert verdict.one(".verdict-text").text == (
-        "Not yet eligible for live: no paper games yet. It needs 10 paper games and 40 paper bets over 21 days, a profit "
-        "and a CLV interval above zero.")
+        "Not yet eligible for live: no paper games yet. It needs 10 paper games and 40 paper bets over 21 days, a paper "
+        "profit, an average CLV of at least +0.0% and a CLV interval above zero.")
     assert head.one(".actions details.menu").has('[data-action="retire"]'), "the one-way Retire sits behind the menu"
     keys = [d.attr("data-key") for d in p.select("details.disclosure")]
     assert keys == DETAIL_KEYS, keys
@@ -163,3 +164,93 @@ def test_model_page_lists_the_lineage_assignments(client, conn):
     assert card.one(".count").text == "1" and row.one(".row-title").text == "NE @ NYJ"
     assert row.one(".row-meta").text.startswith("2026 week 6 · paper") and row.chip("active").has_class("chip-ok")
     assert row.one(".row-value").text == "$0.00" and row.one("a.row-main").target == "/trading"
+
+
+# ------------------------------------------------------------------ step 7 review: the words match the rules
+
+def _scores(conn, model, game_id: str, n_bets: int = 4, pnl: int = 100, clv: float = 0.01) -> None:
+    conn.execute(
+        "INSERT INTO model_scores (model_id, game_id, mode, lineage_id, n_bets, stake_cents, pnl_cents, avg_clv) "
+        "VALUES (%s, %s, 'paper', %s, %s, %s, %s, %s)",
+        (model["id"], game_id, model["lineage_id"], n_bets, n_bets * 1000, pnl, clv),
+    )
+
+
+def test_paper_games_are_counted_once_like_the_gate(client, conn):
+    """Two models of one lineage trading the same 4 games make 4 games everywhere the
+    page counts them, the number the verdict's "(4 so far)" uses."""
+    root = insert_validated_model(conn, status="paper_ok", params={"k": 20.0, "hfa": 50.0, "mov_scale": 1})
+    child = insert_model(conn, parent=root, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1, "seed": "c"},
+                         trained_through=[2025, 18])
+    for i in range(4):
+        game_id = f"2026_0{i + 1}_KC_LV"
+        insert_game(conn, game_id, kickoff_in_s=86400 * (10 + i))
+        insert_paper_bet(conn, root, game_id, 0.01, pnl_cents=100)
+        _scores(conn, root, game_id)
+        _scores(conn, child, game_id)
+    p = page(client.get(f"/models/{root['id']}").text)
+    assert p.stat("paper").one(".stat-note").text == "4 games · 32 bets"
+    assert "10 paper games (4 so far)" in p.one(".verdict-text").text
+    assert p.card("paper").one(".disclosure-summary").text.startswith("4 games · 32 bets · +$8.00")
+    assert p.card("paper").prop("paper record").startswith("4 games · 32 bets · +$8.00"), "signed like the stat"
+    row = page(client.get("/models").text).row("model", root["id"])
+    assert row.chip("rank-paper") and "4 games · 32 bets · +$8.00" in row.one(".row-meta").text
+
+
+def test_paper_pnl_rule_quotes_its_threshold(client, conn):
+    limits = {**DEFAULT_PAPER_THRESHOLDS, "min_pnl_cents": 500}
+    stats = {"games": 12, "bets": 50, "days": 30.0, "avg_clv": 0.01, "pnl_cents": 300}
+    assert paper_misses(stats, {"n_bets": 50, "ci": [0.001, 0.02]}, limits) == ["a paper P&L of at least +$5.00 (now +$3.00)"]
+    floor = {**limits, "min_pnl_cents": -5000}
+    assert paper_misses({**stats, "pnl_cents": -6000}, {"n_bets": 50, "ci": [0.001, 0.02]}, floor) == [
+        "a paper P&L of at least -$50.00 (now -$60.00)"], "a small loss allowed is not 'a profit'"
+    set_setting(conn, "thresholds_paper", {**DEFAULT_PAPER_THRESHOLDS, "min_pnl_cents": 500, "clv_ci_excludes_zero": False})
+    model = insert_validated_model(conn, status="paper_ok", params={"k": 21.0})
+    text = page(client.get(f"/models/{model['id']}").text).one(".verdict-text").text
+    assert text.endswith("over 21 days, a paper P&L of at least +$5.00 and an average CLV of at least +0.0%."), text
+
+
+def test_live_eligible_verdict_names_the_gate_that_judged_it(client, conn):
+    live = insert_validated_model(conn, params={"k": 54.0}, status="live_eligible")
+    text = page(client.get(f"/models/{live['id']}").text).one(".verdict-text").text
+    assert text == "Eligible for live: it passed the held-out seasons and the paper record."
+    set_setting(conn, "thresholds_backtest", {**DEFAULT_THRESHOLDS, "require_validation": False})
+    text = page(client.get(f"/models/{live['id']}").text).one(".verdict-text").text
+    assert text == "Eligible for live: it passed the backtest gate and the paper record.", "no held-out claim off the search era"
+
+
+def test_stress_reading_follows_the_fragile_rule(client, conn):
+    base = {"n_bets": 120, "roi": 0.04}
+    thin = [{"name": "spread+0.01", "n_bets": 80, "roi": 0.02}, {"name": "spread+0.02", "n_bets": 40, "roi": 0.011}]
+    assert stress_reading(base, thin).endswith("; worse prices cut the bets to 40 of 120.")
+    kept = [{"name": "spread+0.02", "n_bets": 74, "roi": 0.011}]
+    assert stress_reading(base, kept).endswith("; the edge survives worse prices.")
+    assert stress_reading(base, [{"name": "spread+0.02", "n_bets": 74, "roi": -0.01}]).endswith("; worse prices remove the edge.")
+    flat = stress_reading({"n_bets": 120, "roi": -0.03}, [{"name": "spread+0.02", "n_bets": 100, "roi": 0.001}])
+    assert flat.endswith("against -3.0% on 120 at base prices; there was no edge at base prices.")
+    stress = stress_metrics(flags=["fragile"])
+    stress["prices"][1]["n_bets"] = 40
+    model = insert_validated_model(conn, params={"k": 24.0}, stress=stress)
+    body = page(client.get(f"/models/{model['id']}").text).card("robustness")
+    assert body.chip("fragile") and not any("survives" in r for r in body.texts(".reading")), "no 'survives' beside 'fragile'"
+    caption = " ".join(body.texts(".caption"))
+    assert "makes luck an unlikely explanation" in caption and "not luck" not in caption
+
+
+def test_ranked_note_counts_every_lineage_cleared_for_paper(client, conn):
+    insert_validated_model(conn, status="live_eligible", params={"k": 25.0})
+    insert_validated_model(conn, status="live_eligible", params={"k": 26.0})
+    insert_validated_model(conn, status="paper_ok", params={"k": 27.0})
+    insert_validated_model(conn, params={"k": 28.0})
+    p = page(client.get("/models").text)
+    assert p.stat("ranked").one(".stat-value").text == "4" and p.stat("ranked").one(".stat-note").text == "3 cleared for paper"
+
+
+def test_counts_read_one_game_one_bet(client, conn):
+    root = insert_validated_model(conn, status="paper_ok", params={"k": 29.0}, validation=validation_metrics(n_bets=1))
+    insert_game(conn)
+    insert_paper_bet(conn, root, "2026_05_KC_LV", 0.02, pnl_cents=150)
+    _scores(conn, root, "2026_05_KC_LV", n_bets=1, pnl=150, clv=0.02)
+    p = page(client.get(f"/models/{root['id']}").text)
+    assert p.stat("paper").one(".stat-note").text == "1 game · 1 bet" and "on 1 held-out bet" in p.stat("backtest-roi").text
+    assert "paper ok 1 held-out bet · range " in page(client.get("/models").text).row("model", root["id"]).one(".row-meta").text

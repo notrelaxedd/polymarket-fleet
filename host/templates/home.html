@@ -5,43 +5,7 @@
 {% block content %}
 <h1>Home</h1>
 {{ ui.intro("home", "How the fleet and the trading are doing today, and what needs you.") }}
-<div class="stats">
-  {{ ui.stat("workers", online ~ " / " ~ worker_total, "Workers online", href="/fleet") }}
-  {{ ui.stat("today", today_cents | pnl, "Today " ~ mode, href="/trading", note="all time " ~ (all_time_cents | pnl)) }}
-  {{ ui.stat("open-orders", open_orders | num, "Open orders", href="/trading#open-orders") }}
-  {% if best %}
-  {{ ui.stat("best-model", best.metric ~ " " ~ (best.value | signed_pct), "Best model", href="/models/" ~ best.id, note=best.name) }}
-  {% else %}
-  {{ ui.stat("best-model", "-", "Best model", href="/models", note="none ranked yet") }}
-  {% endif %}
+<div id="home-live">
+{% include "_home.html" %}
 </div>
-<section class="card" data-card="attention">
-  <header class="card-head"><h2>Needs attention</h2>{% if attention %}<span class="count">{{ attention | length }}</span>{% endif %}</header>
-  {% if attention %}
-  <ul class="rows" data-list="attention">
-    {% for item in attention %}
-    {% call ui.row("attention", item.key, item.href, item.title, item.meta) %}
-    {{ ui.chip(item.state, item.word, key=item.word | replace(" ", "-")) }}
-    {% endcall %}
-    {% endfor %}
-  </ul>
-  {% else %}
-  <p class="empty" data-empty="attention">Nothing needs you.</p>
-  {% endif %}
-</section>
-<section class="card" data-card="recent">
-  <header class="card-head"><h2>Recent</h2><a class="small" href="/trading">Trading</a></header>
-  {% if recent %}
-  <ul class="rows" data-list="recent">
-    {% for b in recent %}
-    {% call ui.row("bet", b.id, "/models/" ~ b.model_id, b.game or b.event, b.mode ~ " · " ~ b.contract ~ " · " ~ (b.settled_at | ts)) %}
-    {{ ui.chip("ok" if b.result == "win" else "bad" if b.result == "loss" else "muted", b.result, key=b.result) }}
-    <span class="row-value{% if b.pnl_cents < 0 %} neg{% endif %}">{{ b.pnl_cents | pnl }}</span>
-    {% endcall %}
-    {% endfor %}
-  </ul>
-  {% else %}
-  <p class="empty">No settled bets yet.</p>
-  {% endif %}
-</section>
 {% endblock %}

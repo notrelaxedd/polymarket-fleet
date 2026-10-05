@@ -4,6 +4,8 @@
 {% import "_robustness.html" as rob %}
 {% block title %}Model {{ model.id | short }}{% endblock %}
 {% block page %}model{% endblock %}
+{# n(3, 'game') -> "3 games", n(1, 'bet') -> "1 bet" #}
+{% macro n(count, word) %}{{ count or 0 }} {{ word }}{{ '' if count == 1 else 's' }}{% endmacro %}
 {% block content %}
 <h1>{{ model.family }} <span class="params">{{ model.short_params }}</span></h1>
 {% if model.is_ingame %}
@@ -73,12 +75,16 @@
     <dt>id</dt><dd><code>{{ model.id }}</code></dd>
     <dt>lineage</dt><dd><code>{{ model.lineage_id }}</code>{% if model.id == model.lineage_id %} {{ ui.chip('muted', 'root', key='root') }}{% endif %}</dd>
     {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
+    {% if model.is_ingame %}{% set fit = (model.backtest_metrics or {}).get('seasons') or [] %}
+    <dt>fitted on</dt><dd>{% if fit %}train seasons {{ fit | season_span }}{% else %}the train seasons of its model search{% endif %}<span class="caption">Fitted once by the model search; an in-game model is not trained week by week.</span></dd>
+    {% else %}
     <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
+    {% endif %}
     <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
     {% if model.is_ingame %}
     <dt>held-out validation</dt><dd>{% if iv %}log-loss {{ iv.log_loss | fixed }} vs vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays | num }} plays{% if iv.seasons %} ({{ iv.seasons | season_span }}){% endif %} {% if iv.beats_baseline %}{{ ui.chip('ok', 'beats vegas_wp', key='beats-vegas', extra='chip-beats') }}{% else %}{{ ui.chip('warn', 'does not beat vegas_wp', key='loses-vegas') }}{% endif %}{% else %}<span class="muted">not validated</span>{% endif %}</dd>
     <dt>status rule</dt><dd>{{ model.ingame_reason }}<span class="caption">Paper ok needs a log-loss at or below vegas_wp over at least 10,000 plays; in-game orders are paper only.</span></dd>
-    <dt>in-game paper record</dt><dd>{% if model.ingame %}{{ model.ingame.games }} games &middot; {{ model.ingame.bets }} bets &middot; {{ model.ingame.pnl_cents | pnl }}<span class="caption">CLV is a pre-game measure, so it is not defined in-game.</span>{% else %}<span class="muted">no in-game bets yet</span>{% endif %}</dd>
+    <dt>in-game paper record</dt><dd>{% if model.ingame %}{{ n(model.ingame.games, 'game') }} &middot; {{ n(model.ingame.bets, 'bet') }} &middot; {{ model.ingame.pnl_cents | pnl }}<span class="caption">CLV is a pre-game measure, so it is not defined in-game.</span>{% else %}<span class="muted">no in-game bets yet</span>{% endif %}</dd>
     {% else %}
     <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %}<span class="caption">ROI x bets / (bets + 100): few bets pull it toward zero. The rank key.</span></dd>
     <dt>search shrunk ROI</dt><dd>{{ model.search_score | signed_pct(2) }}<span class="caption">The same on the search era, the score the search picked it by.</span></dd>
@@ -134,10 +140,10 @@
 {% endcall %}
 
 {% set snap = model.snapshot %}
-{% set snap_summary %}{% if snap %}{{ snap.n_games }} games · {{ snap.n_bets }} bets · CLV {{ snap.avg_clv | signed_pct }}{% if model.rank_mode == 'snapshot' %} · ranked on it{% endif %}{% else %}none yet: replay it on recorded prices{% endif %}{% endset %}
+{% set snap_summary %}{% if snap %}{{ n(snap.n_games, 'game') }} · {{ n(snap.n_bets, 'bet') }} · CLV {{ snap.avg_clv | signed_pct }}{% if model.rank_mode == 'snapshot' %} · ranked on it{% endif %}{% else %}none yet: replay it on recorded prices{% endif %}{% endset %}
 {% call ui.disclosure('model-snapshot', 'Snapshot replay', summary=snap_summary) %}
 <dl class="props">
-  <dt>snapshot replay</dt><dd>{% if snap %}{{ snap.n_games }} games &middot; {{ snap.n_bets }} bets &middot; ROI {{ snap.roi | signed_pct if snap.n_bets else '-' }} &middot; CLV {{ snap.avg_clv | fixed }}{% if snap.clv_ci %} <span class="range snapshot-ci">90% range {{ snap.clv_ci[0] | fixed }} to {{ snap.clv_ci[1] | fixed }}</span>{% endif %} <span class="muted">shrunk {{ snap.score | fixed }}{% if model.rank_mode == 'snapshot' %}, ranked on snapshot CLV{% else %}, ranks on it from 30 bets{% endif %}</span>{% else %}<span class="muted">no snapshot replay yet</span>{% endif %}</dd>
+  <dt>snapshot replay</dt><dd>{% if snap %}{{ n(snap.n_games, 'game') }} &middot; {{ n(snap.n_bets, 'bet') }} &middot; ROI {{ snap.roi | signed_pct if snap.n_bets else '-' }} &middot; CLV {{ snap.avg_clv | fixed }}{% if snap.clv_ci %} <span class="range snapshot-ci">90% range {{ snap.clv_ci[0] | fixed }} to {{ snap.clv_ci[1] | fixed }}</span>{% endif %} <span class="muted">shrunk {{ snap.score | fixed }}{% if model.rank_mode == 'snapshot' %}, ranked on snapshot CLV{% else %}, ranks on it from 30 bets{% endif %}</span>{% else %}<span class="muted">no snapshot replay yet</span>{% endif %}</dd>
 </dl>
 {% if snapshot_metrics %}
 {{ metrics_view.snapshot_line(snapshot_metrics) }}
@@ -160,13 +166,15 @@
 {% endif %}
 {% endcall %}
 
+{# a record's games are counted once each (distinct_games), as the gate verdict counts them #}
 {% set paper = model.paper %}
-{% set paper_summary %}{% if paper.games %}{{ paper.games }} games · {{ paper.bets }} bets · {{ paper.pnl_cents | pnl }}{% if model.rank_mode == 'paper' %} · ranked on it{% endif %}{% else %}no paper games yet{% endif %}{% endset %}
+{% set paper_games = paper.distinct_games if paper.distinct_games is defined else paper.games %}
+{% set live_games = model.live.distinct_games if model.live and model.live.distinct_games is defined else (model.live or {}).get('games') %}
+{% set paper_summary %}{% if paper_games %}{{ n(paper_games, 'game') }} · {{ n(paper.bets, 'bet') }} · {{ paper.pnl_cents | pnl }}{% if model.rank_mode == 'paper' %} · ranked on it{% endif %}{% else %}no paper games yet{% endif %}{% endset %}
 {% call ui.disclosure('model-paper', 'Paper results', summary=paper_summary) %}
 <dl class="props">
-  <dt>paper record</dt><dd>{% if paper.games %}{{ paper.games }} games &middot; {{ paper.bets }} bets &middot; {{ paper.pnl_cents | money }} &middot; ROI {{ paper.roi | signed_pct }} &middot; CLV {{ paper.avg_clv | fixed }} <span class="muted">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bet{{ "" if model.paper_ci.n_bets == 1 else "s" }}</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
-  {% if model.ingame %}<dt>in-game bets</dt><dd>{{ model.ingame.bets }} bets &middot; {{ model.ingame.pnl_cents | pnl }} <span class="muted">in-game orders of this lineage</span></dd>{% endif %}
-  {% if model.live and model.live.games %}<dt>live record</dt><dd>{{ model.live.games }} games &middot; {{ model.live.bets }} bets &middot; {{ model.live.pnl_cents | money }} &middot; ROI {{ model.live.roi | signed_pct }} &middot; CLV {{ model.live.avg_clv | fixed }}</dd>{% endif %}
+  <dt>paper record</dt><dd>{% if paper_games %}{{ n(paper_games, 'game') }} &middot; {{ n(paper.bets, 'bet') }} &middot; {{ paper.pnl_cents | pnl }} &middot; ROI {{ paper.roi | signed_pct }} &middot; CLV {{ paper.avg_clv | fixed }} <span class="muted">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bet{{ "" if model.paper_ci.n_bets == 1 else "s" }}</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
+  {% if live_games %}<dt>live record</dt><dd>{{ n(live_games, 'game') }} &middot; {{ n(model.live.bets, 'bet') }} &middot; {{ model.live.pnl_cents | pnl }} &middot; ROI {{ model.live.roi | signed_pct }} &middot; CLV {{ model.live.avg_clv | fixed }}</dd>{% endif %}
 </dl>
 <span class="caption">Paper trading places simulated orders on real prices; the lineage ranks on its paper CLV once it has 5 paper games and 30 paper bets.</span>
 {% endcall %}

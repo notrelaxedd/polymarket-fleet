@@ -24,6 +24,7 @@
   --amber-text: #b45309;
   --red-fg: #b91c1c;
   --green-fill: #15803d;
+  --green-text: #15803d;
   --amber-fill: #b45309;
   --leased-fill: #2563eb;
   --badge: #e5e7eb;
@@ -55,6 +56,7 @@
     --accent: #3b82f6;
     --amber-text: #f59e0b;
     --red-fg: #f87171;
+    --green-text: #4ade80;
     --badge: #2a2f38;
     --grey: #6b7280;
     --live-bg: #0f1f17;
@@ -63,7 +65,9 @@
   }
 }
 * { box-sizing: border-box; }
-html { -webkit-text-size-adjust: 100%; }
+/* a link to #anchor (or a focused field) lands below the sticky top bar: app.js keeps
+   --topbar-h at the bar's height (a banner or the killed line makes it taller) */
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--topbar-h, 6.5rem) + var(--s2)); }
 body {
   margin: 0;
   background: var(--bg);
@@ -106,7 +110,9 @@ html:not(.js) .js-only { display: none; }
 .topbar.killed a, .topbar.killed .wordmark, .topbar.killed .pnl, .topbar.killed #updated { color: var(--red-text); }
 .topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(0, 0, 0, 0.2); }
 .killed-text { font-weight: 700; text-decoration: none; }
-.topbar .chip-killed { background: rgba(0, 0, 0, 0.3); color: var(--red-text); font-weight: 700; }
+.topbar .chip.chip-killed { background: rgba(0, 0, 0, 0.3); color: var(--red-text); font-weight: 700; }
+/* the accent focus ring is not visible on the red bar (or the red bottom nav): white there */
+.topbar.killed :focus-visible { outline-color: #fff; }
 /* the freshness line: always visible under the sticky bar, so a lost connection is never below the fold */
 .topbar-note { display: none; max-width: 1200px; margin: 0 auto; padding: 0 var(--s4) 0.2rem; font-size: var(--fs-meta); text-align: right; }
 .js .topbar-note { display: block; }
@@ -133,7 +139,6 @@ html:not(.js) .js-only { display: none; }
 details.intro { margin: 0 0 var(--s3); }
 details.intro > summary { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--tap); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; list-style: none; }
 details.intro > p, details.intro > div { margin: 0 0 var(--s2); }
-details.intro[open] > summary { min-height: 2rem; }
 .caption { display: block; margin-top: var(--s1); font-size: var(--fs-meta); line-height: 1.35; color: var(--muted); font-weight: 400; }
 .empty { color: var(--muted); grid-column: 1 / -1; }
 .count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; padding: 0 0.45rem; border-radius: 999px; background: var(--badge); color: var(--chip-text); font-size: var(--fs-meta); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.5; }
@@ -149,7 +154,8 @@ details.intro[open] > summary::after, details.disclosure[open] > summary::after 
 a.stat:hover { border-color: var(--accent); }
 .stat-label { order: -1; font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; }
 .stat-value { font-size: var(--fs-display); font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.stat-note { font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* a note wraps (a range keeps both ends: "90% range -1.0% to +1.4%") and stops at three lines */
+.stat-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; overflow-wrap: anywhere; }
 .stat .chip { align-self: flex-start; margin-top: var(--s1); }
 
 /* ---------------------------------------------------------------- rows: one line on a phone, two at most (88 px) */
@@ -163,8 +169,23 @@ a.row-main:hover .row-title { text-decoration: underline; }
 .row-title, .row-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-title { font-weight: 600; line-height: 1.3; }
 .row-title .chip { margin-left: var(--s1); vertical-align: 1px; }
+/* A title holding a chip is one flex line where the text gives way and the chips keep
+   their width, so a state word is never cut: a span (the params) shrinks with an
+   ellipsis, bare text wraps at a word and its second line stays hidden (max-height);
+   when one long word still leaves no room, the last chip sticks to the right edge. */
+.row-title:has(> .chip) { display: flex; align-items: flex-start; column-gap: 0.3em; white-space: normal; max-height: 1.3em; }
+.row-title:has(> .chip) > :not(.chip) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-title:has(> .chip) > .chip, .row-title:has(> .chip) > .rank { flex: none; margin: 0; }
+.row-title:has(> .chip) > .chip:last-child { position: sticky; right: 0; }
 .row-meta { font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; }
+/* the in-game models row's second grey line is its status reason, a sentence: it wraps, never cut */
+.ingame-row .row-meta2 { white-space: normal; }
+/* the flag chips under the title (overfit, fragile, beats market, ...): they wrap, never cut */
+.row-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s1); margin: 2px 0 1px; }
+.row-title .chip, .row-meta .chip, .row-flags .chip { min-height: 1.25rem; }
 .row-value { flex: none; max-width: 40%; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+/* a number that is a link (a model's "job e12e5e85") is a 44 px target like the row link */
+a.row-value { line-height: var(--tap); }
 .row > .chip, .row > .bar { flex: none; }
 .row > .bar { width: 72px; min-width: 0; }
 .row > form, .row > .btn { flex: none; margin: 0; }
@@ -185,6 +206,8 @@ a.row-main:hover .row-title { text-decoration: underline; }
 .card-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s2); }
 .card-head h2 { margin: 0; font-size: var(--fs-body); }
 .card-head .count { margin-left: auto; }
+/* a link in a card header (Home's Recent: "Trading") is a 44 px target */
+.card-head > a { display: inline-flex; align-items: center; min-height: var(--tap); margin-left: auto; }
 .card h2:first-child { margin-top: 0; }
 details.disclosure { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); margin: 0 0 var(--s3); }
 details.disclosure > summary { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); min-height: var(--tap); padding: var(--s2) calc(var(--s4) + 20px) var(--s2) var(--s4); cursor: pointer; list-style: none; }
@@ -192,7 +215,8 @@ details.disclosure > summary::after { position: absolute; right: var(--s4); top:
 details.disclosure[open] > summary::after { top: calc(50% - 1px); }
 .disclosure-title { font-weight: 600; }
 .disclosure-title h2, .disclosure-title h3 { display: inline; margin: 0; font-size: inherit; }
-.disclosure-summary { flex-basis: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-meta); color: var(--muted); }
+/* the summary wraps rather than cutting a value: a closed group must read at a glance */
+.disclosure-summary { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-meta); color: var(--muted); }
 .disclosure-body { padding: 0 var(--s4) var(--s4); }
 .disclosure-body > :first-child { margin-top: 0; }
 details.disclosure.is-live { border-color: var(--green-fill); }
@@ -211,6 +235,11 @@ details.menu > summary:hover, details.menu[open] > summary { background: var(--b
 .menu-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--line); }
 .menu-form label { flex: 1 1 8rem; }
 .menu-list .muted, .menu-list .caption { padding: var(--s1) var(--s4); margin: 0; }
+/* A dimmed card or block (an offline or disabled worker, a region while the connection is
+   lost) is its own stacking context (opacity), so its menu's z-index counts only inside it
+   and the next card's row would paint over the open list: lift the block holding it. */
+.cards > :has(details.menu[open]), #fleet-grid > :has(details.menu[open]),
+#trading-live > :has(details.menu[open]), #home-live > :has(details.menu[open]) { position: relative; z-index: 31; }
 
 /* ---------------------------------------------------------------- progress bar */
 .bar { position: relative; display: inline-block; vertical-align: middle; flex: 1; min-width: 80px; height: 8px; background: var(--badge); border-radius: 4px; overflow: hidden; }
@@ -220,6 +249,8 @@ details.menu > summary:hover, details.menu[open] > summary { background: var(--b
 .tabs { display: flex; gap: var(--s1); margin: 0 0 var(--s3); border-bottom: 1px solid var(--line); overflow-x: auto; }
 .tabs a { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--tap); padding: 0 var(--s3); color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .tabs a[aria-current="page"], .tabs a.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+/* .tabs scrolls sideways, which clips an outside ring at its top and bottom: draw it inside */
+.tabs a:focus-visible { outline-offset: -2px; }
 
 /* ---------------------------------------------------------------- buttons and forms */
 .btn { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 0.8rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
@@ -253,6 +284,8 @@ form.inline { display: inline; }
 .disclosure-body .group > .btn { margin-top: var(--s1); }
 .group.live.is-live { background: var(--live-bg); box-shadow: inset 4px 0 0 var(--green-fill); border-radius: 6px; padding: var(--s2) var(--s3) var(--s3) var(--s4); }
 .group.killed { background: var(--bad-bg); box-shadow: inset 4px 0 0 var(--red); border-radius: 6px; padding: var(--s2) var(--s3) var(--s3) var(--s4); }
+/* --muted is 4.4:1 on the light bad-bg; the grey text inside (its heading, notes) uses the chip text grey */
+.group.killed { --muted: var(--chip-text); }
 .verdict { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s1) var(--s2); margin: 0 0 var(--s2); }
 .verdict .chip { margin-top: 1px; }
 .verdict-text { flex: 1 1 100%; min-width: 0; font-weight: 600; line-height: 1.35; }
@@ -273,8 +306,11 @@ dl.kv[data-list="timing"] dd { overflow-wrap: anywhere; }
    `in-game` chip keeps its state colours and only adds an accent ring, so it never
    reads as the filled sell chip. A stale state is the amber chip plus the muted line. */
 .chip.chip-ingame { border: 1px solid var(--accent); }
-.row-ingame .chip { min-height: 1.25rem; vertical-align: 1px; }
+.row-ingame .chip { vertical-align: 1px; }
 .game-line, .ingame-p { font-variant-numeric: tabular-nums; }
+/* a stale game state and the probability computed on it are dimmed (grey, italic; no
+   opacity, so the text keeps 4.5:1) next to the amber "state stale" chip */
+.game-line.is-stale, .ingame-p.is-stale { color: var(--muted); font-style: italic; }
 .ingame-form select { width: 100%; }
 .ingame-form label:first-child { flex-basis: 100%; }
 .ingame-form .btn { min-height: var(--tap); }
@@ -316,6 +352,13 @@ fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-weight: 600; font-s
   .btn, .btn.small, select, input[type="text"], input[type="number"], input[type="password"], input[type="search"] { min-height: var(--tap); }
   .stat { padding: var(--s3); }
   .row-value { max-width: 34%; }
+  /* a .lines-full row (Models): the number sits beside the title line and the lines under
+     the title run under it to the menu, so the flag chips get the full width */
+  .row.lines-full { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0 var(--s2); }
+  .row.lines-full > .row-main { grid-area: 1 / 1 / 2 / 3; }
+  .row.lines-full > .row-value { grid-area: 1 / 2 / 2 / 3; align-self: start; max-width: 5.75rem; line-height: 1.3; }
+  .row.lines-full > details.menu { grid-area: 1 / 3 / 2 / 4; }
+  .row.lines-full .row-title { padding-right: calc(5.75rem + var(--s2)); }
   .menu-list { min-width: 11rem; }
   /* step 6C: the probe forms stack as full-width tap targets */
   .probe-row > form, .probe-gamestate label { flex: 1 1 100%; }
@@ -344,9 +387,8 @@ fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-weight: 600; font-s
 /* one row per job: its link, bar and percentage never wrap apart */
 .jobrow { display: flex; align-items: center; gap: 0.5rem; flex-wrap: nowrap; min-width: 0; }
 p.stats, .pnl-line { margin: 0.25rem 0 0; }
-/* data the page could not refresh is shown dimmed with neutral dots */
 /* stale data is dimmed: each block of a refresh region (so a test or a reader can see it on the list itself) */
-.conn-lost #fleet-grid > *, .conn-lost #trading-live > * { opacity: 0.55; }
+.conn-lost #fleet-grid > *, .conn-lost #trading-live > *, .conn-lost #home-live > * { opacity: 0.55; }
 .conn-lost .dot { background: var(--grey); }
 
 /* tables */
@@ -458,15 +500,16 @@ label.check input { width: 20px; height: 20px; margin: 0; }
 .flag-meanings { margin: 0 0 0.75rem; padding-left: 1.2rem; }
 .robustness h3 { font-size: var(--fs-meta); margin: 0.75rem 0 0.4rem; color: var(--muted); }
 .market-line { font-weight: 600; }
-.market-line.beats { color: var(--green-fill); }
+.market-line.beats { color: var(--green-text); }
 .validate-form { display: inline; }
 .validate-form .btn { min-height: 36px; }
 
-/* step 6 Part B: sells and positions. The sell chip reuses the accent fill/text pair
-   (AA in both schemes); a loss is the red text token, a gain only gets its sign. */
-.chip.chip-sell { background: var(--accent-fill); color: var(--accent-text); font-weight: 600; }
-/* the snapshot replay chip (Jobs list, leaderboard rank basis) on the same AA pair */
-.chip.chip-snapshot { background: var(--accent-fill); color: var(--accent-text); }
+/* step 6 Part B: sells and positions. The sell chip (orders and fills) and the snapshot
+   replay chip (Jobs list, leaderboard rank basis) are outlines in the link colour (the
+   accent on card and on live rows pairs), so they never read as a blue status badge; a
+   loss is the red text token, a gain only gets its sign. */
+.chip.chip-sell { background: transparent; color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
+.chip.chip-snapshot { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
 .positions-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.5rem; }
 .positions-head .positions-total { margin-left: auto; font-weight: 400; color: var(--text); }
 

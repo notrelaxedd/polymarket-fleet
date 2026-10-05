@@ -1,18 +1,22 @@
 {# One leaderboard row: `m` is a lineage entry from host.leaderboard shaped by
    host.api.models_view (m.view: headline, meta, chip states). Rank, name and key params
-   with the flag chips after the name; the status chip leads the grey line (at the side
-   it left the name about 100 px on a phone) followed by the record; then the headline
-   number by rank basis and the "..." menu. The summary lives on the detail page.
-   Step 6C: `m.view.ingame` (the in-game record) is the row's second grey line (ui.row's
-   `ingame`, .row-meta.row-ingame). #}
+   on the title line, the headline number by rank basis beside it; under the title the
+   flag chips (overfit, fragile, regime-dependent, beats market, not validated, the
+   unranked reason, the member count) on their own line (ui.row's `flags`, .row-flags:
+   they wrap rather than being cut by the title's ellipsis); then the grey line led by
+   the status chip with the record; then the "..." menu. On a phone the row is
+   `lines-full`, so the chips get the width under the number too. The summary lives on
+   the detail page. A pre-game row has no in-game line: settlement credits every
+   in-game bet to the assignment's ingame_wp lineage (step 6C review). #}
 {% import "_ui.html" as ui %}
-{% set title %}{% if m.rank %}<span class="rank">#{{ m.rank }}</span> {% endif %}{{ m.family }} <span class="params">{{ m.short_params }}</span>
-{%- for f in m.view.flags %} {{ ui.chip(f.state, f.word, key=f.name, extra='chip-flag chip-' ~ f.name, title=f.title) }}{% endfor %}
-{%- if m.validation and m.validation.beats_market %} {{ ui.chip('ok', 'beats market', key='beats', extra='chip-beats') }}{% endif %}
-{%- if not m.validated %} {{ ui.chip('muted', 'not validated', key='unvalidated', extra='chip-unvalidated', title='no validation-era metrics yet: send a validate job') }}{% endif %}
-{%- if m.unranked_reason and m.unranked_reason not in ('retired', 'not validated') %} {{ ui.chip('warn', m.unranked_reason, key='unranked') }}{% endif %}{% endset %}
-{% set meta %}{{ ui.chip(m.view.status_state, m.view.status_word, key=m.status) }} {% if m.rank and m.view.basis_title %}{{ ui.chip('muted', m.rank_mode, key='rank-' ~ m.rank_mode, title=m.view.basis_title) }} {% endif %}{{ m.view.meta }}{% if m.members > 1 %} {{ ui.chip('muted', m.members ~ ' rows', key='members') }}{% endif %}{% endset %}
-{% call ui.row('model', m.id, '/models/' ~ m.id, title, meta=meta, ingame=m.view.ingame) %}
+{% set title %}{% if m.rank %}<span class="rank">#{{ m.rank }}</span> {% endif %}{{ m.family }} <span class="params">{{ m.short_params }}</span>{% endset %}
+{% set flags %}{% for f in m.view.flags %}{{ ui.chip(f.state, f.word, key=f.name, extra='chip-flag chip-' ~ f.name, title=f.title) }} {% endfor %}
+{%- if m.validation and m.validation.beats_market %}{{ ui.chip('ok', 'beats market', key='beats', extra='chip-beats') }} {% endif %}
+{%- if not m.validated %}{{ ui.chip('muted', 'not validated', key='unvalidated', extra='chip-unvalidated', title='no validation-era metrics yet: send a validate job') }} {% endif %}
+{%- if m.unranked_reason and m.unranked_reason not in ('retired', 'not validated') %}{{ ui.chip('warn', m.unranked_reason, key='unranked') }} {% endif %}
+{%- if m.members > 1 %}{{ ui.chip('muted', m.members ~ ' rows', key='members') }}{% endif %}{% endset %}
+{% set meta %}{{ ui.chip(m.view.status_state, m.view.status_word, key=m.status) }} {% if m.rank and m.view.basis_title %}{{ ui.chip('muted', m.rank_mode, key='rank-' ~ m.rank_mode, title=m.view.basis_title) }} {% endif %}{{ m.view.meta }}{% endset %}
+{% call ui.row('model', m.id, '/models/' ~ m.id, title, meta=meta, flags=flags, cls='lines-full') %}
   <span class="row-value" title="{{ m.view.headline.title }}">{{ m.view.headline.text }}</span>
   {% call ui.menu() %}
     <a class="menu-item" href="/models/{{ m.id }}" data-action="open">Details</a>

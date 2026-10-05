@@ -205,6 +205,10 @@ def _job_is_live(conn: psycopg.Connection, job_id: Any) -> bool:
 def _activate(conn: psycopg.Connection, row: dict[str, Any], actor: str | None) -> dict[str, Any]:
     """Shared body of activate_assignment and activate_all_paper (row is locked; a
     live row's caller holds the live approval lock)."""
+    from host.trading.ingame import model_retired  # deferred: ingame imports the approval chain
+
+    if model_retired(conn, row["model_id"]):  # retiring halted it; nothing switches it back on
+        raise Conflict("the model's lineage is retired; it trades nothing more")
     if row["mode"] == "live":
         live_gate(conn, _model(conn, row["model_id"]), row["game_id"])
     if not _job_is_live(conn, row["job_id"]):
@@ -243,14 +247,17 @@ def activate_assignment(conn: psycopg.Connection, assignment_id: Any, actor: str
 
 
 def activate_all_paper(conn: psycopg.Connection, actor: str | None) -> int:
-    """Re-activate every halted paper assignment whose game is not final (after a kill
-    reset). Refused under kill. Returns how many were activated."""
+    """Re-activate every halted paper assignment whose game is not final and whose
+    lineage is not retired (after a kill reset). Refused under kill. Returns how many
+    were activated."""
     if killed_locked(conn):
         raise Conflict("the kill switch is on; reset it first")
     rows = conn.execute(
         """
         SELECT a.* FROM assignments a JOIN games g ON g.game_id = a.game_id
          WHERE a.mode = 'paper' AND a.status = 'halted' AND g.status <> 'final'
+           AND NOT EXISTS (SELECT 1 FROM models m JOIN models r ON r.lineage_id = m.lineage_id
+                            WHERE m.id = a.model_id AND r.status = 'retired')
          ORDER BY a.created_at FOR UPDATE OF a
         """
     ).fetchall()

@@ -112,9 +112,13 @@ def test_stale_state_reads_state_stale_and_missing_state_says_so(client, conn):
     stale = line.chip("state-stale")
     assert stale.text == "state stale" and stale.has_class("chip-warn")
     assert line.one(".game-line.is-stale").text == "Half · 17-14 · 2 min ago", "the stale line keeps the last state and its age, muted"
+    shown = line.one("[data-p-home]")
+    assert shown.has_class("muted") and shown.has_class("is-stale"), "a probability from a stale state is muted"
+    assert shown.text.endswith("(from the stale state, not traded)"), "and marked: the host rejects in-game orders on it"
     _game_state(conn, age_s=90, status="final", period=4, clock_seconds=0, home_score=20)
     line = _assignment(client, setup.assignment).one(".row-ingame")
     assert not line.has('[data-chip="state-stale"]') and "Final · 17-20 · 1 min ago" in line.text, "a final state never goes stale"
+    assert "not traded" not in line.text
 
 
 def test_period_labels_for_overtime_end_of_period_and_final(conn):
@@ -220,6 +224,16 @@ def test_feed_block_per_source_lag_and_enough_events(client, conn):
     assert feed.chip("feed-ok").text == "not suspended" and feed.chip("feed-ok").has_class("chip-ok")
     assert "within 20 s" in feed.one(".feed-state").text
     assert "ESPN 6 s behind · Yahoo 3 of 5 events" in feed.one(".disclosure-summary").text, "the closed header reads the lag"
+
+
+def test_feed_lines_follow_the_source_order(client, conn):
+    insert_game(conn)
+    _lag(conn, 6, 5.0, source="yahoo")
+    _lag(conn, 6, 5.0, source="espn_scoreboard")
+    _lag(conn, 6, 5.0)
+    feed = _live(client).card("ingame")
+    found = [li.attr("data-source") for li in feed.select("li[data-source]")]
+    assert found == ["espn_summary", "espn_scoreboard", "yahoo"], "ESPN before its scoreboard fallback, then Yahoo"
 
 
 def test_feed_block_shows_the_suspension(client, conn):

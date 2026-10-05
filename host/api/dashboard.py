@@ -131,6 +131,12 @@ def home_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     return page(request, conn, "home.html", **home_context(conn))
 
 
+@router.get("/fragments/home", response_class=HTMLResponse)
+def home_fragment(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
+    """Inner HTML of #home-live (the stats, Needs attention, Recent) for the 5 s refresh."""
+    return web.render(request, "_home.html", tz=get_settings(conn).get("tz"), **home_context(conn))
+
+
 @router.get("/fleet", response_class=HTMLResponse)
 def fleet_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     """The fleet: one card per worker."""

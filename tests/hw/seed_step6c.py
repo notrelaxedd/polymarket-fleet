@@ -95,7 +95,8 @@ def validation(n_plays: int, log_loss: float, vegas: float) -> dict[str, Any]:
 
 def _ingame_model(conn: psycopg.Connection, params: dict[str, Any], val: dict[str, Any], coef: list[float]) -> dict[str, Any]:
     artifact = {"coef": coef, "features": list(FEATURE_NAMES), "n_train": 318_204, "train_seasons": [2012, 2021]}
-    model = insert_model(conn, "ingame_wp", params, {"era": "search", "log_loss": round(val["log_loss"] - 0.006, 4)},
+    model = insert_model(conn, "ingame_wp", params, {"era": "search", "log_loss": round(val["log_loss"] - 0.006, 4),
+                                                   "seasons": list(range(2012, 2022))},
                          summary=IngameWP.summary(params, val), artifact=artifact, validation=val)
     eligibility.recompute_lineage(conn, model["lineage_id"])
     return conn.execute("SELECT * FROM models WHERE id = %s", (model["id"],)).fetchone()
@@ -275,8 +276,11 @@ def check_step6c(server_url: str, ids: dict[str, str]) -> None:
         group = models.one("#ingame")
         assert len(group.rows("ingame-model")) >= 2, "both ingame_wp lineages in the In-game models group"
         assert group.row("ingame-model", ids["ingame_model"]).one(".row-ingame").text.startswith("in-game paper 2 bets · ")
+        assert not models.has('[data-row="model"] .row-ingame'), "in-game bets belong to the ingame_wp lineage"
         model = parse(client.get(f"/models/{ids['ingame_model']}").text)
         assert model.has("#ingame-validation") and model.has('[data-chip="beats-vegas"]') and model.action("assign-ingame")
+        assert model.prop("in-game paper record").startswith("1 game · 2 bets"), "plurals"
+        assert model.prop("fitted on").startswith("train seasons 2012-2021"), "an in-game model is fitted by the search"
         board = client.get("/api/models").json()
         found = {m["id"]: m["status"] for m in board["ranked"] + board["unranked"]}
         assert found.get(ids["ingame_model"]) == "paper_ok" and found.get(ids["ingame_weak"]) == "candidate", found

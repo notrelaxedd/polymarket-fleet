@@ -111,9 +111,29 @@ def test_fleet_cards(client, conn, make_worker):
     assert p.one("#fleet-grid").has(".stats") and p.stat("online").one(".stat-value").text == "2 / 4"
     assert p.stat("working").one(".stat-value").text == "1" and p.stat("switching").one(".stat-value").text == "1"
     assert p.nav("fleet").target == "/fleet" and p.nav("fleet").is_current and p.page_name == "fleet"
+    assert [a.target for a in rows[online.id].select('.menu [data-action="open-job"]')] == [f"/jobs/{job['id']}"]
+    assert not rows[stale.id].has('[data-action="open-job"]')
+    assert card.chip("offline").has_class("chip-warn"), "an enabled worker offline is amber, as on Home"
+    assert rows[offline.id].chip("offline").has_class("chip-muted"), "a disabled one is grey"
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM workers")
     assert "No workers yet. Mint an enroll token" in page(fleet_html(client)).text
+
+
+def test_fleet_row_links_every_current_job(client, conn):
+    """A trade worker holds one job per game: each has its own link in the row's menu
+    (the row link opens the first), and a pending role switch still names the jobs."""
+    first = trade_setup(conn)
+    second = trade_setup(conn, game_id="2026_06_NE_NYJ", worker=first.worker)
+    row = page(fleet_html(client)).row("worker", first.worker.id)
+    links = row.select('.menu [data-action="open-job"]')
+    assert sorted(a.target for a in links) == sorted(f"/jobs/{s.job['id']}" for s in (first, second))
+    assert all(a.has_class("menu-item") and a.text.startswith("Open job: ") for a in links)
+    assert row.one("a.row-main").target in {a.target for a in links}
+    assert row.one(".row-meta").text.startswith("job: ") and row.one(".row-meta").text.count(" held") == 2
+    client.post(f"/api/workers/{first.worker.id}/role", json={"role": "idle"})
+    meta = page(fleet_html(client)).row("worker", first.worker.id).one(".row-meta").text
+    assert meta.startswith("switching to idle (epoch ") and "· job: " in meta and meta.count(" held") == 2, meta
 
 
 def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker):
@@ -566,6 +586,10 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
     forms = [p.form(kind) for kind in ("backtest", "model_search", "train", "validate", "sleep")]
     assert all(f.target == "/jobs" for f in forms) and all(f.one('option[value="any_idle"]').text == "Any idle worker" for f in forms)
     assert _value(p.form("backtest"), "seasons_first") == "2010" and _value(p.form("backtest"), "seasons_last") == "2021"
+    # (6B review) a snapshot replay with a blank last season runs through the season in progress (host/jobparams.py)
+    last = p.form("backtest").one('input[name="seasons_last"]').closest("label")
+    assert last.one(".help").text == "blank = last complete (snapshots: through the season in progress)"
+    assert p.form("model_search").one('input[name="seasons_last"]').closest("label").one(".help").text == "blank = last complete"
     assert _value(p.form("model_search"), "n") == "200" and _value(p.form("model_search"), "top_k") == "5"
     assert _value(p.form("train"), "through_season") == "2025"
     assert p.form("train").one(f'option[value="{model["id"]}"]').text == f"K 20 · HFA 50 · MOV on · untrained · {str(model['id'])[:8]}"
@@ -901,7 +925,7 @@ def test_trading_page_shows_assignments_orders_fills_markets_and_exchange(client
     assert reason.startswith("max_bet: over max bet $") and reason.endswith("> $25.00")
     assert refused.chip("rejected").text == "rejected" and "my 0.58 vs ask 0.52, fee 0.012, edge 0.04" in refused.text
     assert "200 @ 0.52" in refused.text and "trader-" in recent.text
-    assert "+4.0%" in recent.text and "my 0.58 vs 0.51" in recent.text
+    assert "+4.0%" in recent.text and "(my 58% vs 51%)" in recent.text, "probabilities as whole percentages in a list"
     # fills
     fills = live.card("fills")
     assert len(fills.rows("fill")) == 1 and "4 @ 0.52" in fills.text and "of 10 @ 0.52" in fills.text and "$0.12" in fills.text
@@ -1021,7 +1045,8 @@ def test_halt_activate_and_settle_forms(client, conn):
     # step 7: the list shows the record behind the headline only for a paper-ranked
     # lineage; the paper record of every lineage is on its model page
     paper = page(client.get(f"/models/{setup.model['id']}").text).card("paper")
-    assert "1 games · 1 bets · $4.68" in paper.text and "1 games · 1 bets · +$4.68" in paper.one(".disclosure-summary").text
+    assert "1 game · 1 bet · +$4.68" in paper.prop("paper record")
+    assert "1 game · 1 bet · +$4.68" in paper.one(".disclosure-summary").text
 
 
 def test_order_cancel_and_cancel_all_forms(client, conn):

@@ -31,7 +31,8 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   New job form. Everything works with JavaScript off: disclosures and menus are
   `<details>`, every action is a form or a link.
 - Refresh: `app.js` replaces `#fleet-grid` with `GET /fragments/fleet` every 5 s,
-  `#trading-live` with `GET /fragments/trading` every 5 s, and `#topbar-status` with
+  `#trading-live` with `GET /fragments/trading` every 5 s, (step 7) Home's `#home-live`
+  with `GET /fragments/home` every 5 s, and `#topbar-status` with
   `GET /fragments/topbar` every 10 s, skipping a refresh while an input inside has
   focus, while a select inside has had focus for less than 15 s (a select keeps focus
   after its picker is dismissed, so the hold is bounded), while an action menu inside is
@@ -95,16 +96,23 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   action sits in its "..." menu. No generated paragraph appears in a list.
 
 ## Home `/` (step 7)
+- The stats, "Needs attention" and "Recent" sit in `#home-live`, refreshed every 5 s
+  from `GET /fragments/home` (`_home.html`), so the "updated N s ago" line measures them.
 - Stats: "Workers online 5 / 7" (to Fleet), today's P&L of the current mode with the
   all-time figure as its note (to Trading), open orders (to `/trading#open-orders`) and
-  the best model with its headline number (CLV when ranked on paper or snapshot replay,
-  the held-out ROI otherwise; to the model page, "-" when none is ranked).
+  the best model with its headline number by the Models page's own rule (CLV when ranked
+  on paper or snapshot replay, the held-out ROI otherwise, "ROI -" without held-out bets;
+  to the model page, "-" when none is ranked).
 - "Needs attention": one row per problem with a state chip and a link to where it is
   fixed, built from the same signals as the top bar banners (kill switch with its
   auto-kill reason, exchange down, assignments unattended) plus an enabled worker offline
-  for more than 5 minutes, an active assignment whose model is retired (or a live one no
-  longer live eligible), a model whose latest validate job failed, and exchange
-  credentials never checked or failing. Empty state: "Nothing needs you."
+  for more than 5 minutes, an assignment of an unfinished game with no eligible model (a
+  red "no model" chip on an active one whose lineage is retired, an amber one on a live
+  one, active or halted, whose lineage is no longer live eligible: leaving live_eligible
+  halts it in the same transaction, so the grey line says "live assignment halted, model
+  candidate"; a halted assignment of a retired lineage is not listed, retiring halted it
+  on purpose), a model whose latest validate job failed, and exchange credentials never
+  checked or failing. Empty state: "Nothing needs you."
 - "Recent": the last 5 settled bets as rows (game, mode, contract, time, a win/loss
   chip, the P&L), each linking to its model.
 
@@ -115,9 +123,11 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   status dot (green online < 15 s, amber stale 15-60 s, grey offline > 60 s, announced
   through `aria-label`), the name with a "stale"/"offline" and a "disabled" chip, a grey
   line with the state in words ("offline 1 h ago · disabled · no job") and the current
-  job ("job: model_search 42%"; a held `trade` job reads "KC @ LV held", one per
-  assignment), the role `<select>` and the "..." menu. The row links to the worker's
-  current job. A running job's progress bar (`role="progressbar"` with numeric
+  jobs ("job: model_search 42%"; a held `trade` job reads "KC @ LV held", one per
+  assignment; after the "switching to ..." text while a role change is pending), the
+  role `<select>` and the "..." menu. The "offline" chip is amber on an enabled worker
+  (as on Home) and grey on a disabled one. The row links to the worker's first current
+  job; the menu has an "Open job: ..." link for each current job. A running job's progress bar (`role="progressbar"` with numeric
   `aria-valuenow`) sits on a thin line under the row; a held trade job has none.
 - Role `<select>` with idle / backtest / model_search / train / trade and a Set button
   (hidden when JS auto-submits; `POST /workers/{id}/role`, redirect back to `/fleet`).
@@ -136,7 +146,9 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 - Stats: running, queued, trading (held trade jobs), done in 24 h (with the failed count).
 - (changed: step 7) One "New job" disclosure (`jobs-new`, closed by default) holds the
   five send forms, each its own `data-form` under a heading: Backtest (model select with
-  a "(none: use family + params)" option, family, params JSON, first and last season,
+  a "(none: use family + params)" option, family, params JSON, first and last season
+  (the last season's help reads "blank = last complete (snapshots: through the season in
+  progress)", since a snapshot replay with it blank includes the season in progress),
   (step 6B) "Price source": "closing line (every game, CLV 0)" or "snapshots (recorded
   prices, real CLV)" with a muted line naming what a snapshot backtest replays and a red
   line when the market source is sim while sim prices are not allowed), Model search
@@ -174,8 +186,8 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   (the raw result as stored).
 
 ## Models `/models` (step 3; changed: steps 4, 6, 6B, 7)
-- Stats: the best model with its headline number, ranked (with how many are cleared for
-  paper), live eligible, unranked.
+- Stats: the best model with its headline number, ranked (with how many of them are
+  cleared for paper: paper ok or live eligible), live eligible, unranked.
 - One grey line says how the list is sorted: paper CLV after 5 paper games and 30 paper
   bets, then snapshot CLV after 30 bets replayed on recorded prices, else the validation
   ROI; few bets are shrunk toward zero (docs/TRADING.md and docs/ROBUSTNESS.md hold the
@@ -189,7 +201,10 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   rank basis chip ("paper" or "snapshot", its meaning as the title) and the record behind
   the headline ("5 games · 50 bets · +$14.00 · range +0.4% to +3.1%", "60 games · 30
   bets replayed · range ...", or "130 held-out bets · range -1.2% to +9.4% · p =
-  0.012"), and an "N rows" chip when the lineage has children. At the side: the one
+  0.012"), and an "N rows" chip when the lineage has children. A paper or live record
+  counts each game once, as the paper gate does (two models of one lineage trading the
+  same game make one game; the API's `games` and the paper rank threshold still count
+  one per model), and counts read "1 game", "1 bet". At the side: the one
   headline number ("CLV +0.6%" when ranked on paper or snapshot, "ROI +6.2%" on the
   validation era, the search-era ROI for an unvalidated lineage, which its title says),
   then the "..." menu: Details, Train (the Jobs form prefilled), Validate (the same),
@@ -198,9 +213,9 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 - "Unranked (n)": a closed disclosure with the not validated and retired lineages, the
   reason on each row. With no ranked lineage one line says why ("No lineage is validated
   yet, so none is ranked." or "No models yet. Send a model search from the Jobs page.").
-- (step 6C) A pre-game row whose lineage has in-game bets gets a third grey line
-  (`.row-meta.row-ingame`, "in-game 2 bets · -$1.20", from `model_scores.ingame_n_bets`
-  and `ingame_pnl_cents`); the others stay two lines.
+- (step 6C) A pre-game row has no in-game line: settlement credits every in-game bet to
+  the assignment's in-game model, so only an ingame_wp lineage has an in-game record (its
+  row in "In-game models" shows it).
 - (step 6C) "In-game models (n)" (`#ingame`, a closed disclosure `models-ingame` whose
   summary counts the ones beating vegas_wp; `host/api/models_ingame_view.py`): the
   ingame_wp lineages, never ranked with the pre-game ones (in `GET /api/models` they are
@@ -220,10 +235,14 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 `/models/{id}` (changed: step 7):
 - The family and short params as the title, then three stats: edge vs the market (CLV
   with its 90% range), the backtest ROI with its bets, and the paper record (games, bets,
-  P&L). Under them the status chip, the "not validated" chip and the gate verdict in
-  words ("Not yet eligible for live: needs 40 paper bets (30 so far) and a CLV interval
-  above zero."; also the wording for no paper games yet, not validated, a candidate with
-  the rules it misses, live eligible and retired), one caption explaining CLV, and the
+  P&L; its games counted once each, the number the verdict's "(N so far)" uses). Under
+  them the status chip, the "not validated" chip and the gate verdict in words ("Not yet
+  eligible for live: needs 40 paper bets (30 so far) and a CLV interval above zero.";
+  the P&L rule reads "a paper profit" at the default one cent, else "a paper P&L of at
+  least +$5.00"; with no paper games yet the sentence lists every paper rule, the average
+  CLV floor included; live eligible says it passed the held-out seasons, or the backtest
+  gate when "Require validation" is off; also not validated, a candidate with the rules
+  it misses and retired), one caption explaining CLV, and the
   actions: Train, Validate (a one-tap form: a validate job for this model to any idle
   worker, seed 1), Assign, and "Retire lineage" in the menu (hidden once retired).
 - Closed disclosures, each with a one-line summary: Summary (the text, the folded "Edit
@@ -232,16 +251,21 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   ROI, each with a caption; the params JSON), (step 6) Robustness (the flag chips or a
   green "no flags" chip, the "beats market" chip, one line per flag, the CI line, the
   market test sentence, the calibration pairs, then the price stress table, the
-  neighbourhood sentence and the regime table, each with a one-line reading above it,
-  and the validation per-season table; "Not validated yet ..." without numbers),
+  neighbourhood sentence and the regime table, each with a one-line reading above it
+  (the stress reading follows the worker's fragile rule: "the edge survives worse
+  prices" only when the base ROI is positive, every stressed run keeps at least half
+  the base bets and the worst stressed ROI stays above zero, else "worse prices cut the
+  bets to 40 of 120", "worse prices remove the edge" or "there was no edge at base
+  prices"), and the validation per-season table; the 90% range caption says a range
+  above zero makes luck an unlikely explanation; "Not validated yet ..." without numbers),
   Backtest metrics (labelled pairs with a muted caption under ROI, hit rate, edge,
   log-loss, drawdown and shrunk ROI; per-season and calibration tables), (step 6B)
   Snapshot replay (the replay line, pairs, per-season table, "Replay on snapshots"),
-  Paper results (the paper record with the shrunk CLV and its 90% range, the live record
-  when there is one), Assignments (the games this lineage was assigned to, a red LIVE chip
-  on live ones) and History (the lineage members and the jobs that created, trained,
-  validated or replayed it). (step 6C) Paper results adds an "in-game bets" line when the
-  lineage has in-game bets.
+  Paper results (the paper record, signed like the stat, with the shrunk CLV and its 90%
+  range, the live record when there is one), Assignments (the games this lineage was
+  assigned to, a red LIVE chip on live ones) and History (the lineage members and the
+  jobs that created, trained, validated or replayed it). (step 6C) A pre-game model page
+  has no in-game line: in-game bets always belong to the ingame_wp lineage.
 - (step 6C) An ingame_wp model page (judged on held-out play-by-play against nflverse's
   vegas_wp, never backtested for edge): the stats are the log-loss (vegas_wp's and the
   gain as its note), the held-out plays (seasons, 10,000 needed) and the in-game paper
@@ -249,18 +273,25 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   41,812 held-out plays. In-game orders never go live in this step." or "Not cleared for
   in-game paper trading: <reason>. Paper ok needs ..."; one caption explains log-loss and
   vegas_wp; the actions are "Assign in-game" and "Retire lineage" in the menu (no Train,
-  Validate, Assign or snapshot replay). The Summary disclosure shows "held-out
-  validation" (with a "beats vegas_wp" or amber "does not beat vegas_wp" chip), "status
-  rule" and "in-game paper record" instead of the shrunk ROIs. In place of Robustness,
+  Validate, Assign or snapshot replay). The Summary disclosure shows "fitted on" ("train
+  seasons 2012-2021", from its search-era metrics, with a caption: the model search fits
+  it once and an in-game model is not trained week by week) instead of the
+  trained-through point, then "held-out validation" (with a "beats vegas_wp" or amber
+  "does not beat vegas_wp" chip), "status rule" and "in-game paper record" ("1 game · 2
+  bets · +$4.80") instead of the shrunk ROIs. In place of Robustness,
   Backtest metrics, Snapshot replay and Paper results it has (`_model_ingame.html`,
   `#ingame-validation`) the closed disclosures In-game validation (log-loss and Brier
   against vegas_wp, the plays left out without a vegas_wp), By period (Q1 to Q4, OT), By
   score (home minus away before the play: <=-9, -8..-1, 0, 1..8, >=9) and Calibration
-  (plays, mean p, mean outcome, vegas_wp mean), each with a one-line reading, or "No
-  held-out validation stored."; then Assignments and History.
+  (headed "p, plays, model, actual, vegas_wp" so the table fits a phone, the long names
+  "mean model probability", "mean outcome" and "mean vegas_wp probability" as the
+  headers' titles), each with a one-line reading, or "No held-out validation stored.";
+  then Assignments and History.
 
 ## Settings `/settings` (changed: step 7)
-- Stats: live trading on/off, kill switch, max bet, market source (each a link to its group).
+- Stats: live trading on/off, kill switch, max bet, market source (each a link to its
+  group), all read from the stored settings: a rejected post re-renders its form with
+  what was typed, but the stats keep saying what is in force.
 - Closed disclosures, one per group, each with a one-line summary of the values in force
   in its header (`host/settings_summary.py`; "-" when a value is missing), so the page
   reads at a glance with everything closed. A rejected form opens its group, keeps what
@@ -275,8 +306,10 @@ layout or wording, `docs/UI.md` wins and this file follows it.
     trade worker.
   - Trading (`POST /settings/trade`, step 4) under four headings: Order approval
     (participation, book max age, order lifetime, orphan cancel after, trade tick, max
-    paper models per game, max exposure paper and live, "Pregame only"; a note on the
-    fixed price band), Market source and snapshots (`market_source` select, lookahead,
+    paper models per game, max exposure paper and live, "Pregame only", whose help
+    reads "no orders after kickoff; unticked, orders after kickoff go only through the
+    in-game rules (paper only)" (step 6C: a pre-game order is cancelled at kickoff
+    either way); a note on the fixed price band), Market source and snapshots (`market_source` select, lookahead,
     snapshot cadence active and idle, retention, scores URL, `market_source_config` JSON),
     Paper thresholds (min games, bets, days, avg CLV, P&L, (step 6) "CLV interval above
     zero"; saving recomputes paper eligibility) and Rate limits.
@@ -368,7 +401,9 @@ error page.
     once the state is older than `ingame_max_state_age_s` (a final state never goes
     stale), or "no game state yet"; while the game is in progress the in-game model's home
     probability next to the home market mid ("model LV 62% · mid 58%", `data-p-home`
-    carries three decimals). A paper assignment that can still trade has the in-game
+    carries three decimals); with a stale state that probability is muted and ends
+    "(from the stale state, not traded)", since the host rejects in-game orders on it
+    (`ingame_stale`). A paper assignment that can still trade has the in-game
     switch in its menu (`data-form="ingame-toggle"`, `POST /assignments/{id}/ingame`:
     in-game model select, "Trade in-game" box, "Save in-game"), which calls
     `assignments_ingame.set_ingame` (audited; turning it off cancels the open in-game
@@ -389,11 +424,14 @@ error page.
       smoke and (step 6C) `in-game` chips, the market, exchange id, model, worker and time on the grey line,
       the status chip and Cancel (`POST /orders/{id}/cancel`) in the menu.
     - (step 6B) Positions (`#positions`): per assignment holding contracts, its label
-      and total unrealized P&L, then one row per market: side, size, average cost with
-      the basis and the bid, the unrealized P&L at the bid net of the sale fee ("no bid"
+      and total ("unrealized (net of sale fee) +$1.20"; the header says "unrealized net
+      of fee"), then one row per market: side, size, average cost, "basis $8.00" and
+      the bid on the grey line, a second grey line "unrealized, net of sale fee" and the
+      unrealized P&L at the bid after the taker fee of the sale at the side ("no bid"
       when there is none).
-    - Recent orders (`#orders`, last 50): the same rows plus a second grey line with the
-      reject reason in red ("max_bet: over max bet $71.06 > $25.00"), the cause of a
+    - Recent orders (`#orders`, last 50): the same rows (the edge with the model's and
+      the market's probability as whole percentages, "edge +3.4% (my 55% vs 52%)") plus
+      a second grey line with the reject reason in red ("max_bet: over max bet $71.06 > $25.00"), the cause of a
       cancelled or expired order ("kill", "gtd expired") and the rationale. (step 6C)
       The in-game reject reasons read in words: `ingame_disabled`, `ingame_paper_only`,
       `ingame_stale` ("game state too old"), `ingame_quiet`, `ingame_cutoff`,

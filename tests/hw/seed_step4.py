@@ -2,11 +2,13 @@
 snapshots, an unmatched market, three assignments through the real create path, a
 trade worker holding their jobs, orders in every interesting state (open with a
 partial fill, resting, rejected, cancelled), a settled game with its bet and score,
-extra paper scores so one lineage ranks on paper, and a live exchange heartbeat.
-Used by tests/hw/screenshots.py.
+extra paper scores so one lineage ranks on paper (each with the settled bets behind
+it, so the paper CLV range seed_paper_ci bootstraps is over the same bets as the CLV
+stat), and a live exchange heartbeat. Used by tests/hw/screenshots.py.
 """
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,6 +40,39 @@ def _open(conn: psycopg.Connection, order: dict[str, Any]) -> dict[str, Any]:
 
 def _age(conn: psycopg.Connection, order_id: Any, seconds: int) -> None:
     conn.execute("UPDATE orders SET created_at = now() - make_interval(secs => %s) WHERE id = %s", (seconds, order_id))
+
+
+def _past_bets(conn: psycopg.Connection, worker_id: str, assignment: dict[str, Any], model_id: Any, lineage: Any,
+               game: dict[str, Any], week: int, bets: int, pnl: int, clv: float, days_ago: int) -> None:
+    """`bets` settled paper buys on a past game (a resolved market, a filled order each)
+    whose stake-weighted CLV is `clv` (spread evenly around it) and whose P&L sums to
+    `pnl`, the same numbers as the game's model_scores row."""
+    market = insert_market(conn, game["game_id"], side="home", status="resolved")
+    title = f"Raiders beat Chiefs (Week {week})"
+    conn.execute("UPDATE markets SET title = %s, resolved_yes = true WHERE id = %s", (title, market["id"]))
+    shares = [pnl // bets] * bets
+    shares[0] += pnl - sum(shares)
+    for k, share in enumerate(shares):
+        order = conn.execute(
+            """
+            INSERT INTO orders (client_request_id, assignment_id, worker_id, market_id, mode, price, size, cost_cents,
+                                status, filled_size, avg_fill_price, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, 'paper', 0.6, 25, 1500, 'filled', 25, 0.6,
+                    now() - make_interval(days => %s), now() - make_interval(days => %s)) RETURNING id
+            """,
+            (uuid.uuid4().hex, assignment["id"], worker_id, market["id"], days_ago, days_ago),
+        ).fetchone()
+        conn.execute(
+            """
+            INSERT INTO bets (order_id, assignment_id, model_id, lineage_id, game_id, worker_id, mode, date, event, platform,
+                              contract, side, entry_price, cost_cents, stake_cents, clv, result, pnl_cents, settled_at)
+            VALUES (%s, %s, %s, %s, %s, %s, 'paper', (now() - make_interval(days => %s))::date, %s, 'sim', %s, 'home', 0.6,
+                    1500, 1500, %s, %s, %s, now() - make_interval(days => %s, mins => %s))
+            """,
+            (order["id"], assignment["id"], model_id, lineage, game["game_id"], worker_id, days_ago,
+             f"{game['away_team']} @ {game['home_team']}", title, round(clv + (k - (bets - 1) / 2) * 0.002, 4),
+             "win" if share > 0 else "loss" if share < 0 else "push", share, days_ago, k),
+        )
 
 
 def seed_trading(url: str, model_id: str) -> dict[str, str]:
@@ -107,11 +142,13 @@ def seed_trading(url: str, model_id: str) -> dict[str, str]:
         conn.execute("UPDATE games SET status = 'final', home_score = 27, away_score = 17, kickoff_at = now() - interval '4 hours'"
                      " WHERE game_id = %s", (done["game_id"],))
         settle_game(conn, done["game_id"], "scores")
-        # Four more past paper scores so the first lineage ranks on paper (5 games, 30 bets).
+        # Four more past paper scores so the first lineage ranks on paper (5 games, 30 bets),
+        # each with its settled bets, so the CLV stat and its 90% range describe the same bets.
         lineage = conn.execute("SELECT lineage_id FROM models WHERE id = %s", (model_id,)).fetchone()["lineage_id"]
         for i, (bets, pnl, clv) in enumerate([(8, 1450, 0.021), (7, -620, 0.004), (9, 980, 0.017), (5, 310, 0.012)]):
             past = insert_game(conn, f"2026_0{i + 1}_PAST_{i}", kickoff_in_s=-(i + 2) * 86400, week=i + 1)
             conn.execute("UPDATE games SET status = 'final', home_score = 20, away_score = 17 WHERE game_id = %s", (past["game_id"],))
+            _past_bets(conn, trader.id, settled, model_id, lineage, past, i + 1, bets, pnl, clv, i + 2)
             conn.execute(
                 "INSERT INTO model_scores (model_id, game_id, mode, lineage_id, n_bets, stake_cents, pnl_cents, avg_clv)"
                 " VALUES (%s, %s, 'paper', %s, %s, %s, %s, %s)",

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from fleet.sim.stress import FRAGILE_BET_FRACTION
 from host.eligibility import model_flags
 from host.leaderboard import FLAG_MEANINGS, MARKET_BEATEN_P, validation_summary
 from host.web import pvalue, signed_pct
@@ -74,15 +75,28 @@ def regime_rows(stress: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def stress_reading(metrics: dict[str, Any], prices: list[dict[str, Any]]) -> str:
-    """One line above the price stress table: the worst stressed ROI against the base."""
+    """One line above the price stress table: the worst stressed ROI against the base,
+    read by the worker's fragile rule (fleet/sim/stress.py fragile_flag). The edge
+    "survives" only when the base ROI is positive, every stressed run keeps at least
+    half the base bets and the worst stressed ROI stays above zero."""
     rated = [p for p in prices if _num(p.get("roi")) is not None and p.get("n_bets")]
     if not rated:
         return "No stressed run placed a bet." if prices else ""
     worst = min(rated, key=lambda p: float(p["roi"]))
-    base = signed_pct(metrics.get("roi")) if metrics.get("n_bets") else "-"
-    verdict = "the edge survives worse prices" if float(worst["roi"]) > 0 else "worse prices remove the edge"
+    base_bets = int(metrics.get("n_bets") or 0)
+    base_roi = _num(metrics.get("roi")) if base_bets else None
+    thin = [p for p in prices if base_bets and int(p.get("n_bets") or 0) < FRAGILE_BET_FRACTION * base_bets]
+    if base_roi is None or base_roi <= 0:
+        verdict = "there was no edge at base prices"
+    elif thin:
+        fewest = min(thin, key=lambda p: int(p.get("n_bets") or 0))
+        verdict = f"worse prices cut the bets to {int(fewest.get('n_bets') or 0)} of {base_bets}"
+    elif float(worst["roi"]) <= 0:
+        verdict = "worse prices remove the edge"
+    else:
+        verdict = "the edge survives worse prices"
     return (f"Worst case {worst.get('name')}: ROI {signed_pct(worst['roi'])} on {worst.get('n_bets')} bets, "
-            f"against {base} on {metrics.get('n_bets') or 0} at base prices; {verdict}.")
+            f"against {signed_pct(base_roi) if base_roi is not None else '-'} on {base_bets} at base prices; {verdict}.")
 
 
 def regime_reading(rows: list[dict[str, Any]]) -> str:

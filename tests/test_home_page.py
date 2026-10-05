@@ -3,13 +3,14 @@ settled bets. Fleet moved to /fleet (its form posts land there)."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from host import kill
+from host import eligibility, kill
 from tests.conftest import (
-    auth_state, flash_cookie, insert_game, insert_job, insert_model, insert_paper_bet, insert_validated_model,
-    make_assignment, set_heartbeat_age,
+    approved_order, auth_state, flash_cookie, insert_game, insert_job, insert_model, insert_paper_bet,
+    insert_validated_model, make_assignment, set_heartbeat_age, trade_setup, validation_metrics,
 )
 from tests.pagecheck import page
 
@@ -73,7 +74,7 @@ def test_needs_attention_lists_each_signal(client, conn, make_worker):
     assert row.chip("offline").text == "offline" and row.one("a.row-main").target == "/fleet"
     row = p.row("attention", f"assignment-{assignment['id']}")
     assert row.one(".row-title").text == "KC @ LV: no eligible model" and row.chip("no-model").has_class("chip-bad")
-    assert row.one(".row-meta").text == "paper assignment, model retired"
+    assert row.one(".row-meta").text == "paper assignment active, model retired"
     row = p.row("attention", f"validate-{failed['id']}")
     assert row.one(".row-meta").text == "out of memory" and row.one("a.row-main").target == f"/jobs/{failed['id']}"
     later = insert_job(conn, "validate", status="succeeded", params=Jsonb({"model_id": str(model["id"])}))
@@ -103,3 +104,60 @@ def test_home_stats_and_recent_bets(client, conn, make_worker):
     assert rows[0].one(".row-title").text == "KC @ LV" and rows[0].one(".row-meta").text.startswith("paper · c · ")
     conn.execute("UPDATE settings SET value = 'true' WHERE key = 'live_enabled'")
     assert _home(client).prop("Today live") == "$0.00", "the current mode's P&L"
+
+
+def test_live_assignment_halted_by_a_lost_eligibility_needs_attention(client, conn):
+    """Leaving live_eligible halts the live assignment in the same transaction, so the
+    rule must look at halted ones too (reached through the real path, no raw UPDATE)."""
+    _checked(conn)
+    setup = trade_setup(conn, mode="live", model_status="live_eligible")
+    with conn.transaction():
+        assert eligibility.recompute_lineage(conn, setup.model["lineage_id"]) == "candidate"
+    aid = setup.assignment["id"]
+    assert conn.execute("SELECT status FROM assignments WHERE id = %s", (aid,)).fetchone()["status"] == "halted"
+    row = _home(client).row("attention", f"assignment-{aid}")
+    assert row.one(".row-title").text == "KC @ LV: no eligible model" and row.chip("no-model").has_class("chip-warn")
+    assert row.one(".row-meta").text == "live assignment halted, model candidate"
+    assert row.one("a.row-main").target == "/trading#assignments"
+    conn.execute("UPDATE games SET status = 'final' WHERE game_id = %s", (setup.game["game_id"],))
+    assert f"assignment-{aid}" not in _home(client).row_ids("attention"), "a finished game needs nothing more"
+
+
+def test_halted_paper_assignment_of_a_retired_lineage_is_not_listed(client, conn):
+    """Retiring halts the assignments on purpose: listing them would repeat the owner's own action."""
+    _checked(conn)
+    setup = trade_setup(conn)
+    conn.execute("UPDATE assignments SET status = 'halted' WHERE id = %s", (setup.assignment["id"],))
+    conn.execute("UPDATE models SET status = 'retired' WHERE lineage_id = %s", (setup.model["lineage_id"],))
+    assert not _home(client).has('[data-list="attention"]')
+
+
+def test_best_model_uses_the_models_page_headline(client, conn):
+    """No held-out bets reads "ROI -" on Home as on /models and the model page, not "ROI +0.0%"."""
+    model = insert_validated_model(conn, params={"k": 22.0, "hfa": 50.0, "mov_scale": 1},
+                                   validation=validation_metrics(n_bets=0, roi=0.0))
+    best = _home(client).stat("best-model")
+    assert best.one(".stat-value").text == "ROI -" and best.target == f"/models/{model['id']}"
+    assert page(client.get("/models").text).stat("best").one(".stat-value").text == "ROI -"
+
+
+def test_home_stats_and_attention_refresh_from_their_fragment(client, conn, make_worker):
+    """#home-live holds the stats, Needs attention and Recent; GET /fragments/home serves
+    its inner HTML and app.js refetches it, so the numbers are never older than the
+    "updated N s ago" line says."""
+    _checked(conn)
+    make_worker("box1")
+    p = _home(client)
+    live = p.one("#home-live")
+    assert live.has('.stats [data-stat="open-orders"]') and live.card("attention") and live.card("recent")
+    assert p.count(".stats") == 1 and live.has(".stats"), "the only stats grid is inside the refreshed region"
+    setup = trade_setup(conn)
+    approved_order(conn, setup)
+    r = client.get("/fragments/home")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    frag = page(r.text)
+    assert not frag.has("main") and not frag.has("h1"), "the fragment is the region's inner HTML only"
+    assert frag.prop("Open orders") == "1" and frag.prop("Workers online") == "2 / 2"
+    assert [s.attr("data-stat") for s in frag.select(".stats .stat")] == ["workers", "today", "open-orders", "best-model"]
+    js = (Path(__file__).resolve().parent.parent / "host" / "static" / "app.js").read_text()
+    assert 'refresh("home-live", "/fragments/home")' in js and '"home-live"' in js.split("function tick")[1].split("function ")[0]

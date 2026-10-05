@@ -119,13 +119,15 @@ def test_positions_table_per_assignment_values_at_the_bid(client, conn):
     assert str(idle["id"]) not in positions.html and "KC @ LV" in positions.text
     assert "1 assignment holding" in positions.text
     home = positions.row("position", b["home"]["id"])
-    assert "size 20" in home.text and "avg cost 0.40 $8.00" in home.text and "bid 0.55" in home.text
+    assert "size 20" in home.text and "avg cost 0.40 · basis $8.00" in home.text and "bid 0.55" in home.text
     assert _pnl(home) == "pos +$2.75" and "home wins" in home.text
+    assert home.select(".row-meta")[-1].text == "unrealized, net of sale fee", "the value's meaning is visible, not only a tooltip"
     away = positions.row("position", b["away"]["id"])
     assert "size 5000" in away.text and "$2,500.00" in away.text and "bid 0.20" in away.text
     assert _pnl(away) == "neg -$1,540.00", "money as $1,234.56 with the sign, net of the sale fee"
     total = positions.one(".positions-total")
-    assert total.text == "unrealized -$1,537.25" and _pnl(total) == "neg -$1,537.25"
+    assert total.text == "unrealized (net of sale fee) -$1,537.25" and _pnl(total) == "neg -$1,537.25"
+    assert "unrealized net of fee -$1,537.25" in positions.one(".disclosure-summary").text
 
 
 def test_position_sold_out_or_resolved_disappears(client, conn):
@@ -205,10 +207,14 @@ def test_sell_rules_in_css_keep_the_aa_pairs_and_phone_layout(client):
     from tests.test_style import _schemes, contrast, declarations
 
     css = client.get("/static/style.css").text
-    assert "var(--accent-fill)" in declarations(".chip-sell", css=css) and "var(--accent-text)" in declarations(".chip-sell", css=css)
+    sell = declarations(".chip-sell", css=css)
+    # colour means state (docs/UI.md): the sell chip is never a filled blue badge; an
+    # outline in the link colour (6B review) or plain chip-muted are both fine
+    assert "accent-fill" not in sell, "the sell chip is not drawn as a blue status badge"
     assert "var(--red-fg)" in declarations(".pnl-neg", css=css)
     for tokens in _schemes():
-        assert contrast(tokens["accent-text"], tokens["accent-fill"]) >= 4.5
+        if "var(--accent)" in sell:
+            assert contrast(tokens["accent"], tokens["card"]) >= 4.5
         for bg in ("card", "live-bg"):
             assert contrast(tokens["red-fg"], tokens[bg]) >= 4.5
     assert "flex-basis: 100%" in declarations(".positions-total", media="max-width", css=css), "the position total wraps on a phone"

@@ -26,7 +26,7 @@
   average edge {{ m.avg_edge | signed_pct if bets else '-' }}{% if bets %} <span class="range">({{ range(r.ci.avg_edge) }})</span>{% endif %},
   max drawdown {{ m.max_drawdown | pct1 }}{% if bets %} <span class="range">({{ range(r.ci.max_drawdown, 'pct1') }})</span>{% endif %},
   CLV range <span class="range">{{ range(r.ci.avg_clv, 'fixed') }}</span> <span class="muted">(0 on closing lines by construction)</span>.</p>
-<span class="caption">The 90% range is a bootstrap over the bets: a range that stays above zero is an edge that is not luck.</span>
+<span class="caption">The 90% range is a bootstrap over the bets: a range that stays above zero makes luck an unlikely explanation.</span>
 <p class="market-line{% if r.beats_market %} beats{% endif %}">{{ r.market }}</p>
 <h3>Calibration</h3>
 <p class="reading">{{ r.readings.calibration if r.readings else '' }}</p>

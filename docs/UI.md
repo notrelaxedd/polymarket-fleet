@@ -45,7 +45,10 @@ and `docs/DASHBOARD.md` disagree about layout or wording, this document wins and
   display size for stats. Light and dark via `prefers-color-scheme` as before.
 - `host/static/app.js` keeps the refresh logic; it gains one thing: open `<details>` keep
   their open state across fragment refreshes (the fragment carries `data-key`, the
-  script restores `open` by key).
+  script restores `open` by key). A group the server opens for a reason (an error, the
+  kill, an alert, a link that asked for it) is never folded by a remembered "closed",
+  and an `#anchor` link opens the group it names, picks the job kind it names and lands
+  below the sticky top bar.
 - Numbers: money as `$1,234.56`, percentages to one decimal, probabilities as
   percentages ("62%"), never raw floats with five decimals in a list. Full precision
   stays on detail pages and in the API.
@@ -85,7 +88,9 @@ One row per lineage: rank, name + key params ("elo_blend K 40 · HFA 70"), statu
 (paper / live_eligible / candidate / retired), one headline number chosen by rank basis
 ("CLV +0.6%" when ranked on paper, "ROI +6.2%" when ranked on backtest), and the
 "..." menu (Train, Assign, Validate, Retire). The flags (overfit, fragile,
-regime_dependent) are small chips after the name. Tapping the row opens the detail
+regime_dependent) are small chips after the name, on their own line under it (they wrap
+there rather than being cut by the name's ellipsis; on a phone the number sits beside
+the name so that line gets the full width). Tapping the row opens the detail
 page. Sorting and the rank basis note are a single grey line at the top. Unranked rows
 are in a collapsed disclosure "Unranked (12)" with the reason in the row.
 
@@ -123,7 +128,9 @@ shown as a muted line under the input rather than beside it.
 - `tests/hw/screenshots.py` takes every page at 390 and 1280, light and dark, and
   asserts: no horizontal overflow, every page's first screen (390x844) contains the
   title and at least one `.stat`, no list row taller than 88 px at 390, every `.chip`
-  has text, every `<details>` has a `<summary>` with text.
+  has text and none in a row title or flag line is cut, every `<details>` has a
+  `<summary>` with text, every summary and control is a 44 px target, and every open
+  "..." menu item is the topmost thing under its centre (also with the connection lost).
 - A row-height audit test renders Models and Trading with 20 rows each and checks the
   page height at 390 px is under 6 screens.
 

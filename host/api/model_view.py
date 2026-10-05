@@ -8,6 +8,7 @@ from typing import Any
 
 import psycopg
 
+from host.api.models_view import counted, games_of
 from host.eligibility import DEFAULT_THRESHOLDS, ci_low, gate_limits, gate_metrics, model_flags
 from host.paper_gate import DEFAULT_PAPER_THRESHOLDS, paper_stats
 from host.settings import get_setting
@@ -67,20 +68,27 @@ def backtest_misses(model: dict[str, Any], limits: dict[str, Any]) -> list[str] 
     return out
 
 
+def pnl_rule(limits: dict[str, Any]) -> str:
+    """The `min_pnl_cents` rule in words: "a paper profit" at the default of one cent,
+    else the floor itself (the owner may set any amount, a small loss included)."""
+    floor = int(limits["min_pnl_cents"])
+    return "a paper profit" if floor == 1 else f"a paper P&L of at least {signed_money(floor)}"
+
+
 def paper_misses(stats: dict[str, Any], ci: dict[str, Any] | None, limits: dict[str, Any]) -> list[str]:
     """What the pooled paper record still misses of the live gate."""
     out: list[str] = []
     if stats["games"] < int(limits["min_games"]):
-        out.append(f"{int(limits['min_games'])} paper games ({stats['games']} so far)")
+        out.append(f"{counted(limits['min_games'], 'paper game')} ({stats['games']} so far)")
     if stats["bets"] < int(limits["min_bets"]):
-        out.append(f"{int(limits['min_bets'])} paper bets ({stats['bets']} so far)")
+        out.append(f"{counted(limits['min_bets'], 'paper bet')} ({stats['bets']} so far)")
     if stats["days"] < float(limits["min_days"]):
-        out.append(f"{int(float(limits['min_days']))} days on paper ({int(stats['days'])} so far)")
+        out.append(f"{counted(int(float(limits['min_days'])), 'day')} on paper ({int(stats['days'])} so far)")
     clv = stats.get("avg_clv")
     if clv is None or float(clv) < float(limits["min_clv"]):
         out.append(f"an average CLV of at least {signed_pct(limits['min_clv'])} (now {signed_pct(clv)})")
     if stats["pnl_cents"] < int(limits["min_pnl_cents"]):
-        out.append(f"a paper profit (now {signed_money(stats['pnl_cents'])})")
+        out.append(f"{pnl_rule(limits)} (now {signed_money(stats['pnl_cents'])})")
     if limits.get("clv_ci_excludes_zero"):
         bounds = (ci or {}).get("ci")
         if not bounds or int((ci or {}).get("n_bets") or 0) < int(limits["min_bets"]) or float(bounds[0]) <= 0.0:
@@ -94,16 +102,20 @@ def gate_verdict(conn: psycopg.Connection, model: dict[str, Any]) -> dict[str, s
     if status == "retired":
         return {"state": "muted", "text": "Retired: it no longer ranks or trades, and a retired lineage cannot come back."}
     if status == "live_eligible":
-        return {"state": "ok", "text": "Eligible for live: it passed the held-out seasons and the paper record."}
+        # without require_validation the gate judged the search-era backtest, not held-out seasons
+        held_out = _limits(conn, "thresholds_backtest", DEFAULT_THRESHOLDS).get("require_validation", True)
+        passed = "the held-out seasons" if held_out else "the backtest gate"
+        return {"state": "ok", "text": f"Eligible for live: it passed {passed} and the paper record."}
     if status == "paper_ok":
         limits = _limits(conn, "thresholds_paper", DEFAULT_PAPER_THRESHOLDS)
         stats = paper_stats(conn, model["lineage_id"])
         if not stats["games"]:
-            return {"state": "warn", "text": (
-                f"Not yet eligible for live: no paper games yet. It needs {int(limits['min_games'])} paper games and "
-                f"{int(limits['min_bets'])} paper bets over {int(float(limits['min_days']))} days, a profit"
-                + (" and a CLV interval above zero." if limits.get("clv_ci_excludes_zero") else ".")
-            )}
+            needs = [
+                f"{counted(limits['min_games'], 'paper game')} and {counted(limits['min_bets'], 'paper bet')} over "
+                f"{counted(int(float(limits['min_days'])), 'day')}",
+                pnl_rule(limits), f"an average CLV of at least {signed_pct(limits['min_clv'])}",
+            ] + (["a CLV interval above zero"] if limits.get("clv_ci_excludes_zero") else [])
+            return {"state": "warn", "text": f"Not yet eligible for live: no paper games yet. It needs {_join(needs)}."}
         missing = paper_misses(stats, model.get("paper_ci"), limits)
         if not missing:
             return {"state": "ok", "text": "Meets every paper rule: it becomes eligible for live at the next settlement."}
@@ -117,11 +129,13 @@ def gate_verdict(conn: psycopg.Connection, model: dict[str, Any]) -> dict[str, s
 
 
 def detail_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
-    """The three stats at the top: edge vs market (CLV), backtest ROI, paper record."""
+    """The three stats at the top: edge vs market (CLV), backtest ROI, paper record (its
+    games counted once each, as the gate verdict under it counts them)."""
     paper, snap, validation = model.get("paper") or {}, model.get("snapshot") or {}, model.get("validation")
     if paper.get("avg_clv") is not None:
         rng = _range((model.get("paper_ci") or {}).get("ci"))
-        edge = {"value": f"CLV {signed_pct(paper['avg_clv'])}", "note": f"paper, 90% range {rng}" if rng else f"paper, {paper.get('bets', 0)} bets"}
+        edge = {"value": f"CLV {signed_pct(paper['avg_clv'])}",
+                "note": f"paper, 90% range {rng}" if rng else f"paper, {counted(paper.get('bets'), 'bet')}"}
     elif snap.get("avg_clv") is not None:
         rng = _range(snap.get("clv_ci"))
         edge = {"value": f"CLV {signed_pct(snap['avg_clv'])}", "note": f"replay, 90% range {rng}" if rng else "snapshot replay"}
@@ -129,14 +143,14 @@ def detail_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
         edge = {"value": "-", "note": "no CLV yet: paper trade it or replay it"}
     if validation:
         bets = validation.get("n_bets") or 0
-        roi = {"value": signed_pct(validation.get("roi")) if bets else "-", "note": f"on {bets} held-out bets"}
+        roi = {"value": signed_pct(validation.get("roi")) if bets else "-", "note": f"on {counted(bets, 'held-out bet')}"}
     else:
         metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else {}
         bets = metrics.get("n_bets") or 0
-        roi = {"value": signed_pct(metrics.get("roi")) if bets else "-", "note": f"on {bets} bets, search era only"}
-    games = paper.get("games") or 0
+        roi = {"value": signed_pct(metrics.get("roi")) if bets else "-", "note": f"on {counted(bets, 'bet')}, search era only"}
+    games = games_of(paper)
     record = {"value": signed_money(paper.get("pnl_cents")) if games else "-",
-              "note": f"{games} games · {paper.get('bets') or 0} bets" if games else "no paper games yet"}
+              "note": f"{counted(games, 'game')} · {counted(paper.get('bets'), 'bet')}" if games else "no paper games yet"}
     return [
         {"name": "edge", "label": "Edge vs market", **edge},
         {"name": "backtest-roi", "label": "Backtest ROI", **roi},

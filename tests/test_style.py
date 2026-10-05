@@ -160,6 +160,12 @@ PAIRS = [
     ("red-text", "red"),
     ("accent-text", "accent-fill"),  # primary buttons
     ("accent", "card"),              # links
+    ("accent", "live-bg"),           # the sell and snapshot outline chips on a live row
+    ("green-text", "card"),          # "beats the market" (the Robustness reading)
+    ("text", "bad-bg"),              # the killed Kill switch group
+    ("chip-text", "bad-bg"),         # its grey text (.group.killed sets --muted to --chip-text)
+    ("red-fg", "bad-bg"),            # "Trading is killed." inside it
+    ("accent", "bad-bg"),            # its Trading link
 ]
 
 
@@ -216,6 +222,21 @@ def test_banners_and_mode_fills_use_the_text_safe_tokens() -> None:
     assert "var(--green-fill)" in declarations(".pill.live")
     assert "var(--accent-fill)" in declarations(".btn.primary")
     assert "var(--red-fg)" in declarations(".error")
+
+
+def test_step7_review_colours_and_scroll_padding() -> None:
+    """The sell and snapshot chips are accent outlines, not a fifth state fill; the green
+    line and the killed group use their AA tokens; the focus ring is white on the red bar;
+    an #anchor or a focused field clears the sticky bar and, on a phone, the bottom nav."""
+    for chip in (".chip.chip-sell", ".chip.chip-snapshot"):
+        body = declarations(chip, media="")
+        assert "background: transparent" in body and "color: var(--accent)" in body and "solid var(--accent)" in body, chip
+    assert "var(--green-text)" in declarations(".market-line.beats")
+    assert "--muted: var(--chip-text)" in declarations(".group.killed")
+    assert "outline-color: #fff" in declarations(".topbar.killed :focus-visible")
+    assert "var(--topbar-h" in declarations("html", media="")
+    assert re.search(r"scroll-padding-bottom:[^;]*--nav-h", declarations("html", media="max-width"))
+    assert "var(--tap)" in declarations("details.intro > summary") and "2rem" not in declarations("details.intro[open] > summary")
 
 
 def test_js_only_rule_outranks_btn_without_javascript() -> None:

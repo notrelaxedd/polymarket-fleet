@@ -10,8 +10,8 @@ from host.api.dashboard import page
 from host.api.dashboard_forms import FORM
 from host.api.deps import DB, require_owner
 from host.api.model_view import detail_stats, gate_verdict, lineage_assignments
-from host.api.models_ingame_view import add_pregame_lines, ingame_row, ingame_stats, ingame_verdict
-from host.api.models_view import board_view, status_state, status_word
+from host.api.models_ingame_view import ingame_row, ingame_stats, ingame_verdict
+from host.api.models_view import add_distinct_games, board_view, status_state, status_word
 from host.api.robustness import calibration_rows, robustness_context
 from host.data_refresh import refresh_now
 from host.errors import BadRequest, Upstream
@@ -27,12 +27,14 @@ NFLVERSE_ATTRIBUTION = (
 @router.get("/models", response_class=HTMLResponse)
 def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     """The leaderboard: ranked lineages, then the unranked ones, then the in-game
-    (ingame_wp) lineages in their own group; a pre-game row gets its in-game line when
-    its lineage has in-game bets."""
+    (ingame_wp) lineages in their own group with their in-game paper record (settlement
+    credits every in-game bet to the assignment's in-game model, so a pre-game row has
+    no in-game line). A record's games are counted once each, as the paper gate counts
+    them."""
     raw = leaderboard.leaderboard(conn)
+    add_distinct_games(conn, raw["ranked"] + raw["unranked"])
     ingame = [ingame_row(m) for m in raw["unranked"] if m.get("is_ingame")]
     board = board_view({**raw, "unranked": [m for m in raw["unranked"] if not m.get("is_ingame")]})
-    add_pregame_lines(board["ranked"] + board["unranked"])
     return page(request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, ingame_models=ingame, **board)
 
 
@@ -44,6 +46,7 @@ def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -
     (step 6C) An ingame_wp model shows its held-out validation against vegas_wp instead
     (_model_ingame.html), with its own stats and status rule."""
     model = leaderboard.model_detail(conn, model_id)
+    add_distinct_games(conn, [model], model["lineage_id"])
     common = {"attribution": NFLVERSE_ATTRIBUTION, "assignments": lineage_assignments(conn, model["lineage_id"]),
               "status_state": status_state(model.get("status")), "status_word": status_word(model.get("status"))}
     if model.get("is_ingame"):  # judged on held-out plays against vegas_wp, no moneyline backtest

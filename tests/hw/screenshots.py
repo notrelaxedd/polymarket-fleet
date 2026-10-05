@@ -28,11 +28,15 @@ after a hand POST /kill, and trading after the reset.
 Every capture runs the docs/UI.md assertions (tests/hw/ui_checks.py): no horizontal
 overflow, every .chip has text, every <details> has a <summary> with text; at 390 px
 also the h1 and a .stat inside the first 844 px (not on the three captures that open a
-form at the top on purpose), no .row taller than 88 px and 44 px tap targets for
-buttons, row links, selects, inputs and menu items, measured again with every
-disclosure opened. At 1280 the Models rows keep their title, number and menu inside the
-row; on Fleet the fragment refresh must reset "updated N s ago". It exits 1 on any
-problem. It needs the Chromium build the installed Playwright expects under
+form at the top on purpose), no .row taller than 88 px, 44 px tap targets for buttons,
+row links, selects, inputs, menu items and summaries, and no chip cut in a row title or
+flag line, measured again with every disclosure opened; then every "..." menu is opened
+and each item must be the topmost thing under its centre, as loaded and with
+body.conn-lost (Fleet holds an offline worker that is not the last card). On the Models
+and model pages at 390 no non-stacked table scrolls sideways, no in-game reason line is
+cut and no pre-game row has an in-game line (step 6C review). At 1280 the Models rows
+keep their title, number and menu inside the row; on Fleet the fragment refresh must
+reset "updated N s ago". It exits 1 on any problem. It needs the Chromium build the installed Playwright expects under
 PLAYWRIGHT_BROWSERS_PATH; it never downloads a browser.
 """
 from __future__ import annotations
@@ -126,6 +130,27 @@ def check_models_desktop(page: Any, problems: list[str]) -> None:
         problems.append(f"models at 1280: {outside} of {rows} rows push their number or menu outside the row")
 
 
+def check_phone_tables(page: Any, name: str, problems: list[str]) -> None:
+    """At 390 px (disclosures open) a non-stacked table on a Models page fits its wrapper
+    (the in-game calibration once hid its vegas_wp column), the in-game reason (an
+    .ingame-row's second grey line) wraps instead of being cut, and no pre-game row has an
+    in-game line: settlement credits in-game bets to the ingame_wp lineage (6C review)."""
+    wide, cut, pregame = page.evaluate(
+        """() => [Array.from(document.querySelectorAll('.table-wrap'))
+                    .filter(el => !el.querySelector('table.stack') && el.scrollWidth > el.clientWidth + 1)
+                    .map(el => [el.querySelector('table').className, el.scrollWidth, el.clientWidth]),
+                  Array.from(document.querySelectorAll('.ingame-row .row-meta2'))
+                    .filter(el => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1).length,
+                  document.querySelectorAll('[data-row="model"] .row-ingame').length]"""
+    )
+    for cls, scroll_w, client_w in wide:
+        problems.append(f"{name}: table.{cls} scrolls sideways ({scroll_w} > {client_w})")
+    if cut:
+        problems.append(f"{name}: {cut} in-game reason lines cut")
+    if pregame:
+        problems.append(f"{name}: {pregame} pre-game model rows carry an in-game line")
+
+
 def check_refresh_counter(page: Any, problems: list[str]) -> None:
     """The footer counts up, a fragment refresh resets it."""
     page.wait_for_function("/^updated [3-9] s ago$/.test(document.getElementById('updated').textContent)", timeout=12_000)
@@ -160,6 +185,8 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             if name in FORM_FIRST:
                 found = [p for p in found if p not in first_screen(page, f"{name}-{width}-{scheme}")]
             problems.extend(found)
+            if phone and name.startswith("model"):
+                check_phone_tables(page, f"{name}-{width}-{scheme}", problems)
             if name == "fleet" and phone and scheme == "light":
                 page.reload(wait_until="networkidle")
                 check_refresh_counter(page, problems)

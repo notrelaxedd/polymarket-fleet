@@ -242,3 +242,25 @@ def test_order_rows_name_the_model_that_placed_them(conn):
     wp = _assignment(conn, s)["ingame_model_id"]
     assert (rows[in_order]["model_id"], rows[in_order]["family"]) == (wp, "ingame_wp")
     assert rows[pre_order]["model_id"] == pre.model["id"] and rows[pre_order]["family"] != "ingame_wp"
+
+
+# ------------------------------------------- a retired lineage is never re-activated
+
+
+def test_a_retired_lineage_assignment_cannot_be_reactivated(conn):
+    import pytest
+
+    from host.errors import Conflict
+    from host.trading import assignments
+
+    s = trade_setup(conn)
+    other = trade_setup(conn, game_id="2026_05_DAL_PHI")
+    model_owner.retire(conn, s.model["id"], "retired", "owner")
+    assert _assignment(conn, s)["status"] == "halted"
+    with pytest.raises(Conflict, match="lineage is retired"):
+        assignments.activate_assignment(conn, s.assignment["id"], "owner")
+    # After a kill reset, "activate all paper" skips it and resumes the others.
+    assignments.halt_assignment(conn, other.assignment["id"], "owner", "test")
+    assert assignments.activate_all_paper(conn, "owner") == 1
+    assert _assignment(conn, s)["status"] == "halted"
+    assert _assignment(conn, other)["status"] == "active"

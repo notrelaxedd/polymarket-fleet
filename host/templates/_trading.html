@@ -111,13 +111,14 @@
 <section class="trading-group" id="positions" data-card="positions">
 {% set held = positions | sum(attribute="unrealized_cents") %}
 {% set npos = positions | map(attribute="rows") | map("length") | sum %}
-{% call ui.disclosure("trading-positions", "Positions", count=npos, summary=(positions | length) ~ " assignment" ~ ("" if positions | length == 1 else "s") ~ " holding" ~ ((" · unrealized " ~ (held | pnl)) if positions else "")) %}
+{% call ui.disclosure("trading-positions", "Positions", count=npos, summary=(positions | length) ~ " assignment" ~ ("" if positions | length == 1 else "s") ~ " holding" ~ ((" · unrealized net of fee " ~ (held | pnl)) if positions else "")) %}
 {% for p in positions %}
-<p class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong>{{ live_chip(p.mode) }} <span class="muted">{{ p.family or 'model' }} {{ p.model_id | short }}</span> <span class="positions-total">unrealized {{ pnl(p.unrealized_cents) }}</span></p>
+<p class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong>{{ live_chip(p.mode) }} <span class="muted">{{ p.family or 'model' }} {{ p.model_id | short }}</span> <span class="positions-total">unrealized (net of sale fee) {{ pnl(p.unrealized_cents) }}</span></p>
 <ul class="rows positions" data-list="positions" data-assignment="{{ p.assignment_id }}">
 {% for r in p.rows %}
-{% set meta %}{{ r.side }} wins &middot; size {{ r.size }} &middot; avg cost {{ r.avg_cost | price }} <span title="cost basis">{{ r.basis_cents | money }}</span> &middot; bid {% if r.bid is not none %}{{ r.bid | price }}{% else %}none{% endif %}{% endset %}
-{% call ui.row("position", r.market_id, None, r.market_title, meta=meta, cls="position-row" ~ (" is-live" if p.mode == 'live' else ""), attrs={"data-market": r.market_id}) %}
+{% set meta %}{{ r.side }} wins &middot; size {{ r.size }} &middot; avg cost {{ r.avg_cost | price }} &middot; basis {{ r.basis_cents | money }} &middot; bid {% if r.bid is not none %}{{ r.bid | price }}{% else %}none{% endif %}{% endset %}
+{# the value at the side is the unrealized P&L at the bid after the taker fee of the sale; the second grey line says so (a phone has no hover) #}
+{% call ui.row("position", r.market_id, None, r.market_title, meta=meta, meta2=("unrealized, net of sale fee" if r.unrealized_cents is not none else none), cls="position-row" ~ (" is-live" if p.mode == 'live' else ""), attrs={"data-market": r.market_id}) %}
   <span class="row-value" title="unrealized at the bid, net of the sale fee">{% if r.unrealized_cents is not none %}{{ pnl(r.unrealized_cents) }}{% else %}<span class="muted">no bid</span>{% endif %}</span>
 {% endcall %}
 {% endfor %}
@@ -135,7 +136,7 @@
 <ul class="rows" data-list="orders">
 {% for o in orders %}
 {% set title %}{{ order_line(o, avg=True) }}{{ order_chips(o) }}{% endset %}
-{% set meta %}{{ o.market_title }} &middot; edge {{ o.edge | signed_pct }} (my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}) &middot; {{ worker(o) }}{% if o.family %} {{ o.family }} {{ o.model_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
+{% set meta %}{{ o.market_title }} &middot; edge {{ o.edge | signed_pct }} (my {{ o.my_p | prob }} vs {{ o.market_p | prob }}) &middot; {{ worker(o) }}{% if o.family %} {{ o.family }} {{ o.model_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
 {% set why %}{% if o.reject_reason %}<span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% elif o.last_reason %}<span class="cause">{{ o.last_reason }}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
 {% call ui.row("order", o.id, None, title, meta=meta, meta2=why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
   {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}

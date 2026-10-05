@@ -33,10 +33,10 @@
 {% endcall %}
 {% call ui.disclosure('model-ingame-calibration', 'Calibration', summary=(iv.calibration | length) ~ ' probability bands, with the vegas_wp mean') %}
 {% if iv.calibration %}
-<p class="reading">Each row is a band of predicted probabilities: a calibrated model's home team wins about as often as it says.</p>
+<p class="reading">Each row is a band of predicted probabilities: the mean model probability, how often the home team actually won, and vegas_wp's mean; a calibrated model's home team wins about as often as it says.</p>
 <div class="table-wrap">
 <table class="metrics calibration ingame-calibration" data-list="ingame-calibration">
-  <thead><tr><th>p bucket</th><th>plays</th><th>mean p</th><th>mean outcome</th><th>vegas_wp mean</th></tr></thead>
+  <thead><tr><th title="predicted probability band">p</th><th>plays</th><th title="mean model probability">model</th><th title="mean outcome: how often the home team won">actual</th><th title="mean vegas_wp probability">vegas_wp</th></tr></thead>
   <tbody>
   {% for b in iv.calibration %}<tr><td>{{ b.bucket }}</td><td>{{ b.count | num }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td><td>{{ b.vegas_mean_p | fixed }}</td></tr>{% endfor %}
   </tbody>

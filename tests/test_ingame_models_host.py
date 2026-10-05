@@ -211,28 +211,39 @@ def test_models_pages_show_the_ingame_group(client, conn):
     doc = page(client.get("/models").text)
     assert not doc.has("#ingame") and not doc.has(".row-ingame"), "no in-game group without in-game lineages or bets"
     model = insert_ingame(conn, status="paper_ok", validation=ingame_validation(log_loss=0.44))
-    add_score(conn, pregame, game["game_id"], ingame_bets=2, ingame_pnl=-120)
-    add_score(conn, model, game["game_id"], clv=None, ingame_bets=3, ingame_pnl=480)
+    conn.execute("UPDATE models SET backtest_metrics = backtest_metrics || %s WHERE id = %s",
+                 (Jsonb({"seasons": list(range(2012, 2022))}), model["id"]))
+    add_score(conn, pregame, game["game_id"])
+    add_score(conn, model, game["game_id"], n_bets=1, clv=None, ingame_bets=1, ingame_pnl=480)
     doc = page(client.get("/models").text)
     group = doc.one("#ingame").card("ingame")
     assert group.one(".disclosure-title").text == "In-game models" and not group.is_open
     row = group.row("ingame-model", model["id"])
     assert row.chip("beats-vegas").text == "beats vegas_wp" and row.chip("paper_ok").text == "paper ok"
-    assert row.one(".row-ingame").text == "in-game paper 3 bets · +$4.80"
+    assert row.one(".row-ingame").text == "in-game paper 1 bet · +$4.80", "one bet reads 1 bet"
     assert row.one('.menu [data-action="assign-ingame"]').target == f"/trading?ingame_model={model['id']}#assign"
     pre = doc.row("model", pregame["id"])
-    assert pre.one(".row-ingame").text == "in-game 2 bets · -$1.20", "a pre-game lineage with in-game bets shows its in-game line"
+    assert not pre.has(".row-ingame") and not doc.has('[data-row="model"] .row-ingame'), (
+        "settlement credits in-game bets to the in-game model, so a pre-game row has no in-game line")
     assert not doc.has(f'[data-row="model"][data-id="{model["id"]}"]'), "an ingame_wp lineage is never in the pre-game lists"
     detail = page(client.get(f"/models/{model['id']}").text)
     assert detail.card("ingame-validation").has("details[data-key=model-ingame-validation]")
     assert detail.has("table.ingame-by-period") and detail.has("table.ingame-by-score") and detail.has("table.ingame-calibration")
     assert [r.first("td").text for r in detail.one("table.ingame-by-period").select("tbody tr")] == ["Q1", "Q2", "Q3", "Q4", "OT"]
     assert not detail.has('[data-action="validate"]') and not detail.has('[data-action="replay-snapshots"]'), "no pre-game jobs offered"
-    assert detail.action("assign-ingame").text == "Assign in-game" and "3 bets" in detail.prop("in-game paper record")
-    assert detail.stat("ingame-paper").one(".stat-value").text == "+$4.80"
+    assert detail.action("assign-ingame").text == "Assign in-game"
+    assert detail.prop("in-game paper record").startswith("1 game · 1 bet · +$4.80"), "plurals"
+    paper = detail.stat("ingame-paper")
+    assert paper.one(".stat-value").text == "+$4.80" and paper.one(".stat-note").text == "1 game · 1 bet"
+    assert detail.prop("fitted on").startswith("train seasons 2012-2021"), "fitted by the search, from its search-era seasons"
+    assert "not trained week by week" in detail.prop("fitted on") and "not trained (search candidate)" not in detail.text
+    heads = detail.one("table.ingame-calibration").select("thead th")
+    assert [h.text for h in heads] == ["p", "plays", "model", "actual", "vegas_wp"], "short headers fit a phone"
+    assert [h.attr("title") for h in heads[2:]] == ["mean model probability", "mean outcome: how often the home team won",
+                                                     "mean vegas_wp probability"], "the long names stay as titles"
     pre_page = page(client.get(f"/models/{pregame['id']}").text)
     assert pre_page.has('[data-action="replay-snapshots"]') and not pre_page.has("#ingame-validation")
-    assert pre_page.prop("in-game bets").startswith("2 bets · -$1.20")
+    assert "in-game bets" not in pre_page.text and pre_page.prop("trained through"), "no in-game line on a pre-game model page"
 
 
 # ------------------------------------------------------------------ data refresh and seed

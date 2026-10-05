@@ -9,14 +9,21 @@
    intro(page, text)                                the dismissable "What this page is" line
    bar(pct)                                         progress, pct a whole 0..100 (filter a fraction with bar_pct)
    {% call ui.disclosure(key, title, count=None, summary=None, open=False) %}body{% endcall %}
+     open=True renders it open with data-server-open: the server opens a group for a
+     reason (an error, the kill, an alert, a link that asked for it), so app.js never
+     folds it from a stored or earlier "closed", only from a fold by hand after it opened
    {% call ui.menu(label='More actions') %}forms and links, each a .menu-item with data-action{% endcall %}
-   {% call ui.row(kind, id, href, title, meta=None, meta2=None, ingame=None, cls='', attrs={}) %}
+   {% call ui.row(kind, id, href, title, meta=None, meta2=None, ingame=None, flags=None, cls='', attrs={}) %}
      chips, .row-value, ui.menu
    {% endcall %}
-     href None draws a div.row-main (a row without a page of its own); meta2 is a second
-     .row-meta line, ingame the in-game line (.row-meta.row-ingame, step 6C); cls adds
-     classes to the li (is-live), attrs more data attributes. Two meta lines at most keep
-     the row under 88 px at 390 px. #}
+     href None draws a div.row-main (a row without a page of its own); flags are chips
+     on their own line under the title (.row-flags, they wrap rather than being cut);
+     meta is the grey line (one line, ellipsis), meta2 a second one (.row-meta.row-meta2;
+     in an .ingame-row it is the status reason, a sentence that wraps), ingame the
+     in-game line (.row-meta.row-ingame, step 6C); cls adds classes to the li (is-live;
+     lines-full: on a phone the number sits beside the title and the lines under it get
+     the full width), attrs more data attributes. Three lines at most keep the row under
+     88 px at 390 px. #}
 
 {% macro stat(name, value, label, href=None, note=None) -%}
 <{{ 'a' if href else 'div' }} class="stat" data-stat="{{ name }}"{% if href %} href="{{ href }}"{% endif %}><span class="stat-value">{{ value }}</span><span class="stat-label">{{ label }}</span>{% if note %}<span class="stat-note">{{ note }}</span>{% endif %}</{{ 'a' if href else 'div' }}>
@@ -36,7 +43,7 @@
 {%- endmacro %}
 
 {% macro disclosure(key, title, count=None, summary=None, open=False) -%}
-<details class="disclosure" data-key="{{ key }}"{% if open %} open{% endif %}><summary><span class="disclosure-title">{{ title }}</span>{% if count is not none %}<span class="count">{{ count }}</span>{% endif %}{% if summary %}<span class="disclosure-summary">{{ summary }}</span>{% endif %}</summary><div class="disclosure-body">
+<details class="disclosure" data-key="{{ key }}"{% if open %} open data-server-open{% endif %}><summary><span class="disclosure-title">{{ title }}</span>{% if count is not none %}<span class="count">{{ count }}</span>{% endif %}{% if summary %}<span class="disclosure-summary">{{ summary }}</span>{% endif %}</summary><div class="disclosure-body">
 {{ caller() }}
 </div></details>
 {%- endmacro %}
@@ -47,9 +54,9 @@
 </div></details>
 {%- endmacro %}
 
-{% macro row(kind, id, href, title, meta=None, meta2=None, ingame=None, cls='', attrs={}) -%}
+{% macro row(kind, id, href, title, meta=None, meta2=None, ingame=None, flags=None, cls='', attrs={}) -%}
 {% set tag = 'a' if href else 'div' %}
-<li class="row{% if cls %} {{ cls }}{% endif %}" data-row="{{ kind }}" data-id="{{ id }}"{% for k, v in attrs.items() %} {{ k }}="{{ v }}"{% endfor %}><{{ tag }} class="row-main"{% if href %} href="{{ href }}"{% endif %}><span class="row-title">{{ title }}</span>{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}{% if meta2 %}<span class="row-meta">{{ meta2 }}</span>{% endif %}{% if ingame %}<span class="row-meta row-ingame">{{ ingame }}</span>{% endif %}</{{ tag }}>
+<li class="row{% if cls %} {{ cls }}{% endif %}" data-row="{{ kind }}" data-id="{{ id }}"{% for k, v in attrs.items() %} {{ k }}="{{ v }}"{% endfor %}><{{ tag }} class="row-main"{% if href %} href="{{ href }}"{% endif %}><span class="row-title">{{ title }}</span>{% if flags and flags | trim %}<span class="row-flags">{{ flags }}</span>{% endif %}{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}{% if meta2 %}<span class="row-meta row-meta2">{{ meta2 }}</span>{% endif %}{% if ingame %}<span class="row-meta row-ingame">{{ ingame }}</span>{% endif %}</{{ tag }}>
 {{ caller() }}
 </li>
 {%- endmacro %}

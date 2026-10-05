@@ -10,6 +10,7 @@ import pytest
 
 from tests.hw.conftest import PHONE
 from tests.hw.serve import Server
+from tests.hw.ui_checks import menus_on_top
 
 
 @pytest.fixture
@@ -114,3 +115,44 @@ def test_without_javascript_copy_buttons_hide_and_set_shows(browser, server, mak
         assert all(not page.locator("button.js-only").nth(i).is_visible() for i in range(3))
     finally:
         context.close()
+
+
+def test_menus_of_dimmed_workers_open_above_the_next_card(page, server, make_worker) -> None:
+    """HIGH (step 7 review): an offline or disabled worker's card is dimmed with opacity,
+    which makes a stacking context, so the next card's row painted over its open menu and
+    a tap on Disable or Details landed on the next worker's role select. The card holding
+    an open menu is lifted, also while the connection is lost (the grid is dimmed)."""
+    offline = make_worker("box1", online=False)
+    make_worker("box2", enabled=False)
+    make_worker("box3")
+    _fleet(page, server, wait_until="networkidle")
+    assert menus_on_top(page, "fleet") == [] and menus_on_top(page, "fleet", dimmed=True) == []
+    page.route("**/fragments/fleet", lambda route: route.abort())
+    page.wait_for_function("document.body.classList.contains('conn-lost')", timeout=8_000)
+    assert menus_on_top(page, "fleet") == []
+    page.click(f"{_row(offline.id)} details.menu > summary")
+    details = page.locator(f'{_row(offline.id)} [data-action="details"] > summary')
+    details.click()
+    assert details.evaluate("s => s.parentElement.open"), "a real tap on Details opens it"
+
+
+def test_anchor_links_open_their_group_pick_the_job_kind_and_clear_the_bar(page, server) -> None:
+    """MEDIUM (step 7 review): /jobs#model_search showed the Backtest form (the kind
+    switch hid the target); a stored "closed" or the section id outside its <details> left
+    an anchored group folded; the target landed under the sticky top bar."""
+    page.goto(server.url + "/jobs#model_search", wait_until="networkidle")
+    assert page.input_value('select[data-switch="job-kind"]') == "model_search"
+    assert page.locator('[data-form="model_search"]').is_visible() and not page.locator('[data-form="backtest"]').is_visible()
+    top, bar = page.evaluate("[document.getElementById('model_search').getBoundingClientRect().top, "
+                             "document.getElementById('topbar').getBoundingClientRect().bottom]")
+    assert top >= bar, f"the target lands below the bar ({top} < {bar})"
+    page.evaluate("() => localStorage.setItem('fleet.details.settings-live', '0')")
+    page.goto(server.url + "/settings#live", wait_until="networkidle")
+    assert page.evaluate("document.querySelector('details[data-key=\"settings-live\"]').open"), "the URL target wins over a stored close"
+    top, bar = page.evaluate("[document.getElementById('live').getBoundingClientRect().top, "
+                             "document.getElementById('topbar').getBoundingClientRect().bottom]")
+    assert top >= bar, f"#live lands below the bar ({top} < {bar})"
+    page.evaluate("() => localStorage.setItem('fleet.details.trading-exchange', '0')")
+    page.goto(server.url + "/trading#exchange", wait_until="networkidle")
+    assert page.evaluate("document.querySelector('details[data-key=\"trading-exchange\"]').open"), "a section id opens the group it wraps"
+

@@ -90,6 +90,29 @@ def test_a_rejected_form_opens_its_group_and_says_where(client):
     assert "search 2010-2021" in _summary(p, "settings-robustness"), "the header keeps the stored values"
 
 
+def test_a_rejected_post_keeps_the_stats_on_the_stored_values(client, conn):
+    """The stats say what is in force: a rejected Trading post re-renders its form with
+    the typed market source, but the Market source stat keeps the stored one."""
+    form = _settings(client).form("trade")
+    data = {i.attr("name"): i.attr("value") or "" for i in form.select("input")
+            if i.attr("name") and i.attr("type") not in ("checkbox", "submit")}
+    data.update({t.attr("name"): t.text for t in form.select("textarea")})
+    data.update(market_source="polymarket_us", participation="7")
+    r = client.post("/settings/trade", data=data, follow_redirects=False)
+    assert r.status_code == 400
+    p = page(r.text)
+    assert p.stat("market-source").one(".stat-value").text == "sim", "the stored source, not the rejected one"
+    assert p.input("market_source").one("option[selected]").attr("value") == "polymarket_us", "the form keeps what was typed"
+    assert _summary(p, "settings-trading").startswith("sim")
+    stored = conn.execute("SELECT value FROM settings WHERE key = 'market_source'").fetchone()["value"]
+    assert stored == "sim"
+
+
+def test_pregame_only_hint_names_the_in_game_rules(client):
+    hint = _settings(client).field("trade_pregame_only").one(".help").text
+    assert hint == "no orders after kickoff; unticked, orders after kickoff go only through the in-game rules (paper only)"
+
+
 def test_help_is_a_muted_line_under_the_input(client):
     p = _settings(client)
     wrappers = p.select("[data-field]")

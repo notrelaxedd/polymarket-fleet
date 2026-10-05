@@ -6,7 +6,7 @@
 <span class="pill {{ mode }}">{{ mode | upper }}</span>
 <a class="pnl{% if today < 0 %} pnl-neg{% endif %}" href="/trading" data-pnl="{{ mode }}">{{ mode }} <span class="num">{{ today | pnl }}</span> today</a>
 {% if topbar.killed %}
-<span class="chip chip-killed" data-chip="killed" data-killed="1" aria-disabled="true">KILLED</span>
+<span class="chip chip-bad chip-killed" data-chip="killed" data-killed="1">KILLED</span>
 {% if topbar.auto_kill %}
 <a class="killed-text" href="/settings#kill" data-auto-kill="{{ topbar.auto_kill.reason }}">TRADING KILLED automatically: <span class="auto-reason">{{ topbar.auto_kill.reason }}</span>. Reset in Settings.</a>
 {% else %}

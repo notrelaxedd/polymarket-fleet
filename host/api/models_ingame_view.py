@@ -1,14 +1,15 @@
 """Display shaping for the in-game (ingame_wp) parts of the Models pages (docs/UI.md
 "Models", docs/INGAME.md "Scoring and dashboard"): the rows of the "In-game models"
-group, the in-game line of a pre-game row whose lineage has in-game bets, and the
-stats and verdict at the top of an ingame_wp model page. The numbers come from
-host.leaderboard_ingame (`ingame`, `ingame_validation`, `ingame_reason`); this module
-only turns them into words and short numbers."""
+group and the stats and verdict at the top of an ingame_wp model page. Settlement
+credits every in-game bet to the assignment's in-game model, so only an ingame_wp
+lineage has an in-game record and a pre-game row has no in-game line. The numbers
+come from host.leaderboard_ingame (`ingame`, `ingame_validation`, `ingame_reason`);
+this module only turns them into words and short numbers."""
 from __future__ import annotations
 
 from typing import Any
 
-from host.api.models_view import status_state, status_word
+from host.api.models_view import counted, status_state, status_word
 from host.ingame_eligibility import MIN_PLAYS
 from host.web import fixed, num, season_span, signed_money
 
@@ -19,8 +20,7 @@ def record_line(record: dict[str, Any] | None, lead: str = "in-game") -> str | N
     """"in-game 3 bets · +$4.80" for a lineage with in-game bets, None without."""
     if not record or not record.get("bets"):
         return None
-    bets = int(record["bets"])
-    return f"{lead} {bets} bet{'' if bets == 1 else 's'} · {signed_money(record.get('pnl_cents'))}"
+    return f"{lead} {counted(record['bets'], 'bet')} · {signed_money(record.get('pnl_cents'))}"
 
 
 def gain_text(iv: dict[str, Any] | None) -> str:
@@ -56,13 +56,6 @@ def ingame_row(entry: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
-def add_pregame_lines(entries: list[dict[str, Any]]) -> None:
-    """The in-game line of a pre-game row whose lineage has in-game bets (ui.row's
-    `ingame`); nothing for the others."""
-    for entry in entries:
-        entry.setdefault("view", {})["ingame"] = record_line(entry.get("ingame"))
-
-
 def ingame_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
     """The three stats at the top of an ingame_wp model page: log-loss against
     vegas_wp, the held-out plays, the in-game paper record."""
@@ -76,7 +69,7 @@ def ingame_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
         plays = {"value": "-", "note": f"{num(MIN_PLAYS)} needed for paper"}
     bets = int(record.get("bets") or 0)
     paper = {"value": signed_money(record.get("pnl_cents")) if bets else "-",
-             "note": f"{record.get('games', 0)} games · {bets} bets" if bets else "no in-game bets yet"}
+             "note": f"{counted(record.get('games'), 'game')} · {counted(bets, 'bet')}" if bets else "no in-game bets yet"}
     return [
         {"name": "log-loss", "label": "Log-loss vs vegas_wp", **loss},
         {"name": "plays", "label": "Held-out plays", **plays},

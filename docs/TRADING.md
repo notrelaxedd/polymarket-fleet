@@ -217,7 +217,8 @@ worker offline and, for paper, with the exchange down. `kill_switch` is read-onl
 `POST /api/settings` (400: use `/api/kill` or `/api/kill/reset`), and `live_enabled`
 cannot be switched on while the fleet is killed. Activate and "Activate all paper" read
 the flag `FOR SHARE` before touching an assignment, so a kill committing at the same time
-is waited for and nothing it halted is re-activated.
+is waited for and nothing it halted is re-activated. An assignment whose lineage is
+retired is never re-activated: Activate answers 409 and "Activate all paper" skips it.
 
 ## Role switch away from trade, orphans
 

@@ -36,7 +36,8 @@
   {{ ui.stat('live', 'On' if live.live_enabled else 'Off', 'Live trading', href='#live', note='real orders' if live.live_enabled else 'paper only') }}
   {{ ui.stat('kill', 'Killed' if killed else 'Off', 'Kill switch', href='#kill', note='reset below' if killed else 'trading may run') }}
   {{ ui.stat('max-bet', settings.max_bet_cents | money, 'Max bet', href='#trading', note='per market') }}
-  {{ ui.stat('market-source', values.market_source, 'Market source', href='#trade') }}
+  {# stored settings, not `values`: a rejected post re-renders the form with what was typed, but the stat says what is in force #}
+  {{ ui.stat('market-source', settings.market_source or market_sources[0], 'Market source', href='#trade') }}
 </div>
 
 {% if errors %}
@@ -76,7 +77,7 @@
     {{ field('max_paper_models_per_game', 'Max paper models per game', '1..20; live is always one', 'numeric') }}
     {{ field('max_exposure_paper', 'Max exposure, paper', '$, 0 = off; open orders plus positions', 'decimal') }}
     {{ field('max_exposure_live', 'Max exposure, live', '$, 0 = off; open orders plus positions', 'decimal') }}
-    {{ check('trade_pregame_only', 'Pregame only', 'no orders after kickoff') }}
+    {{ check('trade_pregame_only', 'Pregame only', 'no orders after kickoff; unticked, orders after kickoff go only through the in-game rules (paper only)') }}
   </div>
   <p class="help">Price band (a fixed rule): 1 to 99 cents, on the market tick, at most 5 cents above the ask.</p>
   <h3>Market source and snapshots</h3>

@@ -1,12 +1,15 @@
 """The Home page (docs/UI.md "Home"): four headline stats, the "Needs attention" list
-and the last settled bets.
+and the last settled bets, all inside `#home-live`, which app.js refreshes every 5 s
+from GET /fragments/home.
 
 Read-only. The attention list is built from the same signals as the top bar banners
 (exchange down, assignments unattended, the kill switch with its auto-kill reason)
-plus: an enabled worker offline for more than five minutes, an active assignment
-whose model is no longer eligible for its mode, a validate job that failed (the
-model's latest validate job), and exchange credentials that were never checked or
-failed their last check. Each item is a dict the template renders as one row.
+plus: an enabled worker offline for more than five minutes, an assignment of an
+unfinished game whose model is no longer eligible for its mode (an active one on a
+retired lineage, or a live one, active or halted, whose lineage left live_eligible), a
+validate job that failed (the model's latest validate job), and exchange credentials
+that were never checked or failed their last check. Each item is a dict the template
+renders as one row.
 """
 from __future__ import annotations
 
@@ -16,6 +19,7 @@ from typing import Any
 import psycopg
 
 from host import pnl, views
+from host.api.models_view import headline
 from host.leaderboard import leaderboard
 from host.settings import get_settings
 
@@ -34,18 +38,13 @@ def _item(key: str, state: str, word: str, title: str, meta: str, href: str) -> 
 
 
 def best_model(board: dict[str, list[dict[str, Any]]]) -> dict[str, Any] | None:
-    """The top ranked lineage with its headline number chosen by its rank basis:
-    CLV on paper or snapshot replay, the held-out ROI otherwise."""
+    """The top ranked lineage with its headline number chosen by its rank basis, by
+    the Models page's own rule (host.api.models_view.headline): CLV on paper or
+    snapshot replay, the held-out ROI otherwise, "ROI -" without held-out bets."""
     if not board["ranked"]:
         return None
     top = board["ranked"][0]
-    if top["rank_mode"] == "paper":
-        metric, value = "CLV", top["paper"].get("avg_clv")
-    elif top["rank_mode"] == "snapshot":
-        metric, value = "CLV", (top.get("snapshot") or {}).get("avg_clv")
-    else:
-        metric, value = "ROI", (top.get("validation") or {}).get("roi")
-    return {"id": top["id"], "name": f"{top['family']} {top['short_params']}", "metric": metric, "value": value,
+    return {"id": top["id"], "name": f"{top['family']} {top['short_params']}", "text": headline(top)["text"],
             "basis": top["rank_mode"]}
 
 
@@ -61,20 +60,27 @@ def worker_items(workers: list[dict[str, Any]], now: datetime) -> list[dict[str,
 
 
 def assignment_items(conn: psycopg.Connection) -> list[dict[str, str]]:
-    """Active assignments whose lineage is retired, or live ones whose lineage is not live_eligible."""
+    """Assignments of unfinished games whose model is no longer eligible: an active one
+    on a retired lineage, or a live one, active or halted, whose lineage is not
+    live_eligible. Leaving live_eligible halts the live assignments in the same
+    transaction (host.eligibility), so the halted ones are what the owner needs to see;
+    a halted assignment of a retired lineage is not listed, retiring halted it on purpose."""
     rows = conn.execute(
         """
-        SELECT a.id, a.mode, r.status, g.away_team || ' @ ' || g.home_team AS game
+        SELECT a.id, a.mode, a.status AS assignment_status, r.status, g.away_team || ' @ ' || g.home_team AS game
           FROM assignments a
           JOIN models r ON r.id = a.lineage_id
           LEFT JOIN games g ON g.game_id = a.game_id
-         WHERE a.status = 'active' AND (r.status = 'retired' OR (a.mode = 'live' AND r.status <> 'live_eligible'))
+         WHERE g.status IS DISTINCT FROM 'final'
+           AND ((a.status = 'active' AND (r.status = 'retired' OR (a.mode = 'live' AND r.status <> 'live_eligible')))
+                OR (a.status = 'halted' AND a.mode = 'live' AND r.status NOT IN ('live_eligible', 'retired')))
          ORDER BY a.created_at
         """
     ).fetchall()
     return [
-        _item(f"assignment-{r['id']}", "bad", "no model", f"{r['game'] or 'A game'}: no eligible model",
-              f"{r['mode']} assignment, model {r['status'].replace('_', ' ')}", "/trading#assignments")
+        _item(f"assignment-{r['id']}", "warn" if r["assignment_status"] == "halted" else "bad", "no model",
+              f"{r['game'] or 'A game'}: no eligible model",
+              f"{r['mode']} assignment {r['assignment_status']}, model {r['status'].replace('_', ' ')}", "/trading#assignments")
         for r in rows
     ]
 

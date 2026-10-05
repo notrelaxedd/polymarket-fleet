@@ -391,7 +391,8 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     assert entry["paper"]["avg_clv"] is not None and entry["rank_mode"] == "validation", "one game: not yet ranked on paper (step 6A ranks by the validation era)"
     assert page(host.client.get("/models").text).row("model", entry["id"])
     assert dollars in page(host.client.get(f"/models/{entry['id']}").text).prop("Paper"), "the paper stat on the model page"
-    assert page(host.client.get(f"/models/{model_id}").text).prop("paper record").startswith(f"1 games · 2 bets · {dollars}")
+    record = page(host.client.get(f"/models/{model_id}").text).prop("paper record")
+    assert record.startswith("1 game · 2 bets · ") and dollars in record, record
     trading = page(host.client.get("/trading").text)
     row = trading.row("assignment", aid)
     assert row.chip("settled").text == "settled" and GAME_ID in row.text
