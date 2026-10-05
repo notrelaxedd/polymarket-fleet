@@ -27,7 +27,10 @@ RELEASE_POLL_SECONDS = 0.1
 class OrderRequestBody(BaseModel):
     """POST /api/v1/orders/request. Limit or cost fields the worker adds are ignored.
     `order_side` is "buy" (default) or "sell" (docs/TRADING.md "Selling"); `side`, the
-    team side the worker may send, is ignored as before."""
+    team side the worker may send, is ignored as before. `ingame` marks an in-game
+    request (docs/INGAME.md, decided by host.trading.ingame); `gtd_seconds` is the
+    worker's GTD wish, kept in the approval event: the host gives in-game orders
+    settings.ingame_gtd_seconds."""
 
     model_config = ConfigDict(extra="ignore")
     client_request_id: str = Field(min_length=1, max_length=64)
@@ -43,6 +46,8 @@ class OrderRequestBody(BaseModel):
     edge: float | None = Field(default=None, allow_inf_nan=False)
     rationale: str | None = Field(default=None, max_length=512)
     order_side: Literal["buy", "sell"] = "buy"
+    ingame: bool = False
+    gtd_seconds: int | None = Field(default=None, ge=1, le=86_400)
 
 
 class ReleaseEntry(BaseModel):

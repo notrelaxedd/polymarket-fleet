@@ -287,3 +287,8 @@ SCHEMA: dict[str, Validator] = {
     "nflverse_pbp_url": _season_url,
     "signals_refresh_hours": _int_range(1, 168),
 }
+
+# step 6 Part C: the in-game trade rules and the game-state feed (host/settings_schema_ingame.py)
+from host.settings_schema_ingame import INGAME_SCHEMA  # noqa: E402
+
+SCHEMA.update(INGAME_SCHEMA)

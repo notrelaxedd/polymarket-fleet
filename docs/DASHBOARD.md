@@ -346,6 +346,45 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
     and keeps its Cancel button.
   - Ledger (`#ledger`): "OK" with the number of bankrolls whose replay matches the cached
     columns, or a red "problems" chip with one line per disagreement.
+- (step 6 Part C) In-game (docs/INGAME.md; view shaping in `host/trading/views_ingame.py`,
+  forms in `host/api/dashboard_ingame.py`). In-game orders are paper only in this step.
+  - New assignment form: an "In-game model" select (`ingame_model_id`, ingame_wp models of
+    non-retired lineages, "ingame_wp · L2 1.00 · time 1.00 · field 1.00 · paper_ok ·
+    8f173b7b", first option "no in-game model") and a "Trade in-game" box (`trade_ingame`,
+    ticked by default when `settings.trade_ingame` is true). A hidden `ingame_form=1`
+    marker tells an unticked box (explicit off) from a post without the fields (the step
+    4 call). The pre-game model select no longer lists ingame_wp models (they trade only
+    in-game); an Assign button on an ingame_wp model (`?model=`) preselects it in the
+    in-game select. `create_assignment` checks the fields; a refusal re-renders the form.
+  - Assignments: a new "in-game" column (`td.c-ingame`, a full-width line on a phone)
+    with an "in-game on" chip (in-game model set and `trade_ingame` on) or "in-game off",
+    the latest game state as "Q3 4:12 · 17-14 · 3 s ago" (away-home score as in the "KC @
+    LV" heading; "Half", "End Q1", "OT 1:01", "Final", "Pre-game"), or an amber "state
+    stale" with the last line muted once the state is older than
+    `ingame_max_state_age_s`, or "no game state yet"; while the game is in progress the
+    in-game model's home probability next to the home market mid ("model LV 0.62 · mid
+    0.58", `data-p-home`), from `latest_state` and the devigged closing moneyline (else
+    the frozen closing price of the home market) as `pregame_p_home`. A paper assignment
+    that can still trade carries a toggle form (`POST /assignments/{id}/ingame`: in-game
+    model select, "trade in-game" box, Save) that calls `assignments_ingame.set_ingame`
+    (audited; turning it off cancels the open in-game orders, named in the flash); a
+    refusal is a flash. A live assignment reads "in-game orders are paper only".
+  - Orders and fills: an `in-game` chip (badge colours with an accent ring) on in-game
+    orders in the open and recent lists and on their fills. The in-game reject reasons
+    read in words: `ingame_disabled`, `ingame_paper_only`, `ingame_stale` ("game state too
+    old"), `ingame_quiet`, `ingame_cutoff`, `ingame_lag_suspended`; `max_bet` on an
+    in-game order names the lower of the caps including `ingame_max_bet_cents`.
+  - Exchange block: a "Probe game state" form (ESPN event id, digits only, with the
+    event ids of assigned unfinished games offered as suggestions) posting to
+    `POST /exchange/probe-gamestate`, which renders `probe.html` as "Game-state probe"
+    with event_id, game_id (or "no game has this ESPN event id"), url, status, error, the
+    parsed states (Copy) and the raw payload (Copy). The "In-game feed" block
+    (`#ingame-feed`, last in the exchange block): one line per source over its last 20
+    measured events ("ESPN: median 6 s behind the market over 12 events", "ahead of"
+    when negative, "Yahoo: not enough data (3 of 5 events measured)" below
+    `ingame_lag_min_events`), a "not suspended" / red "buys suspended" chip with the
+    reason line (median lag against `ingame_max_lag_s`; sells stay allowed), and the
+    polled sources.
 
 ## Step 5 screenshots
 

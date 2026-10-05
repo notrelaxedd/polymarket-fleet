@@ -19,7 +19,8 @@ Three rules keep the simulation honest:
   (buys) and bid levels (sells) are shared separately. The paper fill id is
   `paper:{order}:{snapshot}:{level}` for an ask level and `...:b{level}` for a bid level.
 - With `trade_pregame_only`, snapshots taken at or after the game's kickoff never fill
-  anything (the executor cancels what is still open at kickoff).
+  a pre-game order (the executor cancels what is still open at kickoff). An in-game
+  order (`orders.ingame`) fills on the snapshots after kickoff while it is open.
 
 Nothing fills while the kill switch is on.
 """
@@ -98,8 +99,10 @@ def fill_id(order_id: Any, snapshot_id: Any, level: int, side: str) -> str:
 
 def kickoff_bound(conn: psycopg.Connection, order: dict[str, Any]) -> datetime | None:
     """The game's kickoff when trade_pregame_only is on (snapshots from then on are
-    not used), else None."""
-    if order.get("assignment_id") is None or get_setting(conn, "trade_pregame_only", True) is False:
+    not used), else None; always None for an in-game order."""
+    if order.get("ingame") or order.get("assignment_id") is None:
+        return None
+    if get_setting(conn, "trade_pregame_only", True) is False:
         return None
     row = conn.execute(
         "SELECT g.kickoff_at FROM assignments a JOIN games g ON g.game_id = a.game_id WHERE a.id = %s",

@@ -12,7 +12,7 @@ Features (FEATURE_NAMES order), with s = game seconds left (3600 at kickoff, 0 a
 of regulation, the overtime clock in overtime), t = s / 3600 and sign = +1 when the home
 team has the ball, -1 for the away team, 0 for nobody:
   const               1.0
-  score_time          score_diff / sqrt(t + 0.01) * time_scale
+  score_time          score_diff / (t + 0.01) ** (0.5 * time_scale)
   pregame_logit       logit(pregame_p)
   pregame_logit_time  logit(pregame_p) * t
   field_position      sign * (100 - yardline_100) / 100 * fp_scale
@@ -22,6 +22,10 @@ team has the ball, -1 for the away team, 0 for nobody:
   end_half1           sign * [last 120 s of the first half]
   end_game            sign * [last 120 s of the second half or of overtime]
 A missing pre-game probability counts as 0.5, missing fields as 0 terms.
+
+time_scale is an exponent (1 = the classic 1/sqrt(t) sharpening, 2 = 1/t), fp_scale a
+factor. The L2 penalty is per 1000 plays: the fit uses l2 * n_plays / 1000, so the
+searched range [0.01, 10] means the same shrinkage on a season and on a decade.
 """
 
 from __future__ import annotations
@@ -47,6 +51,7 @@ QUARTER_SECONDS = 900
 END_WINDOW = 120
 MAX_DISTANCE = 20
 STOP_EVERY = 20000
+L2_PER_PLAYS = 1000
 L2_RANGE = (0.01, 10.0)
 SCALE_RANGE = (0.5, 2.0)
 
@@ -112,9 +117,10 @@ def state_from_row(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def feature_vector(state: dict[str, Any], pregame_p: float | None, time_scale: float = 1.0,
-                   fp_scale: float = 1.0) -> list[float]:
-    """The features of a state in FEATURE_NAMES order."""
+def raw_features(state: dict[str, Any], pregame_p: float | None) -> list[float]:
+    """The unscaled features of a state plus one trailing element: FEATURE_NAMES order with
+    the plain score difference in the score_time column and fp_scale 1, then
+    t + 0.01 (the time base of score_time). finish_features turns it into the vector."""
     s, half = game_clock(state)
     t = min(s, GAME_SECONDS) / GAME_SECONDS
     diff = (_num(state.get("home_score")) or 0.0) - (_num(state.get("away_score")) or 0.0)
@@ -123,7 +129,7 @@ def feature_vector(state: dict[str, Any], pregame_p: float | None, time_scale: f
     possession = state.get("possession")
     sign = 1.0 if possession == "home" else -1.0 if possession == "away" else 0.0
     yardline = _num(state.get("yardline_100"))
-    field = sign * (100.0 - yardline) / 100.0 * fp_scale if yardline is not None else 0.0
+    field = sign * (100.0 - yardline) / 100.0 if yardline is not None else 0.0
     down = _int(state.get("down"))
     distance = _num(state.get("distance"))
     late_down = sign if down in (3, 4) else 0.0
@@ -132,21 +138,33 @@ def feature_vector(state: dict[str, Any], pregame_p: float | None, time_scale: f
     timeouts = (ht - at) / 3.0 if ht is not None and at is not None else 0.0
     end_half1 = sign if half == 1 and HALF_SECONDS < s <= HALF_SECONDS + END_WINDOW else 0.0
     end_game = sign if half >= 2 and s <= END_WINDOW else 0.0
-    return [1.0, diff / math.sqrt(t + 0.01) * time_scale, lp, lp * t, field, late_down, dist, timeouts,
-            end_half1, end_game]
+    return [1.0, diff, lp, lp * t, field, late_down, dist, timeouts, end_half1, end_game, t + 0.01]
 
 
 SCORE_TIME_INDEX = FEATURE_NAMES.index("score_time")
 FIELD_INDEX = FEATURE_NAMES.index("field_position")
+K = len(FEATURE_NAMES)
 
 
-def scale_features(base: list[float], time_scale: float, fp_scale: float) -> list[float]:
-    """feature_vector(state, p, time_scale, fp_scale) from feature_vector(state, p) (both
-    scales enter as plain factors of one column each); the search builds the base once."""
-    out = list(base)
-    out[SCORE_TIME_INDEX] *= time_scale
+def finish_features(raw: list[float] | Any, time_scale: float, fp_scale: float) -> list[float]:
+    """The feature vector (FEATURE_NAMES order) of raw_features(...) under the two scales:
+    score_time = diff / (t + 0.01) ** (0.5 * time_scale), field_position * fp_scale.
+    The search builds the raw rows once and finishes them per candidate."""
+    out = [float(v) for v in raw[:K]]
+    out[SCORE_TIME_INDEX] = out[SCORE_TIME_INDEX] / float(raw[K]) ** (0.5 * time_scale)
     out[FIELD_INDEX] *= fp_scale
     return out
+
+
+def feature_vector(state: dict[str, Any], pregame_p: float | None, time_scale: float = 1.0,
+                   fp_scale: float = 1.0) -> list[float]:
+    """The features of a state in FEATURE_NAMES order."""
+    return finish_features(raw_features(state, pregame_p), time_scale, fp_scale)
+
+
+def effective_l2(l2: float, n_plays: int) -> float:
+    """The penalty the fit uses: l2 per 1000 plays."""
+    return float(l2) * n_plays / L2_PER_PLAYS
 
 
 def _log_uniform(rng: random.Random, low: float, high: float) -> float:
@@ -203,9 +221,10 @@ class IngameWP(Model):
         self.train_seasons = sorted(seasons)
 
     def fit_matrix(self, xs: list[list[float]], ys: list[float]) -> None:
-        """Fit on prebuilt feature rows (the search builds them once per candidate)."""
-        self.coef = [float(w) for w in fit_logistic(xs, ys, l2=float(self.params["l2"]), unpenalised=[0])] \
-            if xs else [0.0] * len(FEATURE_NAMES)
+        """Fit on prebuilt feature rows (the search builds them once per candidate); the
+        penalty is params l2 per 1000 rows."""
+        l2 = effective_l2(float(self.params["l2"]), len(xs))
+        self.coef = [float(w) for w in fit_logistic(xs, ys, l2=l2, unpenalised=[0])] if xs else [0.0] * K
         self.n_train = len(xs)
 
     def predict_features(self, x: list[float]) -> float:
@@ -255,7 +274,7 @@ def _span(seasons: Any) -> str:
 def build_summary(params: dict[str, Any], metrics: dict[str, Any]) -> str:
     """Exactly three sentences: what it is, how it validated, the verdict."""
     first = (f"In-game win probability from score, clock, pre-game line, possession and field position "
-             f"(L2 {float(params.get('l2', 0)):.2g}, time scale {float(params.get('time_scale', 1)):.2f}, "
+             f"(L2 {float(params.get('l2', 0)):.2g} per 1000 plays, time exponent {float(params.get('time_scale', 1)):.2f}, "
              f"field scale {float(params.get('fp_scale', 1)):.2f}).")
     n = int(metrics.get("n_plays") or 0)
     if n == 0:

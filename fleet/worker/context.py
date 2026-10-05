@@ -16,18 +16,25 @@ A backtest with params.price_source "snapshots" (docs/ROBUSTNESS.md B1) also get
 (<state>/cache/prices-<platform>.json with its ETag, conditional
 GET /api/v1/data/prices?since=...&platform=...). Platform sim without
 params.allow_sim_prices is not fetched: the job itself refuses it.
+
+A model_search with params.family "ingame_wp" (step 6C, the in-game search) gets
+{"games_path": None, "model": None, "pbp_path": <cache file>} instead: the
+play-by-play rows of the seasons from the first train season to the last validation
+season (an open end = the current year), refreshed with an ETag by
+fleet.worker.pbp_cache (<state>/cache/pbp.jsonl.gz); the games feed is not fetched.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any
 from urllib.parse import urlencode
 
 from fleet.common import http
 from fleet.sim.prices import DEFAULT_PLATFORM, SIM_PLATFORM
-from fleet.worker import config
+from fleet.worker import config, pbp_cache
 
 log = logging.getLogger("fleet.context")
 
@@ -35,6 +42,7 @@ CONTEXT_KINDS = ("backtest", "model_search", "train", "validate")
 GAMES_PATH = "/api/v1/data/games"
 PRICES_PATH = "/api/v1/data/prices"
 PRICES_SINCE = "2000-01-01"
+INGAME_FAMILY = "ingame_wp"
 
 
 class ContextError(Exception):
@@ -162,6 +170,31 @@ def snapshot_platform(job: dict[str, Any]) -> str | None:
     return platform
 
 
+def is_ingame_search(job: dict[str, Any]) -> bool:
+    params = job.get("params") if isinstance(job.get("params"), dict) else {}
+    return job.get("kind") == "model_search" and params.get("family") == INGAME_FAMILY
+
+
+def pbp_seasons(params: dict[str, Any]) -> tuple[int, int]:
+    """(first, last) of the pbp rows an in-game search needs: the first train season to
+    the last validation season, an open end being the current year."""
+    from fleet.sim.ingame import job_eras
+
+    train, validation = job_eras(params)
+    last_year = time.gmtime().tm_year
+    first = train[0] if train[0] is not None else pbp_cache.DEFAULT_SEASONS[0]
+    last = validation[1] if validation[1] is not None else last_year
+    return int(first), max(int(first), int(last))
+
+
+def refresh_pbp(host_url: str, token: str, state_dir: str, params: dict[str, Any], timeout: float) -> str:
+    """The pbp cache path for an in-game search; ContextError when the rows are unavailable."""
+    try:
+        return pbp_cache.refresh_pbp(host_url, token, state_dir, pbp_seasons(params), timeout=timeout)
+    except (pbp_cache.PbpCacheError, ValueError, TypeError) as exc:
+        raise ContextError(str(exc)) from None
+
+
 def fetch_model(host_url: str, token: str, model_id: str, timeout: float) -> dict[str, Any]:
     """GET /api/v1/models/{id}; ContextError on any failure or a non-object answer."""
     url = f"{host_url}/api/v1/models/{model_id}"
@@ -183,8 +216,12 @@ def build_context(
     data_timeout: float,
 ) -> dict[str, Any]:
     """{"games_path", "model"} for one job (plus "prices_path" for a snapshot
-    backtest); ContextError when it cannot be built."""
+    backtest, "pbp_path" instead of the games for an in-game search); ContextError when
+    it cannot be built."""
     params = job.get("params") if isinstance(job.get("params"), dict) else {}
+    if is_ingame_search(job):
+        return {"games_path": None, "model": None,
+                "pbp_path": refresh_pbp(host_url, token, state_dir, params, data_timeout)}
     games_path = refresh_games(host_url, token, state_dir, data_timeout)
     model = None
     model_id = params.get("model_id")

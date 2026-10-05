@@ -8,7 +8,8 @@ after `submitting_grace_s`), never resubmitted blind. `cancel_requested` rows go
 the gateway with retries at 1, 2, 4, 8 s (then every 8 s) until `open_orders()` no
 longer lists them, their last fills absorbed before the release (and never closed
 while the fills call fails); `open`/`partial` rows past `gtd_at` expire: paper at
-once with the release, live through the same cancel path (reason `gtd`), closed as
+once with the release (an in-game order, `orders.ingame`, gets a GTD of
+`ingame_gtd_seconds` and is never bounded or cancelled by kickoff), live through the same cancel path (reason `gtd`), closed as
 `expired` once the exchange no longer lists them. Nothing is ever submitted while the
 kill switch is on: the kill flag is read FOR SHARE in the transaction that marks a
 row `submitting`, so a kill in flight is waited for and an approved row found under
@@ -131,8 +132,10 @@ class Executor:
     def submit_approved(self, conn: psycopg.Connection, now: datetime) -> int:
         """Move approved rows through the outbox one transaction at a time. The order
         lives until `gtd_seconds` after submission, or until kickoff when
-        `trade_pregame_only` is on, whichever comes first."""
+        `trade_pregame_only` is on, whichever comes first. An in-game order lives
+        `ingame_gtd_seconds` after submission, kickoff aside (docs/INGAME.md)."""
         gtd = get_int_setting(conn, "gtd_seconds", 900)
+        ingame_gtd = max(1, get_int_setting(conn, "ingame_gtd_seconds", 60))
         pregame = get_setting(conn, "trade_pregame_only", True) is not False
         submitted = 0
         while True:
@@ -150,8 +153,9 @@ class Executor:
             if row["mode"] == "live" and not self._take(self.gateway_for(row), "orders", now):
                 _commit(conn)
                 break
-            gtd_at = now + timedelta(seconds=gtd)
-            kickoff = kickoff_of(conn, row) if pregame else None
+            ingame = bool(row.get("ingame"))
+            gtd_at = now + timedelta(seconds=ingame_gtd if ingame else gtd)
+            kickoff = kickoff_of(conn, row) if pregame and not ingame else None
             if kickoff is not None and kickoff < gtd_at:
                 gtd_at = kickoff
             order = orders.set_status(
@@ -255,8 +259,8 @@ class Executor:
     # ----------------------------------------------------------------- kickoff
 
     def cancel_at_kickoff(self, conn: psycopg.Connection, now: datetime) -> int:
-        """With trade_pregame_only: cancel every active order whose game has kicked
-        off (actor exchange, reason kickoff). Paper cancels at once with the release;
+        """With trade_pregame_only: cancel every active pre-game order whose game has
+        kicked off (actor exchange, reason kickoff); in-game orders are left alone. Paper cancels at once with the release;
         live rows become cancel_requested for process_cancels."""
         if get_setting(conn, "trade_pregame_only", True) is False:
             return 0
@@ -265,7 +269,7 @@ class Executor:
             SELECT o.id FROM orders o
               JOIN assignments a ON a.id = o.assignment_id
               JOIN games g ON g.game_id = a.game_id
-             WHERE o.status IN ('approved', 'submitting', 'open', 'partial')
+             WHERE o.status IN ('approved', 'submitting', 'open', 'partial') AND NOT o.ingame
                AND g.kickoff_at IS NOT NULL AND g.kickoff_at <= %s
              ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED
             """,

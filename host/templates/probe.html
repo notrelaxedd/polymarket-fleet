@@ -1,15 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Market probe{% endblock %}
+{# The markets probe (Probe markets) and, with `gamestate`, the game-state probe (Probe
+   game state, step 6C): the event id, the game it maps to, the HTTP status, the raw
+   payload and what the summary parser extracted from it. #}
+{% block title %}{{ 'Game-state probe' if gamestate else 'Market probe' }}{% endblock %}
 {% block content %}
 <p><a href="/trading#exchange">&larr; Trading</a></p>
-<h1>Market probe <span class="params">{{ probe.source }}</span></h1>
+<h1>{{ 'Game-state probe' if gamestate else 'Market probe' }} <span class="params">{{ probe.source }}</span></h1>
 <div class="card">
   <dl class="props">
-    <dt>url</dt><dd><code>{{ probe.url or '-' }}</code></dd>
+    {% if gamestate %}
+    <dt>event_id</dt><dd class="c-event"><code>{{ probe.event_id or '-' }}</code></dd>
+    <dt>game_id</dt><dd class="c-game">{% if probe.game_id %}{{ probe.game_id }}{% else %}<span class="muted">no game has this ESPN event id</span>{% endif %}</dd>
+    {% endif %}
+    <dt>url</dt><dd><code class="token">{{ probe.url or '-' }}</code></dd>
     <dt>status</dt><dd>{{ probe.status if probe.status is not none else '-' }}</dd>
     {% if probe.error %}<dt>error</dt><dd class="error">{{ probe.error }}</dd>{% endif %}
   </dl>
-  <p class="muted small">The raw markets payload of the configured source, truncated to 64 KiB. Paste it back when the parser needs fixing.</p>
+  {% if gamestate %}
+  <h2>Parsed</h2>
+  <p class="muted small">What the summary parser extracted: one state per play, the current situation last.</p>
+  <button type="button" class="btn small js-only" data-copy="parsed">Copy</button>
+  <pre id="parsed">{% if probe.parsed is none %}-{% elif probe.parsed is string %}{{ probe.parsed }}{% else %}{{ probe.parsed | pretty_json }}{% endif %}</pre>
+  <h2>Payload</h2>
+  {% endif %}
+  <p class="muted small">The raw {{ 'game-state' if gamestate else 'markets' }} payload of the {{ 'source' if gamestate else 'configured source' }}, truncated to 64 KiB. Paste it back when the parser needs fixing.</p>
   <button type="button" class="btn small js-only" data-copy="payload">Copy</button>
   <pre id="payload">{{ probe.payload if probe.payload is string else probe.payload | pretty_json }}</pre>
 </div>

@@ -12,12 +12,22 @@
     {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
     <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
     <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
+    {% if model.is_ingame %}
+    <dt>held-out validation</dt><dd>{% if iv %}log-loss {{ iv.log_loss | fixed }} vs vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays }} plays{% if iv.seasons %} ({{ iv.seasons[0] }}-{{ iv.seasons[-1] }}){% endif %} &middot; {% if iv.beats_baseline %}<span class="chip chip-beats">beats vegas_wp</span>{% else %}does not beat vegas_wp{% endif %}{% else %}<span class="muted">not validated</span>{% endif %}</dd>
+    <dt>status rule</dt><dd>{{ model.ingame_reason }} <span class="muted small">paper ok needs a log-loss at or below vegas_wp over at least 10000 plays; in-game orders are paper-only</span></dd>
+    <dt>in-game paper record</dt><dd>{% if model.ingame %}{{ model.ingame.games }} games &middot; {{ model.ingame.bets }} bets &middot; {{ model.ingame.pnl_cents | money }} <span class="muted small">CLV is not defined in-game</span>{% else %}<span class="muted">no in-game bets yet</span>{% endif %}</dd>
+    {% else %}
     <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %} <span class="muted small">ROI x bets / (bets + 100), the rank key</span></dd>
     <dt>search shrunk ROI</dt><dd>{{ model.search_score | signed_pct(2) }} <span class="muted small">search era, the selection score</span></dd>
     <dt>paper record</dt><dd>{% if model.paper.games %}{{ model.paper.games }} games &middot; {{ model.paper.bets }} bets &middot; {{ model.paper.pnl_cents | money }} &middot; ROI {{ model.paper.roi | signed_pct }} &middot; CLV {{ model.paper.avg_clv | fixed }} <span class="muted small">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bet{{ "" if model.paper_ci.n_bets == 1 else "s" }}</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
     <dt>snapshot replay</dt><dd>{% if model.snapshot %}{{ model.snapshot.n_games }} games &middot; {{ model.snapshot.n_bets }} bets &middot; ROI {{ model.snapshot.roi | signed_pct if model.snapshot.n_bets else '-' }} &middot; CLV {{ model.snapshot.avg_clv | fixed }}{% if model.snapshot.clv_ci %} <span class="range snapshot-ci">90% range {{ model.snapshot.clv_ci[0] | fixed }} to {{ model.snapshot.clv_ci[1] | fixed }}</span>{% endif %} <span class="muted small">shrunk {{ model.snapshot.score | fixed }}{% if model.rank_mode == 'snapshot' %}, ranked on snapshot CLV{% else %}, ranks on it from 30 bets{% endif %}</span>{% else %}<span class="muted">no snapshot replay yet</span>{% endif %}</dd>
+    {% if model.ingame %}<dt>in-game bets</dt><dd>{{ model.ingame.bets }} bets &middot; {{ model.ingame.pnl_cents | money }} <span class="muted small">in-game orders of this lineage</span></dd>{% endif %}
+    {% endif %}
   </dl>
   <div class="actions">
+    {% if model.is_ingame %}
+    {% if model.status != 'retired' %}<a class="btn" href="/trading?ingame_model={{ model.id }}#assign">Assign in-game</a>{% endif %}
+    {% else %}
     <a class="btn" href="/jobs?train_model={{ model.id }}#train">Train</a>
     {% if model.status != 'retired' %}
     <form method="post" action="/jobs" class="inline validate-form">
@@ -29,6 +39,7 @@
     </form>
     {% endif %}
     {% if model.status != 'retired' %}<a class="btn" href="/trading?model={{ model.id }}#assign">Assign</a>{% endif %}
+    {% endif %}
     {% if model.status != 'retired' %}
     <form method="post" action="/models/{{ model.id }}/retire" class="inline" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
       <input type="hidden" name="next" value="/models/{{ model.id }}">
@@ -52,6 +63,45 @@
   <pre>{{ model.params | pretty_json }}</pre>
 </div>
 
+{% if model.is_ingame %}
+<section class="ingame-validation" id="ingame-validation">
+<h2>In-game validation <span class="muted small">held-out play-by-play seasons against nflverse's vegas_wp</span></h2>
+{% if iv %}
+<p>Log-loss {{ iv.log_loss | fixed }} against vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays }} plays{% if iv.ll_gain is not none %} (gain {{ iv.ll_gain | fixed }} per play){% endif %}; Brier {{ iv.brier | fixed }} against {{ iv.vegas_brier | fixed }}.{% if iv.n_skipped_no_vegas %} <span class="muted small">{{ iv.n_skipped_no_vegas }} plays without a vegas_wp left out.</span>{% endif %}</p>
+<h3>by period</h3>
+<div class="table-wrap">
+<table class="metrics ingame-by-period">
+  <thead><tr><th>period</th><th>plays</th><th>log-loss</th><th>vegas_wp</th><th>gain</th></tr></thead>
+  <tbody>
+  {% for g in iv.by_period %}<tr><td>{{ g.label }}</td><td>{{ g.n_plays }}</td><td>{{ g.log_loss | fixed }}</td><td>{{ g.vegas_log_loss | fixed }}</td><td>{{ g.ll_gain | fixed }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+<h3>by score <span class="muted small">home minus away before the play</span></h3>
+<div class="table-wrap">
+<table class="metrics ingame-by-score">
+  <thead><tr><th>score</th><th>plays</th><th>log-loss</th><th>vegas_wp</th><th>gain</th></tr></thead>
+  <tbody>
+  {% for g in iv.by_score_bucket %}<tr><td>{{ g.label }}</td><td>{{ g.n_plays }}</td><td>{{ g.log_loss | fixed }}</td><td>{{ g.vegas_log_loss | fixed }}</td><td>{{ g.ll_gain | fixed }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+{% if iv.calibration %}
+<h3>calibration</h3>
+<div class="table-wrap">
+<table class="metrics calibration ingame-calibration">
+  <thead><tr><th>p bucket</th><th>plays</th><th>mean p</th><th>mean outcome</th><th>vegas_wp mean</th></tr></thead>
+  <tbody>
+  {% for b in iv.calibration %}<tr><td>{{ b.bucket }}</td><td>{{ b.count }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td><td>{{ b.vegas_mean_p | fixed }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% else %}
+<p class="muted">No held-out validation stored. An ingame_wp model search validates its kept models on the seasons after its train seasons.</p>
+{% endif %}
+</section>
+{% else %}
 {% if robustness %}
 {{ rob.section(robustness) }}
 {% if validation_per_season %}
@@ -111,6 +161,8 @@
 {% else %}
 <p class="muted">No backtest metrics yet. Send a backtest of this model from the <a href="/jobs">Jobs</a> page.</p>
 {% endif %}
+
+{% endif %}{# not in-game #}
 
 <h2>lineage</h2>
 <div class="table-wrap">

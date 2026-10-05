@@ -181,6 +181,40 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
+<form class="card group" method="post" action="/settings/ingame" id="ingame">
+  <h2>In-game <span class="muted small">trade rules while a game is played, the game-state feed, paper only</span></h2>
+  {% if errors.ingame %}<p class="error inline-error">{{ errors.ingame }}</p>{% endif %}
+  <p class="muted small">In-game orders are paper-only in this step. The feed (ESPN's unofficial summary endpoint) can lag the field by 15 to 60 s; in-game buying is suspended while the median measured lag behind the market exceeds the max feed lag, once enough events are measured.</p>
+  <h3>Trade rules</h3>
+  <div class="fields">
+    {{ check('trade_ingame', 'Trade in-game by default', 'new assignments start with in-game trading on') }}
+    {{ field('ingame_tick_s', 'In-game tick (s)', '1..60', 'numeric') }}
+    {{ field('ingame_max_state_age_s', 'Max game-state age (s)', '5..300; older state blocks trading', 'numeric') }}
+    {{ field('ingame_quiet_seconds', 'Quiet seconds', '0..300 after a score or possession change', 'numeric') }}
+    {{ field('ingame_cutoff_seconds', 'Cutoff (s)', '0..900 game seconds left', 'numeric') }}
+    {{ field('ingame_dead_zone', 'Dead zone', '0..0.5 of the price', 'decimal') }}
+    {{ field('ingame_min_edge', 'In-game min edge', '0..0.5', 'decimal') }}
+    {{ field('ingame_max_bet', 'In-game max bet', '$', 'decimal') }}
+    {{ field('ingame_gtd_seconds', 'In-game order lifetime (s)', '10..3600', 'numeric') }}
+  </div>
+  <h3>Feed lag</h3>
+  <div class="fields">
+    {{ field('ingame_max_lag_s', 'Max feed lag (s)', 'above 0, at most 600; median lag behind the market', 'decimal') }}
+    {{ field('ingame_lag_min_events', 'Min measured events', '1..100 before the lag can suspend buying', 'numeric') }}
+  </div>
+  <h3>Game-state feed</h3>
+  <div class="fields">
+    {{ field('gamestate_poll_s', 'Poll each live game every (s)', '3..5', 'decimal') }}
+    {{ field('gamestate_max_rps', 'ESPN max requests per second', 'above 0, at most 10', 'decimal') }}
+    {{ check('gamestate_espn', 'ESPN', 'summary endpoint, scoreboard fallback') }}
+    {{ check('gamestate_yahoo', 'Yahoo', 'opt-in cross-check, used only with a URL below') }}
+    {{ field('espn_summary_url', 'ESPN summary URL', 'must contain {event_id}') }}
+    {{ field('yahoo_pbp_url', 'Yahoo play-by-play URL', 'empty = off; else must contain {event_id}') }}
+    {{ field('yahoo_poll_s', 'Yahoo poll (s)', '5..120', 'numeric') }}
+  </div>
+  <button type="submit" class="btn primary">Save</button>
+</form>
+
 <form class="card group" method="post" action="/enroll-token" id="enroll">
   <h2>Enroll</h2>
   <p class="muted">A token is single use and valid for one hour. The next page shows it once.</p>

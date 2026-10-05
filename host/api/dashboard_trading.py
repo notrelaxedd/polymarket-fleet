@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, Response
 
 from host import kill, views, web
 from host.api.dashboard import FORM, _age_seconds, _now, page
+from host.api.dashboard_ingame import create_args, form_context
 from host.api.deps import DB, require_owner
 from host.errors import BadRequest, Conflict
 from host.leaderboard import short_params
@@ -24,6 +25,8 @@ from host.money import cents_to_dollars, dollars_to_cents
 from host.settings import get_int_setting, get_setting, get_settings
 from host.trading import assignments, ledger, orders
 from host.trading import views as trading_views
+from host.trading.views_ingame import INGAME_FAMILY, ingame_live
+from host.trading.views_ingame import REASON_TEXT as INGAME_REASON_TEXT
 from host.trading.views_positions import assignment_positions
 
 router = APIRouter(tags=["dashboard-trading"], dependencies=[Depends(require_owner)])
@@ -53,7 +56,7 @@ REASON_TEXT = {
     "price_band": "price outside the band", "bankroll": "cost over available", "daily_loss": "daily loss limit",
     "exposure": "exposure limit", "buying_power": "buying power",
     "no_position": "nothing held to sell", "sell_exceeds_position": "sell larger than the position",
-    "open_sell_exists": "a sell is already open on this market",
+    "open_sell_exists": "a sell is already open on this market", **INGAME_REASON_TEXT,
 }
 
 
@@ -67,6 +70,8 @@ def reason_text(order: dict[str, Any], settings: dict[str, Any]) -> str | None:
         own = order.get("assignment_max_bet_cents")
         if own is not None:
             limit = min(limit, int(own))
+        if order.get("ingame") and settings.get("ingame_max_bet_cents") is not None:
+            limit = min(limit, int(settings["ingame_max_bet_cents"]))
         return f"over max bet {web.format_cents(int(order['cost_cents']))} > {web.format_cents(limit)}"
     if code == "participation":
         share = float(settings.get("participation") or 0.0)
@@ -100,7 +105,7 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
     killed = kill.is_killed(conn)
     settings = get_settings(conn)
     live_orders = views.live_order_counts(conn)
-    return {
+    ctx = {
         "live_orders": live_orders["live"],
         "live_open": live_orders["open"],
         "live_cancel_pending": live_orders["cancel_pending"],
@@ -120,6 +125,8 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
         "bankrolls": conn.execute("SELECT count(*) AS n FROM bankrolls").fetchone()["n"],
         "names": views.worker_names(conn),
     }
+    ctx.update(ingame_live(conn, ctx))  # in-game cells, fill flags and the feed block (views_ingame)
+    return ctx
 
 
 def trading_context(
@@ -135,7 +142,8 @@ def trading_context(
     return {
         **live_context(conn),
         "games": [{**g, "label": _game_label(g, tz)} for g in views.upcoming_games(conn)],
-        "models": [{"id": str(m["id"]), "label": _model_label(m)} for m in views.assignable_models(conn)],
+        "models": [{"id": str(m["id"]), "label": _model_label(m)} for m in views.assignable_models(conn) if m["family"] != INGAME_FAMILY],
+        **form_context(conn, submitted, model),
         "values": values,
         "error": error,
         "assign_open": bool(model or error),
@@ -177,6 +185,7 @@ def post_assignment(
         row = assignments.create_assignment(
             conn, (form.get("game_id") or "").strip(), (form.get("model_id") or "").strip(),
             (form.get("mode") or "paper").strip() or "paper", bankroll, actor, _optional_dollars(form, "max_bet", "Max bet"),
+            **create_args(form),
         )
     except (BadRequest, Conflict) as exc:
         conn.rollback()

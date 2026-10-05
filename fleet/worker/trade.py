@@ -14,6 +14,10 @@ and keeps a summary for status.json. Nothing is proposed under kill, for a halte
 assignment, after kickoff (trade_pregame_only) or on a market below the liquidity
 floor. release_jobs() is the POST /api/v1/trade/release handshake before a role change
 away from trade (bounded to 4 s, one retry).
+
+Step 6C: once an assignment whose "ingame" block is enabled has kicked off, the in-game
+rules (fleet.worker.trade_ingame) replace the pre-game ones for it, every ingame_tick_s;
+before kickoff nothing changes.
 """
 
 from __future__ import annotations
@@ -299,6 +303,9 @@ class TradeLoop:
         self.assignments: list[dict[str, Any]] = []
         self.ticks = 0
         self._models: dict[str, Model] = {}
+        from fleet.worker.trade_ingame import IngameRunner  # trade_ingame builds on this module
+
+        self.ingame = IngameRunner()
 
     # knobs
 
@@ -310,7 +317,8 @@ class TradeLoop:
     def tick_seconds(self) -> float:
         override = getattr(self.agent.options, "trade_tick_s", None)
         value = override if override is not None else self.settings.get("trade_tick_s")
-        return max(0.05, float(_num(value) or 5.0))
+        seconds = max(0.05, float(_num(value) or 5.0))
+        return min(seconds, self.ingame.tick_seconds()) if self.ingame.live else seconds
 
     def _post(self, path: str, body: dict[str, Any], timeout: float | None = None) -> Any:
         conf = self.agent.conf
@@ -342,9 +350,12 @@ class TradeLoop:
         """Propose (buys, then sells), then cancel stale orders, per assignment; returns
         the posted requests with the host's answer under "result"."""
         from fleet.worker.sell import plan_sells, stale_sells  # sell builds on this module
+        from fleet.worker.trade_ingame import ingame_active
 
         self.ticks += 1
         self.settings = trade_settings(state.get("settings"))
+        self.ingame.configure(state.get("settings"))
+        live_ingame = 0
         killed = bool(state.get("kill")) or bool(getattr(self.agent, "kill", False))
         now = _parse_time(state.get("server_time"))
         posted: list[dict[str, Any]] = []
@@ -354,6 +365,13 @@ class TradeLoop:
             if not isinstance(a, dict):
                 continue
             summaries.append(self._summary(a))
+            if ingame_active(a, now):  # after kickoff the in-game rules replace the pre-game ones
+                live_ingame += 1
+                if not killed:
+                    sent, gone = self.ingame.run(a, state.get("settings"), now, self._request, self._cancel)
+                    posted += sent
+                    cancelled += gone
+                continue
             if killed:
                 continue
             model = load_model(a.get("model"), self._models)
@@ -368,6 +386,9 @@ class TradeLoop:
             "at": time.time(), "kill": killed, "assignments": len(summaries), "proposed": len(posted),
             "approved": approved, "rejected": len(posted) - approved, "cancelled": len(cancelled),
         }
+        self.ingame.live = live_ingame > 0
+        if live_ingame:
+            self.last_tick["ingame"] = {"assignments": live_ingame, "proposed": sum(1 for p in posted if p.get("ingame"))}
         return posted
 
     @staticmethod

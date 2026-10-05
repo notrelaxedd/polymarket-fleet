@@ -3,7 +3,10 @@
    the action cell sits at its right. A sell order or fill carries a `sell` chip; a sell's
    realized P&L (proceeds - fee - basis) follows its fill. Positions is a card section
    whose tables lead with data-assignment, and an order's side sits on its order cell,
-   so the step 4 table markup the older tests match stays as it was. #}
+   so the step 4 table markup the older tests match stays as it was. Step 6C: the in-game
+   cell (score, clock and state age or "state stale", the in-game model p next to the
+   home mid, the in-game toggle form), an `in-game` chip on in-game orders and fills,
+   and, in the exchange block, the "Probe game state" form and the "In-game feed" block. #}
 {% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{% if cents > 0 %}+{% endif %}{{ cents | money }}</span>{% endmacro %}
 <section class="card group" id="assignments">
 <h2>Assignments <span class="muted small">{{ assignments | length }}</span></h2>
@@ -16,7 +19,7 @@
 {% endif %}
 <div class="table-wrap">
 <table class="assignments stack">
-  <thead><tr><th>game</th><th>kickoff</th><th>model</th><th>mode</th><th>status</th><th>bankroll</th><th>open</th><th></th></tr></thead>
+  <thead><tr><th>game</th><th>kickoff</th><th>model</th><th>mode</th><th>status</th><th>bankroll</th><th>open</th><th>in-game</th><th></th></tr></thead>
   <tbody>
   {% for a in assignments %}
   <tr class="assignment-row{% if a.mode == 'live' %} is-live{% endif %}" data-assignment="{{ a.id }}">
@@ -27,6 +30,7 @@
     <td class="c-status"><span class="badge st-{{ a.status }}">{{ a.status }}</span></td>
     <td class="c-bankroll"><span class="k">bankroll</span> avail {{ a.bankroll.available_cents | money }} &middot; reserved {{ a.bankroll.reserved_cents | money }} &middot; open {{ a.bankroll.open_cost_cents | money }} &middot; realized {{ a.bankroll.realized_pnl_cents | money }}</td>
     <td class="nowrap c-open"><span class="k">open orders</span> {{ a.open_orders }}</td>
+    {% include "_ingame_cell.html" %}
     <td class="action c-actions">
       {% if a.settle_ready %}
       <form method="post" action="/assignments/{{ a.id }}/settle" class="inline"><button type="submit" class="btn small primary">Settle now</button></form>
@@ -38,7 +42,7 @@
     </td>
   </tr>
   {% else %}
-  <tr><td colspan="8" class="muted">No assignments yet. Create one above or press Assign on a model.</td></tr>
+  <tr><td colspan="9" class="muted">No assignments yet. Create one above or press Assign on a model.</td></tr>
   {% endfor %}
   </tbody>
 </table>
@@ -85,7 +89,7 @@
   {% for o in open_orders %}
   <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
     <td class="nowrap lead">{{ o.created_at | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}{% if o.exchange_order_id %} <span class="muted small">#{{ o.exchange_order_id }}</span>{% endif %}</td>
+    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}{% if o.ingame %} <span class="chip chip-ingame">in-game</span>{% endif %}{% if o.exchange_order_id %} <span class="muted small">#{{ o.exchange_order_id }}</span>{% endif %}</td>
     <td class="c-model"><span class="k">model</span> {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}-{% endif %}</td>
     <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="k">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
     <td class="c-status"><span class="badge st-{{ o.status }}">{{ o.status.replace('_', ' ') }}</span></td>
@@ -113,7 +117,7 @@
   {% for o in orders %}
   <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
     <td class="nowrap lead">{{ o.created_at | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}</td>
+    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}{% if o.ingame %} <span class="chip chip-ingame">in-game</span>{% endif %}</td>
     <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="k">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
     <td class="c-status"><span class="badge st-{{ o.status }}">{{ o.status.replace('_', ' ') }}</span>{% if o.reject_reason %} <span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% elif o.last_reason %} <span class="muted small cause">{{ o.last_reason }}</span>{% endif %}</td>
     <td class="nowrap c-edge"><span class="k">edge</span> {{ o.edge | signed_pct }} <span class="muted small">my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}</span></td>
@@ -137,7 +141,7 @@
   {% for f in fills %}
   <tr data-fill="{{ f.id }}" data-side="{{ f.order_side or 'buy' }}">
     <td class="nowrap lead">{{ f.ts | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ f.market_title }} <span class="chip mode-{{ f.mode }}">{{ f.mode }}</span>{% if f.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}</td>
+    <td class="c-market"><span class="k">market</span> {{ f.market_title }} <span class="chip mode-{{ f.mode }}">{{ f.mode }}</span>{% if f.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if f.ingame %} <span class="chip chip-ingame">in-game</span>{% endif %}</td>
     <td class="nowrap c-fill"><span class="k">fill</span> {% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }} <span class="muted small">of {{ f.order_size }} @ {{ f.order_price | price }}</span></td>
     <td class="nowrap c-fee"><span class="k">fee</span> {{ f.fee_cents | money }}</td>
     <td class="nowrap c-realized">{% if f.order_side == 'sell' and f.realized_cents is not none %}<span class="k">realized</span> {{ pnl(f.realized_cents) }} <span class="muted small">basis {{ f.basis_cents | money }}</span>{% endif %}</td>
@@ -227,7 +231,15 @@
   <dt>last auth error</dt><dd><span class="error">{{ exchange.last_auth_error }}</span></dd>
   {% endif %}
 </dl>
+<div class="probe-row">
 <form method="post" action="/exchange/probe" class="inline"><button type="submit" class="btn small">Probe markets</button></form>
+<form method="post" action="/exchange/probe-gamestate" class="probe-gamestate">
+  <label>ESPN event <input type="text" name="event" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" list="probe-events" placeholder="event id"></label>
+  <datalist id="probe-events">{% for e in ingame_feed.probe_events %}<option value="{{ e.event_id }}">{{ e.label }}</option>{% endfor %}</datalist>
+  <button type="submit" class="btn small">Probe game state</button>
+</form>
+</div>
+{% include "_ingame_feed.html" %}
 </section>
 
 <section class="card group" id="ledger">

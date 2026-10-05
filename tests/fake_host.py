@@ -37,10 +37,17 @@ Step 6B: GET /api/v1/data/prices?since=&platform= serves the market rows given t
 set_prices() (confirmed rows of games with kickoff_at >= since; platform "sim" rows
 only when the query names platform=sim) as {"markets", "count"} with an ETag (304 on
 If-None-Match); prices_queries() lists the query strings received.
+
+Step 6C: GET /api/v1/data/pbp?seasons=A-B serves the play-by-play rows given to
+set_pbp() (only the seasons A..B; all rows without the query) like host/api/data_pbp.py:
+gzip-compressed JSON lines, Content-Type application/x-ndjson+gzip, no
+Content-Encoding, ETag '"<count>-<max season>-<stamp>"' and 304 on If-None-Match;
+pbp_queries() lists the query strings received.
 """
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -389,6 +396,9 @@ class FakeHost:
         self.prices_rows: list[dict[str, Any]] = []
         self.prices_etag = "p0"
         self.prices_query_log: list[str] = []
+        self.pbp_rows: list[dict[str, Any]] = []
+        self.pbp_stamp = "0"
+        self.pbp_query_log: list[str] = []
         self.models_store: dict[str, dict[str, Any]] = {}
         self.model_calls: list[dict[str, Any]] = []
         self.trade = TradeStore(self)
@@ -451,8 +461,9 @@ class FakeHost:
             return w["token"]
 
     def fail_next(self, suffix: str, status: int = 503, count: int = 1) -> None:
-        """Answer the next `count` requests whose path ends with /<suffix> with `status`
-        (0 = drop the connection without an answer, like a network failure)."""
+        """Answer the next `count` requests whose path (with or without its query) ends
+        with /<suffix> with `status` (0 = drop the connection without an answer, like a
+        network failure)."""
         with self.lock:
             self.failures.append({"suffix": "/" + suffix.strip("/"), "status": status, "count": count})
 
@@ -513,6 +524,36 @@ class FakeHost:
                     and (not platform or m.get("platform") == platform)
                     and (m.get("platform") != "sim" or platform == "sim")]
         return 200, {"markets": rows, "count": len(rows)}, etag
+
+    def set_pbp(self, rows: list[dict[str, Any]]) -> None:
+        """Replace the play-by-play rows served by GET /api/v1/data/pbp."""
+        with self.lock:
+            self.pbp_rows = [dict(r) for r in rows]
+            self.pbp_stamp = "%x" % int(time.time() * 1000)
+
+    def pbp_queries(self) -> list[str]:
+        with self.lock:
+            return list(self.pbp_query_log)
+
+    def pbp(self, w: dict[str, Any], query: str, if_none_match: str | None) -> tuple[int, bytes, str]:
+        """(status, gzip body, etag) of the pbp feed for one query string."""
+        text = {k: v[-1] for k, v in parse_qs(query).items()}.get("seasons") or ""
+        with self.lock:
+            self.pbp_query_log.append(query)
+            if text:
+                try:
+                    bounds = [int(part) for part in text.split("-")]
+                except ValueError:
+                    raise ApiError(400, f"not a season or a season range: {text!r}") from None
+                first, last = bounds[0], bounds[-1]
+                rows = [r for r in self.pbp_rows if first <= int(r.get("season") or 0) <= last]
+            else:
+                rows = list(self.pbp_rows)
+            etag = '"%d-%d-%s"' % (len(rows), max((int(r.get("season") or 0) for r in rows), default=0), self.pbp_stamp)
+        if if_none_match and if_none_match.strip() == etag:
+            return 304, b"", etag
+        lines = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows).encode("utf-8")
+        return 200, gzip.compress(lines, mtime=0), etag
 
     def add_model(self, model: dict[str, Any] | None = None) -> str:
         """Seed a model row (defaults filled in); returns its id."""
@@ -579,7 +620,7 @@ class FakeHost:
     def _take_failure(self, path: str) -> int | None:
         with self.lock:
             for entry in self.failures:
-                if entry["count"] > 0 and path.endswith(entry["suffix"]):
+                if entry["count"] > 0 and (path.endswith(entry["suffix"]) or urlsplit(path).path.endswith(entry["suffix"])):
                     entry["count"] -= 1
                     return int(entry["status"])
         return None
@@ -991,13 +1032,15 @@ class _Handler(BaseHTTPRequestHandler):
     def host(self) -> FakeHost:
         return self.server.host  # type: ignore[attr-defined]
 
-    def _send(self, status: int, payload: Any, raw: bytes | None = None, etag: str | None = None) -> None:
+    def _send(self, status: int, payload: Any, raw: bytes | None = None, etag: str | None = None,
+              content_type: str | None = None) -> None:
         body = b"" if status == 304 else (raw if raw is not None else json.dumps(payload).encode("utf-8"))
         self.send_response(status)
         if etag is not None:
             self.send_header("ETag", etag)
         if status != 304:
-            self.send_header("Content-Type", "application/octet-stream" if raw is not None else "application/json")
+            default_type = "application/octet-stream" if raw is not None else "application/json"
+            self.send_header("Content-Type", content_type or default_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if body:
@@ -1059,6 +1102,10 @@ class _Handler(BaseHTTPRequestHandler):
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, body, etag = self.host.prices(w, urlsplit(self.path).query, self.headers.get("If-None-Match"))
                 self._send(status, body, etag=etag)
+            elif urlsplit(self.path).path == "/api/v1/data/pbp":
+                w = self.host.auth_any_worker(self.headers.get("Authorization"))
+                status, raw, etag = self.host.pbp(w, urlsplit(self.path).query, self.headers.get("If-None-Match"))
+                self._send(status, None, raw=raw, etag=etag, content_type="application/x-ndjson+gzip")
             elif parts == ["api", "v1", "data", "games"]:
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, body, etag = self.host.games(w, self.headers.get("If-None-Match"))

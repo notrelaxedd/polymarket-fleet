@@ -6,6 +6,14 @@ loser NO, tie push), cancel its open orders with release, settle the positions t
 market_p, edge, stake, closing price, CLV, result, pnl), upsert `model_scores`, mark
 the assignment settled, complete the trade job with the score summary, then recompute
 the lineage's paper eligibility.
+
+Step 6 Part C: in-game rows (host/exchange/settle_sells.py) are attributed to the
+assignment's in-game model, so one assignment can score two models; each touched
+(model, game, mode) row of model_scores is recomputed from all of its bets rows (two
+assignments may share an in-game model on one game). n_bets counts buy rows, stake and
+pnl every row, avg_clv only pre-game buys, ingame_n_bets and ingame_pnl_cents the
+in-game rows (buys, and every in-game row for the pnl). Every scored lineage is
+recomputed for eligibility.
 """
 from __future__ import annotations
 
@@ -64,8 +72,9 @@ def settle_game(conn: psycopg.Connection, game_id: str, actor: str = "settle") -
         summary["assignments"] += 1
         summary["bets"] += result["n_bets"]
         summary["pnl_cents"] += result["pnl_cents"]
-        if assignment["lineage_id"] not in lineages:
-            lineages.append(assignment["lineage_id"])
+        for lineage_id in [assignment["lineage_id"], *result.get("lineages", [])]:
+            if lineage_id not in lineages:
+                lineages.append(lineage_id)
     for lineage_id in lineages:
         status = eligibility.recompute_paper(conn, lineage_id, actor=actor)
         summary["lineages"].append({"lineage_id": str(lineage_id), "status": status})
@@ -110,10 +119,11 @@ def settle_assignment(
     for bet in bets:
         insert_bet(conn, bet)
     score = upsert_score(conn, assignment, bets)
+    scored = list(dict.fromkeys(b["lineage_id"] for b in bets if b["lineage_id"] != assignment["lineage_id"]))
     conn.execute("UPDATE assignments SET status = 'settled', settled_at = now(), updated_at = now() WHERE id = %s", (aid,))
     complete_trade_job(conn, assignment, score)
     add_audit(conn, "assignment_settled", str(aid), actor, {"status": assignment["status"]}, {"status": "settled", **score})
-    return score
+    return {**score, "lineages": scored}
 
 
 def insert_bet(conn: psycopg.Connection, bet: dict[str, Any]) -> None:
@@ -121,38 +131,67 @@ def insert_bet(conn: psycopg.Connection, bet: dict[str, Any]) -> None:
         """
         INSERT INTO bets (order_id, assignment_id, model_id, lineage_id, game_id, worker_id, mode, date, event,
                           platform, contract, side, entry_price, fee_cents, cost_cents, my_p, market_p, edge,
-                          stake_cents, closing_price, clv, result, pnl_cents, order_side)
+                          stake_cents, closing_price, clv, result, pnl_cents, order_side, ingame, state_at_entry)
         VALUES (%(order_id)s, %(assignment_id)s, %(model_id)s, %(lineage_id)s, %(game_id)s, %(worker_id)s, %(mode)s,
                 %(date)s, %(event)s, %(platform)s, %(contract)s, %(side)s, %(entry_price)s, %(fee_cents)s,
                 %(cost_cents)s, %(my_p)s, %(market_p)s, %(edge)s, %(stake_cents)s, %(closing_price)s, %(clv)s,
-                %(result)s, %(pnl_cents)s, %(order_side)s)
+                %(result)s, %(pnl_cents)s, %(order_side)s, %(ingame)s, %(state_at_entry)s)
         ON CONFLICT (order_id) DO NOTHING
         """,
-        {"order_side": "buy", **bet},
+        {"order_side": "buy", "ingame": False, **bet,
+         "state_at_entry": None if bet.get("state_at_entry") is None else Jsonb(bet["state_at_entry"])},
     )
 
 
-def upsert_score(conn: psycopg.Connection, assignment: dict[str, Any], bets: list[dict[str, Any]]) -> dict[str, Any]:
-    """model_scores for one assignment: pnl over every row (sells included), n_bets and
-    the stake-weighted CLV over the buy rows (a sell row has stake 0 and no CLV)."""
+def score_of(bets: list[dict[str, Any]]) -> dict[str, Any]:
+    """n_bets (buy rows), stake and pnl (every row), the stake-weighted CLV over the
+    pre-game buys with a CLV (a sell row has stake 0 and no CLV, an in-game row no
+    CLV), and the in-game buys and pnl."""
     buys = [b for b in bets if b.get("order_side", "buy") == "buy"]
-    stake = sum(b["stake_cents"] for b in bets)
-    pnl = sum(b["pnl_cents"] for b in bets)
-    weighted = [(b["clv"], b["stake_cents"]) for b in buys if b["clv"] is not None and b["stake_cents"] > 0]
+    weighted = [(b["clv"], b["stake_cents"]) for b in buys
+                if not b.get("ingame") and b["clv"] is not None and b["stake_cents"] > 0]
     avg_clv = None
     if weighted:
         avg_clv = sum(c * s for c, s in weighted) / sum(s for _, s in weighted)
-    conn.execute(
-        """
-        INSERT INTO model_scores (model_id, game_id, mode, lineage_id, n_bets, stake_cents, pnl_cents, avg_clv, computed_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
-        ON CONFLICT (model_id, game_id, mode) DO UPDATE SET
-            n_bets = EXCLUDED.n_bets, stake_cents = EXCLUDED.stake_cents, pnl_cents = EXCLUDED.pnl_cents,
-            avg_clv = EXCLUDED.avg_clv, computed_at = now()
-        """,
-        (assignment["model_id"], assignment["game_id"], assignment["mode"], assignment["lineage_id"], len(buys), stake, pnl, avg_clv),
-    )
-    return {"n_bets": len(buys), "stake_cents": stake, "pnl_cents": pnl, "avg_clv": avg_clv}
+    return {
+        "n_bets": len(buys), "stake_cents": sum(b["stake_cents"] for b in bets),
+        "pnl_cents": sum(b["pnl_cents"] for b in bets), "avg_clv": avg_clv,
+        "ingame_n_bets": sum(1 for b in buys if b.get("ingame")),
+        "ingame_pnl_cents": sum(b["pnl_cents"] for b in bets if b.get("ingame")),
+    }
+
+
+SCORE_ROWS_SQL = """
+SELECT order_side, stake_cents, pnl_cents, clv, ingame FROM bets
+ WHERE model_id = %s AND game_id = %s AND mode = %s ORDER BY id
+"""
+
+
+def upsert_score(conn: psycopg.Connection, assignment: dict[str, Any], bets: list[dict[str, Any]]) -> dict[str, Any]:
+    """model_scores for every model the assignment's bets rows are attributed to (its
+    pre-game model always, its in-game model when it has in-game rows), each row
+    recomputed from all bets of that (model, game, mode); returns the assignment's
+    own score summary (score_of over its rows)."""
+    owners = {assignment["model_id"]: assignment["lineage_id"]}
+    for bet in bets:
+        owners.setdefault(bet["model_id"], bet["lineage_id"])
+    for model_id, lineage_id in owners.items():
+        rows = [dict(r) for r in conn.execute(SCORE_ROWS_SQL, (model_id, assignment["game_id"], assignment["mode"])).fetchall()]
+        s = score_of(rows)
+        conn.execute(
+            """
+            INSERT INTO model_scores (model_id, game_id, mode, lineage_id, n_bets, stake_cents, pnl_cents, avg_clv,
+                                      ingame_n_bets, ingame_pnl_cents, computed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+            ON CONFLICT (model_id, game_id, mode) DO UPDATE SET
+                n_bets = EXCLUDED.n_bets, stake_cents = EXCLUDED.stake_cents, pnl_cents = EXCLUDED.pnl_cents,
+                avg_clv = EXCLUDED.avg_clv, ingame_n_bets = EXCLUDED.ingame_n_bets,
+                ingame_pnl_cents = EXCLUDED.ingame_pnl_cents, computed_at = now()
+            """,
+            (model_id, assignment["game_id"], assignment["mode"], lineage_id, s["n_bets"], s["stake_cents"],
+             s["pnl_cents"], s["avg_clv"], s["ingame_n_bets"], s["ingame_pnl_cents"]),
+        )
+    return score_of(bets)
 
 
 def complete_trade_job(conn: psycopg.Connection, assignment: dict[str, Any], score: dict[str, Any]) -> None:

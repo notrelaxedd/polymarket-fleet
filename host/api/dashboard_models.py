@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
 from host import leaderboard, models, nflverse, web
+from host.leaderboard_ingame import has_ingame_columns
 from host.api.dashboard import page
 from host.api.dashboard_forms import FORM
 from host.api.deps import DB, require_owner
@@ -23,9 +24,16 @@ NFLVERSE_ATTRIBUTION = (
 
 @router.get("/models", response_class=HTMLResponse)
 def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """The leaderboard: ranked lineages, then the unranked ones."""
+    """The leaderboard: ranked lineages, then the unranked ones, then the in-game
+    (ingame_wp) lineages in their own table; the in-game column group shows when any
+    lineage has in-game bets."""
     board = leaderboard.leaderboard(conn)
-    return page(request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, **board)
+    ingame = [m for m in board["unranked"] if m.get("is_ingame")]
+    unranked = [m for m in board["unranked"] if not m.get("is_ingame")]
+    return page(
+        request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, ranked=board["ranked"], unranked=unranked,
+        ingame_models=ingame, show_ingame=has_ingame_columns(board["ranked"] + unranked),
+    )
 
 
 @router.get("/models/{model_id}", response_class=HTMLResponse)
@@ -34,6 +42,10 @@ def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -
     snapshot replay (step 6 B1), search-era metrics (overall and per season),
     calibration, lineage, jobs."""
     model = leaderboard.model_detail(conn, model_id)
+    if model.get("is_ingame"):  # judged on held-out plays against vegas_wp, no moneyline backtest
+        return page(request, conn, "model.html", model=model, metrics={}, per_season=[], calibration=[],
+                    attribution=NFLVERSE_ATTRIBUTION, robustness=None, validation_per_season=[],
+                    snapshot_metrics=None, snapshot_per_season=[], iv=model.get("ingame_validation"))
     metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else {}
     validation = model.get("validation_metrics") if isinstance(model.get("validation_metrics"), dict) else None
     snapshot = model.get("snapshot_metrics") if isinstance(model.get("snapshot_metrics"), dict) else None

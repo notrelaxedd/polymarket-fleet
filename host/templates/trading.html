@@ -2,7 +2,9 @@
 {% block title %}Trading{% endblock %}
 {# The create form sits above the live region and outside it, so the 5 s refresh of
    #trading-live never wipes a half-typed bankroll. It is folded unless it was just
-   rejected or opened from a model's Assign button (?model=). #}
+   rejected or opened from a model's Assign button (?model=). Step 6C adds the in-game
+   model select and the trade in-game box (the hidden ingame_form marker tells an
+   unticked box from a post without the in-game fields). #}
 {% block content %}
 <h1>Trading</h1>
 <details class="card send assign" id="assign"{% if assign_open %} open{% endif %}>
@@ -32,6 +34,16 @@
     </label>
     <label>Bankroll <span class="muted small">$</span><input type="text" name="bankroll" value="{{ values.bankroll }}" inputmode="decimal" autocomplete="off"></label>
     <label>Max bet <span class="muted small">$, blank = fleet max bet</span><input type="text" name="max_bet" value="{{ values.max_bet }}" inputmode="decimal" autocomplete="off"></label>
+    <label>In-game model <span class="muted small">ingame_wp, optional</span>
+      <select name="ingame_model_id">
+        <option value="">no in-game model</option>
+        {% for m in ingame_models %}
+        <option value="{{ m.id }}"{% if ingame_values.ingame_model_id == m.id %} selected{% endif %}>{{ m.label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <input type="hidden" name="ingame_form" value="1">
+    <label class="check"><input type="checkbox" name="trade_ingame"{% if ingame_values.trade_ingame %} checked{% endif %}> Trade in-game <span class="muted small">paper only</span></label>
   </div>
   {% if not games %}<p class="muted small">No upcoming game has a confirmed market yet; the exchange process discovers them within the market lookahead.</p>{% endif %}
   {% if not models %}<p class="muted small">No model of a non-retired lineage exists yet: run a model search first.</p>{% endif %}

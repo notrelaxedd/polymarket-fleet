@@ -225,6 +225,7 @@ def kill_confirm(request: Request, conn: psycopg.Connection = DB) -> HTMLRespons
 
 # The trading router imports `page` and `FORM` from this module, so it is included
 # here, after they exist, rather than registered in host/api/app.py.
-from host.api import dashboard_trading  # noqa: E402
+from host.api import dashboard_ingame, dashboard_trading  # noqa: E402
 
 router.include_router(dashboard_trading.router)
+router.include_router(dashboard_ingame.router)

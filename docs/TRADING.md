@@ -414,3 +414,61 @@ Money side, as built:
   sale), `tests/test_sell_kill_live.py` (kill cancels open sells, the live gateway and
   executor send SELL, a live sell fill); the worker rule and the approval have their
   own tests.
+
+## In-game trading (step 6 Part C): assignments and settlement
+
+The feed, the in-game model and the trade rules are in docs/INGAME.md; this section
+covers what the trading side keeps about them. In-game orders are paper-only in this step.
+
+Assignments (`host/trading/assignments_ingame.py`, migration `0009_ingame.sql`):
+- An assignment keeps its pre-game `model_id` and gains an optional `ingame_model_id`
+  and the switch `trade_ingame`. In-game trading is on when both are set.
+- `ingame_model_id` must be an existing `ingame_wp` model whose lineage is not retired
+  (400 otherwise). It needs no eligibility for paper, like a pre-game paper assignment.
+  An `ingame_wp` model cannot be the pre-game `model_id` (400): it has no pre-game rule.
+- `trade_ingame` left out of a new assignment takes `settings.trade_ingame` (default
+  false); a live assignment gets false, and an explicit true on a live assignment is a
+  409 ("in-game trading is paper-only in this step"). Approval still rejects a live
+  in-game order with `ingame_paper_only` as the second guard.
+- `POST /api/assignments` accepts `ingame_model_id` and `trade_ingame`.
+  `POST /api/assignments/{id}/ingame {"ingame_model_id", "trade_ingame"}` changes only
+  the fields sent (an explicit null `ingame_model_id` clears it) on an active or halted
+  assignment (409 for settled or cancelled), under the mode's approval lock, audited as
+  `assignment_ingame` with the before and after values. Turning in-game trading off
+  (either field) cancels the assignment's open in-game orders at once. The in-game model
+  cannot change (409) once the assignment has an open or filled in-game order, because
+  settlement attributes those orders to the assignment's `ingame_model_id`; turn
+  `trade_ingame` off instead.
+- `GET /api/assignments` rows carry `ingame_model_id` and `trade_ingame`.
+- Kill and halt are unchanged: they cancel every open order of the assignment, in-game
+  ones included, and nothing else.
+
+Settlement (`host/exchange/settle.py`, `host/exchange/settle_sells.py`):
+- The money is split exactly as before (buy rows pro rata over the contracts still
+  held, a sell gets its own `sold` row), so the bets of an assignment still add up to
+  its ledger `realized` and the replay identity holds; an in-game order is just an order.
+- The `bets` row of an in-game order (`orders.ingame`) has `ingame = true`, `clv = null`
+  (CLV excludes in-game rows: the closing price is a pre-game price) and
+  `state_at_entry` = `{period, clock_seconds, home_score, away_score, possession}` of the
+  newest `game_state` row of the game at or before the order's `created_at` (its
+  approval), null when there was none. It is attributed to the assignment's in-game
+  model: `model_id` and `lineage_id` are the `ingame_model_id`'s, so the `ingame_wp`
+  lineage gets its own paper record. That includes an in-game sell of contracts a
+  pre-game buy bought: the in-game model chose the sale, so its realized P&L is its.
+- `model_scores` is upserted per `(model, game, mode)` for every model the assignment's
+  rows are attributed to (the pre-game model always, the in-game model when it has
+  rows), each recomputed from all bets of that key (two paper assignments may share one
+  in-game model on a game): `n_bets` = buy rows, `stake_cents` and `pnl_cents` = every
+  row, `avg_clv` = stake-weighted over pre-game buys with a CLV, `ingame_n_bets` = in-game
+  buy rows, `ingame_pnl_cents` = the P&L of every in-game row. The trade job's result
+  and the `assignment_settled` audit carry the assignment's own summary with the two
+  in-game fields.
+- Eligibility is recomputed for every scored lineage; an `ingame_wp` lineage goes
+  through its own rule (`host/ingame_eligibility.py`), never the CLV paper gate, and the
+  paper gate of a pre-game lineage never sees in-game rows (they belong to the in-game
+  lineage and carry no CLV). `host/pnl.py` needs no change: an in-game bet is a bet.
+- Tests: `tests/test_ingame_assignments.py` (create and toggle rules, the API, the audit,
+  cancelling open in-game orders, kill cancels in-game orders),
+  `tests/test_ingame_settlement.py` (in-game buys and sells settled to the cent, the
+  attribution to both lineages, `state_at_entry`, CLV and the paper gate excluding
+  in-game rows, a shared in-game model, the ledger identity).

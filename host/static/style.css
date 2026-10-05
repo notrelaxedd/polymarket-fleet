@@ -317,6 +317,22 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
 .positions-head .positions-total { margin-left: auto; font-weight: 400; color: var(--text); }
 table.positions td.c-size, table.positions td.c-bid { font-variant-numeric: tabular-nums; }
 
+/* step 6C: in-game. The in-game chip is the badge/text pair (AA in both schemes) with an
+   accent ring, so it never reads as the filled sell chip; a stale state reuses .stale-age. */
+.chip.chip-ingame { background: var(--badge); color: var(--text); border: 1px solid var(--accent); font-weight: 600; }
+table.assignments td.c-ingame { min-width: 15rem; }
+.c-ingame .game-line { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.c-ingame .ingame-p { display: inline-block; font-variant-numeric: tabular-nums; }
+.ingame-form { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; margin-top: 0.35rem; }
+.ingame-form label:first-child { flex: 1 1 12rem; min-width: 0; }
+.ingame-form select { width: 100%; }
+.feed-lines { margin: 0 0 0.4rem; padding-left: 1.2rem; }
+.ingame-feed { border-top: 1px solid var(--line); margin-top: 0.75rem; }
+.ingame-feed.is-suspended { border-top: 2px solid var(--red); }
+.probe-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.6rem; }
+.probe-gamestate { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.probe-gamestate input { width: 9rem; }
+
 @media (max-width: 700px) {
   .banner { font-size: 0.85rem; }
   /* step 5: the phrase input takes the full width and the live buttons are full-width tap targets */
@@ -342,4 +358,14 @@ table.positions td.c-size, table.positions td.c-bid { font-variant-numeric: tabu
   table.positions td.lead { display: block; padding-right: 0; min-height: 0; }
   .positions-head .positions-total { margin-left: 0; flex-basis: 100%; }
   table.fills td.c-realized:empty { display: none; }
+  /* step 6C: the in-game cell takes the full row; its select, box and Save are full-width tap targets */
+  table.assignments td.c-ingame { min-width: 0; }
+  .c-ingame .game-line { white-space: normal; }
+  .ingame-form label:first-child { flex-basis: 100%; }
+  .ingame-form .btn { flex: 1; min-height: var(--tap); }
+  .probe-row, .probe-gamestate { flex-basis: 100%; width: 100%; }
+  .probe-row form.inline .btn, .probe-gamestate .btn { width: 100%; min-height: var(--tap); }
+  .probe-row form.inline { width: 100%; }
+  .probe-gamestate label { flex: 1 1 100%; }
+  .probe-gamestate input { width: 100%; }
 }

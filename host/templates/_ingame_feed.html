@@ -1,0 +1,21 @@
+{# The "In-game feed" block (step 6C, included by _trading.html at the end of the exchange block): the measured lag of each
+   game-state source against the market over its last 20 events, and whether in-game
+   buys are suspended (median lag over ingame_max_lag_s with enough measured events). #}
+{% set feed = ingame_feed %}
+<div class="ingame-feed{% if feed.suspended %} is-suspended{% endif %}" id="ingame-feed">
+<h3>In-game feed <span class="chip {{ 'chip-bad' if feed.suspended else 'chip-ok' }}">{{ 'buys suspended' if feed.suspended else 'not suspended' }}</span></h3>
+<ul class="feed-lines">
+{% for s in feed.sources %}
+  <li data-source="{{ s.source }}">{{ s.text }}</li>
+{% else %}
+  <li class="muted">No feed event measured against the market yet: not enough data.</li>
+{% endfor %}
+</ul>
+<p class="small feed-state">
+{% if feed.suspended %}<span class="error">In-game buys are suspended: the median lag {{ feed.median_lag_s | fixed(0) }} s is over {{ feed.max_lag_s | fixed(0) }} s.</span> Sells stay allowed.
+{% elif not feed.enough %}<span class="muted">Not suspended: {{ feed.n }} of {{ feed.min_events }} measured events, not enough data to judge the lag.</span>
+{% else %}<span class="muted">Not suspended: the median lag {{ feed.median_lag_s | fixed(0) }} s is within {{ feed.max_lag_s | fixed(0) }} s.</span>
+{% endif %}
+</p>
+<p class="muted small">Sources polled: {{ feed.configured | join(', ') }}. In-game orders are paper only.</p>
+</div>

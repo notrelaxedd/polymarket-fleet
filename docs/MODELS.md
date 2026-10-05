@@ -152,6 +152,74 @@ log-odds; at most three are named, largest first. Without one it reads "no signa
 the price by 0.03 in log-odds, so it is close to the closing line alone". The second
 and third sentences are the elo_blend ones.
 
+## Third family: `ingame_wp` (step 6C, in-game)
+
+`fleet/models/ingame_wp.py` (docs/INGAME.md). An in-game home win probability from the
+live game state: `predict(state, pregame_p) -> p_home` (clamped to [0.001, 0.999]),
+where `state` is the game-state dict {status, period, clock_seconds, home_score,
+away_score, possession, down, distance, yardline_100, home_timeouts, away_timeouts} and
+`pregame_p` the devigged closing moneyline (or the frozen closing mid of the home market).
+A logistic regression on engineered features, with t = game seconds left / 3600 and the
+sign +1 when the home team has the ball, -1 for the away team, 0 for nobody:
+
+| name | feature |
+|---|---|
+| `const` | 1 |
+| `score_time` | score_diff / (t + 0.01) ** (0.5 * time_scale) (`time_scale` is an exponent: 1 is the square root) |
+| `pregame_logit` | logit(pregame_p) |
+| `pregame_logit_time` | logit(pregame_p) * t |
+| `field_position` | sign * (100 - yardline_100) / 100 * fp_scale |
+| `late_down`, `distance` | down and distance terms of the team in possession, signed |
+| `timeouts` | (home_timeouts - away_timeouts) / 3 |
+| `end_half1`, `end_game` | the last 120 s of each half, signed |
+
+Training data: the host's `pbp_rows` (nflverse play-by-play, one row per play from 2012,
+`host/pbp_rows.py`; refreshed weekly in season, backfilled with `ingest-pbp-rows`),
+served to workers as `GET /api/v1/data/pbp` and cached as `pbp.jsonl.gz`. Fit by
+`fleet.models.newton.fit_logistic` with the L2 penalty per 1000 plays (effective
+`l2 * n_plays / 1000`, intercept unpenalised), so the search range of `l2` matters at
+any data size. Params and search space: `l2` log-uniform [0.01, 10], `time_scale` [0.5,
+2.0], `fp_scale` [0.5, 2.0] (defaults 1, 1, 1). Short params on the Models page read
+"L2 1.00 · time 1.00 · field 1.00".
+
+Search: a `model_search` job with `family: "ingame_wp"` takes its own params (host
+defaults in brackets): `train_seasons` [2012, 2021], `validation_seasons` [2022, null]
+(null = through the newest season in the feed), `n` [20], `seed` [1], `top_k` [5],
+`train_fraction` [0.3] (the share of train games the fit uses). The train era must end
+before the validation era starts (400 otherwise); `seasons` is accepted for
+`train_seasons` (the Jobs form sends it) and a null last train season is capped at the
+season before the validation era; no settings are copied in
+(`host/ingame_jobparams.py`). Each
+candidate is fitted on the train seasons only and selected on them; the kept models are
+then scored on the validation seasons, which never reach a fit or the ranking
+(`fleet/sim/ingame.py`). The result's `create_models` entries are `{"family":
+"ingame_wp", "params", "artifact", "backtest_metrics" (the selection metrics, `"era":
+"search"`), "validation_metrics" (`"era": "validation"`)}`.
+
+Validation (`fleet/sim/ingame_eval.py`): `{"n_plays", "log_loss", "vegas_log_loss",
+"beats_baseline" (log_loss <= vegas_log_loss), "brier", "vegas_brier", "seasons",
+"by_period" (Q1..Q4, OT), "by_score_bucket" (<=-9, -8..-1, 0, 1..8, >=9, home minus away
+before the play), "calibration" (ten buckets of the model's p)}`, every number on the same
+plays against nflverse's `vegas_wp` as the market proxy (there are no historical in-game
+prices, so there is no in-game backtest for edge).
+
+Eligibility (`host/ingame_eligibility.py`): an ingame_wp lineage is `paper_ok` when its
+`validation_metrics.beats_baseline` is true over at least 10000 plays, otherwise
+`candidate`. It is never `live_eligible` in this step: in-game orders are paper-only
+(a live in-game order is rejected with `ingame_paper_only`) and the paper gate skips the
+lineage. The pre-game jobs (backtest, validate, train) refuse ingame_wp models with a
+400.
+
+Leaderboard: ingame_wp lineages are not ranked with the pre-game models (no moneyline
+ROI, no CLV); they are listed apart as "in-game model" (in the API among the unranked,
+after the others), the ones beating vegas_wp first, then by the log-loss gain over it.
+Their row shows the plays, the log-loss against vegas_wp, whether it beats the baseline
+and the in-game paper record. Every lineage with in-game bets gets an in-game column
+group (in-game bets and P&L from `model_scores.ingame_n_bets` and `ingame_pnl_cents`);
+the pooled paper record still counts every bet, and CLV only pre-game buys. The model
+page of an ingame_wp model shows the validation per period, per score bucket and the
+calibration, each against vegas_wp.
+
 ## Backtest (`fleet/sim/backtest.py`)
 
 Walk-forward by season over `seasons = [first, last]` (settings `backtest_seasons`; the

@@ -1,0 +1,33 @@
+{# One assignment's in-game cell (step 6C, included by _trading.html inside the row loop):
+   the switch chip, the live score and clock with the state age or "state stale", the
+   in-game model probability of the home team next to the home market mid, and the
+   toggle form (in-game model + trade in-game) while a paper assignment can still trade. #}
+{% set ig = a.ingame %}
+<td class="wide c-ingame"><span class="k">in-game</span>
+  {% if ig and ig.visible %}
+  <span class="chip {{ 'chip-ingame' if ig.enabled else 'mode-paper' }}">in-game {{ 'on' if ig.enabled else 'off' }}</span>
+  {% if ig.line %}
+    {% if ig.stale %}<span class="stale-age state-stale">state stale</span> <span class="muted small game-line">{{ ig.line }}</span>
+    {% else %}<span class="game-line">{{ ig.line }}</span>{% endif %}
+  {% elif ig.enabled %}<span class="muted small">no game state yet</span>{% endif %}
+  {% if ig.p_home is not none %}
+  <span class="ingame-p" data-p-home="{{ ig.p_home | fixed(3) }}">model {{ a.game.home_team }} {{ ig.p_home | fixed(2) }} &middot; mid {% if ig.mid_home is not none %}{{ ig.mid_home | fixed(2) }}{% else %}-{% endif %}</span>
+  {% endif %}
+  {% else %}<span class="muted small">off</span>
+  {% endif %}
+  {% if a.mode == 'live' %}<span class="muted small">in-game orders are paper only</span>
+  {% elif a.status in ('active', 'halted') and a.game.status != 'final' %}
+  <form method="post" action="/assignments/{{ a.id }}/ingame" class="ingame-form">
+    {% set listed = ingame_models | map(attribute='id') | list %}
+    <label><span class="visually-hidden">In-game model</span>
+      <select name="ingame_model_id">
+        <option value="">no in-game model</option>
+        {% if ig and ig.model_id and ig.model_id not in listed %}<option value="{{ ig.model_id }}" selected>{{ ig.model_label or 'in-game model' }} {{ ig.model_id | short }} (retired)</option>{% endif %}
+        {% for m in ingame_models %}<option value="{{ m.id }}"{% if ig and ig.model_id == m.id %} selected{% endif %}>{{ m.label }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="check"><input type="checkbox" name="trade_ingame"{% if ig and ig.trade_ingame %} checked{% endif %}> trade in-game</label>
+    <button type="submit" class="btn small">Save</button>
+  </form>
+  {% endif %}
+</td>

@@ -17,6 +17,10 @@ into the validation era (host/eras.py): a null last search season is capped at t
 season before the validation era; an explicit search range that overlaps it, a
 backtest of a stored model on seasons that overlap it, eras that do not resolve, and
 a validate of a model whose own search reached into it are refused.
+
+Step 6 Part C: a model search of family `ingame_wp` takes its own params and eras
+(host/ingame_jobparams.py) and copies no settings; the pre-game jobs refuse ingame_wp
+models.
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ from fleet.models.registry import FAMILIES
 from host.eras import (_season, check_before_validation, check_validate_era, required_validation_seasons,
                        resolve_seasons, search_era)
 from host.errors import BadRequest
+from host.ingame_jobparams import INGAME_FAMILY, ingame_search_params, is_ingame_search, refuse_ingame_model
 from host.leases import as_uuid
 from host.models import known_family
 from host.nflverse import last_complete_season
@@ -150,6 +155,8 @@ def _backtest(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
         out["model_id"] = _model_id(conn, params["model_id"])
     elif "family" in params:
         out["family"] = _family(params["family"])
+        if out["family"] == INGAME_FAMILY:
+            raise BadRequest("a backtest does not run ingame_wp: in-game models are validated by their model search")
         out["params"] = _model_params(params.get("params"), out["family"])
     else:
         raise BadRequest("backtest needs model_id or family + params")
@@ -240,6 +247,8 @@ def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) 
     """Validated params for `kind`, with the settings copied in for the batch kinds."""
     if kind == "sleep":
         return _sleep(params)
+    if is_ingame_search(kind, params):
+        return ingame_search_params(params)
     if kind == "backtest":
         out = _backtest(conn, params)
     elif kind == "model_search":
@@ -250,6 +259,7 @@ def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) 
         out = _validate(conn, params)
     else:
         return dict(params)
+    refuse_ingame_model(conn, kind, out.get("model_id"))
     out.update(copied_settings(conn, kind))
     if kind == "validate":
         check_validate_era(conn, out["model_id"], out["validation_seasons"])

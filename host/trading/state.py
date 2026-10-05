@@ -6,7 +6,12 @@ Step 6 Part B: markets carry `bid_depth` and open orders their `side` ('buy' | '
 so the worker can propose and cancel sells; positions are host.trading.positions rows
 ({"market_id", "side", "size", "basis_cents", "avg_cost"}, signed: buys minus sells);
 the game carries "signals" and "team_stats" from host.signals.game_signals so the
-worker builds features with fleet.sim.data.features_of exactly as a backtest does."""
+worker builds features with fleet.sim.data.features_of exactly as a backtest does.
+
+Step 6 Part C: each entry carries "ingame" (`ingame_block`: enabled, the in-game
+model, the latest game state, pregame_p_home and the feed-lag summary) and open
+orders their `ingame` flag; the settings gain the in-game trade rules
+(docs/INGAME.md)."""
 from __future__ import annotations
 
 import uuid
@@ -14,6 +19,9 @@ from typing import Any
 
 import psycopg
 
+from fleet.sim.odds import devig
+from host.exchange.feedlag import lag_status
+from host.exchange.gamestate import latest_state
 from host.kill import is_killed
 from host.settings import get_int_setting, get_settings
 from host.signals import game_signals
@@ -22,7 +30,8 @@ from host.trading.positions import positions, server_now
 
 STATE_SETTINGS = (
     "min_edge", "kelly_fraction", "participation", "trade_pregame_only", "fee_model", "trade_tick_s",
-    "max_bet_cents", "trade_max_games",
+    "max_bet_cents", "trade_max_games", "ingame_tick_s", "ingame_max_state_age_s", "ingame_quiet_seconds",
+    "ingame_cutoff_seconds", "ingame_dead_zone", "ingame_min_edge", "ingame_max_bet_cents", "ingame_gtd_seconds",
 )
 ACTIVE_LIST = "', '".join(ACTIVE_STATUSES)
 
@@ -56,7 +65,48 @@ def _state_markets(conn: psycopg.Connection, game_id: str, floor: int) -> list[d
     return out
 
 
-def _state_entry(conn: psycopg.Connection, job: dict[str, Any], floor: int) -> dict[str, Any] | None:
+def pregame_p_home(conn: psycopg.Connection, game: dict[str, Any] | None) -> float | None:
+    """The in-game model's prior: the devigged closing moneyline of the game, else the
+    frozen closing mid of the home market (1 - the away market's when only that one is
+    frozen), else None."""
+    if game is None:
+        return None
+    p = devig(game.get("home_moneyline"), game.get("away_moneyline"))
+    if p is not None:
+        return float(p)
+    rows = conn.execute(
+        """
+        SELECT side, closing_price FROM markets
+         WHERE game_id = %s AND mapping_confirmed AND closing_price IS NOT NULL ORDER BY side DESC, id
+        """,
+        (game["game_id"],),
+    ).fetchall()
+    for r in rows:  # 'home' sorts before 'away' descending
+        price = float(r["closing_price"])
+        return price if r["side"] == "home" else 1.0 - price
+    return None
+
+
+def ingame_block(conn: psycopg.Connection, a: dict[str, Any], game: dict[str, Any] | None,
+                 lag: dict[str, Any], now: Any) -> dict[str, Any]:
+    """The per-assignment "ingame" entry: {"enabled", "model", "game_state",
+    "pregame_p_home", "lag": {"suspended", "median_lag_s", "n"}}."""
+    model = None
+    if a.get("ingame_model_id") is not None:
+        model = conn.execute(
+            "SELECT id, family, params, artifact FROM models WHERE id = %s", (a["ingame_model_id"],)
+        ).fetchone()
+    return {
+        "enabled": bool(a.get("trade_ingame")) and model is not None,
+        "model": dict(model) if model is not None else None,
+        "game_state": latest_state(conn, a["game_id"], now) if game is not None else None,
+        "pregame_p_home": pregame_p_home(conn, game),
+        "lag": {k: lag.get(k) for k in ("suspended", "median_lag_s", "n")},
+    }
+
+
+def _state_entry(conn: psycopg.Connection, job: dict[str, Any], floor: int, lag: dict[str, Any],
+                 now: Any) -> dict[str, Any] | None:
     params = job["params"] if isinstance(job["params"], dict) else {}
     try:
         aid = uuid.UUID(str(params.get("assignment_id")))
@@ -70,7 +120,7 @@ def _state_entry(conn: psycopg.Connection, job: dict[str, Any], floor: int) -> d
     bank = conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (a["id"],)).fetchone()
     open_orders = conn.execute(
         f"""
-        SELECT id, market_id, side, price, size, filled_size, status, snapshot_id, created_at FROM orders
+        SELECT id, market_id, side, price, size, filled_size, status, snapshot_id, created_at, ingame FROM orders
          WHERE assignment_id = %s AND status IN ('{ACTIVE_LIST}') ORDER BY created_at
         """,
         (a["id"],),
@@ -86,6 +136,7 @@ def _state_entry(conn: psycopg.Connection, job: dict[str, Any], floor: int) -> d
         "markets": _state_markets(conn, a["game_id"], floor),
         "open_orders": [dict(o) for o in open_orders],
         "positions": positions(conn, a["id"]),
+        "ingame": ingame_block(conn, dict(a), dict(game) if game is not None else None, lag, now),
     }
 
 
@@ -100,10 +151,12 @@ def trade_state(conn: psycopg.Connection, worker_id: str) -> dict[str, Any]:
         """,
         (worker_id,),
     ).fetchall()
-    entries = [e for e in (_state_entry(conn, dict(j), floor) for j in jobs) if e is not None]
+    now = server_now(conn)
+    lag = lag_status(conn) if jobs else {}
+    entries = [e for e in (_state_entry(conn, dict(j), floor, lag, now) for j in jobs) if e is not None]
     return {
         "kill": is_killed(conn),
-        "server_time": server_now(conn),
+        "server_time": now,
         "settings": {k: settings.get(k) for k in STATE_SETTINGS},
         "assignments": entries,
     }
