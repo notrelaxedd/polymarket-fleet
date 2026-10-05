@@ -3,37 +3,13 @@ server on the per-test database. Skipped when playwright or its Chromium is miss
 (PLAYWRIGHT_BROWSERS_PATH, default /opt/pw-browsers); never downloads a browser."""
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Iterator
 
 import pytest
 
+from tests.hw.conftest import PHONE
 from tests.hw.serve import Server
-
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")
-PHONE = {"width": 390, "height": 844}
-
-
-@pytest.fixture(scope="module")
-def browser() -> Iterator[Any]:
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        pytest.skip("playwright is not installed")
-    with sync_playwright() as pw:
-        try:
-            chromium = pw.chromium.launch()
-        except Exception as exc:  # noqa: BLE001 - any launch failure means no browser here
-            pytest.skip(f"no Chromium for Playwright: {exc}")
-        yield chromium
-        chromium.close()
-
-
-@pytest.fixture
-def server(test_db_url: str) -> Iterator[Server]:
-    with Server(test_db_url) as live:
-        yield live
 
 
 @pytest.fixture
@@ -130,6 +106,8 @@ def test_without_javascript_copy_buttons_hide_and_set_shows(browser, server, mak
         assert page.locator(f"{_row(w.id)} button.js-hide").is_visible(), "the Set button shows"
         assert page.locator("#updated").bounding_box() is None, "no freshness line without the script"
         page.goto(server.url + "/settings")
+        # the enroll form sits in the closed Fleet group; with JS off the summary still opens it
+        page.click('details[data-key="settings-fleet"] > summary')
         with page.expect_navigation():
             page.click('[data-action="enroll"] button')
         assert page.locator("button.js-only").count() == 3

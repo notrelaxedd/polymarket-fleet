@@ -72,3 +72,20 @@ def test_row_is_one_line_item_with_its_hooks() -> None:
     assert main.target == "/models/m1" and main.one(".row-title").text == "elo_blend K 40 · HFA 70" and main.one(".row-meta").text == "paper 5 games"
     assert row.chips() == ["paper_ok"] and row.one(".row-value").text == "CLV +0.6%"
     assert not render('{% call ui.row("job", 7, "/jobs/7", "sleep") %}{% endcall %}').row("job", 7).has(".row-meta")
+
+
+def test_chip_takes_a_title() -> None:
+    chip = render('{{ ui.chip("warn", "fragile", key="fragile", title="worse prices remove the edge") }}').one(".chip")
+    assert chip.attr("title") == "worse prices remove the edge" and chip.text == "fragile"
+    assert not render('{{ ui.chip("ok", "paper") }}').one(".chip").has_attr("title")
+
+
+def test_row_without_a_page_with_extra_lines_classes_and_hooks() -> None:
+    src = ('<ul class="rows">{% call ui.row("order", 3, None, "5 @ 52c", meta="KC @ LV", meta2="edge 3.1%", ingame="Q3 7:12 KC 17-14",'
+           ' cls="is-live", attrs={"data-order": 3, "data-kind": "smoke"}) %}{% endcall %}</ul>')
+    row = render(src).row("order", 3)
+    assert row.has_class("is-live") and row.attr("data-order") == "3" and row.attr("data-kind") == "smoke"
+    main = row.one(".row-main")
+    assert main.tag == "div" and not main.has_attr("href")
+    assert [m.text for m in main.select(".row-meta")] == ["KC @ LV", "edge 3.1%", "Q3 7:12 KC 17-14"]
+    assert main.one(".row-ingame").text == "Q3 7:12 KC 17-14"

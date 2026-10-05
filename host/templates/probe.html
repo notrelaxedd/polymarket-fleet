@@ -6,7 +6,8 @@
    Trading page's Exchange group), to paste back when the parser needs fixing. #}
 {% block content %}
 <h1>Market probe <span class="muted">{{ probe.source }}</span></h1>
-<p><a href="/trading#exchange">Back to Trading</a></p>
+{{ ui.intro("probe", "The raw markets payload of the configured source, to paste back when the parser needs fixing.") }}
+<p class="small"><a href="/trading#exchange">&larr; Back to Trading</a></p>
 <div class="stats">
 {{ ui.stat("probe-source", probe.source or '-', "Source") }}
 {{ ui.stat("probe-status", probe.status if probe.status is not none else '-', "HTTP status", note="failed" if probe.error else None) }}

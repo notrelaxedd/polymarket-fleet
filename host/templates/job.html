@@ -9,7 +9,7 @@
 {% set chip_state = {'leased': 'ok', 'succeeded': 'ok', 'failed': 'bad', 'cancel_requested': 'warn'}.get(job.status, 'muted') %}
 <h1>{{ job.kind }}{% if target %} {{ target }}{% endif %} <span class="muted small">{{ job.id | short }}</span></h1>
 {{ ui.intro("job", "One job: where it stands, what it found, and below that what it was asked to do and its log.") }}
-<p class="small"><a href="/jobs">&larr; All jobs</a></p>
+<p class="small"><a href="/jobs">&larr; All jobs</a>{% if job.params.model_id %} &middot; model <a href="/models/{{ job.params.model_id }}" data-action="model">{{ job.params.model_id | short }}</a>{% endif %}</p>
 <div class="stats" data-card="job">
   <div class="stat" data-stat="progress"><span class="stat-value">{{ job.progress | pct }}</span><span class="stat-label">Progress</span>{{ ui.chip(chip_state, job.status.replace('_', ' '), key=job.status, extra="st-" ~ job.status) }}</div>
   {{ ui.stat("worker", names.get(worker, worker) if worker else "none", "Worker", note=worker if worker else none) }}
@@ -103,7 +103,7 @@
   </table>
   </div>
 {% endcall %}
-{% call ui.disclosure("job-raw", "Raw", summary="the result as stored, JSON") %}
+{% call ui.disclosure("job-raw", "Raw", summary="the raw result as stored, JSON") %}
   <pre>{{ job.result | pretty_json or 'none' }}</pre>
 {% endcall %}
 {% endblock %}

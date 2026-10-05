@@ -3,20 +3,27 @@
    the tests read stay the same everywhere. Import with {% import "_ui.html" as ui %}.
 
    stat(name, value, label, href=None, note=None)  a big number with its caption; a link when href
-   chip(state, word, key=None, extra='')            state ok|warn|bad|muted, always with a word;
-                                                    data-chip is key (or state); extra = more classes
+   chip(state, word, key=None, extra='', title=None) state ok|warn|bad|muted, always with a word;
+                                                    data-chip is key (or state); extra = more classes;
+                                                    title = a tooltip saying what the word means
    intro(page, text)                                the dismissable "What this page is" line
    bar(pct)                                         progress, pct a whole 0..100 (filter a fraction with bar_pct)
    {% call ui.disclosure(key, title, count=None, summary=None, open=False) %}body{% endcall %}
    {% call ui.menu(label='More actions') %}forms and links, each a .menu-item with data-action{% endcall %}
-   {% call ui.row(kind, id, href, title, meta=None) %}chips, .row-value, ui.menu{% endcall %} #}
+   {% call ui.row(kind, id, href, title, meta=None, meta2=None, ingame=None, cls='', attrs={}) %}
+     chips, .row-value, ui.menu
+   {% endcall %}
+     href None draws a div.row-main (a row without a page of its own); meta2 is a second
+     .row-meta line, ingame the in-game line (.row-meta.row-ingame, step 6C); cls adds
+     classes to the li (is-live), attrs more data attributes. Two meta lines at most keep
+     the row under 88 px at 390 px. #}
 
 {% macro stat(name, value, label, href=None, note=None) -%}
 <{{ 'a' if href else 'div' }} class="stat" data-stat="{{ name }}"{% if href %} href="{{ href }}"{% endif %}><span class="stat-value">{{ value }}</span><span class="stat-label">{{ label }}</span>{% if note %}<span class="stat-note">{{ note }}</span>{% endif %}</{{ 'a' if href else 'div' }}>
 {%- endmacro %}
 
-{% macro chip(state, word, key=None, extra='') -%}
-<span class="chip chip-{{ state }}{% if extra %} {{ extra }}{% endif %}" data-chip="{{ key if key else state }}">{{ word }}</span>
+{% macro chip(state, word, key=None, extra='', title=None) -%}
+<span class="chip chip-{{ state }}{% if extra %} {{ extra }}{% endif %}" data-chip="{{ key if key else state }}"{% if title %} title="{{ title }}"{% endif %}>{{ word }}</span>
 {%- endmacro %}
 
 {% macro intro(page, text) -%}
@@ -40,8 +47,9 @@
 </div></details>
 {%- endmacro %}
 
-{% macro row(kind, id, href, title, meta=None) -%}
-<li class="row" data-row="{{ kind }}" data-id="{{ id }}"><a class="row-main" href="{{ href }}"><span class="row-title">{{ title }}</span>{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}</a>
+{% macro row(kind, id, href, title, meta=None, meta2=None, ingame=None, cls='', attrs={}) -%}
+{% set tag = 'a' if href else 'div' %}
+<li class="row{% if cls %} {{ cls }}{% endif %}" data-row="{{ kind }}" data-id="{{ id }}"{% for k, v in attrs.items() %} {{ k }}="{{ v }}"{% endfor %}><{{ tag }} class="row-main"{% if href %} href="{{ href }}"{% endif %}><span class="row-title">{{ title }}</span>{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}{% if meta2 %}<span class="row-meta">{{ meta2 }}</span>{% endif %}{% if ingame %}<span class="row-meta row-ingame">{{ ingame }}</span>{% endif %}</{{ tag }}>
 {{ caller() }}
 </li>
 {%- endmacro %}

@@ -142,7 +142,7 @@ docker compose exec host python -m host.cli ingest-games
 
    It downloads the nflverse schedule file (games from 1999 on, with closing moneylines and spreads) and stores it in the host database (the `games` table). Workers fetch it from the host (`GET /api/v1/data/games`, cached on the worker with an ETag), never from the internet.
 2. Send a model search. On the Jobs page create a `model_search` job with family `elo_blend`, n 50, seed 1, seasons 2012 to the last completed season, target any idle worker. Go to the Fleet page: the chosen card flips to `model_search` and its progress bar climbs, one step per candidate and test season.
-3. When it finishes, open Models. Five new candidates appear, each with a three-sentence summary, ROI, bets, and log-loss against the market. The worker card returns to `idle` on its own.
+3. When it finishes, open Models. Five new candidates appear, each with its ROI and bets (from step 7 the three-sentence summary and the log-loss against the market are on the model page). The worker card returns to `idle` on its own.
 4. Click one candidate and read the per-season table (bets, ROI, log-loss, drawdown for each test season).
 5. Press Train and accept the default (through the last complete season, week 22). A child row appears in the same lineage, with the parent's backtest metrics and a trained-through label.
 6. Send a backtest for one model to a chosen box from the Jobs page (target: that worker). When it ends, open the job detail page and read the metrics in the result.
@@ -339,6 +339,17 @@ docker compose exec host python -m host.cli ingest-pbp --season 2025
    - Sells only fire when the market overshoots the model, which on the sim source can take a while. Lowering Min edge in Settings (Trading limits) makes both buys and sells fire more readily; put it back afterwards.
    - KILL cancels open sells exactly like buys and leaves positions alone. At settlement each filled sell gets its own bets row (result `sold`), and the buy rows only cover the contracts still held.
 
+## How to test step 7
+
+The UI overhaul changes only the pages (`docs/UI.md`, `docs/DASHBOARD.md`); every form, address and rule is the same.
+
+1. Open the dashboard on the phone. The landing page is now Home: workers online, today's P&L of the current mode, open orders and the best model, then "Needs attention" (empty: "Nothing needs you.") and the last settled bets. The wordmark "Fleet" at the top left always leads back here; the five sections sit in a bar at the bottom of the screen, with Fleet now at `/fleet`.
+2. The top bar shows only the current mode's P&L ("paper +$6.57 today"). The other mode's figure and the all-time totals are the first stats on Trading.
+3. Every page opens with its title, a grey "What this page is" line (tap it to fold it; the dashboard remembers) and two to four big numbers. Lists are one line per row: tap the row for its page, tap "..." for the rest (Halt, Cancel, Train, Validate, Assign, Retire, Disable).
+4. Trading, Settings and the model page fold their sections. Each header says what is inside ("Open orders 2", "max bet $25.00 · daily loss ..."); open the ones you need and they stay open across the 5 s refresh and a reload. A link to a section (the EXCHANGE DOWN banner, `/settings#kill`) opens it.
+5. With JavaScript off everything still works: the sections and "..." menus open on tap, every action is a form, and Jobs shows all five New job forms under their headings.
+6. Developers: `tests/hw/screenshots.py` captures every page at 390 and 1280 px in light and dark and checks the layout rules; `tests/hw/test_row_audit.py` checks Models and Trading stay under six phone screens with 20 rows each.
+
 ## Data
 
 Game schedules, scores and closing lines come from [nflverse](https://github.com/nflverse/nflverse-data) (`games.csv`), licensed CC BY 4.0. Attribution: "Data: nflverse (https://nflverse.com), CC BY 4.0." It is also shown on the Models page. From step 6B the host also loads two more nflverse-data files per season: the weekly injury reports (`injuries_{season}.csv`, for the players listed Out) and play-by-play (`play_by_play_{season}.csv.gz`, folded into per team-game EPA per play, pass rate and success rate). Both download URLs are editable templates in Settings. Prices for snapshot replays are the host's own recordings from the market source, never a third-party history.
@@ -366,6 +377,6 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
    - [x] 6A: validation era, confidence intervals, market test, stress tests, stricter gates, multi-core search
    - [x] 6B: snapshot replay backtests, quarterback, injury and play-by-play signals, the `epa_blend` family, selling a held position
    - [ ] 6C: in-game trading (`docs/INGAME.md`), pending
-7. [ ] Step 7: UI overhaul (`docs/UI.md`), pending
+7. [x] Step 7: UI overhaul (`docs/UI.md`): Home at `/`, Fleet at `/fleet`, one-line rows with action menus, disclosures, a bottom nav on phones
 
 Data is free-only for now; paid sources are considered once profit comes in.

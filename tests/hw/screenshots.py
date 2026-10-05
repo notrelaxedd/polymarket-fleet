@@ -10,169 +10,69 @@ sim markets, a trade worker, assignments, orders in every state, a fill, a settl
 bet), the paper CLV interval, and seed_step6b.py (an epa_blend lineage ranked on
 snapshot replay CLV, snapshot columns on two more, a snapshot backtest job, a partly
 sold position with a filled and an open sell, a second position). It serves the app
-with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet), jobs (backtest
-form with its price source) and its Done tab, job detail, settings (Trading, Snapshot
-replay, nflverse signals), models (validation, paper and snapshot columns), model detail, the flagged model, the
-snapshot-ranked model, the search, backtest, validate and snapshot backtest results,
-the validate form, trading (positions, sell chips) and its create form, at 390x844
-and 1280x800 in light and dark; then (seed_step5.py) settings, trading, fleet and home with
-live on, after an auto-kill, after a hand POST /kill, and trading after the reset. At
-phone width it fails on horizontal scroll, on a visible button, select or link in a
-worker card or a form control (a checkbox through its label) under 40 px tall, and
-when the fragment refresh does not reset "updated N s ago". It needs the Chromium
-build the installed Playwright expects under PLAYWRIGHT_BROWSERS_PATH; it never
-downloads a browser.
+with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet), jobs and its
+Done tab, job detail (sleep, search, backtest, validate, snapshot replay), models,
+model detail (the flagged and the snapshot-ranked ones too), trading, settings and the
+market probe page (the Exchange group's Probe button), plus the validate form and the
+New assignment form opened from a model, at 390x844 and 1280x800 in light and dark;
+then (seed_step5.py) settings, trading, fleet and home with live on, after an auto-kill,
+after a hand POST /kill, and trading after the reset.
+
+Every capture runs the docs/UI.md assertions (tests/hw/ui_checks.py): no horizontal
+overflow, every .chip has text, every <details> has a <summary> with text; at 390 px
+also the h1 and a .stat inside the first 844 px (not on the two captures that open a
+form at the top on purpose), no .row taller than 88 px and 44 px tap targets for
+buttons, row links, selects, inputs and menu items, measured again with every
+disclosure opened. At 1280 the Models rows keep their title, number and menu inside the
+row; on Fleet the fragment refresh must reset "updated N s ago". It exits 1 on any
+problem. It needs the Chromium build the installed Playwright expects under
+PLAYWRIGHT_BROWSERS_PATH; it never downloads a browser.
 """
 from __future__ import annotations
 
 import os
 import re
 import sys
-import uuid
 from pathlib import Path
 from typing import Any
 
 import httpx
-import psycopg
-from psycopg.rows import dict_row
-from psycopg.types.json import Jsonb
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")
 
-from host import db  # noqa: E402
-from host.events import add_audit  # noqa: E402
-from tests.conftest import ADMIN_URL, db_url, insert_job, insert_worker, set_heartbeat_age  # noqa: E402
-from tests.hw.seed_step3 import seed_models  # noqa: E402
-from tests.hw.seed_step4 import seed_trading, touch_trading  # noqa: E402
-from tests.hw.seed_step5 import auto_kill, seed_live, touch_live  # noqa: E402
-from tests.hw.seed_step6 import seed_paper_ci, seed_validation  # noqa: E402
-from tests.hw.seed_step6b import check_step6b, seed_sells, seed_snapshot  # noqa: E402
+from tests.hw.seed_shots import drop_database, fresh_database, seed, touch  # noqa: E402
+from tests.hw.seed_step5 import auto_kill, seed_live  # noqa: E402
+from tests.hw.seed_step6b import check_step6b  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
+from tests.hw.ui_checks import check_page, first_screen  # noqa: E402
 from tests.pagecheck import mode_pill, topbar  # noqa: E402
 from tests.pagecheck import page as parse  # noqa: E402
 
 DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 SCHEMES = ("light", "dark")
-MIN_TAP_PX = 40
-CARD_TARGETS = ".card.worker button, .card.worker select, .card.worker a"
-FORM_TARGETS = "form button, form select, form input:not([type=hidden]):not([type=checkbox]), form textarea, form label.check"
-
-
-# ---------------------------------------------------------------- database and seed
-
-
-def fresh_database() -> str:
-    """Create a migrated throwaway database and return its URL."""
-    name = f"fleet_shots_{uuid.uuid4().hex[:12]}"
-    with psycopg.connect(ADMIN_URL, autocommit=True) as admin:
-        admin.execute(f'CREATE DATABASE "{name}"')
-    url = db_url(name)
-    db.migrate(url)
-    return url
-
-
-def drop_database(url: str) -> None:
-    name = psycopg.conninfo.conninfo_to_dict(url)["dbname"]
-    with psycopg.connect(ADMIN_URL, autocommit=True) as admin:
-        admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
-
-
-def _machine(conn: psycopg.Connection, worker_id: str, cpu: float, used: int, total: int) -> None:
-    conn.execute(
-        """
-        UPDATE workers SET cpu_pct = %s, ram_used_mb = %s, ram_total_mb = %s, hostname = name || '.lan',
-               python_version = '3.11.2', code_version = 'a1b2c3d4e5f6'
-         WHERE id = %s
-        """,
-        (cpu, used, total, worker_id),
-    )
-
-
-def _event(conn: psycopg.Connection, job_id: Any, event: str, worker_id: str | None, detail: dict | None, ago: int) -> None:
-    conn.execute(
-        "INSERT INTO job_events (job_id, ts, worker_id, event, detail) VALUES (%s, now() - make_interval(secs => %s), %s, %s, %s)",
-        (job_id, ago, worker_id, event, Jsonb(detail) if detail is not None else None),
-    )
-
-
-def seed(url: str) -> dict[str, str]:
-    """Three workers (running, switching, offline) and a few jobs, then the step 3, 6,
-    4 and 6B rows (the module docstring lists them); returns the ids the captures need."""
-    ids = _seed_fleet(url)
-    ids.update(seed_models(url, ids["box2"], ids["box1"]))
-    ids.update(seed_validation(url, ids["box2"]))
-    ids.update(seed_trading(url, ids["model"]))
-    seed_paper_ci(url)
-    ids.update(seed_snapshot(url, ids["box2"], ids["model"]))
-    ids.update(seed_sells(url, ids["trader"], ids["assignment"]))
-    return ids
-
-
-def _seed_fleet(url: str) -> dict[str, str]:
-    with psycopg.connect(url, autocommit=True, row_factory=dict_row) as conn:
-        box1 = insert_worker(conn, "box1", role="backtest")
-        _machine(conn, box1.id, 37.5, 2611, 7936)
-        running = insert_job(
-            conn, "sleep", status="leased", progress=0.42, lease_worker_id=box1.id, target_worker_id=box1.id,
-            params=Jsonb({"seconds": 60}), checkpoint=Jsonb({"elapsed": 25}),
-        )
-        conn.execute(
-            """
-            UPDATE jobs SET lease_token = gen_random_uuid(), lease_expires_at = now() + interval '30 seconds',
-                   started_at = now() - interval '25 seconds', created_at = now() - interval '40 seconds'
-             WHERE id = %s
-            """,
-            (running["id"],),
-        )
-        _event(conn, running["id"], "created", None, {"target": box1.id}, 40)
-        _event(conn, running["id"], "claimed", box1.id, None, 38)
-        _event(conn, running["id"], "preempt_requested", None, {"role": "train"}, 31)
-        _event(conn, running["id"], "released", box1.id, {"status": "queued", "reason": "drain"}, 30)
-        _event(conn, running["id"], "claimed", box1.id, None, 25)
-
-        box2 = insert_worker(conn, "box2", role="idle")
-        _machine(conn, box2.id, 3.0, 912, 3934)
-        conn.execute("UPDATE workers SET desired_role = 'backtest', role_epoch = 2 WHERE id = %s", (box2.id,))
-
-        box3 = insert_worker(conn, "box3", role="idle")
-        _machine(conn, box3.id, 0.0, 702, 3934)
-        set_heartbeat_age(conn, box3.id, 600)
-
-        done = insert_job(conn, "sleep", status="succeeded", progress=1.0, target_worker_id=box2.id,
-                          params=Jsonb({"seconds": 30}), checkpoint=Jsonb({"elapsed": 30}), result=Jsonb({"slept": 30}))
-        conn.execute(
-            "UPDATE jobs SET created_at = now() - interval '12 minutes', started_at = now() - interval '11 minutes',"
-            " finished_at = now() - interval '10 minutes' WHERE id = %s", (done["id"],),
-        )
-        _event(conn, done["id"], "claimed", box2.id, None, 660)
-        _event(conn, done["id"], "succeeded", box2.id, None, 600)
-        failed = insert_job(conn, "sleep", status="failed", progress=0.6, target_worker_id=box3.id, expiries=3,
-                            params=Jsonb({"seconds": 600}), checkpoint=Jsonb({"elapsed": 360}),
-                            error="failed after 3 expiries (last: out of memory)")
-        conn.execute(
-            "UPDATE jobs SET created_at = now() - interval '2 hours', started_at = now() - interval '2 hours',"
-            " finished_at = now() - interval '90 minutes' WHERE id = %s", (failed["id"],),
-        )
-        insert_job(conn, "sleep", params=Jsonb({"seconds": 120}))
-        add_audit(conn, "set_role", box2.id, "owner@example.com", {"desired_role": "idle"}, {"desired_role": "backtest"})
-        add_audit(conn, "settings_changed", "max_bet_cents", "owner@example.com", {"max_bet_cents": 2500}, {"max_bet_cents": 2000})
-        return {"box1": box1.id, "box2": box2.id, "box3": box3.id, "running": str(running["id"])}
-
-
-def touch(url: str, box1: str) -> None:
-    """Keep box1 and box2 online and the lease alive while the captures run."""
-    with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '3 seconds' WHERE id = %s", (box1,))
-        conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '1 second' WHERE name = 'box2'")
-        conn.execute("UPDATE jobs SET lease_expires_at = now() + interval '30 seconds' WHERE status = 'leased'")
-        touch_trading(conn)
-        touch_live(conn)
+# captures that open a form at the top on purpose: the form, not a stat, is their first screen
+FORM_FIRST = {"jobs-validate-form", "trading-assign"}
 
 
 # ---------------------------------------------------------------- captures and checks
+
+
+PROBE = "probe:/trading"  # a POST result: open Trading, then press Probe markets in the Exchange group
+
+
+def open_page(page: Any, server_url: str, path: str) -> None:
+    """Load `path`; a "probe:" path loads the page after it and presses Probe markets."""
+    if path.startswith("probe:"):
+        page.goto(server_url + path.removeprefix("probe:"), wait_until="networkidle")
+        page.click('details[data-key="trading-exchange"] > summary')
+        with page.expect_navigation(wait_until="networkidle"):
+            page.click('[data-action="probe"] button')
+        assert page.locator('main[data-page="probe"]').count() == 1, "the probe page"
+        return
+    page.goto(server_url + path, wait_until="networkidle")
 
 
 def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
@@ -183,24 +83,8 @@ def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
         ("job-validate", f"/jobs/{ids['validate_job']}"), ("model-snapshot", f"/models/{ids['epa_model']}"),
         ("job-replay", f"/jobs/{ids['replay_job']}"),
         ("jobs-validate-form", f"/jobs?validate_model={ids['model']}"),
-        ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"),
+        ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"), ("probe", PROBE),
     ]
-
-
-def check_phone_layout(page: Any, name: str, problems: list[str]) -> None:
-    """No horizontal scroll; tap targets inside worker cards and forms are at least MIN_TAP_PX tall."""
-    scroll_w, inner_w = page.evaluate("[document.scrollingElement.scrollWidth, window.innerWidth]")
-    if scroll_w > inner_w:
-        problems.append(f"{name}: horizontal scroll, scrollWidth {scroll_w} > innerWidth {inner_w}")
-    short = page.evaluate(
-        """(sel) => Array.from(document.querySelectorAll(sel))
-             .filter(el => el.getClientRects().length > 0)
-             .map(el => [el.tagName, (el.getAttribute('name') || el.textContent || '').trim().slice(0, 30), el.getBoundingClientRect().height])
-             .filter(([, , h]) => h < %d)""" % MIN_TAP_PX,
-        f"{CARD_TARGETS}, {FORM_TARGETS}",
-    )
-    for tag, text, height in short:
-        problems.append(f"{name}: {tag} '{text}' is {height:.0f} px tall (< {MIN_TAP_PX})")
 
 
 def check_models_desktop(page: Any, problems: list[str]) -> None:
@@ -245,19 +129,23 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
 
-        def shoot(path: str, name: str, width: str, scheme: str, check: bool) -> None:
+        def shoot(path: str, name: str, width: str, scheme: str) -> None:
             w, h = VIEWPORTS[width]
             context = browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
             page = context.new_page()
             touch(database_url, ids["box1"])
-            page.goto(server_url + path, wait_until="networkidle")
+            open_page(page, server_url, path)
             target = out / f"{name}-{width}-{scheme}.png"
             page.screenshot(path=str(target), full_page=True)
             written.append(str(target))
-            if check:
-                check_phone_layout(page, name, problems)
-                if name == "fleet":
-                    check_refresh_counter(page, problems)
+            phone = width == "390"
+            found = check_page(page, f"{name}-{width}-{scheme}", phone=phone)
+            if name in FORM_FIRST:
+                found = [p for p in found if p not in first_screen(page, f"{name}-{width}-{scheme}")]
+            problems.extend(found)
+            if name == "fleet" and phone and scheme == "light":
+                page.reload(wait_until="networkidle")
+                check_refresh_counter(page, problems)
             if name == "models" and width == "1280" and scheme == "light":
                 check_models_desktop(page, problems)
             context.close()
@@ -266,7 +154,7 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             for name, path in captures:
                 for width in VIEWPORTS:
                     for scheme in SCHEMES:
-                        shoot(path, name, width, scheme, check=(width == "390" and scheme == "light"))
+                        shoot(path, name, width, scheme)
 
         check_step6b(server_url, ids)
         shoot_all(pages(ids))
@@ -295,15 +183,15 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             assert resp.status_code == 303, resp.text
             assert "TRADING KILLED" in topbar(parse(client.get("/").text)).text
         for scheme in SCHEMES:
-            shoot("/fleet", "fleet-killed", "390", scheme, check=(scheme == "light"))
-            shoot("/", "home-killed", "390", scheme, check=(scheme == "light"))
-            shoot("/trading", "trading-killed", "390", scheme, check=(scheme == "light"))
+            shoot("/fleet", "fleet-killed", "390", scheme)
+            shoot("/", "home-killed", "390", scheme)
+            shoot("/trading", "trading-killed", "390", scheme)
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
             assert resp.status_code == 303, resp.text
             assert parse(client.get("/trading").text).has('[data-action="activate-all-paper"]')
         for scheme in SCHEMES:
-            shoot("/trading", "trading-reset", "390", scheme, check=(scheme == "light"))
+            shoot("/trading", "trading-reset", "390", scheme)
         browser.close()
     for line in problems:
         print("PROBLEM", line)

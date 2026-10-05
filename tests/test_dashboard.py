@@ -1007,14 +1007,17 @@ def test_halt_activate_and_settle_forms(client, conn):
     bet = conn.execute("SELECT * FROM bets").fetchone()
     assert bet["result"] == "win" and bet["pnl_cents"] == 468 and bet["worker_id"] == setup.worker.id
     p = page(client.get("/trading").text)
-    assert p.row("assignment", aid).chip("settled").text == "settled" and "paper today $4.68 · all $4.68" in topbar(p).text
+    assert p.row("assignment", aid).chip("settled").text == "settled" and re.search(r"\bpaper \+\$4\.68 today", topbar(p).text)
+    assert "+$4.68" in p.stat("paper-today").text and "all time +$4.68" in p.stat("paper-today").text, "today and all time on Trading"
     assert p.row("market", setup.market["id"]).chip("resolved").text == "resolved YES"
     fleet = page(fleet_html(client))
-    assert "today $4.68" in fleet.row("worker", setup.worker.id).text, "the worker's card shows its P&L"
+    assert "P&L today +$4.68" in fleet.row("worker", setup.worker.id).text, "the worker's card shows its P&L (signed)"
     r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r).startswith("settle refused") or "settled" in flash_cookie(r)
-    board = page(client.get("/models").text)
-    assert "1 g · 1 bets · $4.68" in board.row("model", setup.model["id"]).text
+    # step 7: the list shows the record behind the headline only for a paper-ranked
+    # lineage; the paper record of every lineage is on its model page
+    paper = page(client.get(f"/models/{setup.model['id']}").text).card("paper")
+    assert "1 games · 1 bets · $4.68" in paper.text and "1 games · 1 bets · +$4.68" in paper.one(".disclosure-summary").text
 
 
 def test_order_cancel_and_cancel_all_forms(client, conn):
@@ -1172,7 +1175,7 @@ def test_pnl_maths(client, conn, make_worker):
     conn.execute("UPDATE markets SET status = 'resolved', resolved_yes = true WHERE id = %s", (setup.market["id"],))
     assert client.get("/api/pnl").json()["today_cents"] == 300
     set_setting(conn, "live_enabled", True)
-    assert "live today $0.00 · all $0.00" in page(client.get("/fragments/topbar").text).text
+    assert "live $0.00 today" in page(client.get("/fragments/topbar").text).text
 
 
 def test_leaderboard_paper_columns_and_ranking(client, conn):
@@ -1384,7 +1387,7 @@ def test_settings_live_group_on_state(client, conn):
     assert live.chip("auth-ok").text == "ok" and re.search(r"checked [0-9] s ago", live.prop("auth"))
     assert live.prop("balance") == "$500.00" and live.prop("buying power") == "$480.00"
     assert live.prop("clock skew") == "120 ms" and "none since the last reset" in live.text
-    assert mode_pill(page(html)) == "LIVE" and "live today $0.00" in topbar(page(html)).text
+    assert mode_pill(page(html)) == "LIVE" and "live $0.00 today" in topbar(page(html)).text
     # a failed probe after live went on: the failure, its count and the last error show in red
     auth_state(conn, auth_ok=False, auth_failures=2, last_auth_error="401 unauthorized <b>")
     live = _live_section(client.get("/settings").text)

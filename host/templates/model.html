@@ -189,6 +189,8 @@
 {% endif %}
 </section>
 {% endcall %}
-{# Step 6C: the in-game record (live score, clock, state age per assigned game) joins here as an "In-game" disclosure. #}
+{# Step 6C: the in-game record (live score, clock, state age per assigned game) is the
+   "In-game" disclosure in _model_ingame.html (ui.disclosure "model-ingame"), included here once it exists. #}
+{% include "_model_ingame.html" ignore missing %}
 <p class="attribution muted">{{ attribution }}</p>
 {% endblock %}

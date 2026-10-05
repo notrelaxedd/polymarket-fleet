@@ -4,22 +4,13 @@
    the status chip, the money in .row-value, the actions in the row's "..." menu.
 
    Slots for the step 6C port (in-game trading):
-   - an assignment row shows `a.ingame_line` (live score, clock, state age) as a second
-     .row-meta line when live_context sets it;
+   - an assignment row shows `a.ingame_line` (live score, clock, state age) as its
+     .row-meta.row-ingame line (ui.row's `ingame`) when live_context sets it;
    - the "In-game feed" disclosure is the template _trading_ingame.html, included after
      the assignments when it exists (a <section data-card="ingame"> around ui.disclosure
      "trading-ingame", like the groups below). #}
 {% import "_ui.html" as ui %}
 {% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{{ cents | pnl }}</span>{% endmacro %}
-{# A list row as ui.row draws it, plus what the trading lists need: rows without a page
-   of their own (a div.row-main), extra classes (is-live) and extra data attributes
-   (data-side, data-kind, data-order) the older tests and scripts read. #}
-{% macro item(kind, id, title, meta=None, meta2=None, href=None, cls='', attrs={}) -%}
-<li class="row{% if cls %} {{ cls }}{% endif %}" data-row="{{ kind }}" data-id="{{ id }}"{% for k, v in attrs.items() %} {{ k }}="{{ v }}"{% endfor %}>
-<{{ 'a' if href else 'div' }} class="row-main"{% if href %} href="{{ href }}"{% endif %}><span class="row-title">{{ title }}</span>{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}{% if meta2 %}<span class="row-meta">{{ meta2 }}</span>{% endif %}</{{ 'a' if href else 'div' }}>
-{{ caller() }}
-</li>
-{%- endmacro %}
 {% macro live_chip(mode) %}{% if mode == 'live' %} {{ ui.chip("bad", "live", key="live", extra="chip-live") }}{% endif %}{% endmacro %}
 {% macro order_chips(o) %}{{ live_chip(o.mode) }}{% if o.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% if o.kind == 'smoke' %} {{ ui.chip("warn", "smoke", key="smoke", extra="chip-smoke") }}{% endif %}{% endmacro %}
 {% macro order_line(o, avg=False) %}<span class="c-order" data-side="{{ o.order_side or 'buy' }}">{% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if avg and o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; realized {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</span>{% endmacro %}
@@ -52,7 +43,7 @@
 {# the LIVE chip leads so the ellipsis never cuts it; the paper chip may be cut #}
 {% set title %}{% if a.mode == 'live' %}{{ ui.chip("bad", "live", key="live", extra="chip-live") }} {% endif %}{{ a.game.away_team }} @ {{ a.game.home_team }}{% if a.mode != 'live' %} {{ ui.chip("muted", "paper", key="paper", extra="mode-paper") }}{% endif %}{% endset %}
 {% set meta %}{{ a.model.family }} {{ a.short_params }} &middot; {{ a.game.kickoff_at | ts }} &middot; {{ a.game_id }}{% if a.game.status == 'final' %} &middot; final {{ a.game.away_score }}-{{ a.game.home_score }}{% endif %}{% endset %}
-{% call item("assignment", a.id, title, meta, a.ingame_line, href="/models/" ~ a.model_id, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id}) %}
+{% call ui.row("assignment", a.id, "/models/" ~ a.model_id, title, meta=meta, ingame=a.ingame_line, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id}) %}
   <span class="row-value" title="bankroll available">{{ a.bankroll.available_cents | money }}</span>
   {% if a.settle_ready %}
   <form method="post" action="/assignments/{{ a.id }}/settle" data-action="settle"><button type="submit" class="btn small primary">Settle now</button></form>
@@ -96,7 +87,7 @@
 {% for o in open_orders %}
 {% set title %}{{ order_line(o) }}{{ order_chips(o) }}{% endset %}
 {% set meta %}{{ o.market_title }}{% if o.exchange_order_id %} #{{ o.exchange_order_id }}{% endif %} &middot; {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}no assignment{% endif %} &middot; {{ worker(o) }} &middot; {{ o.created_at | ts }}{% endset %}
-{% call item("order", o.id, title, meta, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
+{% call ui.row("order", o.id, None, title, meta=meta, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
   {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
   {% if o.status != 'cancel_requested' %}
   {% call ui.menu() %}
@@ -121,7 +112,7 @@
 <ul class="rows positions" data-list="positions" data-assignment="{{ p.assignment_id }}">
 {% for r in p.rows %}
 {% set meta %}{{ r.side }} wins &middot; size {{ r.size }} &middot; avg cost {{ r.avg_cost | price }} <span title="cost basis">{{ r.basis_cents | money }}</span> &middot; bid {% if r.bid is not none %}{{ r.bid | price }}{% else %}none{% endif %}{% endset %}
-{% call item("position", r.market_id, r.market_title, meta, cls="position-row" ~ (" is-live" if p.mode == 'live' else ""), attrs={"data-market": r.market_id}) %}
+{% call ui.row("position", r.market_id, None, r.market_title, meta=meta, cls="position-row" ~ (" is-live" if p.mode == 'live' else ""), attrs={"data-market": r.market_id}) %}
   <span class="row-value" title="unrealized at the bid, net of the sale fee">{% if r.unrealized_cents is not none %}{{ pnl(r.unrealized_cents) }}{% else %}<span class="muted">no bid</span>{% endif %}</span>
 {% endcall %}
 {% endfor %}
@@ -141,7 +132,7 @@
 {% set title %}{{ order_line(o, avg=True) }}{{ order_chips(o) }}{% endset %}
 {% set meta %}{{ o.market_title }} &middot; edge {{ o.edge | signed_pct }} (my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}) &middot; {{ worker(o) }}{% if o.family %} {{ o.family }} {{ o.model_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
 {% set why %}{% if o.reject_reason %}<span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% elif o.last_reason %}<span class="cause">{{ o.last_reason }}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
-{% call item("order", o.id, title, meta, why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
+{% call ui.row("order", o.id, None, title, meta=meta, meta2=why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
   {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
 {% endcall %}
 {% endfor %}
@@ -159,7 +150,7 @@
 {% for f in fills %}
 {% set title %}{% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }}{{ live_chip(f.mode) }}{% if f.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% endset %}
 {% set meta %}of {{ f.order_size }} @ {{ f.order_price | price }} &middot; fee {{ f.fee_cents | money }}{% if f.order_side == 'sell' and f.basis_cents is not none %} &middot; basis {{ f.basis_cents | money }}{% endif %} &middot; {{ f.market_title }} &middot; {{ names.get(f.worker_id, f.worker_id) or 'no worker' }} &middot; {{ f.ts | ts }}{% endset %}
-{% call item("fill", f.id, title, meta, cls="is-live" if f.mode == 'live' else "", attrs={"data-fill": f.id, "data-side": f.order_side or 'buy'}) %}
+{% call ui.row("fill", f.id, None, title, meta=meta, cls="is-live" if f.mode == 'live' else "", attrs={"data-fill": f.id, "data-side": f.order_side or 'buy'}) %}
   {% if f.order_side == 'sell' and f.realized_cents is not none %}<span class="row-value">realized {{ pnl(f.realized_cents) }}</span>{% endif %}
 {% endcall %}
 {% endfor %}
@@ -176,7 +167,7 @@
 <ul class="rows" data-list="markets">
 {% for m in markets %}
 {% set meta %}{{ m.game_id }} &middot; {{ m.side }} wins &middot; bid / ask {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; liquidity {{ m.liquidity_usd_cents | money }}{% if m.closing_price is not none %} &middot; close {{ m.closing_price | price }}{% endif %} &middot; {{ m.platform }}{% endset %}
-{% call item("market", m.id, m.title, meta, attrs={"data-market": m.id}) %}
+{% call ui.row("market", m.id, None, m.title, meta=meta, attrs={"data-market": m.id}) %}
   <span class="row-value" title="snapshot age"><span class="{% if m.snapshot_age_s is none or m.snapshot_age_s > 60 %}stale-age{% endif %}">{{ m.snapshot_age_s | ago }}</span></span>
   {{ ui.chip(tone("market", m.status), m.status ~ ((" YES" if m.resolved_yes else " NO") if m.status == 'resolved' else ""), key=m.status) }}
 {% endcall %}
@@ -195,7 +186,7 @@
 <ul class="rows" data-list="unmatched">
 {% for m in unmatched %}
 {% set meta %}guess {% if m.game_id %}{{ m.game_id }} {{ m.side }} ({{ (m.mapping_confidence or 0) | pct }}){% else %}none{% endif %} &middot; book {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; {{ m.snapshot_age_s | ago }} &middot; {{ m.platform }} {{ m.market_ref }}{% endset %}
-{% call item("market", m.id, m.title, meta, attrs={"data-market": m.id}) %}
+{% call ui.row("market", m.id, None, m.title, meta=meta, attrs={"data-market": m.id}) %}
   {% call ui.menu("Link to a game") %}
     <form method="post" action="/markets/{{ m.id }}/link" class="menu-form link-form" data-form="link" data-action="link">
       <label>Game

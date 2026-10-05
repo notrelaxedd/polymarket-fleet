@@ -152,7 +152,8 @@ def check_step6b(server_url: str, ids: dict[str, str]) -> None:
         model = page(client.get(f"/models/{ids['epa_model']}").text)
         assert "ranked on snapshot CLV" in model.text and "snapshot per season" in model.card("snapshot").text
         jobs = page(client.get("/jobs").text)
-        assert jobs.form("backtest").input("price_source") and jobs.has('[data-chip="snapshots"]')
+        done = page(client.get("/jobs?tab=done").text)
+        assert jobs.form("backtest").input("price_source") and done.has('[data-chip="snapshots"]'), "the finished replay is in Done"
         assert "Snapshots replay the prices the host recorded" in jobs.form("backtest").text
         settings = page(client.get("/settings").text)
         for key in ("decision_minutes_before_kickoff", "allow_sim_prices", "signals_refresh_hours", "nflverse_injuries_url", "nflverse_pbp_url"):

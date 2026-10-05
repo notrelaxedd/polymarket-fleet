@@ -193,13 +193,22 @@ def test_tiny_market_p_reads_below_one_in_a_thousand(client, conn):
     assert "p = 0.012 (sign-flip test" in page(client.get(f"/models/{other['id']}").text).card("robustness").text
 
 
-def test_the_paper_cell_wraps_so_the_summary_keeps_its_width(client, conn):
+def test_the_models_row_keeps_its_title_width(client, conn):
     """Review 6A (medium): a nowrap paper cell squeezed the summary to one word per line
-    at 1280 px and pushed the buttons out of the table."""
-    insert_validated_model(conn)
+    at 1280 px and pushed the buttons out of the table. Step 7 replaced the table with
+    one-line rows, so the same guarantee is now the row layout: the summary is gone from
+    the list, the title flexes and may shrink (ellipsis) while the headline number keeps
+    a capped width and the actions sit in the row's own menu."""
+    model = insert_validated_model(conn)
     from tests.test_style import declarations
 
     board = page(client.get("/models").text)
-    assert not any(cell.has_class("nowrap") for cell in board.select(".c-paper")), "the paper cell may wrap"
-    if board.has("td.c-summary"):
-        assert "min-width" in declarations(".c-summary", css=client.get("/static/style.css").text)
+    row = board.row("model", str(model["id"]))
+    assert row.has("a.row-main .row-title") and row.has(".row-value") and row.has("details.menu > summary")
+    assert not board.has("td.c-summary") and not board.has(".summary-form"), "no summary or table cells in the list"
+    css = client.get("/static/style.css").text
+    main = declarations(".row-main", media="", css=css)
+    assert "min-width: 0" in main and "flex: 1" in main, "the title area flexes and may shrink"
+    value = declarations(".row-value", media="", css=css)
+    assert "max-width" in value and "nowrap" in value, "the number keeps a capped width on one line"
+    assert "ellipsis" in declarations(".row-title", media="", css=css)
