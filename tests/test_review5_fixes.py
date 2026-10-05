@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -41,6 +42,7 @@ from tests.conftest import (
     insert_market, insert_model, insert_snapshot, order_events, order_row, set_setting, trade_setup,
 )
 from tests.fake_gateway import FakeCredentials, FakeLiveGateway, live_loop
+from tests.pagecheck import mode_pill, page, shows_pnl
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 LIVE_GAME = "2026_05_BUF_MIA"
@@ -523,29 +525,32 @@ def test_exchange_box_counts_pending_cancels_and_names_the_direct_command(client
     Executor(PaperGateway(), gw).tick(conn, NOW)
     orders.cancel_order(conn, b["id"], "owner", "owner cancel")
     conn.execute("UPDATE exchange_state SET heartbeat_at = now()")
-    exchange = client.get("/trading").text.split('id="exchange"')[1].split('id="ledger"')[0]
-    assert '<dd class="c-live-orders">1 open, 1 cancel pending</dd>' in exchange and "c-direct-cancel" not in exchange
+    exchange = page(client.get("/trading").text).card("exchange")
+    assert exchange.prop("live orders") == "1 open, 1 cancel pending" and "recovery" not in exchange.texts("dt")
     conn.execute("UPDATE exchange_state SET heartbeat_at = now() - interval '2 minutes'")
-    exchange = client.get("/fragments/trading").text.split('id="exchange"')[1].split('id="ledger"')[0]
-    assert 'class="c-direct-cancel"' in exchange and "cancel-all --direct" in exchange and "Press KILL first" in exchange
-    # live P&L stays on the top bar while real money is still in play with live off
+    exchange = page(client.get("/fragments/trading").text).card("exchange")
+    recovery = exchange.prop("recovery")
+    assert "cancel-all --direct" in recovery and "Press KILL first" in recovery
+    # live P&L stays in view (the top bar, or the Trading stats from step 7) while real money is in play with live off
     kill.live_off(conn, "owner", "owner")
-    topbar = client.get("/fragments/topbar").text
-    assert '<span class="pill paper">PAPER</span>' in topbar and "live today $0.00" in topbar
+    assert mode_pill(page(client.get("/fragments/topbar").text)) == "PAPER" and shows_pnl(client, "live", "$0.00")
+    live_pnl = re.compile(r"\blive\b[^$]*\$0\.00")
     conn.execute("UPDATE orders SET status = 'cancelled' WHERE mode = 'live'")
     conn.execute("UPDATE assignments SET status = 'settled' WHERE mode = 'live'")
     conn.execute("UPDATE bankrolls SET reserved_cents = 0, open_cost_cents = 0 WHERE mode = 'live'")
-    assert "live today" not in client.get("/fragments/topbar").text
+    assert not live_pnl.search(page(client.get("/fragments/topbar").text).text)
 
 
 def test_settings_shows_a_remedy_per_auto_kill_reason(client, conn):
     enable_live(conn)
     kill.auto_kill(conn, "clock_skew", {"skew_ms": 48_213, "limit_ms": 30_000})
-    html = client.get("/settings").text
-    assert 'data-remedy="clock_skew"' in html and "wsl --shutdown" in html and "cancel-all --direct" in html
-    assert html.count("Recovery: ") == 1 and html.count('data-remedy="clock_skew"') == 2, "the kill card and the live group"
+    p = page(client.get("/settings").text)
+    remedies = p.select('[data-remedy="clock_skew"]')
+    assert "wsl --shutdown" in p.text and "cancel-all --direct" in p.text
+    assert p.text.count("Recovery: ") == 1 and len(remedies) == 2, "the kill card and the live group"
+    assert p.card("kill").has('[data-remedy="clock_skew"]') and p.card("live").has('[data-remedy="clock_skew"]')
     auth_state(conn, credentials_present=False)
-    assert "exchange.env missing or malformed (see the last auth error)" in client.get("/settings").text
+    assert "exchange.env missing or malformed (see the last auth error)" in page(client.get("/settings").text).card("live").text
 
 
 # ------------------------------------------------------ operability: secrets

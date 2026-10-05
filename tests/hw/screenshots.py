@@ -50,6 +50,8 @@ from tests.hw.seed_step5 import auto_kill, seed_live, touch_live  # noqa: E402
 from tests.hw.seed_step6 import seed_paper_ci, seed_validation  # noqa: E402
 from tests.hw.seed_step6b import check_step6b, seed_sells, seed_snapshot  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
+from tests.pagecheck import mode_pill, topbar  # noqa: E402
+from tests.pagecheck import page as parse  # noqa: E402
 
 DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
@@ -274,30 +276,32 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
         # LIVE pill), then the auto-kill the exchange process pulls, then the reset.
         seed_live(database_url, ids["trader"])
         with httpx.Client(base_url=server_url, trust_env=False) as client:
-            page_html = client.get("/settings").text
-            assert 'data-live-state="on"' in page_html and 'class="pill live">LIVE</span>' in page_html, "live is on"
-            assert 'chip-smoke' in client.get("/trading").text, "the smoke order is flagged"
+            settings = parse(client.get("/settings").text)
+            assert settings.one("[data-live-state]").attr("data-live-state") == "on" and mode_pill(settings) == "LIVE", "live is on"
+            assert parse(client.get("/trading").text).has('[data-chip="smoke"]'), "the smoke order is flagged"
         shoot_all([("settings-live", "/settings"), ("trading-live", "/trading"), ("fleet-live", "/")])
         auto_kill(database_url)
         with httpx.Client(base_url=server_url, trust_env=False) as client:
-            assert 'data-auto-kill="clock_skew"' in client.get("/").text, "the bar names the auto-kill reason"
+            reason = topbar(parse(client.get("/").text)).one("[data-auto-kill]")
+            assert reason.attr("data-auto-kill") == "clock_skew", "the bar names the auto-kill reason"
         shoot_all([("fleet-autokill", "/"), ("settings-autokill", "/settings"), ("trading-autokill", "/trading")])
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
             assert resp.status_code == 303, resp.text
-            assert "KILLED" not in client.get("/").text and 'data-live-state="off"' in client.get("/settings").text
+            assert "KILLED" not in topbar(parse(client.get("/").text)).text
+            assert parse(client.get("/settings").text).one("[data-live-state]").attr("data-live-state") == "off"
 
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill", data={}, headers={"Origin": server_url}, follow_redirects=False)
             assert resp.status_code == 303, resp.text
-            assert "TRADING KILLED" in client.get("/").text
+            assert "TRADING KILLED" in topbar(parse(client.get("/").text)).text
         for scheme in SCHEMES:
             shoot("/", "fleet-killed", "390", scheme, check=(scheme == "light"))
             shoot("/trading", "trading-killed", "390", scheme, check=(scheme == "light"))
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
             assert resp.status_code == 303, resp.text
-            assert "Activate all paper" in client.get("/trading").text
+            assert parse(client.get("/trading").text).has('[data-action="activate-all-paper"]')
         for scheme in SCHEMES:
             shoot("/trading", "trading-reset", "390", scheme, check=(scheme == "light"))
         browser.close()

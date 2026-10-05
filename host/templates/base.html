@@ -12,11 +12,11 @@
   <div class="topbar-row">
     <a class="wordmark" href="/">Fleet</a>
     <nav class="nav" aria-label="Sections">
-      <a href="/"{% if path == '/' %} class="active"{% endif %}>Fleet</a>
-      <a href="/jobs"{% if path.startswith('/jobs') %} class="active"{% endif %}>Jobs</a>
-      <a href="/models"{% if path.startswith('/models') %} class="active"{% endif %}>Models</a>
-      <a href="/trading"{% if path.startswith('/trading') %} class="active"{% endif %}>Trading</a>
-      <a href="/settings"{% if path.startswith('/settings') %} class="active"{% endif %}>Settings</a>
+      <a href="/" data-nav="fleet"{% if path == '/' %} class="active" aria-current="page"{% endif %}>Fleet</a>
+      <a href="/jobs" data-nav="jobs"{% if path.startswith('/jobs') %} class="active" aria-current="page"{% endif %}>Jobs</a>
+      <a href="/models" data-nav="models"{% if path.startswith('/models') %} class="active" aria-current="page"{% endif %}>Models</a>
+      <a href="/trading" data-nav="trading"{% if path.startswith('/trading') %} class="active" aria-current="page"{% endif %}>Trading</a>
+      <a href="/settings" data-nav="settings"{% if path.startswith('/settings') %} class="active" aria-current="page"{% endif %}>Settings</a>
     </nav>
     <div id="topbar-status" class="status">
 {% include "_topbar.html" %}
@@ -24,10 +24,10 @@
   </div>
   <div class="topbar-note"><span id="updated" class="muted"></span></div>
 </header>
-<form id="kill-form" method="post" action="/kill" hidden></form>
-<main class="page">
+<form id="kill-form" method="post" action="/kill" data-form="kill" hidden></form>
+<main class="page" data-page="{% block page %}{% endblock %}">
 {% if flash %}
-  <div class="flash" role="status">{{ flash }}</div>
+  <div class="flash" role="status" data-flash>{{ flash }}</div>
 {% endif %}
 {% block content %}{% endblock %}
 </main>

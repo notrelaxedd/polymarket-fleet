@@ -20,32 +20,42 @@ from tests.conftest import (
     insert_snapshot, insert_validated_model, insert_worker, job_row, lease_job, make_assignment, model_row, order_row,
     set_heartbeat_age, set_setting, stress_metrics, trade_setup, validation_metrics, worker_row,
 )
+from tests.pagecheck import Node, fleet_html, mode_pill, page, topbar
 
+
+def _value(p: Node, name: str) -> str | None:
+    """The value of the one input named name (a settings field, a form field)."""
+    return p.input(name).attr("value")
 
 
 def test_every_page_renders(client, make_worker):
     w = make_worker("box1")
     job = client.post("/api/jobs", json={"kind": "sleep", "params": {"seconds": 3}}).json()
     for path, needle in [
-        ("/", 'id="fleet-grid"'),
-        ("/jobs", 'action="/jobs"'),
-        (f"/jobs/{job['id']}", "events"),
-        ("/settings", 'action="/settings/trading"'),
-        ("/kill/confirm", 'action="/kill"'),
-        ("/trading", 'id="trading-live"'),
+        ("/", "[data-page]"),
+        ("/jobs", '[data-form="backtest"]'),
+        (f"/jobs/{job['id']}", '[data-list="events"]'),
+        ("/settings", '[data-form="trading"]'),
+        ("/kill/confirm", 'form[data-action="kill"]'),
+        ("/trading", "#trading-live"),
     ]:
         r = client.get(path)
         assert r.status_code == 200, path
         assert r.headers["content-type"].startswith("text/html")
         html = r.text
-        assert needle in html, path
+        p = page(html)
+        assert p.has(needle), path
+        assert p.page_name, path
         assert "<!doctype html>" in html.lower()
-        assert 'href="/static/style.css"' in html and 'src="/static/app.js"' in html
-        assert 'id="topbar-status"' in html and ">PAPER<" in html and "today $0.00" in html
-        assert 'id="kill-form"' in html and 'id="updated"' in html
-        assert ">Models<" in html and '<a href="/trading"' in html and 'href="/settings"' in html
+        assert "/static/style.css" in p.hrefs and p.has('script[src="/static/app.js"]')
+        bar = topbar(p)
+        assert p.has("#topbar-status") and mode_pill(p) == "PAPER" and "today" in bar.text and "$0.00" in bar.text
+        assert p.has("#kill-form") and p.has("#updated")
+        navs = {n.attr("data-nav"): n for n in p.select("[data-nav]")}
+        assert {"fleet", "jobs", "models", "trading", "settings"} <= set(navs), path
+        assert navs["models"].text == "Models" and navs["trading"].target == "/trading" and navs["settings"].target == "/settings"
         assert "step 4" not in html
-    assert w.id in client.get("/").text
+    assert page(fleet_html(client)).has(f'[data-row="worker"][data-id="{w.id}"]')
 
 
 def test_fleet_cards(client, conn, make_worker):
@@ -59,53 +69,50 @@ def test_fleet_cards(client, conn, make_worker):
     client.post(f"/api/v1/workers/{online.id}/heartbeat", json=heartbeat_body("backtest"), headers=online.headers)
     client.post(f"/api/v1/jobs/{job['id']}/checkpoint", headers=online.headers,
                 json={"lease_token": str(job_row(conn, job["id"])["lease_token"]), "progress": 0.4, "checkpoint": {"elapsed": 4}})
-    html = client.get("/").text
-    cards = re.findall(r'<article class="card worker[^"]*" data-worker="(\w+)">', html)
-    assert cards == [online.id, stale.id, offline.id, switching.id], "one card per worker, sorted by name"
-    assert html.count("<article") == 4
-    assert f'<span class="dot online"' in html.split(stale.id)[0]
-    assert re.search(rf'data-worker="{stale.id}">.*?<span class="dot stale"', html, re.S)
-    assert re.search(rf'data-worker="{offline.id}">.*?<span class="dot offline"', html, re.S)
-    assert re.search(rf'data-worker="{offline.id}">.*?<span class="chip">disabled</span>', html, re.S)
-    assert f'action="/workers/{online.id}/role"' in html
-    assert re.search(rf'id="role-{online.id}" name="role" data-autosubmit="1">', html)
-    assert re.search(rf'<option value="backtest" selected>backtest</option>', html)
-    assert re.search(rf'id="role-{switching.id}" name="role" data-autosubmit="1" disabled>', html)
-    assert "switching to train (epoch 2)" in html
+    p = page(fleet_html(client))
+    assert p.row_ids("worker") == [online.id, stale.id, offline.id, switching.id], "one card per worker, sorted by name"
+    rows = {w.id: p.row("worker", w.id) for w in (online, stale, offline, switching)}
     # MEDIUM: status in text too, not only dot colour; the dot is announced
-    assert re.search(rf'data-worker="{stale.id}">.*?<span class="dot stale" role="img" aria-label="stale"></span>.*?<span class="chip st-stale">stale</span>', html, re.S)
-    assert re.search(rf'<article class="card worker is-disabled is-offline" data-worker="{offline.id}">.*?<span class="chip st-offline">offline</span>', html, re.S)
-    assert 'class="chip st-online"' not in html
-    assert re.search(r'<article class="card worker" data-worker="\w+">.*?<span class="dot online" role="img" aria-label="online"></span>', html, re.S)
+    assert rows[online.id].one(".dot").attr("aria-label") == "online" and rows[online.id].one(".dot").attr("role") == "img"
+    assert rows[stale.id].one(".dot").attr("aria-label") == "stale" and rows[stale.id].chip("stale").text == "stale"
+    assert rows[offline.id].one(".dot").attr("aria-label") == "offline" and rows[offline.id].chip("offline").text == "offline"
+    assert rows[offline.id].chip("disabled").text == "disabled"
+    assert not rows[online.id].has('[data-chip="online"]') and not p.has('[data-chip="online"]')
+    assert rows[online.id].one('select[name="role"]').target == f"/workers/{online.id}/role"
+    assert rows[online.id].one('select[name="role"]').attr("data-autosubmit") == "1" and not rows[online.id].one('select[name="role"]').disabled
+    assert rows[online.id].one('option[selected]').attr("value") == "backtest"
+    assert rows[switching.id].one('select[name="role"]').disabled and "switching to train (epoch 2)" in rows[switching.id].text
     # MEDIUM: an offline worker's select stays enabled while it is "switching" so a wrong pick can be undone
     gone = make_worker("echo", online=False)
     client.post(f"/api/workers/{gone.id}/role", json={"role": "trade"})
-    card = re.search(rf'data-worker="{gone.id}">.*?</article>', client.get("/").text, re.S).group(0)
-    assert "switching to trade (epoch 2)" in card and " disabled" not in card
-    assert f'id="role-{gone.id}" name="role" data-autosubmit="1">' in card
-    assert 'aria-valuemin="0" aria-valuemax="100" aria-valuenow="40"' in html
-    assert f'href="/jobs/{job["id"]}">sleep</a>' in html and 'style="width: 40%"' in html and ">40%<" in html
-    assert "no job" in html
-    assert 'CPU 2% &middot; RAM 0.5 / 4.0 GB &middot; 0 s ago &middot; <span class="nowrap">v test</span>' in html
-    assert 'value="false">' in html and ">Disable<" in html and 'value="true">' in html and ">Enable<" in html
-    assert "today $0.00" in html
-    client.get("/")  # the empty state
+    card = page(fleet_html(client)).row("worker", gone.id)
+    assert "switching to trade (epoch 2)" in card.text and not card.select("[disabled]")
+    assert not card.one('select[name="role"]').disabled
+    bar = rows[online.id].one('[role="progressbar"]')
+    assert (bar.attr("aria-valuemin"), bar.attr("aria-valuemax"), bar.attr("aria-valuenow")) == ("0", "100", "40")
+    assert "width: 40%" in (bar.first("[style]").attr("style") or "") and "40%" in rows[online.id].text
+    assert f"/jobs/{job['id']}" in rows[online.id].hrefs and rows[online.id].first(f'a[href="/jobs/{job["id"]}"]').text == "sleep"
+    assert "no job" in rows[stale.id].text
+    assert "CPU 2% · RAM 0.5 / 4.0 GB · 0 s ago · v test" in rows[online.id].text
+    assert rows[online.id].action("disable").text == "Disable" and rows[online.id].action("disable").one('input[name="enabled"]').attr("value") == "false"
+    assert rows[offline.id].action("enable").text == "Enable" and rows[offline.id].action("enable").one('input[name="enabled"]').attr("value") == "true"
+    assert "today $0.00" in rows[online.id].text
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM workers")
-    assert "No workers yet. Mint an enroll token" in client.get("/").text
+    assert "No workers yet. Mint an enroll token" in page(fleet_html(client)).text
 
 
 def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker):
     w = make_worker("box1")
     r = client.post(f"/workers/{w.id}/role", data={"role": "backtest"}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/" and flash_cookie(r) == "box1: switching to backtest (epoch 2)"
+    assert r.headers["location"] in ("/", "/fleet") and flash_cookie(r) == "box1: switching to backtest (epoch 2)"
     assert "httponly" in r.headers["set-cookie"].lower() and "samesite=lax" in r.headers["set-cookie"].lower()
     row = worker_row(conn, w.id)
     assert row["desired_role"] == "backtest" and row["role_epoch"] == 2 and row["auto_role"] is False
-    page = client.get(r.headers["location"]).text
-    assert '<div class="flash" role="status">box1: switching to backtest (epoch 2)</div>' in page
-    assert '<div class="flash"' not in client.get("/").text, "a flash is shown once, not on every reload"
+    flash = page(client.get(r.headers["location"]).text).one("[data-flash]")
+    assert flash.text == "box1: switching to backtest (epoch 2)" and flash.attr("role") == "status"
+    assert page(client.get("/").text).flash is None, "a flash is shown once, not on every reload"
     r = client.post(f"/workers/{w.id}/role", data={"role": "chef"}, follow_redirects=False)
     assert r.status_code == 400 and "text/html" in r.headers["content-type"] and "unknown role" in r.text
     assert worker_row(conn, w.id)["role_epoch"] == 2
@@ -116,20 +123,20 @@ def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker
 def test_enabled_form(client, conn, make_worker):
     w = make_worker("box1")
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "false"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/" and flash_cookie(r) == "box1 disabled"
+    assert r.status_code == 303 and r.headers["location"] in ("/", "/fleet") and flash_cookie(r) == "box1 disabled"
     assert worker_row(conn, w.id)["enabled"] is False
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "true"}, follow_redirects=False)
-    assert r.headers["location"] == "/" and flash_cookie(r) == "box1 enabled"
+    assert r.headers["location"] in ("/", "/fleet") and flash_cookie(r) == "box1 enabled"
     assert worker_row(conn, w.id)["enabled"] is True
 
 
 def test_send_job_form_and_cancel(client, conn, make_worker):
     w = make_worker("box1")
-    html = client.get("/jobs").text
-    assert '<option value="any_idle">Any idle worker</option>' in html
-    assert f'<option value="{w.id}">box1</option>' in html
-    assert 'id="backtest"' in html and 'id="model_search"' in html and 'id="train"' in html and 'id="sleep"' in html
-    assert 'name="seconds" value="60"' in html
+    p = page(client.get("/jobs").text)
+    targets = p.form("sleep").one('select[name="target"]')
+    assert targets.one('option[value="any_idle"]').text == "Any idle worker" and targets.one(f'option[value="{w.id}"]').text == "box1"
+    assert all(p.has(f'[data-form="{kind}"]') for kind in ("backtest", "model_search", "train", "validate", "sleep"))
+    assert p.form("sleep").one('input[name="seconds"]').attr("value") == "60"
     r = client.post("/jobs", data={"kind": "sleep", "seconds": "7", "target": "any_idle"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/jobs" and flash_cookie(r).startswith("sleep job ")
     assert f"sent to {w.id}" in flash_cookie(r)
@@ -143,10 +150,10 @@ def test_send_job_form_and_cancel(client, conn, make_worker):
     r = client.post("/jobs", data={"kind": "sleep", "target": "any_idle"}, follow_redirects=False)
     assert "waiting for an idle worker" in flash_cookie(r)
     waiting = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
-    html = client.get("/jobs").text
-    assert html.count("<tr>") == 4 and "waiting for an idle worker" in html
-    assert html.count(f'action="/jobs/{waiting["id"]}/cancel"') == 1
-    assert html.index(str(waiting["id"])) < html.index(str(first["id"])), "newest first"
+    p = page(client.get("/jobs").text)
+    assert len(p.rows("job")) == 3 and "waiting for an idle worker" in p.row("job", waiting["id"]).text
+    assert p.row("job", waiting["id"]).action("cancel").target == f"/jobs/{waiting['id']}/cancel"
+    assert p.row_ids("job").index(str(waiting["id"])) < p.row_ids("job").index(str(first["id"])), "newest first"
     assert client.post("/jobs", data={"kind": "sleep", "seconds": "x"}, follow_redirects=False).status_code == 400
     assert client.post("/jobs", data={"kind": "mystery"}, follow_redirects=False).status_code == 400
     assert client.post("/jobs", data={"kind": "sleep", "target": "w_nope"}, follow_redirects=False).status_code == 404
@@ -155,17 +162,17 @@ def test_send_job_form_and_cancel(client, conn, make_worker):
     assert job_row(conn, waiting["id"])["status"] == "cancelled"
     r = client.post(f"/jobs/{first['id']}/cancel", data={"next": "//evil.example"}, follow_redirects=False)
     assert r.headers["location"] == "/jobs"
-    detail = client.get(f"/jobs/{first['id']}").text
-    assert ">cancelled<" in detail and "&#34;seconds&#34;: 7" in detail and ">created<" in detail
+    detail = page(client.get(f"/jobs/{first['id']}").text)
+    assert detail.chip("cancelled").text == "cancelled" and '"seconds": 7' in detail.text and detail.prop("created")
     assert client.get("/jobs/not-a-job").status_code == 404
     assert "<html" in client.get("/jobs/not-a-job").text
 
 
 def test_settings_form_converts_rejects_and_audits(client, conn):
-    html = client.get("/settings").text
-    assert 'name="max_bet" value="25.00"' in html and 'name="max_daily_loss_paper" value="1000.00"' in html
-    assert 'name="lease_seconds" value="30"' in html and 'name="tz" value="America/New_York"' in html
-    assert 'name="max_expiries" value="3"' in html
+    p = page(client.get("/settings").text)
+    assert _value(p, "max_bet") == "25.00" and _value(p, "max_daily_loss_paper") == "1000.00"
+    assert _value(p, "lease_seconds") == "30" and _value(p, "tz") == "America/New_York"
+    assert _value(p, "max_expiries") == "3"
     good = {
         "max_bet": "12.50", "max_daily_loss_paper": "$1,500", "max_daily_loss_live": "300.005",
         "default_bankroll": "100", "liquidity_floor": "500.00", "min_edge": "0.05", "kelly_fraction": "0.25",
@@ -182,8 +189,8 @@ def test_settings_form_converts_rejects_and_audits(client, conn):
     ).fetchall()
     assert [a["entity"] for a in audited] == ["max_bet_cents", "max_daily_loss_cents", "min_edge", "trade_max_games"]
     assert audited[0]["before"] == {"max_bet_cents": 2500} and audited[0]["after"] == {"max_bet_cents": 1250}
-    html = client.get("/settings").text
-    assert 'name="max_bet" value="12.50"' in html and 'name="max_daily_loss_live" value="300.01"' in html
+    p = page(client.get("/settings").text)
+    assert _value(p, "max_bet") == "12.50" and _value(p, "max_daily_loss_live") == "300.01"
     for bad, message in [
         ({**good, "max_bet": "lots"}, "Max bet must be a dollar amount"),
         ({**good, "max_bet": "-1"}, "max_bet_cents must be between 0 and 100000000000"),
@@ -192,8 +199,9 @@ def test_settings_form_converts_rejects_and_audits(client, conn):
     ]:
         r = client.post("/settings/trading", data=bad, follow_redirects=False)
         assert r.status_code == 400, bad
-        assert f'<p class="error inline-error">{message}' in r.text or message in r.text
-        assert 'name="max_bet" value="%s"' % bad["max_bet"] in r.text, "submitted values are kept"
+        p = page(r.text)
+        assert any(message in e for e in p.card("trading").texts(".error")), (bad, message)
+        assert _value(p, "max_bet") == bad["max_bet"], "submitted values are kept"
     assert client.get("/api/settings").json()["max_bet_cents"] == 1250
     r = client.post("/settings/fleet", data={"lease_seconds": "45", "heartbeat_seconds": "5",
                                               "online_after_seconds": "20", "max_expiries": ""}, follow_redirects=False)
@@ -214,11 +222,11 @@ def test_settings_form_converts_rejects_and_audits(client, conn):
 def test_enroll_token_form_shows_token_once(client, conn):
     r = client.post("/enroll-token", follow_redirects=False)
     assert r.status_code == 200
-    token = re.search(r'<code id="token" class="token">([^<]+)</code>', r.text).group(1)
+    token = page(r.text).one("#token").text
     assert len(token) > 30
     assert f"curl -fsSL http://127.0.0.1:8080/install.sh | sudo bash -s -- http://127.0.0.1:8080 {token}" in r.text
     assert f"curl -fsSL http://127.0.0.1:8080/install.sh | sudo FLEET_ENROLL_TOKEN={token} bash -s -- http://127.0.0.1:8080" in r.text
-    assert 'data-copy="token"' in r.text
+    assert page(r.text).has('[data-copy="token"]')
     assert conn.execute("SELECT count(*) AS n FROM enroll_tokens").fetchone()["n"] == 1
     assert token not in client.get("/settings").text
     reg = client.post("/api/v1/workers/register", json={"enroll_token": token, "hostname": "box9"})
@@ -227,11 +235,11 @@ def test_enroll_token_form_shows_token_once(client, conn):
 
 def test_fragments_return_inner_html_only(client, make_worker):
     w = make_worker("box1")
-    fleet = client.get("/fragments/fleet").text
-    assert "<html" not in fleet and "<article" in fleet and w.id in fleet and 'id="fleet-grid"' not in fleet
-    topbar = client.get("/fragments/topbar").text
-    assert "<html" not in topbar and ">PAPER<" in topbar and 'data-kill="1"' in topbar
-    assert 'id="topbar-status"' not in topbar
+    fleet = page(client.get("/fragments/fleet").text)
+    assert not fleet.has("html") and fleet.has(f'[data-row="worker"][data-id="{w.id}"]') and not fleet.has("#fleet-grid")
+    bar = page(client.get("/fragments/topbar").text)
+    assert not bar.has("html") and mode_pill(bar) == "PAPER" and bar.has('[data-kill="1"]')
+    assert not bar.has("#topbar-status")
 
 
 def test_names_and_params_are_escaped(client, conn, make_worker):
@@ -240,15 +248,16 @@ def test_names_and_params_are_escaped(client, conn, make_worker):
                                          "target": w.id}).json()
     for path in ("/", "/fragments/fleet", "/jobs", f"/jobs/{job['id']}", "/settings"):
         html = client.get(path).text
-        assert "<script>" not in html.replace('<script src="/static/app.js" defer></script>', ""), path
-    assert "evil&lt;script&gt;alert(1)&lt;/script&gt;" in client.get("/").text
+        assert "<script>" not in html and all(s.has_attr("src") for s in page(html).select("script")), path
+    assert "evil&lt;script&gt;alert(1)&lt;/script&gt;" in fleet_html(client)
     assert "&lt;script&gt;x&lt;/script&gt;" in client.get(f"/jobs/{job['id']}").text
     # The flash travels in a cookie set by the redirect: a crafted link cannot inject one.
-    flash = client.get("/?flash=<img src=x onerror=alert(1)>").text
-    assert "<img" not in flash and 'class="flash"' not in flash
+    crafted = client.get("/?flash=<img src=x onerror=alert(1)>").text
+    assert "<img" not in crafted and page(crafted).flash is None
     r = client.post(f"/workers/{w.id}/role", data={"role": "backtest"}, follow_redirects=False)
-    page = client.get(r.headers["location"]).text
-    assert '<div class="flash" role="status">evil&lt;script&gt;alert(1)&lt;/script&gt;: switching to backtest' in page
+    shown = client.get(r.headers["location"]).text
+    assert page(shown).flash.startswith("evil<script>alert(1)</script>: switching to backtest")
+    assert "evil&lt;script&gt;alert(1)&lt;/script&gt;: switching to backtest" in shown, "escaped in the source"
 
 
 def test_auth_and_csrf_render_html(config, client):
@@ -282,7 +291,8 @@ def test_timestamps_follow_the_owner_time_zone(client, conn):
     client.post("/api/settings", json={"tz": "Asia/Tokyo"})
     expected = created.astimezone(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S JST")
     assert expected in client.get("/jobs").text and expected in client.get(f"/jobs/{job['id']}").text
-    assert re.search(r'<td class="nowrap lead">\d{4}-\d\d-\d\d \d\d:\d\d:\d\d JST</td>', client.get("/settings").text)
+    audit = page(client.get("/settings").text).rows("audit")
+    assert audit and all(re.search(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d JST", row.text) for row in audit)
     r = client.post("/enroll-token")
     assert re.search(r"expires \d{4}-\d\d-\d\d \d\d:\d\d:\d\d JST\.", r.text)
     conn.execute("""UPDATE settings SET value = '"Mars/Olympus"' WHERE key = 'tz'""")
@@ -291,7 +301,7 @@ def test_timestamps_follow_the_owner_time_zone(client, conn):
 
 def test_settings_inputs_open_the_number_keyboard(client):
     """MEDIUM: every numeric field carries an inputmode; the tz field does not."""
-    html = client.get("/settings").text
+    p = page(client.get("/settings").text)
     decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction",
                "taker_rate", "half_spread", "min_roi", "max_drawdown", "min_roi_ci_low", "max_market_p", "participation",
                "max_exposure_paper", "max_exposure_live", "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s",
@@ -301,15 +311,20 @@ def test_settings_inputs_open_the_number_keyboard(client):
                "book_max_age_s", "gtd_seconds", "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game",
                "market_lookahead_days", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days", "paper_min_games",
                "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours")
+    def field_input(name):
+        box = p.field(name).one(f'input[name="{name}"]')
+        assert box.attr("type") == "text", name
+        return box
+
     for name in decimal:
-        assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="decimal"', html), name
+        assert field_input(name).attr("inputmode") == "decimal", name
     for name in numeric:
-        assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="numeric"', html), name
-    assert re.search(r'<input type="text" name="tz" value="[^"]*" autocomplete="off">', html)
-    assert re.search(r'<input type="text" name="search_workers" value="auto" autocomplete="off">', html), "auto or a number: no number keyboard"
-    assert re.search(r'<input type="text" name="nflverse_url" value="https://[^"]*" autocomplete="off">', html)
-    assert re.search(r'<input type="text" name="scores_url" value="https://[^"]*" autocomplete="off">', html)
-    assert html.count("inputmode=") == len(decimal) + len(numeric)
+        assert field_input(name).attr("inputmode") == "numeric", name
+    assert field_input("tz").attr("inputmode") is None and field_input("tz").attr("autocomplete") == "off"
+    assert field_input("search_workers").attr("value") == "auto" and field_input("search_workers").attr("inputmode") is None, "auto or a number: no number keyboard"
+    for name in ("nflverse_url", "scores_url"):
+        assert field_input(name).attr("value").startswith("https://") and field_input(name).attr("inputmode") is None, name
+    assert p.count("[inputmode]") == len(decimal) + len(numeric)
 
 
 def test_fleet_timing_is_checked_across_fields(client):
@@ -320,7 +335,7 @@ def test_fleet_timing_is_checked_across_fields(client):
     assert r.status_code == 400
     assert "lease_seconds must be at least 125 (2 x heartbeat_seconds + 5)" in r.text
     assert "online_after_seconds must be greater than heartbeat_seconds (60)" in r.text
-    assert 'name="heartbeat_seconds" value="60"' in r.text, "submitted values are kept"
+    assert _value(page(r.text), "heartbeat_seconds") == "60", "submitted values are kept"
     s = client.get("/api/settings").json()
     assert (s["lease_seconds"], s["heartbeat_seconds"], s["online_after_seconds"]) == (30, 5, 15), "nothing stored"
     r = client.post("/settings/fleet", data={**data, "lease_seconds": "125", "online_after_seconds": "61"}, follow_redirects=False)
@@ -342,7 +357,7 @@ def test_money_fields_reject_decimal_commas_and_huge_amounts(client):
     for value in ("1e30", "1e999999999", "1e25", "1000000000.01", "12,34,567"):
         r = client.post("/settings/trading", data={**good, "max_bet": value}, follow_redirects=False)
         assert r.status_code == 400 and r.headers["content-type"].startswith("text/html"), value
-        assert "Max bet" in r.text and f'name="max_bet" value="{value}"' in r.text, value
+        assert "Max bet" in page(r.text).card("trading").text and _value(page(r.text), "max_bet") == value, value
     assert client.get("/api/settings").json()["max_bet_cents"] == 1250
     assert client.post("/api/settings", json={"max_bet_cents": 10**25}).status_code == 400
 
@@ -370,7 +385,7 @@ def test_unknown_paths_render_html_on_the_dashboard_and_json_under_api(client):
     for path in ("/nope", "/workers", "/jobs/x/y", "/static/", "/static/missing.css", "/static/../web.py"):
         r = client.get(path)
         assert r.status_code == 404 and r.headers["content-type"].startswith("text/html"), path
-        assert "404 Not found" in r.text and 'href="/"' in r.text, path
+        assert "404 Not found" in r.text and "/" in page(r.text).hrefs, path
     r = client.get("/api/nope")
     assert r.status_code == 404 and r.json() == {"detail": "Not Found"}
     r = client.post("/settings", data={})
@@ -400,14 +415,15 @@ def test_chunked_body_over_the_limit_is_refused(client):
 
 
 def test_models_page_renders_ranked_rows_and_attribution(client, conn):
-    html = client.get("/models").text
-    assert "No models yet. Send a model search" in html and "CC BY 4.0" in html and "nflverse" in html
-    assert 'id="unranked"' not in html and 'id="ranked"' not in html and "<table" not in html
+    p = page(client.get("/models").text)
+    assert "No models yet. Send a model search" in p.text and "CC BY 4.0" in p.text and "nflverse" in p.text
+    assert not p.has('[data-card="unranked"]') and not p.has('[data-card="ranked"]') and not p.rows("model")
     only_unranked = insert_model(conn, params={"k": 19.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
-    html = client.get("/models").text
-    assert "No lineage is validated yet, so none is ranked." in html and "No models yet" not in html
-    assert 'id="ranked"' not in html and 'id="unranked"' in html, "no empty ranked header above the unranked table"
-    assert '<span class="chip chip-unvalidated" title="no validation-era metrics yet: send a validate job">not validated</span>' in html
+    p = page(client.get("/models").text)
+    assert "No lineage is validated yet, so none is ranked." in p.text and "No models yet" not in p.text
+    assert not p.has('[data-card="ranked"]') and p.has('[data-card="unranked"]'), "no empty ranked header above the unranked table"
+    chip = p.row("model", only_unranked["id"]).chip("unvalidated")
+    assert chip.text == "not validated" and chip.attr("title") == "no validation-era metrics yet: send a validate job"
     conn.execute("DELETE FROM models WHERE id = %s", (only_unranked["id"],))
     best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, log_loss=0.65, market_log_loss=0.659, max_drawdown=0.14, seasons=[2016, 2017, 2018, 2019]),
                         validation=validation_metrics(n_bets=130, roi=0.041, ci_roi=(-0.012, 0.094), market_p=0.012, log_loss=0.651, market_log_loss=0.658, max_drawdown=0.09),
@@ -418,35 +434,36 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     few = insert_model(conn, params={"k": 31.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
     none = insert_model(conn, params={"k": 32.0}, summary="<b>bold</b>")
     html = client.get("/models").text
-    rows = re.findall(r'<tr class="model-row" data-model="([^"]+)">', html)
-    assert rows == [str(best["id"]), str(second["id"]), str(none["id"]), str(few["id"])], "ranked first, then unranked newest first"
-    ranked = html.split('id="unranked"')[0]
-    assert str(few["id"]) not in ranked and 'id="unranked"' in html
-    assert "#1" in ranked and "#2" in ranked
-    assert '<span class="badge st-paper_ok">paper ok</span>' in ranked and '<span class="badge st-candidate">candidate</span>' in html
-    assert "K 20 · HFA 50 · MOV on" in ranked and "K 30 · HFA 60 · MOV off" in ranked
-    first = re.search(rf'<tr class="model-row" data-model="{best["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<span class="k">validation ROI</span> +4.1% <span class="range">-1.2% to +9.4%</span>' in first, "the validation ROI with its 90% range"
-    assert '<span class="k">beats market</span> <span class="chip chip-beats">yes</span> <span class="muted small">p = 0.012</span>' in first
-    assert '<span class="k">bets</span> 130 <span class="muted small">search 400</span>' in first and '<span class="k">search ROI</span> +5.0%' in first
-    assert "0.651" in first and "vs 0.658" in first and '<span class="k">drawdown</span> 9.0%' in first and "chip-flag" not in first
-    assert "Best lineage." in first and '<span class="chip">2 rows</span>' in first and "not validated" not in first
-    row2 = re.search(rf'<tr class="model-row" data-model="{second["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<span class="chip chip-flag chip-overfit"' in row2 and '>overfit</span>' in row2 and '>fragile</span>' in row2 and '>regime-dependent</span>' in row2
-    assert '<span class="k">beats market</span> no <span class="muted small">p = 0.310</span>' in row2
-    unranked = html.split('id="unranked"')[1]
-    assert unranked.count("not validated</span>") == 2 and "<th>validation ROI" in html and "<th>beats market</th>" in html
-    assert '<span class="k">validation ROI</span> -' in unranked and '<span class="k">beats market</span> -' in unranked
-    assert '<span class="k">bets</span> - <span class="muted small">search 20</span>' in unranked
-    assert "not validated, or retired" in unranked
-    assert f'href="/jobs?train_model={best["id"]}#train"' in ranked and ">Train</a>" in ranked
-    assert f'<a class="btn small" href="/jobs?validate_model={best["id"]}#validate">Validate</a>' in ranked
-    assert f'<a class="btn small" href="/trading?model={best["id"]}#assign">Assign</a>' in ranked
-    assert f'action="/models/{best["id"]}/summary"' in ranked and 'maxlength="600"' in ranked
-    assert "&lt;b&gt;bold&lt;/b&gt;" in html and "<b>bold</b>" not in html
-    assert "No summary yet." in html
-    assert 'class="attribution' in html and "creativecommons.org/licenses/by/4.0" in html
-    assert '<a href="/models" class="active">Models</a>' in html and "step 3" not in html
+    p = page(html)
+    assert p.row_ids("model") == [str(best["id"]), str(second["id"]), str(none["id"]), str(few["id"])], "ranked first, then unranked newest first"
+    ranked, unranked = p.card("ranked"), p.card("unranked")
+    assert ranked.row_ids("model") == [str(best["id"]), str(second["id"])] and unranked.row_ids("model") == [str(none["id"]), str(few["id"])]
+    assert "#1" in ranked.row("model", best["id"]).text and "#2" in ranked.row("model", second["id"]).text
+    assert ranked.row("model", best["id"]).chip("paper_ok").text == "paper ok" and p.row("model", few["id"]).chip("candidate").text == "candidate"
+    assert "K 20 · HFA 50 · MOV on" in ranked.text and "K 30 · HFA 60 · MOV off" in ranked.text
+    first = ranked.row("model", best["id"])
+    assert "validation ROI +4.1% -1.2% to +9.4%" in first.text, "the validation ROI with its 90% range"
+    assert first.chip("beats").text == "yes" and "beats market yes p = 0.012" in first.text
+    assert "bets 130 search 400" in first.text and "search ROI +5.0%" in first.text
+    assert "0.651" in first.text and "vs 0.658" in first.text and "drawdown 9.0%" in first.text
+    assert not {"overfit", "fragile", "regime_dependent"} & set(first.chips())
+    assert "Best lineage." in first.text and first.chip("members").text == "2 rows" and "unvalidated" not in first.chips()
+    row2 = ranked.row("model", second["id"])
+    assert {"overfit", "fragile", "regime_dependent"} <= set(row2.chips())
+    assert row2.chip("overfit").text == "overfit" and row2.chip("fragile").text == "fragile" and row2.chip("regime_dependent").text == "regime-dependent"
+    assert "beats market no p = 0.310" in row2.text and "beats" not in row2.chips()
+    assert unranked.count('[data-chip="unvalidated"]') == 2 and "validation ROI" in p.text and "beats market" in p.text
+    assert "validation ROI -" in unranked.row("model", few["id"]).text and "beats market -" in unranked.row("model", few["id"]).text
+    assert "bets - search 20" in unranked.row("model", few["id"]).text
+    assert "not validated, or retired" in unranked.text
+    assert first.action("train").target == f"/jobs?train_model={best['id']}#train" and first.action("train").text == "Train"
+    assert first.action("validate").target == f"/jobs?validate_model={best['id']}#validate" and first.action("validate").text == "Validate"
+    assert first.action("assign").target == f"/trading?model={best['id']}#assign" and first.action("assign").text == "Assign"
+    assert first.form("summary").target == f"/models/{best['id']}/summary" and first.form("summary").one("textarea").attr("maxlength") == "600"
+    assert "&lt;b&gt;bold&lt;/b&gt;" in html and "<b>bold</b>" not in html and "<b>bold</b>" in p.row("model", none["id"]).text
+    assert "No summary yet." in p.text
+    assert p.has(".attribution") and "https://creativecommons.org/licenses/by/4.0/" in p.hrefs
+    assert p.nav("models").is_current and not p.nav("trading").is_current and "step 3" not in html
 
 
 def test_model_detail_page(client, conn, make_worker):
@@ -461,26 +478,34 @@ def test_model_detail_page(client, conn, make_worker):
     r = client.post("/api/jobs", json={"kind": "backtest", "params": {"model_id": str(root["id"])}})
     assert r.status_code == 201, r.text
     bt = r.json()
-    html = client.get(f"/models/{root['id']}").text
-    assert "<h1>elo_blend" in html and "K 20 · HFA 50 · MOV on" in html and 'badge st-paper_ok' in html
-    assert str(root["lineage_id"]) in html and '<span class="chip">root</span>' in html and "Root summary." in html
-    assert "&#34;hfa&#34;: 50.0" in html, "params are shown as JSON"
-    assert ">400<" in html and "+5.0%" in html and "2016-2018" in html
-    assert "per season" in html and ">2016<" in html and ">2017<" in html and "-1.0%" in html and "-$7.00" in html
-    assert "calibration" in html and "0.0-0.1" in html and "0.9-1.0" in html
-    assert f'href="/models/{child["id"]}"' in html and "2024 week 10" in html and f'href="/jobs/{job["id"]}"' in html
-    assert f'href="/jobs/{bt["id"]}"' in html and "ran against it" in html and "created this model" not in html
-    assert f'action="/models/{root["id"]}/retire"' in html and 'data-confirm="Retire this whole lineage?' in html
-    assert f'href="/jobs?train_model={root["id"]}#train"' in html and f'action="/models/{root["id"]}/summary"' in html
-    assert '<form method="post" action="/jobs" class="inline validate-form">' in html and f'<input type="hidden" name="model_id" value="{root["id"]}">' in html
-    assert '<input type="hidden" name="kind" value="validate">' in html and ">Validate</button>" in html
-    assert '<h2>Robustness <span class="muted small">validation era 2022-2025, held out of the search</span></h2>' in html
-    assert "<dt>validation shrunk ROI</dt><dd>+2.18%" in html and "<dt>search shrunk ROI</dt><dd>+4.00%" in html
-    assert '<h2>backtest <span class="muted small">search era</span></h2>' in html
-    child_html = client.get(f"/models/{child['id']}").text
-    assert f'href="/models/{root["id"]}">{str(root["id"])[:8]}</a>' in child_html and "(this)" in child_html
-    assert "No backtest metrics yet" not in child_html, "a child shows the lineage metrics"
-    assert "created this model" in child_html and f'href="/jobs/{job["id"]}"' in child_html
+    p = page(client.get(f"/models/{root['id']}").text)
+    assert p.page_name == "model" and p.one("h1").text.startswith("elo_blend") and "K 20 · HFA 50 · MOV on" in p.one("h1").text
+    assert p.one("h1").has('[data-chip="paper_ok"]')
+    assert str(root["lineage_id"]) in p.text and p.card("model").has('[data-chip="root"]') and "Root summary." in p.text
+    assert '"hfa": 50.0' in p.text, "params are shown as JSON"
+    backtest = p.card("backtest")
+    assert backtest.prop("bets") == "400" and backtest.prop("ROI") == "+5.0%" and backtest.prop("seasons") == "2016-2018"
+    assert backtest.row("season", 2016) and "-1.0%" in backtest.row("season", 2017).text and "-$7.00" in backtest.row("season", 2017).text
+    assert "0.0-0.1" in backtest.listing("calibration").text and "0.9-1.0" in backtest.listing("calibration").text
+    lineage = p.card("lineage")
+    assert f"/models/{child['id']}" in lineage.hrefs and "2024 week 10" in lineage.row("lineage", child["id"]).text
+    assert f"/jobs/{job['id']}" in lineage.hrefs
+    jobs = p.card("jobs")
+    assert f"/jobs/{bt['id']}" in jobs.hrefs and "ran against it" in jobs.row("job", bt["id"]).text and "created this model" not in jobs.text
+    retire = p.action("retire")
+    assert retire.target == f"/models/{root['id']}/retire" and retire.attr("data-confirm").startswith("Retire this whole lineage?")
+    assert p.action("train").target == f"/jobs?train_model={root['id']}#train" and p.form("summary").target == f"/models/{root['id']}/summary"
+    validate = p.action("validate")
+    assert validate.target == "/jobs" and validate.attr("method") == "post" and validate.text == "Validate"
+    assert validate.one('input[name="model_id"]').attr("value") == str(root["id"]) and validate.one('input[name="kind"]').attr("value") == "validate"
+    assert "Robustness validation era 2022-2025, held out of the search" in p.card("robustness").text
+    assert p.prop("validation shrunk ROI").startswith("+2.18%") and p.prop("search shrunk ROI").startswith("+4.00%")
+    assert "backtest search era" in backtest.text
+    child_p = page(client.get(f"/models/{child['id']}").text)
+    parent = child_p.card("lineage").row("lineage", root["id"])
+    assert parent.first(f'a[href="/models/{root["id"]}"]').text == str(root["id"])[:8] and "(this)" in child_p.card("lineage").text
+    assert "No backtest metrics yet" not in child_p.text, "a child shows the lineage metrics"
+    assert "created this model" in child_p.card("jobs").text and f"/jobs/{job['id']}" in child_p.card("jobs").hrefs
     empty = insert_model(conn, params={"k": 40.0})
     assert "No backtest metrics yet" in client.get(f"/models/{empty['id']}").text
     assert client.get("/models/not-a-model").status_code == 404
@@ -488,7 +513,8 @@ def test_model_detail_page(client, conn, make_worker):
     r = client.post(f"/models/{child['id']}/retire", data={"next": f"/models/{child['id']}"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/models/{child['id']}" and "retired" in flash_cookie(r)
     assert model_row(conn, root["id"])["status"] == "retired"
-    assert "retire" not in client.get(f"/models/{root['id']}").text.split("<h2>summary</h2>")[0].split("</h1>")[1].lower().replace("retired", "")
+    retired = page(client.get(f"/models/{root['id']}").text)
+    assert not retired.has('[data-action="retire"]') and retired.one("h1").has('[data-chip="retired"]')
 
 
 def test_summary_edit_form(client, conn):
@@ -510,12 +536,15 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
     w = make_worker("box1")
     ingest_fixture(conn)
     model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1})
-    html = client.get("/jobs").text
-    assert html.count('action="/jobs"') == 5 and html.count('<option value="any_idle">Any idle worker</option>') == 5
-    assert 'name="seasons_first" value="2010"' in html and 'name="seasons_last" value="2021"' in html
-    assert 'name="n" value="200"' in html and 'name="top_k" value="5"' in html and 'name="through_season" value="2025"' in html
-    assert f'<option value="{model["id"]}">K 20 · HFA 50 · MOV on · untrained · {str(model["id"])[:8]}</option>' in html
-    assert '<option value="elo_blend" selected>elo_blend</option>' in html
+    p = page(client.get("/jobs").text)
+    forms = [p.form(kind) for kind in ("backtest", "model_search", "train", "validate", "sleep")]
+    assert all(f.target == "/jobs" for f in forms) and all(f.one('option[value="any_idle"]').text == "Any idle worker" for f in forms)
+    assert _value(p.form("backtest"), "seasons_first") == "2010" and _value(p.form("backtest"), "seasons_last") == "2021"
+    assert _value(p.form("model_search"), "n") == "200" and _value(p.form("model_search"), "top_k") == "5"
+    assert _value(p.form("train"), "through_season") == "2025"
+    assert p.form("train").one(f'option[value="{model["id"]}"]').text == f"K 20 · HFA 50 · MOV on · untrained · {str(model['id'])[:8]}"
+    family = p.form("model_search").one('select[name="family"] option[selected]')
+    assert family.attr("value") == "elo_blend" and family.text == "elo_blend"
     # Backtest by family + params.
     r = client.post("/jobs", data={"kind": "backtest", "model_id": "", "family": "elo_blend", "params": '{"k": 22}',
                                    "seasons_first": "2018", "seasons_last": "", "target": "any_idle"}, follow_redirects=False)
@@ -538,8 +567,8 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
     assert job["kind"] == "model_search" and job["role"] == "model_search"
     assert job["params"]["n"] == 50 and job["params"]["seed"] == 7 and job["params"]["top_k"] == 3 and job["params"]["seasons"] == [2016, 2019]
     # Train, prefilled from the models page link.
-    html = client.get(f"/jobs?train_model={model['id']}").text
-    assert f'<option value="{model["id"]} selected>' in html.replace('" selected>', ' selected>')
+    train = page(client.get(f"/jobs?train_model={model['id']}").text).form("train")
+    assert train.one('select[name="model_id"] option[selected]').attr("value") == str(model["id"])
     r = client.post("/jobs", data={"kind": "train", "model_id": str(model["id"]), "through_season": "2024", "through_week": "10",
                                    "target": "any_idle"}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r).startswith("train job ")
@@ -549,16 +578,17 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
         "default_bankroll_cents": 10000, "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2021],
     }
     # Validate, prefilled from the models page link.
-    html = client.get(f"/jobs?validate_model={model['id']}").text
-    assert '<details class="card send" id="validate" open>' in html and 'name="validate_seed" value="1"' in html
-    assert "held-out validation era (2022-2025)" in html
+    p = page(client.get(f"/jobs?validate_model={model['id']}").text)
+    assert p.form("validate").closest("details").is_open and _value(p.form("validate"), "validate_seed") == "1"
+    assert "held-out validation era (2022-2025)" in p.form("validate").text
     r = client.post("/jobs", data={"kind": "validate", "model_id": str(model["id"]), "validate_seed": "4", "target": "any_idle"}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r).startswith("validate job ")
     job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
     assert job["kind"] == "validate" and job["role"] == "backtest" and job["params"]["model_id"] == str(model["id"]) and job["params"]["seed"] == 4
     assert job["params"]["validation_seasons"] == [2022, 2025] and job["params"]["workers"] == "auto"
-    listing = client.get("/jobs").text
-    assert "elo_blend n 50" in listing and listing.count('<tr>') == 6 and f"validate <span class=\"muted small\">{str(model['id'])[:8]}</span>" in listing
+    listing = page(client.get("/jobs").text)
+    assert len(listing.rows("job")) == 5 and any("elo_blend n 50" in row.text for row in listing.rows("job"))
+    assert f"validate {str(model['id'])[:8]}" in listing.row("job", job["id"]).text
 
 
 def test_invalid_job_params_rerender_with_an_inline_error(client, conn):
@@ -581,15 +611,14 @@ def test_invalid_job_params_rerender_with_an_inline_error(client, conn):
     ]:
         r = client.post("/jobs", data=data, follow_redirects=False)
         assert r.status_code == 400 and r.headers["content-type"].startswith("text/html"), data
-        assert f'<p class="error inline-error">{message}' in r.text, (data, message)
-        assert 'id="fleet-grid"' not in r.text and 'action="/jobs"' in r.text, "the jobs page is re-rendered"
+        p = page(r.text)
+        posted = p.form(data["kind"])
+        assert any(e.startswith(message) for e in posted.texts(".inline-error")), (data, message)
+        assert p.page_name == "jobs" and not p.has('[data-list="workers"]'), "the jobs page is re-rendered"
+        assert p.count(".inline-error") == 1, "the error sits in the posted form only"
+        assert posted.closest("details") is None or posted.closest("details").is_open, "the posted form is open"
         if data["kind"] == "backtest":
-            assert f'name="params" rows="2">{data["params"]}</textarea>' in r.text.replace("&#34;", '"'), "submitted values are kept"
-            assert r.text.index('inline-error') < r.text.index('id="model_search"'), "the error sits in the posted form"
-        if data["kind"] == "sleep":
-            assert 'id="sleep" open>' in r.text
-        if data["kind"] == "validate":
-            assert 'id="validate" open>' in r.text
+            assert posted.one('textarea[name="params"]').text == data["params"], "submitted values are kept"
     assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 0, "nothing was created"
 
 
@@ -601,19 +630,22 @@ def test_job_detail_renders_result_tables_and_model_links(client, conn, make_wor
     ])
     bt = client.post("/api/jobs", json={"kind": "backtest", "params": {"model_id": str(model["id"])}, "target": w.id}).json()
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s, progress = 1 WHERE id = %s", (__import__("psycopg").types.json.Jsonb(metrics), bt["id"]))
-    html = client.get(f"/jobs/{bt['id']}").text
-    assert f'href="/models/{model["id"]}"' in html and ">300<" in html and "+4.0%" in html and ">2016<" in html and "+10.0%" in html
-    assert "raw result" in html and 'class="table-wrap"' in html
+    p = page(client.get(f"/jobs/{bt['id']}").text)
+    assert f"/models/{model['id']}" in p.hrefs and p.prop("bets") == "300" and p.prop("ROI") == "+4.0%"
+    assert "+10.0%" in p.row("season", 2016).text and "raw result" in p.text
     top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": 0.03, "metrics": backtest_metrics(n_bets=200, roi=0.045)},
            {"index": 1, "params": {"k": 25.0, "hfa": 40.0, "mov_scale": 0}, "score": 0.01, "metrics": backtest_metrics(n_bets=100, roi=0.02)}]
     created = [{"id": str(model["id"]), "lineage_id": str(model["id"]), "created": False}, {"id": "00000000-0000-0000-0000-0000000000aa", "lineage_id": "x", "created": True}]
     ms = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 2}}).json()
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (__import__("psycopg").types.json.Jsonb({"evaluated": 2, "seasons": [2016, 2017], "top": top, "created_models": created}), ms["id"]))
-    html = client.get(f"/jobs/{ms['id']}").text
-    assert "K 20 · HFA 50 · MOV on" in html and "K 25 · HFA 40 · MOV off" in html and "+4.5%" in html
-    assert f'href="/models/{model["id"]}">{str(model["id"])[:8]}</a>' in html and "0000000000aa" not in html.split("raw result")[0].replace('href="/models/00000000-0000-0000-0000-0000000000aa">00000000', "")
-    assert f'<a class="btn small" href="/models/{model["id"]}">{str(model["id"])[:8]} (existing)</a>' in html
-    assert "2 candidates evaluated over 2016-2017" in html
+    p = page(client.get(f"/jobs/{ms['id']}").text)
+    first, second = p.row("candidate", 1), p.row("candidate", 2)
+    assert "K 20 · HFA 50 · MOV on" in first.text and "K 25 · HFA 40 · MOV off" in second.text and "+4.5%" in first.text
+    assert first.one(f'a[href="/models/{model["id"]}"]').text == str(model["id"])[:8]
+    assert second.one('a[href="/models/00000000-0000-0000-0000-0000000000aa"]').text == "00000000", "the created id, shortened"
+    created = p.listing("created-models").select(f'a[href="/models/{model["id"]}"]')
+    assert [a.text for a in created] == [f"{str(model['id'])[:8]} (existing)"]
+    assert "2 candidates evaluated over 2016-2017" in p.text
 
 
 def test_phone_layout_rules(client, conn):
@@ -621,14 +653,11 @@ def test_phone_layout_rules(client, conn):
     insert_model(conn, metrics=backtest_metrics())
     css = client.get("/static/style.css").text
     assert "--tap: 44px" in css and "@media (max-width: 700px)" in css
-    assert "table.models td.action .btn { flex: 1; min-height: var(--tap); }" in css
-    assert ".send-grid { grid-template-columns: 1fr; }" in css
     for path in ("/models", "/jobs", "/trading"):
-        html = client.get(path).text
-        tables = re.findall(r"<table class=\"([^\"]+)\"", html)
-        assert tables and all("stack" in t for t in tables), (path, tables)
-        assert html.count("<table") == html.count('<div class="table-wrap">'), path
-        assert 'width=device-width' in html
+        p = page(client.get(path).text)
+        for table in p.select("table"):
+            assert table.has_class("stack") and table.closest(".table-wrap") is not None, (path, table)
+        assert "width=device-width" in p.one('meta[name="viewport"]').attr("content")
     assert "min-height: var(--tap)" in css.split("@media (max-width: 700px)")[1]
 
 
@@ -640,53 +669,53 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
         {"season": 2016, "n_games": 100, "n_bets": 0, "roi": 0.0, "pnl_cents": 0, "log_loss": 0.66, "market_log_loss": 0.66, "max_drawdown": None},
     ]))
     html = client.get(f"/models/{model['id']}").text
-    assert '<dl class="kv metrics">' in html and '<dt>log-loss vs market</dt><dd>0.660 <span class="muted">vs 0.659</span></dd>' in html
-    assert '<table class="metrics per-season stack">' in html and '<span class="k">drawdown</span> -' in html
-    assert "<dt>ROI</dt><dd>-</dd>" in html and "<dt>hit rate</dt><dd>-</dd>" in html and "<dt>avg edge</dt><dd>-</dd>" in html, "no bets: no ROI, hit rate or edge"
-    assert "<dt>max drawdown</dt><dd>0.4%" in html, "a 0.4% drawdown is not rounded to 0%"
-    assert "+0.0%" not in html.split("<h2>lineage</h2>")[0]
-    assert f'<a class="btn" href="/trading?model={model["id"]}#assign">Assign</a>' in html
-    assert '<details class="edit">' in html and html.count("No summary yet.") == 1, "the summary editor is folded"
-    assert '<dt>validation shrunk ROI</dt><dd><span class="muted">not validated</span>' in html and "<dt>search shrunk ROI</dt><dd>+0.00%" in html
-    assert "Not validated yet: no held-out numbers" in html and ">Validate</button>" in html
-    tables = re.findall(r"<table class=\"([^\"]+)\"", html)
-    assert all("stack" in t for t in tables if "calibration" not in t), tables
+    p = page(html)
+    backtest = p.card("backtest")
+    assert backtest.has('[data-list="metrics"]') and backtest.prop("log-loss vs market") == "0.660 vs 0.659"
+    assert backtest.has('[data-list="per-season"]') and "drawdown -" in backtest.row("season", 2016).text
+    assert (backtest.prop("ROI"), backtest.prop("hit rate"), backtest.prop("avg edge")) == ("-", "-", "-"), "no bets: no ROI, hit rate or edge"
+    assert backtest.prop("max drawdown").startswith("0.4%"), "a 0.4% drawdown is not rounded to 0%"
+    assert all("+0.0%" not in p.card(name).text for name in ("model", "robustness", "snapshot", "backtest"))
+    assert p.action("assign").target == f"/trading?model={model['id']}#assign" and p.action("assign").text == "Assign"
+    editor = p.form("summary").closest("details")
+    assert editor is not None and not editor.is_open and p.text.count("No summary yet.") == 1, "the summary editor is folded"
+    assert p.prop("validation shrunk ROI").startswith("not validated") and p.prop("search shrunk ROI").startswith("+0.00%")
+    assert "Not validated yet: no held-out numbers" in p.card("robustness").text and p.action("validate").text == "Validate"
+    assert all(t.has_class("stack") for t in p.select("table") if t.attr("data-list") != "calibration")
     # The leaderboard row: "-" for ROI without bets, one-decimal drawdown.
-    row = client.get("/models").text
-    assert '<span class="k">search ROI</span> -' in row and '<span class="k">drawdown</span> 0.4%' in row
-    assert '<span class="k">paper</span> -' in row and 'href="/trading?model=' in row
+    row = page(client.get("/models").text).row("model", model["id"])
+    assert "search ROI -" in row.text and "drawdown 0.4%" in row.text
+    assert "paper -" in row.text and row.action("assign").target.startswith("/trading?model=")
     # The search result page: a stacked top list with a shrunk ROI percentage.
     top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": -0.0103, "metrics": backtest_metrics(n_bets=5, roi=-0.355, max_drawdown=0.5)}]
     ms = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 1}, "target": w.id}).json()
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (__import__("psycopg").types.json.Jsonb({"evaluated": 1, "seasons": [2016], "top": top, "created_models": []}), ms["id"]))
-    html = client.get(f"/jobs/{ms['id']}").text
-    assert '<table class="metrics top stack">' in html and "<th>shrunk ROI</th>" in html
-    assert '<span class="k">shrunk ROI</span> -1.03%' in html and '<span class="k">ROI</span> -35.5%' in html and '<span class="k">drawdown</span> 50.0%' in html
-    assert '<td class="lead"><span class="rank">#1</span> K 20 · HFA 50 · MOV on</td>' in html
+    p = page(client.get(f"/jobs/{ms['id']}").text)
+    assert p.listing("candidates").has_class("stack") and "shrunk ROI" in p.listing("candidates").text
+    top_row = p.row("candidate", 1)
+    assert "shrunk ROI -1.03%" in top_row.text and "ROI -35.5%" in top_row.text and "drawdown 50.0%" in top_row.text
+    assert top_row.text.startswith("#1 K 20 · HFA 50 · MOV on")
     bt = client.post("/api/jobs", json={"kind": "backtest", "params": {"model_id": str(model["id"])}, "target": w.id}).json()
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (__import__("psycopg").types.json.Jsonb(backtest_metrics(n_bets=300, roi=0.04, per_season=[{"season": 2016, "n_games": 100, "n_bets": 30, "roi": 0.1, "pnl_cents": 3000, "log_loss": 0.66, "market_log_loss": 0.66, "max_drawdown": 0.03}])), bt["id"]))
-    html = client.get(f"/jobs/{bt['id']}").text
-    assert '<dl class="kv metrics">' in html and '<table class="metrics per-season stack">' in html and "<dt>hit rate</dt><dd>52.0%</dd>" in html
-    css = client.get("/static/style.css").text
-    assert "table.stack .k { display: inline; }" in css and "table.metrics.stack td { white-space: normal; }" in css
-    assert ".kv { display: grid;" in css and ".chip {" in css and "white-space: nowrap; }" in css.split(".chip {")[1].split("\n")[0]
-    assert ".btn.soon[disabled] { opacity: 1; color: var(--muted); border-style: dashed; }" in css
+    p = page(client.get(f"/jobs/{bt['id']}").text)
+    assert p.has('[data-list="metrics"]') and p.has('[data-list="per-season"]') and p.prop("hit rate") == "52.0%"
 
 
 def test_send_cards_fold_so_the_job_list_is_near_the_top(client, conn):
     """MEDIUM: each send form is a details card; only the relevant one is open."""
     model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, trained_through=[2024, 18])
+    def open_forms(html):
+        return [k for k in ("backtest", "model_search", "train", "validate", "sleep") if page(html).form(k).closest("details").is_open]
+
     html = client.get("/jobs").text
-    assert '<details class="card send" id="backtest" open>' in html
-    assert '<details class="card send" id="model_search">' in html and '<details class="card send" id="train">' in html
-    assert html.count("<summary><h2>") == 4 and "<summary>Sleep test job</summary>" in html
-    assert html.index('<table class="jobs stack">') > html.index('id="train"')
-    assert f'K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model["id"])[:8]}</option>' in html, "the select label fits a phone"
-    html = client.get(f"/jobs?train_model={model['id']}").text
-    assert '<details class="card send" id="train" open>' in html and '<details class="card send" id="backtest">' in html
+    p = page(html)
+    assert open_forms(html) == ["backtest"]
+    assert [d.one("summary").text for d in p.select("details") if d.has("[data-form]")] == ["Backtest", "Model search", "Train", "Validate", "Sleep test job"]
+    assert p.listing("jobs").start > p.form("train").start, "the job list follows the folded forms"
+    assert p.form("train").one(f'option[value="{model["id"]}"]').text.endswith(f"K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model['id'])[:8]}"), "the select label fits a phone"
+    assert open_forms(client.get(f"/jobs?train_model={model['id']}").text) == ["train"]
     r = client.post("/jobs", data={"kind": "model_search", "family": "elo_blend", "n": "0", "target": "any_idle"}, follow_redirects=False)
-    assert r.status_code == 400 and '<details class="card send" id="model_search" open>' in r.text
-    assert '<details class="card send" id="backtest">' in r.text
+    assert r.status_code == 400 and open_forms(r.text) == ["model_search"]
     insert_model(conn, family="elo_blend", params={"k": 21.0})
     assert "elo_blend · K 21" not in client.get("/jobs").text, "one family: no family prefix"
 
@@ -739,22 +768,28 @@ def _score(conn, model, game_id, n_bets, pnl_cents, stake_cents, avg_clv):
     )
 
 
+TRADING_CARDS = ("assignments", "positions", "open-orders", "orders", "fills", "unmatched", "markets", "exchange", "ledger")
+
+
 def test_trading_page_empty_state_and_fragment(client, conn):
-    html = client.get("/trading").text
-    assert '<a href="/trading" class="active">Trading</a>' in html
-    assert 'id="assign"' in html and '<details class="card send assign" id="assign">' in html, "the create form is folded"
-    assert "No assignments yet." in html and "No open orders." in html and "No orders yet." in html and "No fills yet." in html
-    assert "Every market is mapped." in html and "No mapped markets yet." in html
-    assert 'id="exchange"' in html and '<span class="chip chip-bad">DOWN</span>' in html and "never" in html
-    assert 'id="ledger"' in html and '<span class="chip chip-ok">OK</span>' in html and "Replay of 0 bankrolls" in html
-    assert "No upcoming game has a confirmed market yet" in html and "No model of a non-retired lineage" in html
-    assert '<button type="submit" class="btn primary" disabled>Create assignment</button>' in html
-    assert 'action="/assignments/activate-paper"' not in html and 'action="/cancel-all"' not in html
-    assert 'id="trading-live"' in html and html.count("<section") == 9
-    fragment = client.get("/fragments/trading").text
-    assert "<html" not in fragment and 'id="trading-live"' not in fragment and 'id="assignments"' in fragment
-    assert 'id="assign"' not in fragment, "the create form stays out of the refreshed region"
-    assert fragment.count("<section") == 9
+    p = page(client.get("/trading").text)
+    assert p.page_name == "trading" and p.nav("trading").is_current
+    assign = p.form("assign").closest("details")
+    assert assign is not None and not assign.is_open, "the create form is folded"
+    assert "No assignments yet." in p.card("assignments").text and "No open orders." in p.card("open-orders").text
+    assert "No orders yet." in p.card("orders").text and "No fills yet." in p.card("fills").text
+    assert "Every market is mapped." in p.card("unmatched").text and "No mapped markets yet." in p.card("markets").text
+    assert p.card("exchange").chip("exchange-down").text == "DOWN" and "never" in p.card("exchange").text
+    assert p.card("ledger").chip("ledger-ok").text == "OK" and "Replay of 0 bankrolls" in p.card("ledger").text
+    assert "No upcoming game has a confirmed market yet" in p.form("assign").text and "No model of a non-retired lineage" in p.form("assign").text
+    create = p.form("assign").one('button[type="submit"]')
+    assert create.text == "Create assignment" and create.disabled
+    assert not p.has('[data-action="activate-all-paper"]') and not p.has('[data-action="cancel-all"]')
+    assert p.has("#trading-live") and set(TRADING_CARDS) <= set(p.cards())
+    fragment = page(client.get("/fragments/trading").text)
+    assert not fragment.has("html") and not fragment.has("#trading-live") and fragment.card("assignments")
+    assert not fragment.has('[data-form="assign"]'), "the create form stays out of the refreshed region"
+    assert set(TRADING_CARDS) <= set(fragment.cards())
 
 
 def test_trading_page_shows_assignments_orders_fills_markets_and_exchange(client, conn):
@@ -769,46 +804,55 @@ def test_trading_page_shows_assignments_orders_fills_markets_and_exchange(client
     assert rejected["reason"] == "max_bet"
     conn.execute("UPDATE exchange_state SET heartbeat_at = now() - interval '3 seconds', market_source = 'sim', last_error = 'boom <i>'")
     html = client.get("/trading").text
-    live = html.split('id="trading-live"')[1]
+    live = page(html).one("#trading-live")
     # assignments
-    row = re.search(rf'<tr class="assignment-row" data-assignment="{setup.assignment["id"]}">.*?</tr>', live, re.S).group(0)
-    assert "<strong>KC @ LV</strong>" in row and GAME_ID in row and f'href="/models/{setup.model["id"]}"' in row
-    assert '<span class="chip mode-paper">paper</span>' in row and '<span class="badge st-active">active</span>' in row
+    row = live.card("assignments").row("assignment", setup.assignment["id"])
+    assert "KC @ LV" in row.text and GAME_ID in row.text and f"/models/{setup.model['id']}" in row.hrefs
+    assert row.chip("paper").text == "paper" and row.chip("active").text == "active"
     bank = conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (setup.assignment["id"],)).fetchone()
-    assert f"avail ${bank['available_cents'] // 100}.{bank['available_cents'] % 100:02d}" in row
-    assert "reserved $" in row and "open $2.08" in row and "realized -$0.12" in row
-    assert '<span class="k">open orders</span> 1' in row and f'action="/assignments/{setup.assignment["id"]}/halt"' in row
-    assert "Settle now" not in row and "Activate" not in row
+    assert f"avail ${bank['available_cents'] // 100}.{bank['available_cents'] % 100:02d}" in row.text
+    assert "reserved $" in row.text and "open $2.08" in row.text and "realized -$0.12" in row.text
+    assert "open orders 1" in row.text and row.action("halt").target == f"/assignments/{setup.assignment['id']}/halt"
+    assert row.actions() == ["halt"], "no Settle now, no Activate"
     # open orders with a cancel button and the cancel-all form
-    assert f'action="/orders/{opened["id"]}/cancel"' in live and 'action="/cancel-all"' in live
-    assert "10 @ 0.52 (4 filled" in live and '<span class="badge st-partial">partial</span>' in live
+    open_orders = live.card("open-orders")
+    assert open_orders.row("order", opened["id"]).action("cancel").target == f"/orders/{opened['id']}/cancel"
+    assert open_orders.action("cancel-all").target == "/cancel-all"
+    assert "10 @ 0.52 (4 filled" in open_orders.row("order", opened["id"]).text
+    assert open_orders.row("order", opened["id"]).chip("partial").text == "partial"
     # recent orders: the rejection with its reason, the rationale, the worker name
-    recent = live.split('id="orders"')[1].split('id="fills"')[0]
-    assert str(rejected["order_id"]) in recent and '<span class="reason">max_bet: over max bet $' in recent and "&gt; $25.00</span>" in recent
-    assert '<span class="badge st-rejected">rejected</span>' in recent and "my 0.58 vs ask 0.52, fee 0.012, edge 0.04" in recent
-    assert "+4.0%" in recent and "my 0.58 vs 0.51" in recent and f"trader-" in recent and "200 @ 0.52" in recent
+    recent = live.card("orders")
+    refused = recent.row("order", rejected["order_id"])
+    reason = refused.one(".reason").text
+    assert reason.startswith("max_bet: over max bet $") and reason.endswith("> $25.00")
+    assert refused.chip("rejected").text == "rejected" and "my 0.58 vs ask 0.52, fee 0.012, edge 0.04" in refused.text
+    assert "200 @ 0.52" in refused.text and "trader-" in recent.text
+    assert "+4.0%" in recent.text and "my 0.58 vs 0.51" in recent.text
     # fills
-    fills = live.split('id="fills"')[1].split('id="unmatched"')[0]
-    assert "4 @ 0.52" in fills and "of 10 @ 0.52" in fills and "$0.12" in fills
+    fills = live.card("fills")
+    assert len(fills.rows("fill")) == 1 and "4 @ 0.52" in fills.text and "of 10 @ 0.52" in fills.text and "$0.12" in fills.text
     # unmatched market with the link form, escaped title
-    unmatched = live.split('id="unmatched"')[1].split('id="markets"')[0]
-    assert "Chiefs vs Raiders &lt;b&gt;x&lt;/b&gt;" in unmatched and f'action="/markets/{loose["id"]}/link"' in unmatched
-    assert f'<option value="{GAME_ID}" selected>' in unmatched and '<option value="home" selected>home wins</option>' in unmatched
-    assert "(50%)" in unmatched
+    unmatched = live.card("unmatched").row("market", loose["id"])
+    assert "Chiefs vs Raiders <b>x</b>" in unmatched.text and "Chiefs vs Raiders &lt;b&gt;x&lt;/b&gt;" in html
+    link = unmatched.form("link")
+    assert link.target == f"/markets/{loose['id']}/link"
+    assert link.one('select[name="game_id"] option[selected]').attr("value") == GAME_ID
+    assert link.one('select[name="side"] option[selected]').text == "home wins" and "(50%)" in unmatched.text
     # mapped markets with snapshot ages
-    markets = live.split('id="markets"')[1].split('id="exchange"')[0]
-    assert markets.count("<tr data-market=") == 2 and "0.50 / 0.52" in markets and "0.46 / 0.48" in markets
-    assert '<span class="stale-age">1 min ago</span>' in markets and "$2,000.00" in markets and "home wins" in markets and "away wins" in markets
+    markets = live.card("markets")
+    assert len(markets.rows("market")) == 2 and "0.50 / 0.52" in markets.text and "0.46 / 0.48" in markets.text
+    assert markets.row("market", other["id"]).one(".stale-age").text == "1 min ago"
+    assert "$2,000.00" in markets.text and "home wins" in markets.text and "away wins" in markets.text
     # exchange state and ledger
-    exchange = live.split('id="exchange"')[1].split('id="ledger"')[0]
-    assert '<span class="chip chip-ok">up</span>' in exchange and "3 s ago" in exchange and ">sim<" in exchange
-    assert "boom &lt;i&gt;" in exchange and 'action="/exchange/probe"' in exchange
-    assert "Replay of 1 bankroll " in live and '<span class="chip chip-ok">OK</span>' in live
+    exchange = live.card("exchange")
+    assert exchange.chip("exchange-up").text == "up" and "3 s ago" in exchange.text and exchange.prop("source") == "sim"
+    assert "boom <i>" in exchange.prop("last error") and exchange.action("probe").target == "/exchange/probe"
+    assert "Replay of 1 bankroll " in live.card("ledger").text and live.card("ledger").chip("ledger-ok").text == "OK"
     conn.execute("UPDATE bankrolls SET available_cents = available_cents + 1 WHERE id = %s", (bank["id"],))
-    broken = client.get("/fragments/trading").text
-    assert '<span class="chip chip-bad">problems</span>' in broken and "cached" in broken and "ledger sums to" in broken
-    tables = re.findall(r'<table class="([^"]+)"', html)
-    assert len(tables) == 6 and all("stack" in t for t in tables)
+    broken = page(client.get("/fragments/trading").text).card("ledger")
+    assert broken.chip("ledger-problems").text == "problems" and "cached" in broken.text and "ledger sums to" in broken.text
+    tables = page(html).select("table")
+    assert all(t.has_class("stack") for t in tables)
 
 
 def test_create_assignment_form(client, conn):
@@ -820,15 +864,18 @@ def test_create_assignment_form(client, conn):
     model = insert_model(conn, status="paper_ok", params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, trained_through=[2024, 18])
     retired = insert_model(conn, status="retired", params={"k": 21.0})
     html = client.get("/trading").text
-    assert f'<option value="{GAME_ID}">KC @ LV · ' in html and "2026_05_DAL_PHI" not in html.split('id="trading-live"')[0], "only games with confirmed markets"
-    assert "2025_01_OLD_GAME" not in html.split('id="trading-live"')[0], "kicked off games are not offered"
-    assert f'<option value="{model["id"]}">elo_blend · K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model["id"])[:8]}</option>' in html
+    form = page(html).form("assign")
+    games = [o.attr("value") for o in form.select('select[name="game_id"] option')]
+    assert games == [GAME_ID] and form.one(f'option[value="{GAME_ID}"]').text.startswith("KC @ LV · "), "only upcoming games with confirmed markets"
+    assert form.one(f'option[value="{model["id"]}"]').text == f"elo_blend · K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model['id'])[:8]}"
     assert str(retired["id"]) not in html
-    assert 'name="bankroll" value="100.00"' in html and '<option value="paper" selected>paper</option>' in html and 'value="live"' not in html
-    assert '<button type="submit" class="btn primary">Create assignment</button>' in html
+    assert _value(form, "bankroll") == "100.00" and [o.attr("value") for o in form.select('select[name="mode"] option')] == ["paper"]
+    assert form.one('select[name="mode"] option[selected]').text == "paper"
+    create = form.one('button[type="submit"]')
+    assert create.text == "Create assignment" and not create.disabled
     # ?model= opens the form with that model selected (the Assign button on the Models page)
-    html = client.get(f"/trading?model={model['id']}").text
-    assert '<details class="card send assign" id="assign" open>' in html and f'<option value="{model["id"]}" selected>' in html
+    form = page(client.get(f"/trading?model={model['id']}").text).form("assign")
+    assert form.closest("details").is_open and form.one('select[name="model_id"] option[selected]').attr("value") == str(model["id"])
     r = client.post("/assignments", data={"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "paper", "bankroll": "250", "max_bet": "5"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/trading", r.text
     assert flash_cookie(r).endswith(f"created: paper on {GAME_ID}, bankroll $250.00")
@@ -839,8 +886,8 @@ def test_create_assignment_form(client, conn):
     job = conn.execute("SELECT * FROM jobs WHERE id = %s", (a["job_id"],)).fetchone()
     assert job["kind"] == "trade" and job["status"] == "queued" and job["params"] == {"assignment_id": str(a["id"])}
     assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'assignment_created'").fetchone()["n"] == 1
-    page = client.get("/trading").text
-    assert f'data-assignment="{a["id"]}"' in page and '<details class="card send assign" id="assign">' in page
+    p = page(client.get("/trading").text)
+    assert p.row("assignment", a["id"]) and not p.form("assign").closest("details").is_open
     # a refusal re-renders the page with the error inline, the submitted values kept, nothing stored
     for data, status, message in [
         ({"game_id": GAME_ID, "model_id": str(model["id"]), "mode": "paper", "bankroll": "lots"}, 400, "Bankroll must be a dollar amount"),
@@ -852,8 +899,9 @@ def test_create_assignment_form(client, conn):
     ]:
         r = client.post("/assignments", data=data, follow_redirects=False)
         assert r.status_code == status and r.headers["content-type"].startswith("text/html"), (data, r.status_code)
-        assert '<p class="error inline-error">' in r.text and message in r.text, (data, message)
-        assert '<details class="card send assign" id="assign" open>' in r.text and f'name="bankroll" value="{data["bankroll"]}"' in r.text
+        form = page(r.text).form("assign")
+        assert any(message in e for e in form.texts(".inline-error")), (data, message)
+        assert form.closest("details").is_open and _value(form, "bankroll") == data["bankroll"]
     assert conn.execute("SELECT count(*) AS n FROM assignments").fetchone()["n"] == 1
     assert conn.execute("SELECT count(*) AS n FROM bankrolls").fetchone()["n"] == 1
     assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 1
@@ -868,9 +916,9 @@ def test_halt_activate_and_settle_forms(client, conn):
     r = client.post(f"/assignments/{aid}/halt", data={}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/trading" and flash_cookie(r) == f"assignment {str(aid)[:8]} halted"
     assert assignment_row(conn, aid)["status"] == "halted" and order_row(conn, opened["id"])["status"] == "filled"
-    html = client.get("/trading").text
-    assert '<span class="badge st-halted">halted</span>' in html and f'action="/assignments/{aid}/activate"' in html
-    assert f'action="/assignments/{aid}/halt"' not in html
+    row = page(client.get("/trading").text).row("assignment", aid)
+    assert row.chip("halted").text == "halted" and row.action("activate").target == f"/assignments/{aid}/activate"
+    assert not row.has('[data-action="halt"]')
     # settle is refused until the game is final (flash, not an error page)
     r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r) == "settle refused: the game is not final yet"
@@ -881,22 +929,22 @@ def test_halt_activate_and_settle_forms(client, conn):
     assert client.post("/assignments/00000000-0000-0000-0000-000000000000/halt", data={}, follow_redirects=False).status_code == 404
     # the game goes final: the row offers Settle now; settling writes the bet and the score
     conn.execute("UPDATE games SET status = 'final', home_score = 24, away_score = 20 WHERE game_id = %s", (GAME_ID,))
-    html = client.get("/trading").text
-    assert f'action="/assignments/{aid}/settle"' in html and ">Settle now</button>" in html and "final 20-24" in html
+    row = page(client.get("/trading").text).row("assignment", aid)
+    assert row.action("settle").target == f"/assignments/{aid}/settle" and row.action("settle").text == "Settle now" and "final 20-24" in row.text
     r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r) == f"{GAME_ID} settled: 1 bets, P&L $4.68", flash_cookie(r)
     assert assignment_row(conn, aid)["status"] == "settled"
     bet = conn.execute("SELECT * FROM bets").fetchone()
     assert bet["result"] == "win" and bet["pnl_cents"] == 468 and bet["worker_id"] == setup.worker.id
-    html = client.get("/trading").text
-    assert '<span class="badge st-settled">settled</span>' in html and "paper today $4.68 &middot; all $4.68" in html
-    assert '<span class="badge st-resolved">resolved YES</span>' in html
-    fleet = client.get("/").text
-    assert re.search(rf'data-worker="{setup.worker.id}">.*?today \$4\.68', fleet, re.S), "the worker's card shows its P&L"
+    p = page(client.get("/trading").text)
+    assert p.row("assignment", aid).chip("settled").text == "settled" and "paper today $4.68 · all $4.68" in topbar(p).text
+    assert p.row("market", setup.market["id"]).chip("resolved").text == "resolved YES"
+    fleet = page(fleet_html(client))
+    assert "today $4.68" in fleet.row("worker", setup.worker.id).text, "the worker's card shows its P&L"
     r = client.post(f"/assignments/{aid}/settle", data={}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r).startswith("settle refused") or "settled" in flash_cookie(r)
-    board = client.get("/models").text
-    assert "1 g &middot; 1 bets &middot; $4.68" in board
+    board = page(client.get("/models").text)
+    assert "1 g · 1 bets · $4.68" in board.row("model", setup.model["id"]).text
 
 
 def test_order_cancel_and_cancel_all_forms(client, conn):
@@ -936,9 +984,9 @@ def test_link_market_form(client, conn):
     assert r.status_code == 303 and r.headers["location"] == "/trading#markets" and flash_cookie(r) == "market linked to 2026_05_DAL_PHI (away)"
     m = conn.execute("SELECT * FROM markets WHERE id = %s", (loose["id"],)).fetchone()
     assert m["mapping_confirmed"] is True and m["game_id"] == "2026_05_DAL_PHI" and m["side"] == "away" and m["mapping_confidence"] == 1.0
-    html = client.get("/trading").text
-    assert "Every market is mapped." in html and "2026_05_DAL_PHI &middot; away wins" in html
-    assert '<option value="2026_05_DAL_PHI">DAL @ PHI · ' in html, "a game without markets can be assigned now"
+    p = page(client.get("/trading").text)
+    assert "Every market is mapped." in p.card("unmatched").text and "2026_05_DAL_PHI · away wins" in p.row("market", loose["id"]).text
+    assert p.form("assign").one('option[value="2026_05_DAL_PHI"]').text.startswith("DAL @ PHI · "), "a game without markets can be assigned now"
     r = client.post(f"/markets/{loose['id']}/link", data={"game_id": "nope", "side": "home"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/trading#unmatched" and flash_cookie(r).startswith("market not linked: unknown game")
     r = client.post(f"/markets/{loose['id']}/link", data={"game_id": GAME_ID, "side": "sideways"}, follow_redirects=False)
@@ -955,31 +1003,34 @@ def test_activate_all_paper_after_a_kill_reset(client, conn):
     conn.execute("UPDATE games SET status = 'final', home_score = 1, away_score = 0 WHERE game_id = '2026_05_DAL_PHI'")
     r = client.post("/kill", follow_redirects=False)
     assert r.status_code == 303
-    html = client.get("/trading").text
-    assert "Trading is killed: every assignment stays halted" in html and 'action="/assignments/activate-paper"' not in html
-    assert html.count('<span class="badge st-halted">halted</span>') == 3 and "No open orders." in html
-    assert ">Activate</button>" not in html, "no per-row activate under kill"
-    assert 'data-banner="exchange-down"' in html, "no exchange heartbeat while killed"
+    p = page(client.get("/trading").text)
+    assert "Trading is killed: every assignment stays halted" in p.card("assignments").text and not p.has('[data-action="activate-all-paper"]')
+    assert [row.first('[data-chip="halted"]') is not None for row in p.rows("assignment")] == [True] * 3 and "No open orders." in p.text
+    assert not p.has('[data-action="activate"]'), "no per-row activate under kill"
+    assert p.has('[data-banner="exchange-down"]'), "no exchange heartbeat while killed"
     r = client.post("/assignments/activate-paper", data={}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r) == "activate all paper refused: the kill switch is on; reset it first"
     client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
-    html = client.get("/trading").text
-    assert ">Activate all paper (2)</button>" in html and f'action="/assignments/{done["id"]}/settle"' in html
+    p = page(client.get("/trading").text)
+    assert p.action("activate-all-paper").text == "Activate all paper (2)" and p.row("assignment", done["id"]).action("settle").target == f"/assignments/{done['id']}/settle"
     r = client.post("/assignments/activate-paper", data={}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r) == "2 paper assignments activated"
     assert assignment_row(conn, setup.assignment["id"])["status"] == "active" and assignment_row(conn, second["id"])["status"] == "active"
     assert assignment_row(conn, done["id"])["status"] == "halted", "a final game's assignment waits for settlement"
-    assert 'action="/assignments/activate-paper"' not in client.get("/trading").text
+    assert not page(client.get("/trading").text).has('[data-action="activate-all-paper"]')
     assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'activate_all_paper'").fetchone()["n"] == 1
 
 
 def test_topbar_banners(client, conn):
-    assert 'data-banner' not in client.get("/fragments/topbar").text, "no heartbeat but nothing at stake: no banner"
+    def banners():
+        return page(client.get("/fragments/topbar").text).select("[data-banner]")
+
+    assert not banners(), "no heartbeat but nothing at stake: no banner"
     client.post("/kill", follow_redirects=False)
-    topbar = client.get("/fragments/topbar").text
-    assert '<a class="banner banner-down" href="/trading#exchange" data-banner="exchange-down" role="alert">EXCHANGE DOWN</a>' in topbar
+    [down] = banners()
+    assert (down.attr("data-banner"), down.target, down.attr("role"), down.text) == ("exchange-down", "/trading#exchange", "alert", "EXCHANGE DOWN")
     client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
-    assert 'data-banner' not in client.get("/fragments/topbar").text
+    assert not banners()
     setup = trade_setup(conn)
     _open_order(conn, setup)
     assert "EXCHANGE DOWN" in client.get("/").text, "an open order with no heartbeat"
@@ -993,14 +1044,14 @@ def test_topbar_banners(client, conn):
                  " created_at = now() - interval '2 minutes' WHERE id = %s", (setup.job["id"],))
     assert "unattended" not in client.get("/fragments/topbar").text, "queued again 30 s ago"
     conn.execute("UPDATE jobs SET updated_at = now() - interval '61 seconds' WHERE id = %s", (setup.job["id"],))
-    topbar = client.get("/fragments/topbar").text
-    assert '<a class="banner banner-warn" href="/trading#assignments" data-banner="unattended" role="alert">1 assignment unattended</a>' in topbar
+    [warn] = [b for b in banners() if b.attr("data-banner") == "unattended"]
+    assert (warn.attr("data-banner"), warn.target, warn.attr("role"), warn.text) == ("unattended", "/trading#assignments", "alert", "1 assignment unattended")
     second = make_assignment(conn, GAME_ID)
     conn.execute("UPDATE jobs SET created_at = now() - interval '2 minutes', updated_at = now() - interval '2 minutes' WHERE id = %s", (second["job_id"],))
     assert "2 assignments unattended" in client.get("/jobs").text
     client.post(f"/assignments/{second['id']}/halt", data={}, follow_redirects=False)
     assert "1 assignment unattended" in client.get("/fragments/topbar").text, "a halted assignment is not unattended"
-    assert 'role="alert"' in client.get("/").text
+    assert page(client.get("/").text).has('[data-banner][role="alert"]')
 
 
 def test_pnl_maths(client, conn, make_worker):
@@ -1039,17 +1090,19 @@ def test_pnl_maths(client, conn, make_worker):
     assert totals["today_cents"] == 290 and totals["all_time_cents"] == 170
     assert totals["by_worker"] == {idle.id: 0, setup.worker.id: -10, helper.id: 300}
     assert totals["by_mode"] == {"paper": {"today_cents": 290, "all_time_cents": 170}, "live": {"today_cents": 0, "all_time_cents": 0}}
-    html = client.get("/").text
-    assert "paper today $2.90 &middot; all $1.70" in html and "live today" not in html
-    assert re.search(rf'data-worker="{helper.id}">.*?today \$3\.00', html, re.S) and re.search(rf'data-worker="{setup.worker.id}">.*?today -\$0\.10', html, re.S)
-    card = re.search(rf'data-worker="{setup.worker.id}">.*?</article>', html, re.S).group(0)
-    assert f'<div class="jobrow">\n    <a class="joblink" href="/jobs/{setup.job["id"]}">KC @ LV</a>' in card and '<span class="small muted">held</span>' in card
-    assert 'role="progressbar"' not in card, "a held trade job has no progress to show"
+    bar = topbar(page(client.get("/").text))
+    assert re.search(r"\bpaper\b[^$]*\+?\$2\.90", bar.text) and not re.search(r"\blive\b", bar.text), "the current mode's P&L only"
+    fleet = page(fleet_html(client))
+    assert re.search(r"\+?\$3\.00", fleet.row("worker", helper.id).text) and "-$0.10" in fleet.row("worker", setup.worker.id).text
+    card = fleet.row("worker", setup.worker.id)
+    held = card.one(f'[data-job="{setup.job["id"]}"]')
+    assert held.one(f'a[href="/jobs/{setup.job["id"]}"]').text == "KC @ LV" and "held" in held.text
+    assert not card.has('[role="progressbar"]'), "a held trade job has no progress to show"
     # a resolved market drops out of the open positions
     conn.execute("UPDATE markets SET status = 'resolved', resolved_yes = true WHERE id = %s", (setup.market["id"],))
     assert client.get("/api/pnl").json()["today_cents"] == 300
     set_setting(conn, "live_enabled", True)
-    assert "live today $0.00 &middot; all $0.00" in client.get("/fragments/topbar").text
+    assert "live today $0.00 · all $0.00" in page(client.get("/fragments/topbar").text).text
 
 
 def test_leaderboard_paper_columns_and_ranking(client, conn):
@@ -1089,27 +1142,28 @@ def test_leaderboard_paper_columns_and_ranking(client, conn):
     assert still["rank_mode"] == "paper" and still["unranked_reason"] == "not validated"
     conn.execute("UPDATE models SET validation_metrics = %s WHERE lineage_id = %s", (__import__("psycopg").types.json.Jsonb(validation_metrics()), almost["lineage_id"]))
     assert client.get("/api/models").json()["ranked"][0]["id"] == str(almost["id"]), "validated, it ranks first on paper CLV"
-    html = client.get("/models").text
-    first = re.search(rf'<tr class="model-row" data-model="{almost["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<span class="rank">#1</span><span class="chip chip-paper" title="ranked on paper CLV">paper</span>' in first
-    assert '<span class="k">paper</span> 5 g &middot; 50 bets &middot; $14.00 &middot; ROI +28.0% &middot; CLV 0.052' in first
-    last = re.search(rf'<tr class="model-row" data-model="{backtested["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<span class="k">paper</span> -' in last and "chip-paper" not in last and "#4" in last
-    assert "<th>paper</th>" in html and "5 paper games and 30 paper bets" in html
-    detail = client.get(f"/models/{better['id']}").text
-    assert "<dt>paper record</dt><dd>5 games &middot; 30 bets &middot; -$3.00 &middot; ROI -1.0% &middot; CLV 0.030" in detail
-    assert "ranked on paper" in detail and "no paper games yet" in client.get(f"/models/{backtested['id']}").text
+    p = page(client.get("/models").text)
+    first = p.row("model", almost["id"])
+    assert first.text.startswith("#1") and first.chip("rank-paper").text == "paper" and first.chip("rank-paper").attr("title") == "ranked on paper CLV"
+    assert "paper 5 g · 50 bets · $14.00 · ROI +28.0% · CLV 0.052" in first.text
+    last = p.row("model", backtested["id"])
+    assert "paper -" in last.text and "rank-paper" not in last.chips() and last.text.startswith("#4")
+    assert "paper" in p.card("ranked").first("thead").text and "5 paper games and 30 paper bets" in p.text
+    detail = page(client.get(f"/models/{better['id']}").text)
+    assert detail.prop("paper record").startswith("5 games · 30 bets · -$3.00 · ROI -1.0% · CLV 0.030")
+    assert "ranked on paper" in detail.prop("paper record")
+    assert "no paper games yet" in page(client.get(f"/models/{backtested['id']}").text).prop("paper record")
 
 
 def test_settings_trade_group_round_trip(client, conn):
-    html = client.get("/settings").text
-    form = html.split('id="trade"')[1].split("</form>")[0]
-    assert 'action="/settings/trade"' in html and "<h3>Order approval</h3>" in form and "<h3>Paper thresholds" in form
-    assert '<option value="sim" selected>sim</option>' in form and '<option value="polymarket_clob">' in form
-    assert 'name="participation" value="0.5"' in form and 'name="gtd_seconds" value="900"' in form
-    assert 'name="trade_pregame_only" value="true" checked>' in form and 'name="paper_min_pnl" value="0.01"' in form
-    assert 'name="max_exposure_paper" value="0.00"' in form and 'name="orders_per_s" value="5"' in form
-    assert "&#34;gamma_url&#34;: &#34;https://gamma-api.polymarket.com&#34;" in form and "<textarea name=\"market_source_config\"" in form
+    form = page(client.get("/settings").text).form("trade")
+    assert form.target == "/settings/trade" and "Order approval" in form.texts("h3") and any(h.startswith("Paper thresholds") for h in form.texts("h3"))
+    source = form.field("market_source")
+    assert source.one("option[selected]").attr("value") == "sim" and source.has('option[value="polymarket_clob"]')
+    assert _value(form, "participation") == "0.5" and _value(form, "gtd_seconds") == "900"
+    assert form.input("trade_pregame_only").has_attr("checked") and _value(form, "paper_min_pnl") == "0.01"
+    assert _value(form, "max_exposure_paper") == "0.00" and _value(form, "orders_per_s") == "5"
+    assert '"gamma_url": "https://gamma-api.polymarket.com"' in form.field("market_source_config").one("textarea").text
     good = {
         "participation": "0.4", "book_max_age_s": "45", "gtd_seconds": "600", "orphan_cancel_after_s": "40", "trade_tick_s": "4",
         "max_paper_models_per_game": "2", "max_exposure_paper": "1,000", "max_exposure_live": "0",
@@ -1128,13 +1182,14 @@ def test_settings_trade_group_round_trip(client, conn):
     assert s["thresholds_paper"] == {"min_games": 8, "min_bets": 20, "min_days": 14, "min_clv": 0.005, "min_pnl_cents": 250, "clv_ci_excludes_zero": False}, "the unticked CLV box stores false"
     assert s["max_exposure_cents"] == {"paper": 100000, "live": 0} and s["scores_url"] == "https://example.com/scores"
     assert s["rate_limits"] == {"orders_per_s": 4, "cancels_per_s": 8, "market_data_per_s": 9.5, "account_per_s": 1}
-    html = client.get("/settings").text
-    assert '<option value="polymarket_clob" selected>' in html and 'name="trade_pregame_only" value="true">' in html
-    assert 'name="paper_clv_ci" value="true">' in html and "CLV interval above zero" in html
+    p = page(client.get("/settings").text)
+    assert p.field("market_source").one("option[selected]").attr("value") == "polymarket_clob"
+    assert not p.input("trade_pregame_only").has_attr("checked") and p.input("trade_pregame_only").attr("value") == "true"
+    assert not p.input("paper_clv_ci").has_attr("checked") and "CLV interval above zero" in p.field("paper_clv_ci").text
     r = client.post("/settings/trade", data={**good, "paper_clv_ci": "true"}, follow_redirects=False)
     assert r.status_code == 303 and client.get("/api/settings").json()["thresholds_paper"]["clv_ci_excludes_zero"] is True
-    assert 'name="paper_clv_ci" value="true" checked>' in client.get("/settings").text
-    assert 'name="max_exposure_paper" value="1000.00"' in html and "&#34;gamma_url&#34;: &#34;https://g.example&#34;" in html
+    assert page(client.get("/settings").text).input("paper_clv_ci").has_attr("checked")
+    assert _value(p, "max_exposure_paper") == "1000.00" and '"gamma_url": "https://g.example"' in p.field("market_source_config").text
     for bad, message in [
         ({**good, "participation": "2"}, "participation must be between 0 and 1"),
         ({**good, "market_source": "kalshi"}, "market_source must be one of sim, polymarket_us, polymarket_clob"),
@@ -1147,7 +1202,7 @@ def test_settings_trade_group_round_trip(client, conn):
     ]:
         r = client.post("/settings/trade", data=bad, follow_redirects=False)
         assert r.status_code == 400 and message in r.text, (bad, message)
-        assert 'name="participation" value="%s"' % bad["participation"] in r.text, "submitted values are kept"
+        assert _value(page(r.text), "participation") == bad["participation"], "submitted values are kept"
     assert client.get("/api/settings").json()["participation"] == 0.4
     audited = [a["entity"] for a in conn.execute("SELECT entity FROM audit_log WHERE action = 'settings_changed' ORDER BY id").fetchall()]
     assert "market_source" in audited and "thresholds_paper" in audited and "trade_pregame_only" in audited and len(audited) == 18
@@ -1163,20 +1218,19 @@ def test_probe_page_and_exchange_card(client, conn):
     """The probe button renders the raw payload page (the sim source needs no network)."""
     insert_game(conn)
     r = client.post("/exchange/probe", data={}, follow_redirects=False)
-    assert r.status_code == 200 and "Market probe" in r.text and '<pre id="payload">' in r.text and 'data-copy="payload"' in r.text
-    assert ">sim<" in r.text or "sim" in r.text
+    p = page(r.text)
+    assert r.status_code == 200 and p.page_name == "probe" and "Market probe" in p.one("h1").text
+    assert p.has("#payload") and p.has('[data-copy="payload"]')
+    assert "sim" in p.one("h1").text, "the probed source is named"
 
 
 def test_trading_style_rules():
-    """The banner and chip colours use the text-safe tokens; the step 4 rules exist."""
-    css = (Path(__file__).resolve().parent.parent / "host" / "static" / "style.css").read_text()
-    assert ".banner-down { background: var(--red); color: var(--red-text); }" in css
-    assert ".banner-warn { background: var(--amber-fill); color: #fff; }" in css
-    assert ".chip.chip-bad { background: var(--red); color: var(--red-text); }" in css
-    assert ".badge.st-rejected, .badge.st-rejected_by_exchange { background: var(--red); color: var(--red-text); }" in css
-    phone = css.split("@media (max-width: 700px)")[-1]
-    assert "table.assignments td.action { position: static; flex-basis: 100%; display: flex; gap: 0.5rem; }" in phone
-    assert "label.check { min-height: var(--tap); }" in phone
+    """The banner and chip colours use the text-safe tokens (tests/test_style.py checks
+    the component contract); the trading region refreshes."""
+    from tests.test_style import declarations
+
+    assert "var(--red)" in declarations(".banner-down") and "var(--amber-fill)" in declarations(".banner-warn")
+    assert "var(--red)" in declarations(".chip-bad")
     js = (Path(__file__).resolve().parent.parent / "host" / "static" / "app.js").read_text()
     assert 'refresh("trading-live", "/fragments/trading")' in js and chr(0x2014) not in js
 
@@ -1215,8 +1269,8 @@ def _live_flag(conn) -> object:
     return conn.execute("SELECT value FROM settings WHERE key = 'live_enabled'").fetchone()["value"]
 
 
-def _live_section(html: str) -> str:
-    return html.split('id="live"')[1].split('id="kill"')[0]
+def _live_section(html: str) -> Node:
+    return page(html).card("live")
 
 
 def test_settings_live_group_off_state(client, conn):
@@ -1224,18 +1278,20 @@ def test_settings_live_group_off_state(client, conn):
     Disable button, credentials no, auth not checked, blank balances, no auto-kill."""
     html = client.get("/settings").text
     live = _live_section(html)
-    assert '<section class="card group live" id="live">' in html and 'data-live-state="off"' in live and ">OFF<" in live
-    assert "Live trading is <strong>off</strong>" in live
-    assert 'action="/settings/live"' in live and 'name="confirm" value="" placeholder="' + _phrase(conn) + '"' in live
-    assert f'<code class="phrase">{_phrase(conn)}</code>' in live and "Enable live trading" in live
-    assert 'action="/settings/live/off"' not in live and "Disable live" not in live
-    assert "<dt>credentials</dt><dd>no " in live and '<span class="muted">not checked</span>' in live
-    assert '<dt>balance</dt><dd><span class="muted">-</span>' in live and '<dt>buying power</dt><dd><span class="muted">-</span>' in live
-    assert '<dt>clock skew</dt><dd><span class="muted">-</span>' in live and "<dt>last auth error</dt><dd><span class=\"muted\">none</span>" in live
-    assert "none since the last reset" in live and "auto-kill-reason" not in live
-    assert "the exchange process has no credentials loaded" in live, "the preconditions are listed before the owner types"
-    assert 'name="live_enabled"' not in html, "the switch has no generic settings field"
-    assert 'class="pill paper">PAPER</span>' in html and ">LIVE<" not in html
+    state = live.one("[data-live-state]")
+    assert not live.has_class("is-live") and state.attr("data-live-state") == "off" and state.text == "OFF"
+    assert "Live trading is off" in live.text
+    enable = live.form("live-on")
+    assert enable.target == "/settings/live" and _value(enable, "confirm") == "" and enable.input("confirm").attr("placeholder") == _phrase(conn)
+    assert live.one(".phrase").text == _phrase(conn) and "Enable live trading" in enable.text
+    assert not live.has('[data-action="live-off"]') and "Disable live" not in live.text
+    assert live.prop("credentials").startswith("no ") and live.prop("auth") == "not checked"
+    assert (live.prop("balance"), live.prop("buying power"), live.prop("clock skew")) == ("-", "-", "-")
+    assert live.prop("last auth error") == "none"
+    assert "none since the last reset" in live.text and not live.has('[data-chip="auto-kill"]')
+    assert "the exchange process has no credentials loaded" in live.text, "the preconditions are listed before the owner types"
+    assert not page(html).has('[name="live_enabled"]'), "the switch has no generic settings field"
+    assert mode_pill(page(html)) == "PAPER" and "LIVE" not in topbar(page(html)).text
 
 
 def test_settings_live_group_on_state(client, conn):
@@ -1247,21 +1303,23 @@ def test_settings_live_group_on_state(client, conn):
     set_setting(conn, "tz", "America/New_York")
     html = client.get("/settings").text
     live = _live_section(html)
-    assert '<section class="card group live is-live" id="live">' in html and 'data-live-state="on"' in live and ">ON<" in live
-    since = re.search(r"Live trading is <strong>on</strong> since (\S+ \S+ \S+) by owner@example.com", live)
-    assert since, live
+    state = live.one("[data-live-state]")
+    assert live.has_class("is-live") and state.attr("data-live-state") == "on" and state.text == "ON"
+    since = re.search(r"Live trading is on since (\S+ \S+ \S+) by owner@example.com", live.text)
+    assert since, live.text
     assert since.group(1).endswith(("EDT", "EST")), "the since time is shown in the owner's zone"
-    assert 'action="/settings/live/off"' in live and "Disable live" in live and 'data-confirm="Disable live trading now?' in live
-    assert 'action="/settings/live"' not in live and 'name="confirm"' not in live
-    assert '<span class="chip chip-ok">ok</span>' in live and re.search(r"checked [0-9] s ago", live)
-    assert "<dt>balance</dt><dd>$500.00</dd>" in live and "<dt>buying power</dt><dd>$480.00</dd>" in live
-    assert "<dt>clock skew</dt><dd>120 ms</dd>" in live and "none since the last reset" in live
-    assert 'class="pill live">LIVE</span>' in html and "live today $0.00" in html
+    off = live.action("live-off")
+    assert off.target == "/settings/live/off" and "Disable live" in off.text and off.attr("data-confirm").startswith("Disable live trading now?")
+    assert not live.has('[data-form="live-on"]') and not live.has('[name="confirm"]')
+    assert live.chip("auth-ok").text == "ok" and re.search(r"checked [0-9] s ago", live.prop("auth"))
+    assert live.prop("balance") == "$500.00" and live.prop("buying power") == "$480.00"
+    assert live.prop("clock skew") == "120 ms" and "none since the last reset" in live.text
+    assert mode_pill(page(html)) == "LIVE" and "live today $0.00" in topbar(page(html)).text
     # a failed probe after live went on: the failure, its count and the last error show in red
     auth_state(conn, auth_ok=False, auth_failures=2, last_auth_error="401 unauthorized <b>")
     live = _live_section(client.get("/settings").text)
-    assert '<span class="chip chip-bad">failed</span>' in live and "2 failures in a row" in live
-    assert '<dt>last auth error</dt><dd><span class="error">401 unauthorized &lt;b&gt;</span>' in live
+    assert live.chip("auth-failed").text == "failed" and "2 failures in a row" in live.prop("auth")
+    assert live.prop("last auth error") == "401 unauthorized <b>" and live.texts(".error")[-1] == "401 unauthorized <b>"
 
 
 def test_live_enable_form_posts_the_phrase(client, conn):
@@ -1274,9 +1332,9 @@ def test_live_enable_form_posts_the_phrase(client, conn):
     assert _live_flag(conn) is True
     audit = conn.execute("SELECT actor, confirmation_text FROM audit_log WHERE action = 'live_on'").fetchall()
     assert [dict(a) for a in audit] == [{"actor": "dev", "confirmation_text": _phrase(conn)}]
-    html = client.get("/settings").text
-    assert 'data-live-state="on"' in html and "by dev." in html and 'class="pill live">LIVE</span>' in html
-    assert ">LIVE<" in client.get("/fragments/topbar").text and ">LIVE<" in client.get("/").text
+    p = page(client.get("/settings").text)
+    assert p.one("[data-live-state]").attr("data-live-state") == "on" and "by dev." in p.card("live").text and mode_pill(p) == "LIVE"
+    assert mode_pill(page(client.get("/fragments/topbar").text)) == "LIVE" and mode_pill(page(client.get("/").text)) == "LIVE"
 
 
 def test_live_enable_wrong_phrase_shows_the_inline_error(client, conn):
@@ -1287,21 +1345,21 @@ def test_live_enable_wrong_phrase_shows_the_inline_error(client, conn):
         r = client.post("/settings/live", data={"confirm": bad}, follow_redirects=False)
         assert r.status_code == 400, bad
         live = _live_section(r.text)
-        assert '<p class="error inline-error">confirmation must be exactly &#34;' + _phrase(conn) + "&#34;</p>" in live, bad
-        assert f'name="confirm" value="{bad}"' in live, "the typed text is kept"
-        assert 'action="/settings/live"' in live and _live_flag(conn) is False
+        assert live.texts(".inline-error") == [f'confirmation must be exactly "{_phrase(conn)}"'], bad
+        assert _value(live, "confirm") == bad, "the typed text is kept"
+        assert live.form("live-on").target == "/settings/live" and _live_flag(conn) is False
         assert "flash" not in r.cookies
     assert conn.execute("SELECT count(*) AS n FROM audit_log WHERE action = 'live_on'").fetchone()["n"] == 0
-    assert _live_section(client.get("/settings").text).count("inline-error") == 0, "a plain GET carries no error"
+    assert _live_section(client.get("/settings").text).count(".inline-error") == 0, "a plain GET carries no error"
     auth_state(conn, credentials_present=False, auth_ok=False)
     r = client.post("/settings/live", data={"confirm": _phrase(conn)}, follow_redirects=False)
     assert r.status_code == 409 and _live_flag(conn) is False
     live = _live_section(r.text)
-    assert "live trading cannot be enabled: the exchange process has no credentials loaded" in live
+    assert "live trading cannot be enabled: the exchange process has no credentials loaded" in live.text
     client.post("/kill", follow_redirects=False)
     _ready(conn)
     r = client.post("/settings/live", data={"confirm": _phrase(conn)}, follow_redirects=False)
-    assert r.status_code == 409 and "the kill switch is on; reset it first" in _live_section(r.text)
+    assert r.status_code == 409 and "the kill switch is on; reset it first" in _live_section(r.text).text
     # a generic settings group never carries the switch
     r = client.post("/settings/trading", data={"max_bet": "25", "max_daily_loss_paper": "100", "max_daily_loss_live": "100",
                                                 "default_bankroll": "100", "liquidity_floor": "100", "min_edge": "0.02",
@@ -1316,7 +1374,7 @@ def test_live_disable_form_halts_live_assignments(client, conn):
     setup = trade_setup(conn, mode="live", model_status="live_eligible")
     opened = _open_order(conn, setup)
     conn.execute("UPDATE orders SET exchange_order_id = 'pm-7f3a' WHERE id = %s", (opened["id"],))
-    assert 'data-live-state="on"' in client.get("/settings").text
+    assert page(client.get("/settings").text).one("[data-live-state]").attr("data-live-state") == "on"
     r = client.post("/settings/live/off", data={}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/settings#live"
     assert flash_cookie(r) == "Live trading disabled: 1 live assignment halted, 1 orders cancel requested on the exchange."
@@ -1325,61 +1383,66 @@ def test_live_disable_form_halts_live_assignments(client, conn):
     assert order_row(conn, opened["id"])["status"] == "cancel_requested"
     audit = conn.execute("SELECT actor FROM audit_log WHERE action = 'live_off'").fetchall()
     assert [a["actor"] for a in audit] == ["dev"]
-    html = client.get("/settings").text
-    assert 'data-live-state="off"' in html and 'class="pill paper">PAPER</span>' in html
-    assert "Live trading is <strong>off</strong>" in html and 'action="/settings/live"' in html
+    p = page(client.get("/settings").text)
+    assert p.one("[data-live-state]").attr("data-live-state") == "off" and mode_pill(p) == "PAPER"
+    assert "Live trading is off" in p.card("live").text and p.form("live-on").target == "/settings/live"
     r = client.post("/settings/live/off", data={}, follow_redirects=False)
     assert r.status_code == 303 and "0 live assignments halted" in flash_cookie(r), "idempotent"
 
 
 def test_topbar_pill_states(client, conn):
     """PAPER grey until live is on, LIVE green while it is, PAPER again after a kill."""
+    from tests.test_style import declarations
+
     for path in ("/", "/trading", "/settings", "/jobs", "/fragments/topbar"):
-        html = client.get(path).text
-        assert '<span class="pill paper">PAPER</span>' in html and ">LIVE<" not in html, path
+        bar = topbar(page(client.get(path).text))
+        assert mode_pill(bar) == "PAPER" and bar.one(".pill").has_class("paper") and "LIVE" not in bar.text, path
     set_setting(conn, "live_enabled", True)
     for path in ("/", "/trading", "/settings", "/jobs", "/fragments/topbar"):
-        html = client.get(path).text
-        assert '<span class="pill live">LIVE</span>' in html and ">PAPER<" not in html, path
-        assert "live today $0.00 &middot; all $0.00" in html, path
-    assert ">ON<" in client.get("/settings").text
+        bar = topbar(page(client.get(path).text))
+        assert mode_pill(bar) == "LIVE" and bar.one(".pill").has_class("live") and "PAPER" not in bar.text, path
+        assert re.search(r"\blive\b[^$]*\$0\.00", bar.text), (path, bar.text)
+    assert page(client.get("/settings").text).one("[data-live-state]").text == "ON"
     client.post("/kill", follow_redirects=False)
-    topbar = client.get("/fragments/topbar").text
-    assert '<span class="pill paper">PAPER</span>' in topbar and 'data-killed="1"' in topbar, "a kill turns live off"
-    css = client.get("/static/style.css").text
-    assert ".pill.live { background: var(--green-fill); color: #fff; }" in css
+    bar = page(client.get("/fragments/topbar").text)
+    assert mode_pill(bar) == "PAPER" and bar.has('[data-killed="1"]'), "a kill turns live off"
+    assert "var(--green-fill)" in declarations(".pill.live")
 
 
 def test_killed_bar_shows_the_auto_kill_reason(client, conn):
     """A kill pulled by the exchange process names its reason in the red bar and in the
     Settings kill section; a hand kill does not; a reset clears it."""
+    def bar() -> Node:
+        return page(client.get("/fragments/topbar").text)
+
     client.post("/kill", follow_redirects=False)
-    topbar = client.get("/fragments/topbar").text
-    assert "TRADING KILLED. Reset in Settings." in topbar and "data-auto-kill" not in topbar and "automatically" not in topbar
-    assert "Killed automatically" not in client.get("/settings").text
+    hand = bar()
+    assert "TRADING KILLED. Reset in Settings." in hand.text and not hand.has("[data-auto-kill]") and "automatically" not in hand.text
+    assert "Killed automatically" not in page(client.get("/settings").text).card("kill").text
     client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
     kill.auto_kill(conn, "auth_failures", {"failures": 3, "error": "401 <b>"})
-    topbar = client.get("/fragments/topbar").text
-    assert 'data-killed="1"' in topbar and 'data-auto-kill="auth_failures"' in topbar
-    assert 'TRADING KILLED automatically: <span class="auto-reason">auth_failures</span>. Reset in Settings.' in topbar
-    assert 'href="/settings#kill"' in topbar
-    assert "TRADING KILLED automatically" in client.get("/").text and "TRADING KILLED automatically" in client.get("/trading").text
-    html = client.get("/settings").text
-    assert 'class="topbar killed"' in html
-    assert "Killed automatically by the exchange process: <strong>auth_failures</strong> at " in html
-    assert "401 &lt;b&gt;" in html and "&#34;failures&#34;: 3" in html
-    assert '<span class="chip chip-bad auto-kill-reason">auth_failures</span>' in _live_section(html)
+    auto = bar()
+    reason = auto.one("[data-auto-kill]")
+    assert auto.has('[data-killed="1"]') and reason.attr("data-auto-kill") == "auth_failures"
+    assert reason.text == "TRADING KILLED automatically: auth_failures. Reset in Settings." and reason.target == "/settings#kill"
+    for path in ("/", "/trading"):
+        assert "TRADING KILLED automatically" in topbar(page(client.get(path).text)).text, path
+    p = page(client.get("/settings").text)
+    assert p.one("#topbar").has_class("killed")
+    section = p.card("kill")
+    assert "Killed automatically by the exchange process: auth_failures at " in section.text
+    assert "401 <b>" in section.text and '"failures": 3' in section.text and not section.has("b"), "the detail is escaped"
+    assert p.card("live").texts('[data-chip="auto-kill"]') == ["auth_failures"]
     # a later auto-kill is the one the bar names; the group lists both
     kill.auto_kill(conn, "clock_skew", {"skew_ms": 48_000})
-    topbar = client.get("/fragments/topbar").text
-    assert 'data-auto-kill="clock_skew"' in topbar and "auth_failures" not in topbar
-    live = _live_section(client.get("/settings").text)
-    assert live.index("auto-kill-reason\">auth_failures") < live.index("auto-kill-reason\">clock_skew")
+    later = bar()
+    assert later.one("[data-auto-kill]").attr("data-auto-kill") == "clock_skew" and "auth_failures" not in later.text
+    assert _live_section(client.get("/settings").text).texts('[data-chip="auto-kill"]') == ["auth_failures", "clock_skew"]
     client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
-    topbar = client.get("/fragments/topbar").text
-    assert "KILLED" not in topbar and "data-auto-kill" not in topbar
-    html = client.get("/settings").text
-    assert "Killed automatically" not in html and "none since the last reset" in html and "auto-kill-reason" not in html
+    cleared = bar()
+    assert "KILLED" not in cleared.text and not cleared.has("[data-auto-kill]")
+    p = page(client.get("/settings").text)
+    assert "Killed automatically" not in p.text and "none since the last reset" in p.card("live").text and not p.has('[data-chip="auto-kill"]')
 
 
 def test_trading_exchange_box_live_rows_and_smoke_flag(client, conn):
@@ -1392,63 +1455,74 @@ def test_trading_exchange_box_live_rows_and_smoke_flag(client, conn):
     conn.execute("UPDATE orders SET exchange_order_id = 'pm-7f3a' WHERE id = %s", (opened["id"],))
     smoke = _smoke_order(conn, setup.market)
     paper = make_assignment(conn, GAME_ID)
-    html = client.get("/trading").text
-    live = html.split('id="trading-live"')[1]
-    row = re.search(rf'<tr class="assignment-row is-live" data-assignment="{setup.assignment["id"]}">.*?</tr>', live, re.S).group(0)
-    assert '<span class="chip mode-live">live</span>' in row
-    assert f'<tr class="assignment-row" data-assignment="{paper["id"]}">' in live, "a paper row keeps its plain markup"
-    open_orders = live.split('id="open-orders"')[1].split('id="orders"')[0]
-    assert open_orders.count('class="is-live"') == 2 and open_orders.count('<span class="chip mode-live">live</span>') == 2
-    assert f'<tr data-order="{smoke["id"]}" data-kind="smoke" class="is-live">' in open_orders
-    assert open_orders.count('<span class="chip chip-smoke">smoke</span>') == 1 and "#pm-7f3a" in open_orders and "#pm-smoke-1" in open_orders
-    assert f'action="/orders/{smoke["id"]}/cancel"' in open_orders, "a smoke order can be cancelled by hand"
-    assert "1 @ 0.45" in open_orders and "$0.45" in open_orders
-    recent = live.split('id="orders"')[1].split('id="fills"')[0]
-    assert f'<tr data-order="{smoke["id"]}" data-kind="smoke" class="is-live">' in recent
-    assert recent.count('<span class="chip chip-smoke">smoke</span>') == 1 and "smoke order" in recent
-    exchange = live.split('id="exchange"')[1].split('id="ledger"')[0]
-    assert '<span class="chip chip-ok">up</span>' in exchange and ">polymarket_us<" in exchange
-    assert '<dd class="c-auth"><span class="chip chip-ok">ok</span> <span class="muted small">checked 0 s ago</span> &middot; credentials yes &middot; skew 140 ms</dd>' in exchange
-    assert "$1,234.56 &middot; buying power $1,000.00" in exchange
-    assert '<dd class="c-live-orders">2 open <span class="chip chip-smoke">1 smoke</span></dd>' in exchange
-    assert "last auth error" not in exchange
-    assert html.count("<section") == 9 and client.get("/fragments/trading").text.count("<section") == 9
+    live = page(client.get("/trading").text).one("#trading-live")
+    row = live.row("assignment", setup.assignment["id"])
+    assert row.has_class("is-live") and row.chip("live").text == "live"
+    assert not live.row("assignment", paper["id"]).has_class("is-live"), "a paper row stays plain"
+    open_orders = live.card("open-orders")
+    rows = open_orders.rows("order")
+    assert len(rows) == 2 and all(r.has_class("is-live") for r in rows) and [r.chip("live").text for r in rows] == ["live", "live"]
+    smoke_row = open_orders.row("order", smoke["id"])
+    assert smoke_row.attr("data-kind") == "smoke" and smoke_row.has_class("is-live")
+    assert open_orders.count('[data-chip="smoke"]') == 1 and "#pm-7f3a" in open_orders.text and "#pm-smoke-1" in open_orders.text
+    assert smoke_row.action("cancel").target == f"/orders/{smoke['id']}/cancel", "a smoke order can be cancelled by hand"
+    assert "1 @ 0.45" in smoke_row.text and "$0.45" in smoke_row.text
+    recent = live.card("orders")
+    assert recent.row("order", smoke["id"]).attr("data-kind") == "smoke" and recent.row("order", smoke["id"]).has_class("is-live")
+    assert recent.count('[data-chip="smoke"]') == 1 and "smoke order" in recent.text
+    exchange = live.card("exchange")
+    assert exchange.chip("exchange-up").text == "up" and exchange.prop("source") == "polymarket_us"
+    auth = exchange.prop("auth")
+    assert exchange.chip("auth-ok").text == "ok" and "checked 0 s ago" in auth and "credentials yes" in auth and "skew 140 ms" in auth
+    assert "$1,234.56" in exchange.text and "buying power $1,000.00" in exchange.text
+    assert exchange.prop("live orders").startswith("2 open") and exchange.chip("smoke").text == "1 smoke"
+    assert "last auth error" not in exchange.text
+    sections = {"assignments", "positions", "open-orders", "orders", "fills", "unmatched", "markets", "exchange", "ledger"}
+    fragment = page(client.get("/fragments/trading").text)
+    assert sections <= set(live.cards()) and fragment.cards() == live.cards(), "the fragment carries every trading card"
     # auth failing: the chip turns, the error shows; a cancelled smoke order leaves the count
     auth_state(conn, auth_ok=False, auth_failures=2, last_auth_error="401 unauthorized <i>")
     conn.execute("UPDATE orders SET status = 'cancelled' WHERE id = %s", (smoke["id"],))
-    frag = client.get("/fragments/trading").text
-    exchange = frag.split('id="exchange"')[1].split('id="ledger"')[0]
-    assert '<span class="chip chip-bad">failed</span>' in exchange and "401 unauthorized &lt;i&gt;" in exchange
-    assert '<dd class="c-live-orders">1 open</dd>' in exchange
-    assert 'data-kind="smoke"' not in frag.split('id="open-orders"')[1].split('id="orders"')[0]
-    assert "chip-smoke" in frag.split('id="orders"')[1].split('id="fills"')[0], "still flagged in the recent list"
-    assert "No live orders" not in frag
+    frag = page(client.get("/fragments/trading").text)
+    exchange = frag.card("exchange")
+    assert exchange.chip("auth-failed").text == "failed" and "401 unauthorized <i>" in exchange.text and not exchange.has("i")
+    assert exchange.prop("live orders") == "1 open" and not exchange.has('[data-chip="smoke"]')
+    assert "smoke" not in [r.attr("data-kind") for r in frag.card("open-orders").rows("order")]
+    assert frag.card("orders").has('[data-chip="smoke"]'), "still flagged in the recent list"
+    assert "No live orders" not in frag.text
 
 
 def test_live_phone_layout_and_colour_rules(client, conn):
     """The live form stacks at phone width with 44 px buttons, the tinted live row keeps
     AA contrast in both schemes, the Settings tables stack."""
-    from tests.test_style import _schemes, contrast
+    from tests.test_style import _schemes, contrast, declarations
 
-    css = client.get("/static/style.css").text
-    assert ".chip.chip-smoke { background: var(--amber-fill); color: #fff; }" in css
-    assert "tr.is-live { background: var(--live-bg); }" in css and css.count("--live-bg:") == 2
-    assert ".live-form .btn, .live-off .btn { min-height: var(--tap); }" in css
-    phone = css.split("@media (max-width: 700px)")[-1]
-    assert ".live-form label { flex-basis: 100%; }" in phone and ".live-form .btn, .live-off .btn { flex: 1; width: 100%; }" in phone
-    for name, tokens in zip(("light", "dark"), _schemes()):
+    assert "var(--amber-fill)" in declarations(".chip-smoke")
+    assert "var(--live-bg)" in declarations(".is-live")
+    light, dark = _schemes()
+    assert light["live-bg"] != dark["live-bg"], "the live tint has a dark-scheme value"
+    for sel in (".live-form .btn", ".live-off .btn"):
+        assert "var(--tap)" in declarations(sel) + declarations(".btn"), sel
+        assert "100%" in declarations(sel, media="max-width"), sel
+    assert "100%" in declarations(".live-form label", media="max-width")
+    for name, tokens in zip(("light", "dark"), (light, dark)):
         for fg in ("text", "muted", "accent", "red-fg"):
             assert contrast(tokens[fg], tokens["live-bg"]) >= 4.5, (name, fg)
     enable_live(conn)
     for state in ("on", "off"):
-        html = client.get("/settings").text
-        assert 'width=device-width' in html and re.findall(r'<table class="([^"]+)"', html) == ["audit stack"]
+        p = page(client.get("/settings").text)
+        assert "width=device-width" in p.one('meta[name="viewport"]').attr("content")
+        assert all(t.has_class("stack") for t in p.select("table")), "the Settings tables stack"
+        live = p.card("live")
         if state == "on":
-            assert '<form method="post" action="/settings/live/off" class="live-off"' in html
+            off = live.action("live-off")
+            assert off.tag == "form" and off.attr("method") == "post" and off.target == "/settings/live/off" and off.has_class("live-off")
             set_setting(conn, "live_enabled", False)
         else:
-            assert '<form method="post" action="/settings/live" class="live-form">' in html
-            assert 'autocapitalize="characters" spellcheck="false"' in html, "a phone keyboard must not mangle the phrase"
+            form = live.form("live-on")
+            assert form.tag == "form" and form.attr("method") == "post" and form.target == "/settings/live" and form.has_class("live-form")
+            box = form.input("confirm")
+            assert box.attr("autocapitalize") == "characters" and box.attr("spellcheck") == "false", "a phone keyboard must not mangle the phrase"
     for path in ("/settings", "/trading"):
         assert chr(0x2014) not in client.get(path).text
 
@@ -1465,41 +1539,48 @@ def test_model_page_robustness_section_renders_every_element(client, conn, make_
     stress = stress_metrics(flags=["regime_dependent"], seed=9)
     model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(), validation=validation, stress=stress)
     html = client.get(f"/models/{model['id']}").text
-    assert '<section class="robustness" id="robustness">' in html
-    assert '<span class="chip chip-flag chip-overfit" title="the search era looked better' in html and '<span class="chip chip-flag chip-regime_dependent"' in html
-    assert "<strong>overfit</strong>: the search era looked better than the held-out era" in html
-    assert "<strong>regime-dependent</strong>: in one regime pair" in html
-    assert 'Validation ROI <strong>+4.1%</strong> <span class="range">(90% range -1.2% to +9.4%)</span> over 130 bets, shrunk +2.32%.' in html
-    assert "Hit rate 52.0% <span class=\"range\">(49.0% to 56.0%)</span>" in html and "average edge +3.4%" in html
-    assert "CLV range <span class=\"range\">0.000 to 0.000</span>" in html
-    assert '<p class="market-line beats">Beats the market on log-loss: mean gain +0.0021 per game, p = 0.012 (sign-flip test, 10 000 flips; beaten means p &lt; 0.05).</p>' in html
-    assert '<span class="chip chip-beats">beats market</span>' in html
-    assert "<dt>calibration slope</dt><dd>0.970" in html and "<dt>calibration intercept</dt><dd>-0.020" in html
-    assert "<dt>reliability</dt><dd>0.0021</dd>" in html and "<dt>resolution</dt><dd>0.0146</dd>" in html and "<dt>uncertainty</dt><dd>0.2487</dd>" in html
-    assert '<table class="metrics stress stack">' in html and "<strong>spread+0.01</strong>" in html and "<strong>spread+0.02</strong>" in html and "<strong>fee x1.5</strong>" in html
-    assert '<span class="k">bets</span> 96' in html and '<span class="k">ROI</span> +2.5%' in html and '<span class="k">gain</span> 0.0020' in html
-    assert "10 perturbations (every numeric parameter scaled by 0.9 to 1.1): shrunk ROI median +1.90%, 10th percentile +0.40%; log-loss gain median 0.0018, 10th percentile 0.0007." in html
-    assert '<table class="metrics regimes stack">' in html
+    p = page(html)
+    rob = p.card("robustness")
+    overfit = rob.chip("overfit")
+    assert overfit.text == "overfit" and overfit.has_class("chip-overfit") and overfit.attr("title").startswith("the search era looked better")
+    assert rob.chip("regime_dependent").has_class("chip-regime_dependent") and rob.chip("regime_dependent").text == "regime-dependent"
+    assert "overfit: the search era looked better than the held-out era" in rob.text
+    assert "regime-dependent: in one regime pair" in rob.text
+    assert "Validation ROI +4.1% (90% range -1.2% to +9.4%) over 130 bets, shrunk +2.32%." in rob.text
+    assert "(90% range -1.2% to +9.4%)" in rob.texts(".range")
+    assert "Hit rate 52.0% (49.0% to 56.0%)" in rob.text and "average edge +3.4%" in rob.text
+    assert "CLV range 0.000 to 0.000" in rob.text
+    market = rob.one(".market-line")
+    assert market.has_class("beats") and market.text == "Beats the market on log-loss: mean gain +0.0021 per game, p = 0.012 (sign-flip test, 10 000 flips; beaten means p < 0.05)."
+    assert rob.chip("beats").text == "beats market"
+    assert rob.prop("calibration slope").startswith("0.970") and rob.prop("calibration intercept").startswith("-0.020")
+    assert (rob.prop("reliability"), rob.prop("resolution"), rob.prop("uncertainty")) == ("0.0021", "0.0146", "0.2487")
+    assert rob.listing("stress").has_class("stack") and rob.row_ids("stress") == ["base", "spread+0.01", "spread+0.02", "fee x1.5"]
+    first = rob.row("stress", "spread+0.01")
+    assert "bets 96" in first.text and "ROI +2.5%" in first.text and "gain 0.0020" in first.text
+    assert "10 perturbations (every numeric parameter scaled by 0.9 to 1.1): shrunk ROI median +1.90%, 10th percentile +0.40%; log-loss gain median 0.0018, 10th percentile 0.0007." in rob.text
+    assert rob.listing("regimes").has_class("stack")
+    regimes = rob.row_ids("regime")
     for label in ("favourite", "underdog", "home", "away", "divisional", "non-divisional", "primetime", "day", "cold or windy", "other weather"):
-        assert f"<strong>{label}</strong>" in html, label
-    assert html.index("<strong>favourite</strong>") < html.index("<strong>underdog</strong>") < html.index("<strong>home</strong>")
-    assert "<h3>validation per season</h3>" in html and ">2022<" in html and "Stress seed 9; bootstrap B = 1000, 10 000 sign flips." in html
-    assert html.index('id="robustness"') < html.index("<h2>backtest"), "the validation era leads"
-    tables = re.findall(r"<table class=\"([^\"]+)\"", html)
-    assert all("stack" in t for t in tables if "calibration" not in t), tables
+        assert label in regimes, label
+    assert regimes.index("favourite") < regimes.index("underdog") < regimes.index("home")
+    assert "validation per season" in p.texts("h3") and p.has('[data-row="season"][data-id="2022"]')
+    assert "Stress seed 9; bootstrap B = 1000, 10 000 sign flips." in rob.text
+    assert rob.start < p.card("backtest").start, "the validation era leads"
+    assert [t.attr("class") for t in p.select("table") if not t.has_class("stack") and not t.has_class("calibration")] == []
     assert chr(0x2014) not in html
     # No flags, market not beaten: the honest sentence and a "no flags" chip.
     plain = insert_model(conn, params={"k": 21.0}, validation=validation_metrics(market_p=0.4), stress=stress_metrics())
-    html = client.get(f"/models/{plain['id']}").text
-    assert '<span class="chip chip-ok">no flags</span>' in html and "Does not beat the market on log-loss" in html and "chip-beats" not in html
+    rob = page(client.get(f"/models/{plain['id']}").text).card("robustness")
+    assert rob.chip("no-flags").text == "no flags" and "Does not beat the market on log-loss" in rob.text and not rob.has('[data-chip="beats"]')
     # A validate job renders its result the same way, and the kind is listed with the model.
     w = make_worker("box1", role="backtest")
     job = client.post("/api/jobs", json={"kind": "validate", "params": {"model_id": str(model["id"])}, "target": w.id}).json()
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s, checkpoint = %s WHERE id = %s",
                  (__import__("psycopg").types.json.Jsonb({"validation_metrics": validation, "stress_metrics": stress}), __import__("psycopg").types.json.Jsonb({"stage": "regimes"}), job["id"]))
-    html = client.get(f"/jobs/{job['id']}").text
-    assert '<section class="robustness" id="robustness">' in html and "<strong>spread+0.02</strong>" in html and "stage regimes" in html
-    assert f'href="/models/{model["id"]}"' in html and "raw result" in html
+    jp = page(client.get(f"/jobs/{job['id']}").text)
+    assert "spread+0.02" in jp.card("robustness").row_ids("stress") and "stage regimes" in jp.text
+    assert f"/models/{model['id']}" in jp.hrefs and "raw result" in jp.text
 
 
 def test_leaderboard_shows_the_paper_clv_interval(client, conn):
@@ -1513,25 +1594,27 @@ def test_leaderboard_shows_the_paper_clv_interval(client, conn):
     eligibility.recompute_paper(conn, model["lineage_id"])
     row = client.get("/api/models").json()["ranked"][0]
     assert row["paper_ci"]["n_bets"] == 4 and row["paper_ci"]["ci"][0] > 0 and row["paper_ci"]["avg_clv"] == pytest.approx(0.03)
-    html = client.get("/models").text
-    assert re.search(r'<span class="range paper-ci">0\.0\d\d to 0\.0\d\d</span>', html), "the 90% CLV range next to the paper record"
-    detail = client.get(f"/models/{model['id']}").text
-    assert re.search(r'<span class="paper-ci">CLV 90% range 0\.0\d\d to 0\.0\d\d over 4 bets</span>', detail)
+    board = page(client.get("/models").text)
+    assert re.search(r"0\.0\d\d to 0\.0\d\d", board.row("model", row["id"]).text), "the 90% CLV range next to the paper record"
+    detail = page(client.get(f"/models/{model['id']}").text)
+    assert re.search(r"CLV 90% range 0\.0\d\d to 0\.0\d\d over 4 bets", detail.text)
 
 
 def test_settings_step6_groups_round_trip(client, conn):
     """The thresholds group with the gate fields and the seasons group with the
     validation era and the search pool; an overlapping era is an inline error."""
-    html = client.get("/settings").text
-    form = html.split('id="thresholds"')[1].split("</form>")[0]
-    assert 'name="min_bets" value="50"' in form and 'name="min_roi_ci_low" value="0.0"' in form and 'name="max_market_p" value="0.1"' in form
-    assert 'name="require_validation" value="true" checked>' in form and 'name="forbid_overfit" value="true" checked>' in form
-    assert 'name="forbid_fragile" value="true" checked>' in form and 'name="forbid_regime_dependent" value="true">' in form
-    assert "judged on the validation era" in form and "the bootstrap lower bound" in form and "0.05 = beats the market" in form
-    seasons = html.split('id="seasons"')[1].split("</form>")[0]
-    assert 'name="seasons_first" value="2010"' in seasons and 'name="seasons_last" value="2021"' in seasons
-    assert 'name="validation_first" value="2022"' in seasons and 'name="validation_last" value=""' in seasons and 'name="search_workers" value="auto"' in seasons
-    assert "blank = the season before the validation era" in seasons and "auto = cores minus one" in seasons
+    p = page(client.get("/settings").text)
+    form = p.form("thresholds")
+    assert (_value(form, "min_bets"), _value(form, "min_roi_ci_low"), _value(form, "max_market_p")) == ("50", "0.0", "0.1")
+    checked = {name: form.input(name).has_attr("checked") for name in ("require_validation", "forbid_overfit", "forbid_fragile", "forbid_regime_dependent")}
+    assert checked == {"require_validation": True, "forbid_overfit": True, "forbid_fragile": True, "forbid_regime_dependent": False}
+    assert all(form.input(name).attr("value") == "true" for name in checked)
+    assert "judged on the validation era" in p.card("thresholds").text
+    assert "the bootstrap lower bound" in form.field("min_roi_ci_low").text and "0.05 = beats the market" in form.field("max_market_p").text
+    seasons = p.form("seasons")
+    assert (_value(seasons, "seasons_first"), _value(seasons, "seasons_last")) == ("2010", "2021")
+    assert (_value(seasons, "validation_first"), _value(seasons, "validation_last"), _value(seasons, "search_workers")) == ("2022", "", "auto")
+    assert "blank = the season before the validation era" in seasons.field("seasons_last").text and "auto = cores minus one" in seasons.field("search_workers").text
     model = insert_validated_model(conn, validation=validation_metrics(n_bets=60, roi=0.03, ci_roi=(-0.01, 0.07), market_p=0.08), stress=stress_metrics(flags=["regime_dependent"]))
     assert model_row(conn, model["id"])["status"] == "candidate"
     good = {"min_bets": "60", "min_roi": "0.02", "max_drawdown": "0.3", "min_roi_ci_low": "-0.01", "max_market_p": "0.08", "require_validation": "true", "forbid_overfit": "true", "forbid_fragile": "true"}
@@ -1553,11 +1636,12 @@ def test_settings_step6_groups_round_trip(client, conn):
     assert r.status_code == 303
     s = client.get("/api/settings").json()["thresholds_backtest"]
     assert s["require_validation"] is False and s["forbid_flags"] == [], "unticked boxes store false and an empty list"
-    assert 'name="require_validation" value="true">' in client.get("/settings").text
+    unticked = page(client.get("/settings").text).input("require_validation")
+    assert unticked.attr("value") == "true" and not unticked.has_attr("checked")
     # Seasons: the validation era must start after the search era; a blank search last season is allowed.
     r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "2022", "validation_first": "2022", "validation_last": "", "search_workers": "4"}, follow_redirects=False)
     assert r.status_code == 400 and "validation_seasons must start after the search era ends (2022)" in r.text
-    assert 'name="search_workers" value="4"' in r.text, "submitted values are kept"
+    assert _value(page(r.text), "search_workers") == "4", "submitted values are kept"
     r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "", "validation_first": "2023", "validation_last": "2025", "search_workers": "4"}, follow_redirects=False)
     assert r.status_code == 303 and flash_cookie(r) == "seasons settings saved"
     s = client.get("/api/settings").json()

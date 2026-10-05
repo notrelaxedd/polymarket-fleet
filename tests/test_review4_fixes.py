@@ -30,6 +30,7 @@ from tests.conftest import (
     insert_model, insert_snapshot, insert_worker, job_row, make_assignment, order_events, order_row, set_setting,
     trade_setup, worker_row,
 )
+from tests.pagecheck import page
 from tests.test_exchange import NOW, bankroll, make_assignment as mk_assignment, make_game, make_market, make_model, make_order, order, snap
 
 FEE = {"taker_rate": 0.05, "half_spread": 0.01}
@@ -588,20 +589,19 @@ def test_assign_select_puts_trained_models_first_and_names_untrained_ones(client
     insert_market(conn, GAME_ID)
     untrained = insert_model(conn, status="candidate", params={"k": 40.0, "hfa": 70.0, "mov_scale": 1})
     trained = insert_model(conn, status="paper_ok", params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, trained_through=[2024, 18])
-    html = client.get("/trading").text
-    select = html.split('name="model_id"')[1].split("</select>")[0]
-    assert select.index(str(trained["id"])) < select.index(str(untrained["id"])), "trained first although older"
-    assert f'<option value="{untrained["id"]}">elo_blend · K 40 · HFA 70 · MOV on · untrained: mirrors the market, never trades · ' in html
+    select = page(client.get("/trading").text).form("assign").one('select[name="model_id"]')
+    ids = [o.attr("value") for o in select.select("option")]
+    assert ids.index(str(trained["id"])) < ids.index(str(untrained["id"])), "trained first although older"
+    label = select.one(f'option[value="{untrained["id"]}"]').text
+    assert label.startswith("elo_blend · K 40 · HFA 70 · MOV on · untrained: mirrors the market, never trades · "), label
 
 
 def test_open_orders_name_the_model_and_cancelled_orders_show_their_cause(client, conn):
     s = trade_setup(conn)
     o = approved_order(conn, s, size=10)
     Executor().tick(conn)
-    html = client.get("/fragments/trading").text
-    open_rows = html.split('id="open-orders"')[1].split('id="orders"')[0]
-    assert f'data-assignment="{s.assignment["id"]}">elo_blend {str(s.model["id"])[:8]}</a>' in open_rows
+    row = page(client.get("/fragments/trading").text).card("open-orders").row("order", o["id"])
+    assert row.one(f'a[data-assignment="{s.assignment["id"]}"]').text == f"elo_blend {str(s.model['id'])[:8]}"
     orders.cancel_order(conn, o["id"], "owner", "owner cancel")
-    html = client.get("/fragments/trading").text
-    recent = html.split('id="orders"')[1].split('id="fills"')[0]
-    assert '<span class="badge st-cancelled">cancelled</span> <span class="muted small cause">owner cancel</span>' in recent
+    row = page(client.get("/fragments/trading").text).card("orders").row("order", o["id"])
+    assert row.chip("cancelled").text == "cancelled" and "owner cancel" in row.text

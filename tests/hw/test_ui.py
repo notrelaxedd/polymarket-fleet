@@ -45,25 +45,43 @@ def page(browser: Any, server: Server) -> Iterator[Any]:
         context.close()
 
 
+def _row(worker_id: str) -> str:
+    """The selector of a worker's row (the step 7 data hooks)."""
+    return f'[data-row="worker"][data-id="{worker_id}"]'
+
+
+def _role(worker_id: str) -> str:
+    return f'{_row(worker_id)} select[name="role"]'
+
+
 def _card(page: Any, worker_id: str) -> str:
-    return page.text_content(f'[data-worker="{worker_id}"]')
+    return page.text_content(_row(worker_id))
+
+
+def _fleet(page: Any, server: Server, **kwargs: Any) -> str:
+    """Open the Fleet page: /fleet once Home takes over /, else / (steps 1 to 6)."""
+    for path in ("/fleet", "/"):
+        response = page.goto(server.url + path, **kwargs)
+        if response is not None and response.status == 200:
+            return server.url + path
+    raise AssertionError("no Fleet page")
 
 
 def test_role_select_autosubmits_and_the_switching_line_clears_on_ack(page, server, conn, make_worker) -> None:
     w = make_worker("box1")
-    page.goto(server.url + "/", wait_until="networkidle")
+    fleet = _fleet(page, server, wait_until="networkidle")
     with page.expect_navigation():
-        page.select_option(f"#role-{w.id}", "train")
-    assert page.url == server.url + "/", "the redirect carries no flash in the query string"
-    assert page.text_content(".flash") == "box1: switching to train (epoch 2)"
+        page.select_option(_role(w.id), "train")
+    assert page.url == fleet, "the redirect carries no flash in the query string"
+    assert page.text_content("[data-flash]") == "box1: switching to train (epoch 2)"
     assert "switching to train (epoch 2)" in _card(page, w.id)
-    assert page.is_disabled(f"#role-{w.id}"), "an online worker's select is held while it acks"
+    assert page.is_disabled(_role(w.id)), "an online worker's select is held while it acks"
     conn.execute(
         "UPDATE workers SET reported_role = 'train', acked_epoch = 2, last_heartbeat_at = now() WHERE id = %s", (w.id,)
     )
-    page.wait_for_function(f"!document.querySelector('[data-worker=\"{w.id}\"] .switching')", timeout=8_000)
-    assert page.is_enabled(f"#role-{w.id}") and page.input_value(f"#role-{w.id}") == "train"
-    page.wait_for_selector(".flash", state="detached", timeout=10_000)
+    page.wait_for_function(f"!document.querySelector('{_row(w.id)}').textContent.includes('switching to')", timeout=8_000)
+    assert page.is_enabled(_role(w.id)) and page.input_value(_role(w.id)) == "train"
+    page.wait_for_selector("[data-flash]", state="detached", timeout=10_000)
 
 
 def test_focused_select_holds_the_grid_briefly_and_the_counter_reports_the_grid_age(page, server, conn, make_worker) -> None:
@@ -71,15 +89,15 @@ def test_focused_select_holds_the_grid_briefly_and_the_counter_reports_the_grid_
     and a select that keeps focus after its picker was dismissed stops holding the grid
     after 15 s."""
     w = make_worker("box1")
-    page.goto(server.url + "/", wait_until="networkidle")
-    page.focus(f"#role-{w.id}")
+    _fleet(page, server, wait_until="networkidle")
+    page.focus(_role(w.id))
     conn.execute("UPDATE workers SET cpu_pct = 77 WHERE id = %s", (w.id,))
     page.wait_for_timeout(11_500)
     assert "CPU 77%" not in _card(page, w.id), "the grid is held while the select has focus"
     counter = page.text_content("#updated")
     assert re.fullmatch(r"updated 1[0-9] s ago", counter), f"topbar fetch must not reset the counter: {counter!r}"
     page.wait_for_function(
-        f"document.querySelector('[data-worker=\"{w.id}\"]').textContent.includes('CPU 77%')", timeout=12_000
+        f"document.querySelector('{_row(w.id)}').textContent.includes('CPU 77%')", timeout=12_000
     )
     page.wait_for_function(
         "/^updated [0-4] s ago$/.test(document.getElementById('updated').textContent)", timeout=3_000
@@ -89,14 +107,14 @@ def test_focused_select_holds_the_grid_briefly_and_the_counter_reports_the_grid_
 def test_connection_lost_shows_in_the_sticky_bar_and_dims_the_grid(page, server, make_worker) -> None:
     """MEDIUM: a failed fetch is visible without scrolling and the stale data is marked."""
     make_worker("box1")
-    page.goto(server.url + "/", wait_until="networkidle")
+    _fleet(page, server, wait_until="networkidle")
     page.route("**/fragments/fleet", lambda route: route.abort())
     page.wait_for_function("document.getElementById('updated').textContent === 'connection lost'", timeout=8_000)
     assert page.evaluate("document.body.classList.contains('conn-lost')")
     box = page.locator("#updated").bounding_box()
     assert box is not None and box["y"] < 140, f"the indicator sits in the top bar, not the footer: {box}"
     assert page.evaluate("getComputedStyle(document.querySelector('.dot')).backgroundColor") == "rgb(156, 163, 175)"
-    assert float(page.evaluate("getComputedStyle(document.getElementById('fleet-grid')).opacity")) < 1
+    assert float(page.evaluate("getComputedStyle(document.querySelector('[data-list=\"workers\"]')).opacity")) < 1
     page.unroute("**/fragments/fleet")
     page.wait_for_function("/^updated [0-2] s ago$/.test(document.getElementById('updated').textContent)", timeout=8_000)
     assert not page.evaluate("document.body.classList.contains('conn-lost')")
@@ -108,12 +126,12 @@ def test_without_javascript_copy_buttons_hide_and_set_shows(browser, server, mak
     context = browser.new_context(viewport=PHONE, java_script_enabled=False)
     try:
         page = context.new_page()
-        page.goto(server.url + "/")
-        assert page.locator(f'[data-worker="{w.id}"] button.js-hide').is_visible(), "the Set button shows"
+        _fleet(page, server)
+        assert page.locator(f"{_row(w.id)} button.js-hide").is_visible(), "the Set button shows"
         assert page.locator("#updated").bounding_box() is None, "no freshness line without the script"
         page.goto(server.url + "/settings")
         with page.expect_navigation():
-            page.click("form#enroll button")
+            page.click('[data-action="enroll"] button')
         assert page.locator("button.js-only").count() == 3
         assert all(not page.locator("button.js-only").nth(i).is_visible() for i in range(3))
     finally:

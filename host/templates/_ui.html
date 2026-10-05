@@ -1,0 +1,47 @@
+{# Step 7 components (docs/UI.md, the component contract). Every page builds its stats,
+   chips, rows, disclosures, menus and bars from these, so the markup and the data hooks
+   the tests read stay the same everywhere. Import with {% import "_ui.html" as ui %}.
+
+   stat(name, value, label, href=None, note=None)  a big number with its caption; a link when href
+   chip(state, word, key=None, extra='')            state ok|warn|bad|muted, always with a word;
+                                                    data-chip is key (or state); extra = more classes
+   intro(page, text)                                the dismissable "What this page is" line
+   bar(pct)                                         progress, pct a whole 0..100 (filter a fraction with bar_pct)
+   {% call ui.disclosure(key, title, count=None, summary=None, open=False) %}body{% endcall %}
+   {% call ui.menu(label='More actions') %}forms and links, each a .menu-item with data-action{% endcall %}
+   {% call ui.row(kind, id, href, title, meta=None) %}chips, .row-value, ui.menu{% endcall %} #}
+
+{% macro stat(name, value, label, href=None, note=None) -%}
+<{{ 'a' if href else 'div' }} class="stat" data-stat="{{ name }}"{% if href %} href="{{ href }}"{% endif %}><span class="stat-value">{{ value }}</span><span class="stat-label">{{ label }}</span>{% if note %}<span class="stat-note">{{ note }}</span>{% endif %}</{{ 'a' if href else 'div' }}>
+{%- endmacro %}
+
+{% macro chip(state, word, key=None, extra='') -%}
+<span class="chip chip-{{ state }}{% if extra %} {{ extra }}{% endif %}" data-chip="{{ key if key else state }}">{{ word }}</span>
+{%- endmacro %}
+
+{% macro intro(page, text) -%}
+<details class="intro" data-key="intro-{{ page }}" open><summary>What this page is</summary><p class="muted">{{ text }}</p></details>
+{%- endmacro %}
+
+{% macro bar(pct) -%}
+{% set n = [[(pct or 0) | round | int, 0] | max, 100] | min %}
+<span class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ n }}"><span class="bar-fill" style="width: {{ n }}%"></span></span>
+{%- endmacro %}
+
+{% macro disclosure(key, title, count=None, summary=None, open=False) -%}
+<details class="disclosure" data-key="{{ key }}"{% if open %} open{% endif %}><summary><span class="disclosure-title">{{ title }}</span>{% if count is not none %}<span class="count">{{ count }}</span>{% endif %}{% if summary %}<span class="disclosure-summary">{{ summary }}</span>{% endif %}</summary><div class="disclosure-body">
+{{ caller() }}
+</div></details>
+{%- endmacro %}
+
+{% macro menu(label='More actions') -%}
+<details class="menu"><summary aria-label="{{ label }}">...</summary><div class="menu-list">
+{{ caller() }}
+</div></details>
+{%- endmacro %}
+
+{% macro row(kind, id, href, title, meta=None) -%}
+<li class="row" data-row="{{ kind }}" data-id="{{ id }}"><a class="row-main" href="{{ href }}"><span class="row-title">{{ title }}</span>{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}</a>
+{{ caller() }}
+</li>
+{%- endmacro %}

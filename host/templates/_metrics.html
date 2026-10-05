@@ -3,7 +3,7 @@
    drawdown in cents. ROI, hit rate and average edge read "-" when nothing was bet. #}
 {% macro pairs(m, detail=false) -%}
 {% set bets = m.n_bets or 0 %}
-<dl class="kv metrics">
+<dl class="kv metrics" data-list="metrics">
   <div><dt>games</dt><dd>{{ m.n_games }}</dd></div>
   <div><dt>bets</dt><dd>{{ m.n_bets }}</dd></div>
   <div><dt>ROI</dt><dd>{{ m.roi | signed_pct if bets else '-' }}</dd></div>
@@ -18,11 +18,11 @@
 {%- endmacro %}
 {% macro per_season(rows) -%}
 <div class="table-wrap">
-<table class="metrics per-season stack">
+<table class="metrics per-season stack" data-list="per-season">
   <thead><tr><th>season</th><th>games</th><th>bets</th><th>ROI</th><th>P&amp;L</th><th>log-loss</th><th>market</th><th>drawdown</th></tr></thead>
   <tbody>
   {% for s in rows %}
-  <tr>
+  <tr data-row="season" data-id="{{ s.season }}">
     <td class="lead"><strong>{{ s.season }}</strong></td>
     <td><span class="k">games</span> {{ s.n_games }}</td><td><span class="k">bets</span> {{ s.n_bets }}</td>
     <td><span class="k">ROI</span> {{ s.roi | signed_pct if s.n_bets else '-' }}</td><td><span class="k">P&amp;L</span> {{ s.pnl_cents | money }}</td>

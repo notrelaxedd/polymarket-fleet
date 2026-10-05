@@ -1,8 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Fleet{% endblock %}
+{% block page %}fleet{% endblock %}
 {% block content %}
 <h1 class="visually-hidden">Fleet</h1>
-<div id="fleet-grid" class="grid">
+<div id="fleet-grid" class="grid" data-list="workers">
 {% include "_fleet.html" %}
 </div>
 {% endblock %}

@@ -3,7 +3,6 @@ models.snapshot_metrics on the whole lineage, the leaderboard shows the snapshot
 column group and ranks paper > snapshot (30 bets, shrunk CLV) > validation."""
 from __future__ import annotations
 
-import re
 from typing import Any
 
 import pytest
@@ -14,6 +13,7 @@ from tests.conftest import (
     backtest_metrics, insert_game, insert_model, insert_validated_model, lease_job, model_row, set_setting,
     validation_metrics,
 )
+from tests.pagecheck import page
 
 PARAMS = {"k": 24.0, "hfa": 55.0, "regress": 0.33, "rest_per_day": 1.0, "mov_scale": 1, "min_edge": 0.03, "kelly_fraction": 0.25}
 
@@ -165,31 +165,31 @@ def test_snapshot_ties_break_on_roi(client, conn):
 def test_models_page_shows_the_snapshot_group(client, conn):
     ranked = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.031))
     plain = insert_validated_model(conn, params={"k": 2.0})
-    html = client.get("/models").text
-    assert '<th>snapshot <span class="muted">CLV 90% range</span></th>' in html
-    assert "30 bets replayed on recorded prices" in html
-    row = re.search(rf'<tr class="model-row" data-model="{ranked["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<span class="rank">#1</span><span class="chip chip-snapshot" title="ranked on snapshot replay CLV">snapshot</span>' in row
-    assert ('<span class="k">snapshot</span> 60 games &middot; 30 bets &middot; ROI +3.1% &middot; '
-            '<span title="closing price minus the price paid, per contract">CLV 0.020</span> '
-            '<span class="range snapshot-ci">0.004 to 0.031</span>') in row
-    other = re.search(rf'<tr class="model-row" data-model="{plain["id"]}">.*?</tr>', html, re.S).group(0)
-    assert '<span class="k">snapshot</span> -' in other and "chip-snapshot" not in other
+    p = page(client.get("/models").text)
+    assert "CLV 90% range" in p.card("ranked").text, "the snapshot column group names its range"
+    assert "30 bets replayed on recorded prices" in p.text
+    row = p.row("model", ranked["id"])
+    chip = row.chip("rank-snapshot")
+    assert row.text.startswith("#1") and chip.text == "snapshot" and chip.attr("title") == "ranked on snapshot replay CLV"
+    assert "60 games · 30 bets · ROI +3.1%" in row.text and "CLV 0.020" in row.text and "0.004 to 0.031" in row.text
+    other = p.row("model", plain["id"])
+    assert "snapshot -" in other.text and "rank-snapshot" not in other.chips()
 
 
 def test_model_page_shows_the_snapshot_section(client, conn):
     model = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=29, clv=0.02))
-    html = client.get(f"/models/{model['id']}").text
-    assert "<dt>snapshot replay</dt><dd>58 games &middot; 29 bets &middot; ROI +3.0% &middot; CLV 0.020" in html
-    assert "ranks on it from 30 bets" in html
-    section = re.search(r'<section class="snapshot" id="snapshot">.*?</section>', html, re.S).group(0)
-    assert "Replayed on recorded <strong>polymarket_us</strong> prices: 58 games scored, 29 bets, ROI +3.0%." in section
-    assert '<strong>0.020</strong> per contract <span class="range snapshot-ci">(90% range 0.004 to 0.031)</span>' in section
-    assert "7 games skipped for lack of recorded prices" in section and "snapshot per season" in section
-    assert '<input type="hidden" name="price_source" value="snapshots">' in section
+    p = page(client.get(f"/models/{model['id']}").text)
+    assert p.prop("snapshot replay").startswith("58 games · 29 bets · ROI +3.0% · CLV 0.020")
+    assert "ranks on it from 30 bets" in p.prop("snapshot replay")
+    section = p.card("snapshot")
+    assert "Replayed on recorded polymarket_us prices: 58 games scored, 29 bets, ROI +3.0%." in section.text
+    assert "0.020 per contract (90% range 0.004 to 0.031)" in section.text
+    assert "7 games skipped for lack of recorded prices" in section.text and "snapshot per season" in section.text
+    replay = section.action("replay-snapshots")
+    assert replay.target == "/jobs" and replay.one('input[name="price_source"]').attr("value") == "snapshots"
     bare = insert_model(conn, params={"k": 2.0})
-    html = client.get(f"/models/{bare['id']}").text
-    assert "no snapshot replay yet" in html and "No snapshot replay yet." in html
+    p = page(client.get(f"/models/{bare['id']}").text)
+    assert "no snapshot replay yet" in p.prop("snapshot replay") and "No snapshot replay yet." in p.card("snapshot").text
 
 
 def test_job_page_shows_a_snapshot_result(client, conn, make_worker):
@@ -198,9 +198,9 @@ def test_job_page_shows_a_snapshot_result(client, conn, make_worker):
     job = lease_job(conn, w, "backtest", {"model_id": str(model["id"]), "price_source": "snapshots", "price_platform": "polymarket_us",
                                            "decision_minutes_before_kickoff": 60, "participation": 0.5, "allow_sim_prices": False})
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s WHERE id = %s", (Jsonb(snapshot_metrics(clv=None)), job["id"]))
-    html = client.get(f"/jobs/{job['id']}").text
-    assert "Replayed on recorded <strong>polymarket_us</strong> prices: 80 games scored, 40 bets" in html
-    assert "<strong>0.018</strong> per contract" in html, "no avg_clv reported: the middle of the range"
+    text = page(client.get(f"/jobs/{job['id']}").text).text
+    assert "Replayed on recorded polymarket_us prices: 80 games scored, 40 bets" in text
+    assert "0.018 per contract" in text, "no avg_clv reported: the middle of the range"
 
 
 def test_short_params_label_for_epa_blend() -> None:

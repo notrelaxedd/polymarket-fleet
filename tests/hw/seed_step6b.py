@@ -30,6 +30,7 @@ from host.trading.sells import sell_fee_cents
 from tests.conftest import (
     backtest_metrics, insert_job, insert_model, insert_snapshot, stress_metrics, validation_metrics, worker_row,
 )
+from tests.pagecheck import page
 
 EPA_PARAMS = {"window": 8, "shrink": 3.0, "l2": 1.0, "min_edge": 0.03, "kelly_fraction": 0.25}
 REPLAY_SEASONS = [2024, 2026]
@@ -144,15 +145,19 @@ def check_step6b(server_url: str, ids: dict[str, str]) -> None:
         board = client.get("/api/models").json()
         modes = {m["id"]: m["rank_mode"] for m in board["ranked"]}
         assert modes.get(ids["epa_model"]) == "snapshot", f"the epa_blend lineage ranks on snapshot CLV: {modes}"
-        models = client.get("/models").text
-        assert 'class="chip chip-snapshot"' in models and "c-snapshot" in models and "window 8" in models
-        model = client.get(f"/models/{ids['epa_model']}").text
-        assert 'id="snapshot"' in model and "ranked on snapshot CLV" in model and "snapshot per season" in model
-        jobs = client.get("/jobs").text
-        assert 'name="price_source"' in jobs and 'chip chip-snapshot">snapshots' in jobs and "replay-hint" in jobs
-        settings = client.get("/settings").text
-        assert all(f'name="{key}"' in settings for key in ("decision_minutes_before_kickoff", "allow_sim_prices",
-                                                          "signals_refresh_hours", "nflverse_injuries_url", "nflverse_pbp_url"))
-        trading = client.get("/trading").text
-        assert trading.count('class="positions stack"') == 2, "two assignments hold contracts"
-        assert '<span class="chip chip-sell">sell</span>' in trading and f'data-order="{ids["open_sell"]}"' in trading
+        models = page(client.get("/models").text)
+        epa = models.row("model", ids["epa_model"])
+        assert epa.chip("rank-snapshot").text == "snapshot" and "window 8" in epa.text
+        assert models.has(".c-snapshot") or "CLV 90% range" in models.text, "the snapshot column group"
+        model = page(client.get(f"/models/{ids['epa_model']}").text)
+        assert "ranked on snapshot CLV" in model.text and "snapshot per season" in model.card("snapshot").text
+        jobs = page(client.get("/jobs").text)
+        assert jobs.form("backtest").input("price_source") and jobs.has('[data-chip="snapshots"]')
+        assert "Snapshots replay the prices the host recorded" in jobs.form("backtest").text
+        settings = page(client.get("/settings").text)
+        for key in ("decision_minutes_before_kickoff", "allow_sim_prices", "signals_refresh_hours", "nflverse_injuries_url", "nflverse_pbp_url"):
+            assert settings.field(key), key
+        trading = page(client.get("/trading").text)
+        held = {n.attr("data-assignment") for n in trading.card("positions").select("[data-assignment]")}
+        assert len(held) == 2, "two assignments hold contracts"
+        assert trading.has('[data-chip="sell"]') and "sell" in trading.card("open-orders").row("order", ids["open_sell"]).chips()

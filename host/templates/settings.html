@@ -1,19 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Settings{% endblock %}
+{% block page %}settings{% endblock %}
 {# Every field stays type=text so a blank value and the server-side validation still
    work; `mode` sets inputmode so a phone opens the right keyboard. #}
 {% macro field(name, label, hint='', mode='') -%}
-<label><span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span>
+<label data-field="{{ name }}"><span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span>
   <input type="text" name="{{ name }}" value="{{ values[name] }}"{% if mode %} inputmode="{{ mode }}"{% endif %} autocomplete="off">
 </label>
 {%- endmacro %}
 {% macro check(name, label, hint='') -%}
-<label class="check"><input type="checkbox" name="{{ name }}" value="true"{% if values[name] %} checked{% endif %}> <span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span></label>
+<label class="check" data-field="{{ name }}"><input type="checkbox" name="{{ name }}" value="true"{% if values[name] %} checked{% endif %}> <span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span></label>
 {%- endmacro %}
 {% block content %}
 <h1>Settings</h1>
 
-<form class="card group" method="post" action="/settings/trading" id="trading">
+<form class="card group" method="post" action="/settings/trading" id="trading" data-card="trading" data-form="trading">
   <h2>Trading limits <span class="muted small">dollars</span></h2>
   {% if errors.trading %}<p class="error inline-error">{{ errors.trading }}</p>{% endif %}
   <div class="fields">
@@ -29,7 +30,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/trade" id="trade">
+<form class="card group" method="post" action="/settings/trade" id="trade" data-card="trade" data-form="trade">
   <h2>Trading <span class="muted small">approval, snapshots, market source, paper thresholds, rate limits</span></h2>
   {% if errors.trade %}<p class="error inline-error">{{ errors.trade }}</p>{% endif %}
   <h3>Order approval</h3>
@@ -42,11 +43,11 @@
     {{ field('max_paper_models_per_game', 'Max paper models per game', '1..20', 'numeric') }}
     {{ field('max_exposure_paper', 'Max exposure, paper', '$, 0 = off', 'decimal') }}
     {{ field('max_exposure_live', 'Max exposure, live', '$, 0 = off', 'decimal') }}
-    <label class="check"><input type="checkbox" name="trade_pregame_only" value="true"{% if values.trade_pregame_only %} checked{% endif %}> <span>Pregame only <span class="muted small">no orders after kickoff</span></span></label>
+    <label class="check" data-field="trade_pregame_only"><input type="checkbox" name="trade_pregame_only" value="true"{% if values.trade_pregame_only %} checked{% endif %}> <span>Pregame only <span class="muted small">no orders after kickoff</span></span></label>
   </div>
   <h3>Market source and snapshots</h3>
   <div class="fields">
-    <label><span>Market source</span>
+    <label data-field="market_source"><span>Market source</span>
       <select name="market_source">
         {% for source in market_sources %}<option value="{{ source }}"{% if values.market_source == source %} selected{% endif %}>{{ source }}</option>{% endfor %}
       </select>
@@ -56,7 +57,7 @@
     {{ field('snapshot_idle_s', 'Snapshot cadence, idle (s)', '1..3600', 'numeric') }}
     {{ field('snapshot_retention_days', 'Snapshot retention (days)', '1..365', 'numeric') }}
     {{ field('scores_url', 'Scores URL', 'ESPN scoreboard') }}
-    <label class="span-all"><span>Market source config <span class="muted small">JSON: endpoints and field names per source</span></span>
+    <label class="span-all" data-field="market_source_config"><span>Market source config <span class="muted small">JSON: endpoints and field names per source</span></span>
       <textarea name="market_source_config" rows="6" spellcheck="false">{{ values.market_source_config }}</textarea>
     </label>
   </div>
@@ -79,7 +80,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/fleet" id="fleet">
+<form class="card group" method="post" action="/settings/fleet" id="fleet" data-card="fleet" data-form="fleet">
   <h2>Fleet</h2>
   {% if errors.fleet %}<p class="error inline-error">{{ errors.fleet }}</p>{% endif %}
   <div class="fields">
@@ -91,7 +92,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/tz" id="tz">
+<form class="card group" method="post" action="/settings/tz" id="tz" data-card="tz" data-form="tz">
   <h2>Time zone</h2>
   {% if errors.tz %}<p class="error inline-error">{{ errors.tz }}</p>{% endif %}
   <div class="fields">
@@ -100,7 +101,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/fees" id="fees">
+<form class="card group" method="post" action="/settings/fees" id="fees" data-card="fees" data-form="fees">
   <h2>Fee model <span class="muted small">closing-line fill in backtests</span></h2>
   {% if errors.fees %}<p class="error inline-error">{{ errors.fees }}</p>{% endif %}
   <div class="fields">
@@ -110,7 +111,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/thresholds" id="thresholds">
+<form class="card group" method="post" action="/settings/thresholds" id="thresholds" data-card="thresholds" data-form="thresholds">
   <h2>Backtest thresholds <span class="muted small">candidate to paper_ok, judged on the validation era</span></h2>
   {% if errors.thresholds %}<p class="error inline-error">{{ errors.thresholds }}</p>{% endif %}
   <div class="fields">
@@ -127,7 +128,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/seasons" id="seasons">
+<form class="card group" method="post" action="/settings/seasons" id="seasons" data-card="seasons" data-form="seasons">
   <h2>Seasons and search <span class="muted small">the search era, the held-out validation era, the search pool</span></h2>
   {% if errors.seasons %}<p class="error inline-error">{{ errors.seasons }}</p>{% endif %}
   <div class="fields">
@@ -140,7 +141,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/replay" id="replay">
+<form class="card group" method="post" action="/settings/replay" id="replay" data-card="replay" data-form="replay">
   <h2>Snapshot replay <span class="muted small">backtests on the prices the host recorded</span></h2>
   {% if errors.replay %}<p class="error inline-error">{{ errors.replay }}</p>{% endif %}
   <p class="muted small">A backtest with price source "snapshots" buys at the recorded ask at the decision time, walks the recorded book (participation from the Trading group) and measures CLV against the frozen closing price. It replays the market source chosen in the Trading group.</p>
@@ -151,7 +152,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/settings/nflverse" id="nflverse">
+<form class="card group" method="post" action="/settings/nflverse" id="nflverse" data-card="nflverse" data-form="nflverse">
   <h2>nflverse games <span class="muted small">{{ games_count }} rows{% if last_complete_season %}, last complete season {{ last_complete_season }}{% endif %}</span></h2>
   {% if errors.nflverse %}<p class="error inline-error">{{ errors.nflverse }}</p>{% endif %}
   {% if refresh.last_error %}
@@ -167,10 +168,10 @@
     {{ field('nflverse_url', 'games.csv URL') }}
   </div>
   <button type="submit" class="btn primary">Save</button>
-  <button type="submit" class="btn" formaction="/data/refresh">Refresh now</button>
+  <button type="submit" class="btn" formaction="/data/refresh" data-action="refresh-nflverse">Refresh now</button>
 </form>
 
-<form class="card group" method="post" action="/settings/signals" id="signals">
+<form class="card group" method="post" action="/settings/signals" id="signals" data-card="signals" data-form="signals">
   <h2>nflverse signals <span class="muted small">injury reports and play-by-play, free</span></h2>
   {% if errors.signals %}<p class="error inline-error">{{ errors.signals }}</p>{% endif %}
   <div class="fields">
@@ -181,7 +182,7 @@
   <button type="submit" class="btn primary">Save</button>
 </form>
 
-<form class="card group" method="post" action="/enroll-token" id="enroll">
+<form class="card group" method="post" action="/enroll-token" id="enroll" data-card="enroll" data-action="enroll">
   <h2>Enroll</h2>
   <p class="muted">A token is single use and valid for one hour. The next page shows it once.</p>
   <button type="submit" class="btn primary">New enroll token</button>
@@ -189,12 +190,12 @@
 
 {# Step 5: the typed live switch. live_enabled has no generic settings field; the only
    way on is today's exact phrase, the only way off is the button (or a kill). #}
-<section class="card group live{% if live.live_enabled %} is-live{% endif %}" id="live">
+<section class="card group live{% if live.live_enabled %} is-live{% endif %}" id="live" data-card="live">
   <h2>Live trading <span class="pill {{ 'live' if live.live_enabled else 'paper' }}" data-live-state="{{ 'on' if live.live_enabled else 'off' }}">{{ 'ON' if live.live_enabled else 'OFF' }}</span></h2>
   {% if live.live_enabled %}
   <p class="live-since">Live trading is <strong>on</strong> since {{ live.live_enabled_at | ts if live.live_enabled_at else 'an unknown time' }} by {{ live.live_enabled_by or 'an unknown actor' }}. Real orders go to the exchange for live assignments of live-eligible lineages.</p>
   {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
-  <form method="post" action="/settings/live/off" class="live-off" data-confirm="Disable live trading now? Live assignments are halted and their orders are cancel-requested; the exchange process cancels them on the exchange (while paused by clock skew they rest until the skew clears or their GTD).">
+  <form method="post" action="/settings/live/off" class="live-off" data-action="live-off" data-confirm="Disable live trading now? Live assignments are halted and their orders are cancel-requested; the exchange process cancels them on the exchange (while paused by clock skew they rest until the skew clears or their GTD).">
     <button type="submit" class="btn danger">Disable live</button>
   </form>
   {% else %}
@@ -205,8 +206,8 @@
   </ul>
   {% endif %}
   {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
-  <form method="post" action="/settings/live" class="live-form">
-    <label><span>Type exactly <code class="phrase">{{ live.expected_phrase }}</code> <span class="muted small">today's date in your time zone</span></span>
+  <form method="post" action="/settings/live" class="live-form" data-form="live-on">
+    <label data-field="live_confirm"><span>Type exactly <code class="phrase">{{ live.expected_phrase }}</code> <span class="muted small">today's date in your time zone</span></span>
       <input type="text" name="confirm" value="{{ values.live_confirm }}" placeholder="{{ live.expected_phrase }}" autocomplete="off" autocapitalize="characters" spellcheck="false">
     </label>
     <button type="submit" class="btn danger">Enable live trading</button>
@@ -214,16 +215,16 @@
   {% endif %}
   <dl class="props live-props">
     <dt>credentials</dt><dd>{{ 'yes' if live.credentials_present else 'no' }} <span class="muted small">{{ 'loaded by the exchange process' if live.credentials_present else 'exchange.env missing or malformed (see the last auth error), or the exchange process has not started' }}</span></dd>
-    <dt>auth</dt><dd>{% if live.auth_ok %}<span class="chip chip-ok">ok</span>{% elif live.auth_checked_at %}<span class="chip chip-bad">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if live.auth_checked_at %} <span class="muted small auth-age">checked {{ live.auth_age_s | ago }}</span>{% endif %}{% if live.auth_failures %} <span class="error small">{{ live.auth_failures }} failure{{ '' if live.auth_failures == 1 else 's' }} in a row</span>{% endif %}</dd>
+    <dt>auth</dt><dd>{% if live.auth_ok %}<span class="chip chip-ok" data-chip="auth-ok">ok</span>{% elif live.auth_checked_at %}<span class="chip chip-bad" data-chip="auth-failed">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if live.auth_checked_at %} <span class="muted small auth-age">checked {{ live.auth_age_s | ago }}</span>{% endif %}{% if live.auth_failures %} <span class="error small">{{ live.auth_failures }} failure{{ '' if live.auth_failures == 1 else 's' }} in a row</span>{% endif %}</dd>
     <dt>balance</dt><dd>{% if live.balance_cents is not none %}{{ live.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
     <dt>buying power</dt><dd>{% if live.buying_power_cents is not none %}{{ live.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
     <dt>clock skew</dt><dd>{% if live.clock_skew_ms is not none %}{{ live.clock_skew_ms }} ms{% else %}<span class="muted">-</span>{% endif %}</dd>
     <dt>last auth error</dt><dd>{% if live.last_auth_error %}<span class="error">{{ live.last_auth_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
-    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}<span class="chip chip-bad auto-kill-reason">{{ reason }}</span> {% endfor %}<span class="muted small">since the last reset</span>{% for reason in live.auto_kill_reasons %}{% if live.remedies and live.remedies[reason] %}<br><span class="small remedy" data-remedy="{{ reason }}"><strong>{{ reason }}</strong>: {{ live.remedies[reason] }}</span>{% endif %}{% endfor %}{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
+    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}<span class="chip chip-bad auto-kill-reason" data-chip="auto-kill">{{ reason }}</span> {% endfor %}<span class="muted small">since the last reset</span>{% for reason in live.auto_kill_reasons %}{% if live.remedies and live.remedies[reason] %}<br><span class="small remedy" data-remedy="{{ reason }}"><strong>{{ reason }}</strong>: {{ live.remedies[reason] }}</span>{% endif %}{% endfor %}{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
   </dl>
 </section>
 
-<section class="card group{% if killed %} killed{% endif %}" id="kill">
+<section class="card group{% if killed %} killed{% endif %}" id="kill" data-card="kill">
   <h2>Kill switch</h2>
   {% if killed %}
   <p class="error">Trading is killed. Trade workers do not claim, no order is approved and every assignment stays halted until you activate it again on the <a href="/trading">Trading</a> page.</p>
@@ -231,8 +232,8 @@
   <p class="error auto-kill">Killed automatically by the exchange process: <strong>{{ auto_kill.reason }}</strong> at {{ auto_kill.ts | ts }}{% if auto_kill.detail %} <span class="muted small">{{ auto_kill.detail | compact_json }}</span>{% endif %}. Live trading stays off after the reset until you enable it again.{% if auto_kill.remedy %} <span class="remedy" data-remedy="{{ auto_kill.reason }}">Recovery: {{ auto_kill.remedy }}.</span>{% endif %}</p>
   {% endif %}
   {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
-  <form method="post" action="/kill/reset" class="reset">
-    <label>Type RESUME to clear it
+  <form method="post" action="/kill/reset" class="reset" data-form="kill-reset">
+    <label data-field="kill_confirm">Type RESUME to clear it
       <input type="text" name="confirm" autocomplete="off" autocapitalize="characters" placeholder="RESUME">
     </label>
     <button type="submit" class="btn primary">Reset kill switch</button>
@@ -242,14 +243,14 @@
   {% endif %}
 </section>
 
-<section class="card group" id="audit">
+<section class="card group" id="audit" data-card="audit">
   <h2>Audit log <span class="muted small">last 20</span></h2>
   <div class="table-wrap">
-  <table class="audit stack">
+  <table class="audit stack" data-list="audit">
     <thead><tr><th>time</th><th>actor</th><th>action</th><th>entity</th><th>confirmation</th></tr></thead>
     <tbody>
     {% for a in audit %}
-    <tr>
+    <tr data-row="audit" data-id="{{ loop.index }}">
       <td class="nowrap lead">{{ a.ts | ts }}</td>
       <td>{{ a.actor or '-' }}</td>
       <td>{{ a.action }}</td>

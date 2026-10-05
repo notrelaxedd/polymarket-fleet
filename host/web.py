@@ -173,6 +173,43 @@ def pvalue(value: Any) -> str:
     return "p < 0.001" if p < 0.001 else f"p = {p:.3f}"
 
 
+def signed_money(cents: Any) -> str:
+    """P&L with its sign: 657 -> "+$6.57", -120 -> "-$1.20", 0 or missing -> "$0.00"."""
+    text = format_cents(cents)
+    return text if text.startswith("-") or text == "$0.00" else f"+{text}"
+
+
+def prob(value: Any) -> str:
+    """A probability as a whole percentage: 0.62 -> "62%"; "-" when missing."""
+    return "-" if value is None or isinstance(value, bool) else pct(value)
+
+
+def num(value: Any, digits: int = 0) -> str:
+    """A count or amount with thousands separators: 1234 -> "1,234"; "-" when missing."""
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        return f"{float(value):,.{digits}f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
+def bar_pct(value: Any) -> int:
+    """A 0..1 fraction as a whole 0..100 for a progress bar's width and aria-valuenow."""
+    try:
+        return max(0, min(100, int(round(float(value or 0) * 100))))
+    except (TypeError, ValueError):
+        return 0
+
+
+def tone(value: Any) -> str:
+    """"neg" for a number below zero (a loss gets the red text token), else ""."""
+    try:
+        return "neg" if float(value or 0) < 0 else ""
+    except (TypeError, ValueError):
+        return ""
+
+
 def season_span(seasons: Any) -> str:
     """[2010, ..., 2025] -> "2010-2025"; "-" when empty."""
     if isinstance(seasons, (list, tuple)) and seasons:
@@ -187,7 +224,8 @@ def make_env() -> Environment:
         {"money": format_cents, "dollars": cents_to_dollars, "pct": pct, "pct1": pct1, "gb": gb, "ago": ago,
          "ts": ts, "pretty_json": pretty_json, "compact_json": compact_json, "short": short,
          "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span, "price": price,
-         "pvalue": pvalue}
+         "pvalue": pvalue, "pnl": signed_money, "signed_money": signed_money, "prob": prob, "num": num,
+         "bar_pct": bar_pct, "tone": tone}
     )
     return env
 

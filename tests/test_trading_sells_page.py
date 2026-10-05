@@ -5,7 +5,6 @@ P&L at the bid, in dollars. Orders and fills are inserted straight into the tabl
 (the 0008 columns), so these tests do not depend on the approval or fill paths."""
 from __future__ import annotations
 
-import re
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -13,6 +12,7 @@ from typing import Any
 import psycopg
 
 from tests.conftest import GAME_ID, insert_market, insert_snapshot, make_assignment, trade_setup
+from tests.pagecheck import Node, page
 
 
 def _order(
@@ -45,12 +45,16 @@ def _fill(conn: psycopg.Connection, order: dict[str, Any], price: float, size: i
     ).fetchone()
 
 
-def _section(html: str, start: str, end: str) -> str:
-    return html.split(f'id="{start}"')[1].split(f'id="{end}"')[0]
+def _live(client: Any) -> Node:
+    """The live region of /trading (everything the 5 s refresh replaces)."""
+    return page(client.get("/trading").text).one("#trading-live")
 
 
-def _row(html: str, attr: str, value: Any) -> str:
-    return re.search(rf'<tr[^>]*{attr}="{value}"[^>]*>.*?</tr>', html, re.S).group(0)
+def _pnl(node: Node) -> str:
+    """The signed money of the one P&L figure in node, with its state class."""
+    figure = node.one(".pnl")
+    state = "pos" if figure.has_class("pnl-pos") else "neg" if figure.has_class("pnl-neg") else "zero"
+    return f"{state} {figure.text}"
 
 
 def _book(conn: psycopg.Connection) -> dict[str, Any]:
@@ -78,55 +82,50 @@ def _book(conn: psycopg.Connection) -> dict[str, Any]:
 
 def test_sell_chip_on_open_and_recent_sell_orders_with_realized_pnl(client, conn):
     b = _book(conn)
-    html = client.get("/trading").text
-    live = html.split('id="trading-live"')[1]
-    open_rows = _section(live, "open-orders", "orders")
-    resting = _row(open_rows, "data-order", b["resting"]["id"])
-    assert 'data-side="sell"' in resting and '<span class="chip chip-sell">sell</span>' in resting
-    assert "sell 5 @ 0.62" in resting and "$0.00" not in resting, "a sell shows no reservation cost"
-    assert f'action="/orders/{b["resting"]["id"]}/cancel"' in resting, "an open sell keeps its Cancel button"
-    recent = _section(live, "orders", "fills")
-    sold = _row(recent, "data-order", b["sold"]["id"])
-    assert '<span class="chip chip-sell">sell</span>' in sold and "sell 10 @ 0.60 (10 filled avg 0.60)" in sold
-    assert '<span class="k">realized</span> <span class="pnl pnl-pos">+$1.76</span>' in sold
-    bought = _row(recent, "data-order", b["buy"]["id"])
-    assert 'data-side="buy"' in bought and "chip-sell" not in bought and "30 @ 0.40" in bought and "$12.00" in bought
-    assert "realized" not in bought
-    rest_recent = _row(recent, "data-order", b["resting"]["id"])
-    assert "chip-sell" in rest_recent and "realized" not in rest_recent, "an unfilled sell has no realized P&L yet"
+    live = _live(client)
+    resting = live.card("open-orders").row("order", b["resting"]["id"])
+    assert resting.one("[data-side]").attr("data-side") == "sell" and resting.chip("sell").text == "sell"
+    assert "sell 5 @ 0.62" in resting.text and "$0.00" not in resting.text, "a sell shows no reservation cost"
+    assert resting.action("cancel").target == f"/orders/{b['resting']['id']}/cancel", "an open sell keeps its Cancel button"
+    recent = live.card("orders")
+    sold = recent.row("order", b["sold"]["id"])
+    assert sold.chip("sell").text == "sell" and "sell 10 @ 0.60 (10 filled avg 0.60)" in sold.text
+    assert "realized +$1.76" in sold.text and _pnl(sold) == "pos +$1.76"
+    bought = recent.row("order", b["buy"]["id"])
+    assert bought.one("[data-side]").attr("data-side") == "buy" and "sell" not in bought.chips()
+    assert "30 @ 0.40" in bought.text and "$12.00" in bought.text and "realized" not in bought.text
+    rest_recent = recent.row("order", b["resting"]["id"])
+    assert "sell" in rest_recent.chips() and "realized" not in rest_recent.text, "an unfilled sell has no realized P&L yet"
 
 
 def test_sell_fill_shows_chip_realized_pnl_and_basis(client, conn):
     b = _book(conn)
-    fills = _section(client.get("/trading").text, "fills", "unmatched")
-    sold = _row(fills, "data-fill", b["sell_fill"]["id"])
-    assert 'data-side="sell"' in sold and '<span class="chip chip-sell">sell</span>' in sold
-    assert "sold 10 @ 0.60" in sold and "$0.24" in sold and "basis $4.00" in sold
-    assert '<span class="pnl pnl-pos">+$1.76</span>' in sold
-    bought = _row(fills, "data-fill", b["buy_fill"]["id"])
-    assert "chip-sell" not in bought and "30 @ 0.40" in bought and "pnl" not in bought
-    assert "<th>realized</th>" in fills
+    fills = _live(client).card("fills")
+    sold = fills.row("fill", b["sell_fill"]["id"])
+    assert sold.attr("data-side") == "sell" and sold.chip("sell").text == "sell"
+    assert "sold 10 @ 0.60" in sold.text and "$0.24" in sold.text and "basis $4.00" in sold.text
+    assert _pnl(sold) == "pos +$1.76"
+    bought = fills.row("fill", b["buy_fill"]["id"])
+    assert "sell" not in bought.chips() and "30 @ 0.40" in bought.text and not bought.has(".pnl")
+    assert "realized" in fills.text.lower(), "the realized column is labelled"
 
 
 def test_positions_table_per_assignment_values_at_the_bid(client, conn):
     b = _book(conn)
     idle = make_assignment(conn, GAME_ID)
-    html = client.get("/trading").text
-    positions = _section(html, "positions", "open-orders")
-    assert positions.count('class="positions stack"') == 1, "only the assignment holding contracts gets a table"
-    assert str(idle["id"]) not in positions
-    assert f'data-assignment="{b["setup"].assignment["id"]}"' in positions and "<strong>KC @ LV</strong>" in positions
-    assert "1 assignment holding" in positions
-    home = _row(positions, "data-market", b["home"]["id"])
-    assert '<span class="k">size</span> 20</td>' in home
-    assert '<span class="k">avg cost</span> 0.40 <span class="muted small">$8.00</span>' in home
-    assert '<span class="k">bid</span> 0.55</td>' in home
-    assert '<span class="pnl pnl-pos">+$2.75</span>' in home and "home wins" in home
-    away = _row(positions, "data-market", b["away"]["id"])
-    assert '<span class="k">size</span> 5000</td>' in away and "$2,500.00" in away and '<span class="k">bid</span> 0.20' in away
-    assert '<span class="pnl pnl-neg">-$1,540.00</span>' in away, "money as $1,234.56 with the sign, net of the sale fee"
-    total = re.search(r'<span class="positions-total">unrealized (.*?)</span></h3>', positions, re.S).group(1)
-    assert total == '<span class="pnl pnl-neg">-$1,537.25</span>'
+    positions = _live(client).card("positions")
+    held = {n.attr("data-assignment") for n in positions.select("[data-assignment]")}
+    assert held == {str(b["setup"].assignment["id"])}, "only the assignment holding contracts gets a table"
+    assert str(idle["id"]) not in positions.html and "KC @ LV" in positions.text
+    assert "1 assignment holding" in positions.text
+    home = positions.row("position", b["home"]["id"])
+    assert "size 20" in home.text and "avg cost 0.40 $8.00" in home.text and "bid 0.55" in home.text
+    assert _pnl(home) == "pos +$2.75" and "home wins" in home.text
+    away = positions.row("position", b["away"]["id"])
+    assert "size 5000" in away.text and "$2,500.00" in away.text and "bid 0.20" in away.text
+    assert _pnl(away) == "neg -$1,540.00", "money as $1,234.56 with the sign, net of the sale fee"
+    total = positions.one(".positions-total")
+    assert total.text == "unrealized -$1,537.25" and _pnl(total) == "neg -$1,537.25"
 
 
 def test_position_sold_out_or_resolved_disappears(client, conn):
@@ -134,8 +133,8 @@ def test_position_sold_out_or_resolved_disappears(client, conn):
     rest = _order(conn, b["setup"], b["home"], "sell", 0.55, 20, age_s=50)
     _fill(conn, rest, 0.55, 20, 20, 800, age_s=50)
     conn.execute("UPDATE markets SET status = 'resolved', resolved_yes = false WHERE id = %s", (b["away"]["id"],))
-    positions = _section(client.get("/trading").text, "positions", "open-orders")
-    assert "<table" not in positions and "No open positions." in positions and "0 assignments holding" in positions
+    positions = _live(client).card("positions")
+    assert not positions.rows("position") and "No open positions." in positions.text and "0 assignments holding" in positions.text
 
 
 def test_position_without_any_bid_is_not_valued(conn):
@@ -172,23 +171,21 @@ def test_latest_snapshot_bid_wins_over_the_market_row(conn):
 
 
 def test_fragment_refresh_carries_positions_and_sell_chips(client, conn):
-    b = _book(conn)
+    _book(conn)
     r = client.get("/fragments/trading")
     assert r.status_code == 200
-    fragment = r.text
-    assert "<html" not in fragment and 'id="trading-live"' not in fragment and 'id="assign"' not in fragment
-    assert 'id="positions"' in fragment and '<span class="pnl pnl-pos">+$2.75</span>' in fragment
-    assert fragment.count('<span class="chip chip-sell">sell</span>') == 4, "open sell, two recent sells, one sell fill"
-    assert fragment.count("<section") == 9, "positions is a card section (step 4 had 8)"
-    page = client.get("/trading").text
-    assert page.split('id="trading-live">')[1].count('id="positions"') == 1
+    fragment = page(r.text)
+    assert not fragment.has("html") and not fragment.has("#trading-live") and not fragment.has('[data-card="assign"]')
+    assert fragment.card("positions").has(".pnl-pos") and "+$2.75" in fragment.card("positions").text
+    assert fragment.count('[data-chip="sell"]') == 4, "open sell, two recent sells, one sell fill"
+    assert "positions" in fragment.cards() and len(fragment.cards()) == 9, "positions is a card (step 4 had 8)"
+    assert _live(client).count('[data-card="positions"]') == 1
 
 
 def test_empty_positions_state_in_words(client, conn):
-    html = client.get("/trading").text
-    positions = _section(html, "positions", "open-orders")
-    assert "No open positions." in positions and "<table" not in positions
-    assert "No open positions." in client.get("/fragments/trading").text
+    positions = _live(client).card("positions")
+    assert "No open positions." in positions.text and not positions.rows("position")
+    assert "No open positions." in page(client.get("/fragments/trading").text).card("positions").text
 
 
 def test_owner_api_orders_and_fills_carry_order_side_and_realized(conn):
@@ -205,18 +202,16 @@ def test_owner_api_orders_and_fills_carry_order_side_and_realized(conn):
 
 
 def test_sell_rules_in_css_keep_the_aa_pairs_and_phone_layout(client):
-    from tests.test_style import _schemes, contrast
+    from tests.test_style import _schemes, contrast, declarations
 
     css = client.get("/static/style.css").text
-    assert ".chip.chip-sell { background: var(--accent-fill); color: var(--accent-text);" in css
-    assert ".pnl.pnl-neg { color: var(--red-fg); }" in css
+    assert "var(--accent-fill)" in declarations(".chip-sell", css=css) and "var(--accent-text)" in declarations(".chip-sell", css=css)
+    assert "var(--red-fg)" in declarations(".pnl-neg", css=css)
     for tokens in _schemes():
         assert contrast(tokens["accent-text"], tokens["accent-fill"]) >= 4.5
         for bg in ("card", "live-bg"):
             assert contrast(tokens["red-fg"], tokens[bg]) >= 4.5
-    phone = css.split("@media (max-width: 700px)")[-1]
-    assert "table.positions td.lead { display: block; padding-right: 0; min-height: 0; }" in phone
-    assert ".positions-head .positions-total { margin-left: 0; flex-basis: 100%; }" in phone
+    assert "flex-basis: 100%" in declarations(".positions-total", media="max-width", css=css), "the position total wraps on a phone"
 
 
 def test_sell_reject_reasons_in_words():

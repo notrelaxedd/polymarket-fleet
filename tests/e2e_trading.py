@@ -41,6 +41,7 @@ from host.exchange.adapters.sim import SimSource, home_mid
 from host.exchange.main import ExchangeLoop
 from host.nflverse import EASTERN
 from tests.conftest import FIXTURE_GAMES
+from tests.pagecheck import page, shows_pnl
 
 SOURCE_GAME = "2025_02_BUF_NYJ"
 GAME_ID = "2026_05_BUF_NYJ"
@@ -246,14 +247,14 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     away = next(m for m in markets if m["side"] == "away")
     exchange_state = host.get("/api/exchange")
     assert exchange_state["down"] is False and exchange_state["market_source"] == "sim" and exchange_state["last_error"] is None
-    assert 'data-banner="exchange-down"' not in host.client.get("/fragments/topbar").text
+    assert not page(host.client.get("/fragments/topbar").text).has('[data-banner="exchange-down"]')
 
     # The owner assigns the trained model to the game (bankroll, trade job).
     created = host.post("/api/assignments", {"game_id": GAME_ID, "model_id": model_id, "bankroll_cents": BANKROLL_CENTS}, expect=201)
     aid, job_id = created["id"], created["job_id"]
     assert created["status"] == "active" and created["bankroll"]["available_cents"] == BANKROLL_CENTS
     assert host.job(job_id)["kind"] == "trade" and host.job(job_id)["status"] == "queued"
-    assert GAME_ID in host.client.get("/trading").text
+    assert GAME_ID in page(host.client.get("/trading").text).row("assignment", aid).text
 
     # The worker takes the trade role, claims the job, ticks and proposes; the host
     # approves (the away side carries the edge against the sim book) and the paper
@@ -287,7 +288,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     rejected = wait_for(order_in(host, aid, "rejected"), "a proposal rejected for daily_loss", timeout=15.0)
     assert rejected["reject_reason"] == "daily_loss" and rejected["cost_cents"] > LOW_DAILY_LOSS
     assert host.get(f"/api/orders/{rejected['id']}")["events"][-1]["detail"] == {"reason": "daily_loss"}
-    assert '<span class="reason">daily_loss: daily loss limit</span>' in host.client.get("/trading").text
+    assert "daily_loss: daily loss limit" in page(host.client.get("/trading").text).card("orders").row("order", rejected["id"]).text
     host.post("/api/settings", {"max_daily_loss_cents": daily_loss})
 
     # The next approval opens, the sim moves against it and it rests; KILL cancels it
@@ -316,8 +317,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     # RESUME clears the flag only; "Activate all paper" brings the assignment back.
     host.form("/kill/reset", {"confirm": "RESUME"})
     assert host.get(f"/api/assignments/{aid}")["status"] == "halted"
-    page = host.client.get("/trading").text
-    assert 'action="/assignments/activate-paper"' in page
+    assert page(host.client.get("/trading").text).action("activate-all-paper").target == "/assignments/activate-paper"
     resp = host.form("/assignments/activate-paper")
     assert resp.headers["location"] == "/trading"
     assert host.get(f"/api/assignments/{aid}")["status"] == "active"
@@ -384,20 +384,26 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     assert pnl["by_worker"][worker_id] == pnl_cents and pnl["by_mode"]["paper"] == {"today_cents": pnl_cents, "all_time_cents": pnl_cents}
     assert pnl["by_mode"]["live"] == {"today_cents": 0, "all_time_cents": 0}
     dollars = f"${pnl_cents // 100}.{pnl_cents % 100:02d}"
-    assert f"paper today {dollars} &middot; all {dollars}" in host.client.get("/fragments/topbar").text
+    assert shows_pnl(host.client, "paper", dollars), "today's paper P&L is on view"
     board = host.get("/api/models")
     entry = next(m for m in board["ranked"] + board["unranked"] if m["id"] == models_root(host, model_id))
     assert entry["paper"]["games"] == 1 and entry["paper"]["bets"] == 2 and entry["paper"]["pnl_cents"] == pnl_cents
     assert entry["paper"]["avg_clv"] is not None and entry["rank_mode"] == "validation", "one game: not yet ranked on paper (step 6A ranks by the validation era)"
-    assert f"1 g &middot; 2 bets &middot; {dollars}" in host.client.get("/models").text
-    assert f"1 games &middot; 2 bets &middot; {dollars}" in host.client.get(f"/models/{model_id}").text
-    page = host.client.get("/trading").text
-    assert '<span class="badge st-settled">settled</span>' in page and GAME_ID in page
+    assert f"1 g · 2 bets · {dollars}" in page(host.client.get("/models").text).row("model", entry["id"]).text
+    assert page(host.client.get(f"/models/{model_id}").text).prop("paper record").startswith(f"1 games · 2 bets · {dollars}")
+    trading = page(host.client.get("/trading").text)
+    row = trading.row("assignment", aid)
+    assert row.chip("settled").text == "settled" and GAME_ID in row.text
+    listed = set(trading.row_ids("order"))
     for order_id in (first["id"], second["id"], third["id"], fourth["id"], rejected["id"]):
-        assert order_id in page, order_id
-    assert '<span class="reason">daily_loss: daily loss limit</span>' in page and 'id="fills"' in page and "No fills yet." not in page
-    assert '<span class="chip chip-ok">OK</span>' in page and "Replay of 1 bankroll" in page
-    assert '<span class="chip chip-bad">DOWN</span>' not in page and "sim" in page
+        assert str(order_id) in listed, order_id
+    assert "daily_loss: daily loss limit" in trading.card("orders").row("order", rejected["id"]).text
+    fills = trading.card("fills")
+    assert fills.rows("fill") and "No fills yet." not in fills.text
+    ledger = trading.card("ledger")
+    assert ledger.chip("ledger-ok").text == "OK" and "Replay of 1 bankroll" in ledger.text
+    exchange = trading.card("exchange")
+    assert not exchange.has('[data-chip="exchange-down"]') and exchange.prop("source") == "sim"
     assert host.client.get("/fragments/trading").status_code == 200
     assert "ledger ok" in run_cli(["ledger-check"])
 

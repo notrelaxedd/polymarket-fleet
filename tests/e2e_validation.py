@@ -19,6 +19,7 @@ from psycopg.types.json import Jsonb
 from host.eligibility import DEFAULT_THRESHOLDS
 from tests.conftest import stress_metrics, validation_metrics
 from tests.e2e_models import finished, send
+from tests.pagecheck import Node, page
 
 ERAS = {"backtest_seasons": [2016, 2019], "validation_seasons": [2022, 2023]}
 SEARCH = {"family": "elo_blend", "n": 4, "seed": 6, "seasons": [2016, 2019], "top_k": 2}
@@ -125,24 +126,25 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
         stored = host.get(f"/api/models/{mid}")["validation_metrics"]
         assert entry["validation"]["ci"]["roi"] == stored["ci"]["roi"] and entry["validation"]["market_p"] == stored["market_p"]
         assert entry["score"] == entry["validation"]["shrunk_roi"] and entry["search_score"] is not None
-    page = host.client.get("/models").text
-    assert '<span class="k">validation ROI</span>' in page and '<span class="k">beats market</span>' in page
+    board_page = page(host.client.get("/models").text)
+    assert "validation ROI" in board_page.text and "beats market" in board_page.text
     for mid in ids:
-        row = _row(page, mid)
-        assert 'href="/jobs?validate_model=' in row and ("chip chip-beats" in row or "no <span" in row)
+        row = board_page.row("model", mid)
+        assert row.action("validate").target.startswith("/jobs")
+        assert ("beats" in row.chips()) == bool(ranked[mid]["validation"]["beats_market"]), "the chip shows a beaten market"
         if host.get(f"/api/models/{mid}")["validation_metrics"]["n_bets"]:
-            assert '<span class="range">' in row, "the ROI interval is printed next to the validation ROI"
+            assert row.has(".range"), "the ROI interval is printed next to the validation ROI"
     return ids
 
 
-def _row(page: str, model_id: str) -> str:
-    start = page.index(f'data-model="{model_id}"')
-    return page[start:page.index("</tr>", start)]
+def model_row(host: Any, model_id: str) -> Node:
+    """The lineage's row on the Models page."""
+    return page(host.client.get("/models").text).row("model", model_id)
 
 
-def _classes(html: str) -> set[str]:
-    """Every class name used in a fragment (class lookups survive markup changes)."""
-    return {name for attr in re.findall(r'class="([^"]*)"', html) for name in attr.split()}
+def is_ranked(row: Node) -> bool:
+    """A ranked row leads with its rank, "#3"."""
+    return re.match(r"#\d+", row.text) is not None
 
 
 def unvalidated_phase(host: Any, worker_id: str, model_id: str, wait_for: Callable[..., Any],
@@ -156,8 +158,8 @@ def unvalidated_phase(host: Any, worker_id: str, model_id: str, wait_for: Callab
     entry = next(m for m in board["unranked"] if m["id"] == model_id)
     assert entry["unranked_reason"] == "not validated" and entry["validated"] is False and entry["validation"] is None
     assert "rank" not in entry and host.get(f"/api/models/{model_id}")["validated"] is False
-    classes = _classes(_row(host.client.get("/models").text, model_id))
-    assert "chip-unvalidated" in classes and "rank" not in classes, classes
+    row = model_row(host, model_id)
+    assert "unvalidated" in row.chips() and not is_ranked(row), row.text
     job = send(host, "validate", {"model_id": model_id}, worker_id)
     done = wait_for(finished(host, job["id"]), "validate of the unvalidated lineage done", timeout=60.0)
     vm = done["result"]["validation_metrics"]
@@ -167,8 +169,8 @@ def unvalidated_phase(host: Any, worker_id: str, model_id: str, wait_for: Callab
     entry = next(m for m in board["ranked"] if m["id"] == model_id)
     assert entry["validated"] is True and entry["rank_mode"] == "validation" and entry["rank"] >= 1
     assert entry["score"] == vm["shrunk_roi"] and entry["validation"]["seasons"] == [2022, 2023]
-    classes = _classes(_row(host.client.get("/models").text, model_id))
-    assert "chip-unvalidated" not in classes and "rank" in classes, classes
+    row = model_row(host, model_id)
+    assert "unvalidated" not in row.chips() and is_ranked(row), row.text
     wait_for(settled(host, worker_id, "idle"), "worker idle after validating the unvalidated lineage")
 
 
@@ -196,13 +198,14 @@ def validate_phase(host: Any, worker_id: str, child_id: str, root_id: str,
         stored = host.get(f"/api/models/{mid}")
         assert stored["validation_metrics"] == vm and stored["stress_metrics"] == sm, "the lineage shares the validation"
         assert stored["validation"]["seasons"] == [2022, 2023]
-    page = host.client.get(f"/models/{child_id}").text
-    assert 'id="robustness"' in page and "validation era 2022-2023" in page and 'class="ci-line"' in page
-    assert "spread+0.02" in page and "primetime" in page.lower()
-    detail = host.client.get(f"/jobs/{job['id']}").text
-    assert 'id="robustness"' in detail, "the validate job's result renders like the model's section"
-    form = host.client.get(f"/jobs?validate_model={child_id}").text
-    assert 'id="validate" open' in form and f'value="{child_id}"' in form and 'name="validate_seed"' in form
+    robustness = page(host.client.get(f"/models/{child_id}").text).card("robustness")
+    assert "validation era 2022-2023" in robustness.text and "Validation ROI" in robustness.text
+    assert "spread+0.02" in robustness.row_ids("stress") and "primetime" in robustness.text.lower()
+    detail = page(host.client.get(f"/jobs/{job['id']}").text)
+    assert detail.card("robustness").rows("stress"), "the validate job's result renders like the model's section"
+    form = page(host.client.get(f"/jobs?validate_model={child_id}").text).form("validate")
+    assert form.closest("details").is_open and form.input("validate_seed")
+    assert form.input("model_id").one("option[selected]").attr("value") == child_id
     wait_for(settled(host, worker_id, "idle"), "worker idle after the validate job")
 
 
@@ -232,17 +235,16 @@ def gates_phase(host: Any, child_id: str, root_id: str) -> None:
     set_lineage_metrics(host, root_id, validation_metrics(), stress_metrics())
     recompute(DEFAULT_THRESHOLDS)
     assert statuses() == {"paper_ok"}, "metrics that clear every rule promote the whole lineage"
-    page = host.client.get("/models").text
-    assert 'class="badge st-paper_ok">paper ok</span>' in _row(page, root_id)
+    assert model_row(host, root_id).chip("paper_ok").text == "paper ok"
 
     set_lineage_metrics(host, root_id, validation_metrics(flags=["overfit"]), stress_metrics(flags=["regime_dependent"]))
     recompute(DEFAULT_THRESHOLDS)
     assert statuses() == {"candidate"}, "a forbidden flag demotes"
-    row = _row(host.client.get("/models").text, root_id)
-    assert 'class="chip chip-flag chip-overfit"' in row and 'class="chip chip-flag chip-regime_dependent"' in row
+    row = model_row(host, root_id)
+    assert row.chip("overfit").has_class("chip-overfit") and row.chip("regime_dependent").has_class("chip-regime_dependent")
     detail = host.get(f"/api/models/{child_id}")
     assert detail["flags"] == ["overfit", "regime_dependent"] and detail["status"] == "candidate"
-    assert "the search era looked better than the held-out era" in host.client.get(f"/models/{child_id}").text
+    assert "the search era looked better than the held-out era" in page(host.client.get(f"/models/{child_id}").text).card("robustness").text
 
     set_lineage_metrics(host, root_id, validation_metrics(), stress_metrics(flags=["regime_dependent"]))
     recompute(DEFAULT_THRESHOLDS)
@@ -279,10 +281,10 @@ def phase_validation(host: Any, worker_id: str, models: dict[str, Any], wait_for
     before = host.get("/api/settings")
     assert before["validation_seasons"] == [2022, None] and before["search_workers"] == "auto"
     host.post("/api/settings", ERAS)
-    settings_page = host.client.get("/settings").text
+    settings_page = page(host.client.get("/settings").text)
     for name in ("seasons_first", "seasons_last", "validation_first", "validation_last", "search_workers"):
-        assert f'name="{name}"' in settings_page, name
-    assert 'id="thresholds"' in settings_page and 'value="2023"' in settings_page
+        assert settings_page.field(name).one(f'[name="{name}"]'), name
+    assert settings_page.form("thresholds") and settings_page.input("validation_last").attr("value") == "2023"
     ids = search_phase(host, worker_id, wait_for, settled)
     validate_phase(host, worker_id, models["child"], models["roots"][0], wait_for, settled)
     unvalidated_phase(host, worker_id, models["roots"][1], wait_for, settled)

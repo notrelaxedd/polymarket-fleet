@@ -49,6 +49,7 @@ from tests.e2e_models import CountingRunner, phase_models
 from tests.e2e_paper_gate import phase_paper_gate
 from tests.e2e_trading import phase_trading
 from tests.e2e_validation import phase_validation
+from tests.pagecheck import Node, page, topbar
 
 HEARTBEAT = 0.3
 LOOP = 0.5
@@ -355,11 +356,9 @@ def phase_cancel(host: LiveHost, worker_id: str) -> None:
     assert host.worker(worker_id)["current_jobs"] == []
 
 
-def _card(fragment: str, worker_id: str) -> str:
-    """The worker's card out of the fleet fragment."""
-    start = fragment.index(f'data-worker="{worker_id}"')
-    end = fragment.find("</article>", start)
-    return fragment[start:end]
+def _card(fragment: str, worker_id: str) -> Node:
+    """The worker's row out of the fleet fragment."""
+    return page(fragment).row("worker", worker_id)
 
 
 def _card_settled(host: LiveHost, worker_id: str, role: str) -> Callable[[], Any]:
@@ -367,7 +366,8 @@ def _card_settled(host: LiveHost, worker_id: str, role: str) -> Callable[[], Any
 
     def check() -> Any:
         card = _card(host.fragment(), worker_id)
-        if f'<option value="{role}" selected>' in card and "switching to" not in card and " disabled>" not in card:
+        chosen = card.one('select[name="role"]').first("option[selected]")
+        if chosen is not None and chosen.attr("value") == role and "switching to" not in card.text and not card.has("[disabled]"):
             return card
         return False
 
@@ -389,25 +389,26 @@ def phase_dashboard(host: LiveHost, state_dir: str, worker_id: str, agent: Agent
 
     t_role = time.monotonic()
     resp = host.form(f"/workers/{worker_id}/role", {"role": "train"})
-    assert resp.headers["location"] == "/" and flash_cookie(resp).startswith("e2e-box: switching to train")
+    assert resp.headers["location"] in ("/", "/fleet") and flash_cookie(resp).startswith("e2e-box: switching to train")
     card = _card(host.fragment(), worker_id)
-    assert f"switching to train (epoch {epoch_before + 1})" in card, card
-    assert f'id="role-{worker_id}" name="role" data-autosubmit="1" disabled>' in card
-    assert '<option value="train" selected>' in card
+    assert f"switching to train (epoch {epoch_before + 1})" in card.text, card.text
+    select = card.one('select[name="role"]')
+    assert select.disabled and select.attr("data-autosubmit") == "1", "held while the worker acks"
+    assert select.one("option[selected]").attr("value") == "train"
     card = wait_for(_card_settled(host, worker_id, "train"), "fragment to show train", timeout=ROLE_CHANGE_BOUND)
     role_wall = time.monotonic() - t_role
     assert role_wall < ROLE_CHANGE_BOUND, f"fragment showed train after {role_wall:.2f} s"
-    assert "no job" in card, "the preempted job left the card"
+    assert "no job" in card.text, "the preempted job left the card"
     wait_for(settled(host, worker_id, "train"), "worker settled in train")
     assert host.job(job_id)["status"] == "queued", "the backtest job was handed back, not cancelled"
     assert host.client.get("/?flash=x").status_code == 200
     resp = host.form(f"/jobs/{job_id}/cancel", {"next": f"/jobs/{job_id}"})
     assert resp.headers["location"] == f"/jobs/{job_id}" and flash_cookie(resp).startswith("job ")
     assert host.job(job_id)["status"] == "cancelled"
-    assert "cancelled" in host.client.get(f"/jobs/{job_id}").text
+    assert page(host.client.get(f"/jobs/{job_id}").text).has('[data-chip="cancelled"]')
 
     # KILL through the form: the host flag, the next heartbeat reply and status.json agree.
-    assert host.client.get("/fragments/topbar").text.count('data-kill="1"') == 1
+    assert page(host.fragment("topbar")).count('[data-action="kill"]') == 1
     heartbeats = agent.agent.heartbeat_count
     resp = host.form("/kill")
     assert resp.headers["location"] == "/" and flash_cookie(resp) == "Trading killed. Reset in Settings."
@@ -416,10 +417,10 @@ def phase_dashboard(host: LiveHost, state_dir: str, worker_id: str, agent: Agent
              "heartbeat reply with kill=true")
     wait_for(lambda: (worker_config.load_status(state_dir) or {}).get("kill") is True, "status.json shows kill")
     assert agent.agent.kill is True
-    topbar = host.client.get("/fragments/topbar").text
-    assert 'data-killed="1"' in topbar and ">KILLED<" in topbar and 'data-kill="1"' not in topbar
-    assert "TRADING KILLED. Reset in" in host.client.get("/").text
-    assert host.client.get("/kill/confirm").text.count("already killed") == 1
+    bar = page(host.fragment("topbar"))
+    assert bar.has('[data-killed="1"]') and bar.chip("killed").text == "KILLED" and not bar.has('[data-action="kill"]')
+    assert "TRADING KILLED. Reset in" in topbar(page(host.client.get("/").text)).text
+    assert page(host.client.get("/kill/confirm").text).text.count("already killed") == 1
     audit = host.get("/api/audit?limit=5")
     assert audit[0]["action"] == "kill" and audit[0]["actor"]
 
@@ -433,7 +434,7 @@ def phase_dashboard(host: LiveHost, state_dir: str, worker_id: str, agent: Agent
 
     # RESUME: the wrong word is a 400 that keeps the flag, the right one clears it.
     resp = host.form("/kill/reset", {"confirm": "resume"}, expect=400)
-    assert "text/html" in resp.headers["content-type"] and "RESUME" in resp.text
+    assert "text/html" in resp.headers["content-type"] and "RESUME" in page(resp.text).card("kill").text
     assert host.get("/api/settings")["kill_switch"] is True
     heartbeats = agent.agent.heartbeat_count
     resp = host.form("/kill/reset", {"confirm": "RESUME"})
@@ -442,7 +443,7 @@ def phase_dashboard(host: LiveHost, state_dir: str, worker_id: str, agent: Agent
     wait_for(lambda: agent.agent.heartbeat_count > heartbeats and agent.agent.last_response.get("kill") is False,
              "heartbeat reply with kill=false")
     wait_for(lambda: (worker_config.load_status(state_dir) or {}).get("kill") is False, "status.json shows the reset")
-    assert 'data-kill="1"' in host.client.get("/fragments/topbar").text
+    assert page(host.fragment("topbar")).has('[data-action="kill"]')
     audit = host.get("/api/audit?limit=10")
     assert audit[0]["action"] == "kill_reset" and audit[0]["confirmation_text"] == "RESUME"
     assert [a["action"] for a in audit if a["action"].startswith("kill")] == ["kill_reset", "kill"]

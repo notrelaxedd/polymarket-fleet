@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Kill trading{% endblock %}
+{% block page %}kill{% endblock %}
 {% block content %}
 <div class="card confirm">
   <h1>Kill trading?</h1>
@@ -8,7 +9,7 @@
   <p><a class="btn" href="/">Back</a></p>
   {% else %}
   <p>Trade workers stop proposing, their open orders are cancelled, every assignment is halted and no trade claim is granted until you reset the switch in Settings by typing RESUME. Backtests, model searches and training keep running.</p>
-  <form method="post" action="/kill">
+  <form method="post" action="/kill" data-action="kill">
     <button type="submit" class="btn btn-kill big">KILL TRADING</button>
     <a class="btn" href="/">Cancel</a>
   </form>

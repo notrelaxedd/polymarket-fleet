@@ -39,6 +39,7 @@ from tests.e2e_trading import (
     shifted_game_csv, trade_status,
 )
 from tests.fake_gateway import FakeCredentials, FakeLiveGateway
+from tests.pagecheck import mode_pill, page, shows_pnl, topbar
 
 SOURCE_GAME = "2025_02_BUF_NYJ"
 LIVE_GAME = "2026_06_BUF_NYJ"
@@ -97,15 +98,16 @@ def _enable_live(host: Any, phrase: str) -> None:
     changes), the exact dated phrase turns live on with a flash."""
     wrong = host.client.post("/settings/live", data={"confirm": "ENABLE LIVE TRADING"}, headers={"Origin": host.url}, follow_redirects=False)
     assert wrong.status_code == 400 and "text/html" in wrong.headers["content-type"]
-    assert f'<p class="error inline-error">confirmation must be exactly &#34;{phrase}&#34;</p>' in wrong.text
-    assert 'name="confirm" value="ENABLE LIVE TRADING"' in wrong.text, "the typed text is kept"
+    live = page(wrong.text).card("live")
+    assert live.texts(".inline-error") == [f'confirmation must be exactly "{phrase}"']
+    assert live.input("confirm").attr("value") == "ENABLE LIVE TRADING", "the typed text is kept"
     assert live_state(host)["live_enabled"] is False
     resp = host.form("/settings/live", {"confirm": phrase})
     assert resp.headers["location"] == "/settings#live"
     state = live_state(host)
     assert state["live_enabled"] is True and state["live_enabled_by"] == "dev" and state["live_enabled_at"]
-    topbar = host.client.get("/fragments/topbar").text
-    assert 'class="pill live">LIVE</span>' in topbar and ">PAPER<" not in topbar
+    bar = page(host.client.get("/fragments/topbar").text)
+    assert mode_pill(bar) == "LIVE" and bar.one(".pill").has_class("live") and "PAPER" not in bar.text
 
 
 def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, gw: FakeLiveGateway,
@@ -121,8 +123,8 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
         "two sim markets with snapshots for the live game",
     )
     away = next(m for m in markets if m["side"] == "away")
-    page = host.client.get("/settings").text
-    assert "<dt>credentials</dt><dd>yes " in page and '<span class="chip chip-ok">ok</span>' in page
+    live = page(host.client.get("/settings").text).card("live")
+    assert live.prop("credentials").startswith("yes ") and live.chip("auth-ok").text == "ok"
 
     # The typed switch, then the lineage forced live_eligible and a live assignment.
     phrase = state["expected_phrase"]
@@ -131,7 +133,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     created = host.post("/api/assignments", {"game_id": LIVE_GAME, "model_id": model_id, "mode": "live", "bankroll_cents": BANKROLL_CENTS}, expect=201)
     aid, job_id = created["id"], created["job_id"]
     assert created["mode"] == "live" and created["status"] == "active" and created["bankroll"]["available_cents"] == BANKROLL_CENTS
-    assert "is-live" in host.client.get("/trading").text, "the live assignment row is tinted"
+    assert page(host.client.get("/trading").text).row("assignment", aid).has_class("is-live"), "the live assignment row is tinted"
 
     # The worker claims the live trade job; the approval passes buying power; the
     # executor places on the fake gateway and records the exchange id.
@@ -146,7 +148,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     assert [e["to_status"] for e in host.get(f"/api/orders/{first['id']}")["events"]] == ["approved", "submitting", "open"]
     assert host.get(f"/api/assignments/{aid}")["bankroll"]["reserved_cents"] == first["cost_cents"]
     assert first["cost_cents"] <= BALANCE_CENTS, "the approval was checked against the fake buying power"
-    assert first["exchange_order_id"] in host.client.get("/fragments/trading").text
+    assert first["exchange_order_id"] in page(host.client.get("/fragments/trading").text).card("open-orders").row("order", first["id"]).text
 
     # A fill arrives through the fills poll (idempotent on the exchange fill id).
     fill = gw.add_fill(first["client_request_id"], float(first["price"]), int(first["size"]))
@@ -179,10 +181,10 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     assert stranger["exchange_order_id"] in gw.cancelled and stranger["exchange_order_id"] not in gw.remote
     state = live_state(host)
     assert state["live_enabled"] is False and state["killed"] is True and state["auto_kill_reasons"] == ["unknown_order"]
-    topbar = host.client.get("/fragments/topbar").text
-    assert 'data-auto-kill="unknown_order"' in topbar and "TRADING KILLED automatically: " in topbar
-    assert 'data-auto-kill="unknown_order"' in host.client.get("/").text
-    assert 'auto-kill-reason">unknown_order</span>' in host.client.get("/settings").text
+    bar = page(host.client.get("/fragments/topbar").text)
+    assert bar.one("[data-auto-kill]").attr("data-auto-kill") == "unknown_order" and "TRADING KILLED automatically: " in bar.text
+    assert topbar(page(host.client.get("/").text)).one("[data-auto-kill]").attr("data-auto-kill") == "unknown_order"
+    assert page(host.client.get("/settings").text).card("live").texts('[data-chip="auto-kill"]') == ["unknown_order"]
     audit = host.get("/api/audit?limit=5")
     assert audit[0]["action"] == "auto_kill" and audit[0]["actor"] == "auto:unknown_order"
     assert audit[0]["after"]["orders"][0]["exchange_order_id"] == stranger["exchange_order_id"]
@@ -199,7 +201,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     host.form("/kill/reset", {"confirm": "RESUME"})
     state = live_state(host)
     assert state["killed"] is False and state["live_enabled"] is False and state["auto_kill_reasons"] == []
-    assert 'data-auto-kill' not in host.client.get("/fragments/topbar").text
+    assert not page(host.client.get("/fragments/topbar").text).has("[data-auto-kill]")
     _enable_live(host, phrase)
     wait_for(lambda: trade_status(state_dir).get("last_tick", {}).get("kill") is False, "the worker's tick sees the reset")
 
@@ -215,7 +217,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     assert smoke["exchange_order_id"] in gw.cancelled and gw.remote == {}
     smoke_row = host.get(f"/api/orders/{smoke['order_id']}")
     assert smoke_row["kind"] == "smoke" and smoke_row["mode"] == "live" and smoke_row["assignment_id"] is None
-    assert "chip-smoke" in host.client.get("/trading").text
+    assert page(host.client.get("/trading").text).card("orders").row("order", smoke["order_id"]).chip("smoke").text == "smoke"
     smoke_audit = next(a for a in host.get("/api/audit?limit=20") if a["action"] == "smoke_order")
     assert smoke_audit["confirmation_text"] == "SMOKE " + phrase[-10:] and smoke_audit["actor"] == "cli"
 
@@ -265,7 +267,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     assert pnl["by_mode"]["live"] == {"today_cents": pnl_cents, "all_time_cents": pnl_cents}
     assert pnl["by_mode"]["paper"] == paper_pnl and pnl["all_time_cents"] == pnl_cents + paper_pnl["all_time_cents"]
     dollars = f"${pnl_cents // 100}.{pnl_cents % 100:02d}"
-    assert f"live today {dollars} &middot; all {dollars}" in host.client.get("/fragments/topbar").text
+    assert shows_pnl(host.client, "live", dollars), "today's live P&L is on view"
     score = rows(host, "SELECT * FROM model_scores WHERE game_id = %s", (LIVE_GAME,))
     assert len(score) == 1 and score[0]["mode"] == "live" and score[0]["n_bets"] == 1
     assert sorted(o["status"] for o in orders_of(host, aid) if o["status"] != "rejected") == ["cancelled", "cancelled", "filled"]

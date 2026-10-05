@@ -1,13 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Trading{% endblock %}
+{% block page %}trading{% endblock %}
 {# The create form sits above the live region and outside it, so the 5 s refresh of
    #trading-live never wipes a half-typed bankroll. It is folded unless it was just
    rejected or opened from a model's Assign button (?model=). #}
 {% block content %}
 <h1>Trading</h1>
-<details class="card send assign" id="assign"{% if assign_open %} open{% endif %}>
+<details class="card send assign" id="assign" data-card="assign"{% if assign_open %} open{% endif %}>
   <summary><h2>New assignment</h2></summary>
-  <form method="post" action="/assignments">
+  <form method="post" action="/assignments" data-form="assign">
   {% if error %}<p class="error inline-error">{{ error }}</p>{% endif %}
   <div class="fields">
     <label>Game <span class="muted small">upcoming, with confirmed markets</span>

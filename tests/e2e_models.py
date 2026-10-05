@@ -19,6 +19,7 @@ from fleet.worker import config as worker_config
 from fleet.worker import runner as runner_module
 from host import cli
 from tests.conftest import FIXTURE_GAMES
+from tests.pagecheck import page
 
 FIXTURE_ROWS = 2761
 SHORT_SEARCH = {"family": "elo_blend", "n": 3, "seasons": [2019, 2021], "top_k": 2}
@@ -119,12 +120,13 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
         assert entry["metrics"]["n_bets"] == top["metrics"]["n_bets"]
         assert entry["summary"].count(". ") + entry["summary"].count(".\n") >= 2 and entry["summary"].endswith("CLV.")
         assert entry["summary"].startswith(f"Elo blend (K {round(top['params']['k'])}, home edge")
-    page = host.client.get("/models").text
+    board = page(host.client.get("/models").text)
     for mid in ids:
-        assert f'href="/models/{mid}"' in page
-        assert listed[mid]["summary"].split(". ")[0] in page, "the Models page renders the summary (first sentence)"
-    detail = host.client.get(f"/jobs/{job['id']}").text
-    assert 'class="metrics top' in detail and f'href="/models/{ids[0]}"' in detail
+        assert f"/models/{mid}" in board.row("model", mid).hrefs
+        detail = page(host.client.get(f"/models/{mid}").text)
+        assert listed[mid]["summary"].split(". ")[0] in detail.text, "the model page renders the summary (first sentence)"
+    detail = page(host.client.get(f"/jobs/{job['id']}").text)
+    assert detail.has('[data-list="candidates"]') and f"/models/{ids[0]}" in detail.hrefs
     wait_for(settled(host, worker_id, "idle"), "worker idle after the search")
     return ids
 
@@ -147,8 +149,8 @@ def train_phase(host: Any, worker_id: str, root_id: str, wait_for: Callable[...,
     assert len(artifact["ratings"]) >= 32 and "LV" in artifact["ratings"] and "OAK" not in artifact["ratings"]
     assert [r["id"] for r in child["lineage"]] == [root_id, child_id]
     assert child["backtest_metrics"]["n_bets"] == root["backtest_metrics"]["n_bets"], "a child inherits the lineage metrics"
-    page = host.client.get(f"/models/{child_id}").text
-    assert "2021 week 10" in page and f'href="/models/{root_id}"' in page
+    detail = page(host.client.get(f"/models/{child_id}").text)
+    assert "2021 week 10" in detail.text and f"/models/{root_id}" in detail.hrefs
     return child_id
 
 
@@ -166,10 +168,10 @@ def backtest_phase(host: Any, worker_id: str, model_id: str, root_id: str, wait_
         assert stored["n_games"] == result["n_games"] and stored["log_loss"] == result["log_loss"]
         assert stored["per_season"][0]["season"] == 2019
     assert "model_backtest" in host.events(job["id"])
-    detail = host.client.get(f"/jobs/{job['id']}").text
-    assert 'class="kv metrics"' in detail and 'class="metrics per-season' in detail
-    assert f">{result['n_games']}<" in detail
-    assert 'class="kv metrics"' in host.client.get(f"/models/{model_id}").text
+    detail = page(host.client.get(f"/jobs/{job['id']}").text)
+    assert detail.has('[data-list="metrics"]') and detail.has('[data-list="per-season"]')
+    assert detail.listing("metrics").prop("games") == str(result["n_games"])
+    assert page(host.client.get(f"/models/{model_id}").text).has('[data-list="metrics"]')
 
 
 def preempt_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settled: Callable[..., Any]) -> None:

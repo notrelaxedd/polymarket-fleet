@@ -15,6 +15,7 @@ from tests.conftest import (
     approve, approved_order, assignment_row, audit_rows, auth_state, bankroll_of, enable_live, order_row, post_loss,
     set_setting, trade_setup,
 )
+from tests.pagecheck import mode_pill, page
 
 LIVE_GAME = "2026_05_BUF_MIA"
 
@@ -44,7 +45,7 @@ def test_default_off_after_install(client, conn):
     assert state["live_enabled_at"] is None and state["live_enabled_by"] is None and state["auto_kill_reasons"] == []
     assert state["expected_phrase"] == phrase(conn) and state["killed"] is False
     assert len(state["problems"]) >= 2, "no credentials, no auth"
-    assert client.get("/fragments/topbar").text.count(">PAPER<") == 1
+    assert mode_pill(page(client.get("/fragments/topbar").text)) == "PAPER"
 
 
 def test_enable_requires_exact_dated_phrase(client, conn):
@@ -169,14 +170,14 @@ def test_kill_turns_live_off(client, conn):
     lv = trade_setup(conn, mode="live", model_status="live_eligible", game_id=LIVE_GAME)
     row = approved_order(conn, lv, size=3)
     orders.set_status(conn, row["id"], "open", "executor", expected=("approved",), exchange_order_id="ex-2")
-    assert client.get("/fragments/topbar").text.count(">LIVE<") == 1
+    assert mode_pill(page(client.get("/fragments/topbar").text)) == "LIVE"
     client.post("/api/kill")
     assert live_flag(conn) is False
     assert assignment_row(conn, lv.assignment["id"])["status"] == "halted"
     assert order_row(conn, row["id"])["status"] == "cancel_requested"
     state = client.get("/api/live").json()
     assert state["live_enabled"] is False and state["killed"] is True and state["live_enabled_at"] is None
-    assert ">PAPER<" in client.get("/fragments/topbar").text
+    assert mode_pill(page(client.get("/fragments/topbar").text)) == "PAPER"
     client.post("/api/kill/reset", json={"confirm": "RESUME"})
     assert live_flag(conn) is False, "a reset never turns live back on"
     # the live daily-loss trip turns it off the same way (through kill.live_off)
@@ -225,13 +226,13 @@ def test_dashboard_form_and_pill(client, conn):
         assert key in state, key
     assert state["credentials_present"] is True and state["auth_ok"] is True and 0 <= state["auth_age_s"] < 5
     assert state["balance_cents"] == 50_000 and state["clock_skew_ms"] == 120 and state["problems"] == []
-    topbar = client.get("/fragments/topbar").text
-    assert ">PAPER<" in topbar and ">LIVE<" not in topbar
+    bar = page(client.get("/fragments/topbar").text)
+    assert mode_pill(bar) == "PAPER" and "LIVE" not in bar.text
     assert client.post("/live", json={"confirm": state["expected_phrase"]}).status_code == 200
-    topbar = client.get("/fragments/topbar").text
-    assert ">LIVE<" in topbar and 'class="pill live"' in topbar
-    page = client.get("/settings").text
-    assert 'action="/settings/live/off"' in page and 'data-live-state="on"' in page, "the Disable button once on"
+    bar = page(client.get("/fragments/topbar").text)
+    assert mode_pill(bar) == "LIVE" and bar.one(".pill").has_class("live")
+    live = page(client.get("/settings").text).card("live")
+    assert live.action("live-off").target == "/settings/live/off" and live.one("[data-live-state]").attr("data-live-state") == "on", "the Disable button once on"
     client.post("/live/off", json={"reason": "test"})
-    page = client.get("/settings").text
-    assert 'action="/settings/live"' in page and state["expected_phrase"] in page, "the typed form shows the phrase"
+    live = page(client.get("/settings").text).card("live")
+    assert live.form("live-on").target == "/settings/live" and state["expected_phrase"] in live.text, "the typed form shows the phrase"

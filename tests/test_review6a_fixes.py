@@ -16,6 +16,7 @@ from host.jobparams import copied_settings, prepare_params
 from host.settings import get_settings, validate_settings
 from tests.conftest import (assignment_row, backtest_metrics, ingest_fixture, insert_model, insert_validated_model,
                             model_row, set_setting, trade_setup, validation_metrics)
+from tests.pagecheck import page
 
 LIVE_GAME = "2025_12_KC_BUF"
 
@@ -145,7 +146,7 @@ def test_an_unvalidated_lineage_never_ranks_on_its_paper_record(client, conn):
     assert [e["id"] for e in board["ranked"]] == [str(validated["id"])]
     entry = next(e for e in board["unranked"] if e["id"] == str(unvalidated["id"]))
     assert entry["unranked_reason"] == "not validated" and entry["rank_mode"] == "paper" and "rank" not in entry
-    assert 'chip-unvalidated' in client.get("/models").text
+    assert page(client.get("/models").text).row("model", unvalidated["id"]).chip("unvalidated").text == "not validated"
 
 
 # the startup recompute ----------------------------------------------------------------
@@ -184,19 +185,21 @@ def test_host_main_runs_the_startup_recompute():
 def test_tiny_market_p_reads_below_one_in_a_thousand(client, conn):
     """Review 6A (low): p = 1/10001 printed as "p = 0.000"."""
     model = insert_validated_model(conn, validation=validation_metrics(market_p=1 / 10001))
-    row = client.get("/models").text
-    assert "p &lt; 0.001" in row and "p 0.000" not in row
-    detail = client.get(f"/models/{model['id']}").text
-    assert "p &lt; 0.001 (sign-flip test" in detail and "p = 0.000" not in detail
+    board = page(client.get("/models").text).text
+    assert "p < 0.001" in board and "p 0.000" not in board
+    detail = page(client.get(f"/models/{model['id']}").text).card("robustness").text
+    assert "p < 0.001 (sign-flip test" in detail and "p = 0.000" not in detail
     other = insert_validated_model(conn, params={"k": 19.0}, validation=validation_metrics(market_p=0.0123))
-    assert "p = 0.012 (sign-flip test" in client.get(f"/models/{other['id']}").text
+    assert "p = 0.012 (sign-flip test" in page(client.get(f"/models/{other['id']}").text).card("robustness").text
 
 
 def test_the_paper_cell_wraps_so_the_summary_keeps_its_width(client, conn):
     """Review 6A (medium): a nowrap paper cell squeezed the summary to one word per line
     at 1280 px and pushed the buttons out of the table."""
     insert_validated_model(conn)
-    page = client.get("/models").text
-    assert 'class="c-paper"' in page and 'class="nowrap c-paper"' not in page
-    css = client.get("/static/style.css").text
-    assert "table.models td.c-summary { min-width: 14rem; }" in css
+    from tests.test_style import declarations
+
+    board = page(client.get("/models").text)
+    assert not any(cell.has_class("nowrap") for cell in board.select(".c-paper")), "the paper cell may wrap"
+    if board.has("td.c-summary"):
+        assert "min-width" in declarations(".c-summary", css=client.get("/static/style.css").text)

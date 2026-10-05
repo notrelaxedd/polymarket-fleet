@@ -22,7 +22,7 @@ from psycopg.rows import dict_row
 
 from host.eligibility import DEFAULT_PAPER_THRESHOLDS, DEFAULT_THRESHOLDS
 from tests.conftest import stress_metrics, validation_metrics
-from tests.e2e_validation import _classes, _row, set_lineage_metrics
+from tests.e2e_validation import model_row, set_lineage_metrics
 
 N_BETS = 40
 STAKE_CENTS = 1000
@@ -117,7 +117,9 @@ def phase_paper_gate(host: Any, lineage_ids: list[str]) -> None:
     assert first["paper"]["games"] == N_BETS and first["paper"]["bets"] == N_BETS and first["paper"]["avg_clv"] > 0
     assert first["paper_ci"]["n_bets"] == N_BETS and first["paper_ci"]["ci"][0] > 0, first["paper_ci"]
     assert second["paper"]["avg_clv"] > 0 and second["paper_ci"]["ci"][0] < 0 < second["paper_ci"]["ci"][1], second["paper_ci"]
-    assert "paper-ci" in _classes(_row(host.client.get("/models").text, sure)), "the 90% range is printed on the row"
+    lo, hi = first["paper_ci"]["ci"]
+    row = model_row(host, sure).text
+    assert f"{lo:.3f} to {hi:.3f}" in row or f"{lo * 100:+.1f}% to {hi * 100:+.1f}%" in row, "the 90% range is printed on the row"
 
     host.post("/api/settings", {"thresholds_paper": dict(DEFAULT_PAPER_THRESHOLDS, clv_ci_excludes_zero=False)})
     assert status(mixed) == "live_eligible", "only the interval rule held it back"

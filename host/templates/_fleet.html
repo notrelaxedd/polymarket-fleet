@@ -5,16 +5,16 @@
 {# The select is held only while an online worker is acking a change (a few seconds);
    a stale or offline box keeps it enabled so a wrong pick can be undone before it returns. #}
 {% set locked = w.switching and w.dot == 'online' %}
-<article class="card worker{% if not w.enabled %} is-disabled{% endif %}{% if w.dot == 'offline' %} is-offline{% endif %}" data-worker="{{ w.id }}">
+<article class="card worker{% if not w.enabled %} is-disabled{% endif %}{% if w.dot == 'offline' %} is-offline{% endif %}" data-worker="{{ w.id }}" data-row="worker" data-id="{{ w.id }}">
   <header class="card-head">
     <span class="dot {{ w.dot }}" role="img" aria-label="{{ w.dot }}"></span>
     <span class="name">{{ w.name }}</span>
-    {% if w.dot != 'online' %}<span class="chip st-{{ w.dot }}">{{ w.dot }}</span>{% endif %}
-    {% if not w.enabled %}<span class="chip">disabled</span>{% endif %}
+    {% if w.dot != 'online' %}<span class="chip st-{{ w.dot }}" data-chip="{{ w.dot }}">{{ w.dot }}</span>{% endif %}
+    {% if not w.enabled %}<span class="chip" data-chip="disabled">disabled</span>{% endif %}
     <span class="muted small">{{ w.id }}{% if w.hostname and w.hostname != w.name %} &middot; {{ w.hostname }}{% endif %}</span>
   </header>
   <div class="role-row">
-    <form class="role" method="post" action="/workers/{{ w.id }}/role">
+    <form class="role" data-form="role" method="post" action="/workers/{{ w.id }}/role">
       <label class="visually-hidden" for="role-{{ w.id }}">Role</label>
       <select id="role-{{ w.id }}" name="role" data-autosubmit="1"{% if locked %} disabled{% endif %}>
         {% for r in roles %}
@@ -23,7 +23,7 @@
       </select>
       <button type="submit" class="btn js-hide"{% if locked %} disabled{% endif %}>Set</button>
     </form>
-    <form class="inline" method="post" action="/workers/{{ w.id }}/enabled">
+    <form class="inline" method="post" action="/workers/{{ w.id }}/enabled" data-action="{{ 'disable' if w.enabled else 'enable' }}">
       <input type="hidden" name="enabled" value="{{ 'false' if w.enabled else 'true' }}">
       <button type="submit" class="link">{{ 'Disable' if w.enabled else 'Enable' }}</button>
     </form>
@@ -34,7 +34,7 @@
   <div class="job">
     {% if w.current_jobs %}
     {% for j in w.current_jobs %}
-    <div class="jobrow">
+    <div class="jobrow" data-job="{{ j.id }}">
     <a class="joblink" href="/jobs/{{ j.id }}">{% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind }}{% endif %}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}</a>
     {% if j.kind == 'trade' %}
     <span class="small muted">held</span>

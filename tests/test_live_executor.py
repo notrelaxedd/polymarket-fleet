@@ -17,6 +17,7 @@ from tests.conftest import (
     set_setting, trade_setup,
 )
 from tests.fake_gateway import FakeAuthError, FakeLiveGateway, live_loop
+from tests.pagecheck import page
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 LIVE_GAME = "2026_05_BUF_MIA"
@@ -431,8 +432,7 @@ def test_auto_kill_reason_shown_until_reset(client, conn):
     assert state["killed"] is True and state["auto_kill_reasons"] == ["unknown_order", "auth_failures"]
     assert state["live_enabled"] is False
     assert [r["actor"] for r in audit_rows(conn, "kill")] == ["auto:unknown_order", "auto:auth_failures"]
-    topbar = client.get("/fragments/topbar").text
-    assert 'data-killed="1"' in topbar
+    assert page(client.get("/fragments/topbar").text).has('[data-killed="1"]')
     assert client.post("/api/kill/reset", json={"confirm": "RESUME"}).status_code == 200
     state = client.get("/api/live").json()
     assert state["killed"] is False and state["auto_kill_reasons"] == [] and state["live_enabled"] is False

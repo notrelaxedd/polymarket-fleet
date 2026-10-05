@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -33,6 +34,7 @@ from psycopg.types.json import Jsonb
 from fleet.worker import config as worker_config
 from tests.e2e_models import finished, send
 from tests.e2e_sells import phase_sells
+from tests.pagecheck import page
 
 PLATFORM = "sim"
 CLOSE = 0.58
@@ -135,7 +137,7 @@ def phase_replay(host: Any, state_dir: str, worker_id: str, models: dict[str, An
 
     # allow_sim_prices off (the default): the Jobs page warns, the worker refuses.
     assert host.get("/api/settings")["allow_sim_prices"] is False
-    assert 'class="error small replay-sim"' in host.client.get("/jobs").text
+    assert _sim_warning(host), "the backtest form warns that sim prices are refused"
     refused = _snapshot_job(host, worker_id, child)
     assert refused["params"]["allow_sim_prices"] is False
     failed = wait_for(lambda: (j := host.job(refused["id"]))["status"] == "failed" and j, "sim prices refused", timeout=30.0)
@@ -147,7 +149,7 @@ def phase_replay(host: Any, state_dir: str, worker_id: str, models: dict[str, An
 
     # allow_sim_prices on: replayed through the latest season, stored apart.
     host.post("/api/settings", {"allow_sim_prices": True})
-    assert 'class="error small replay-sim"' not in host.client.get("/jobs").text
+    assert not _sim_warning(host)
     expect = expected_replay(host)
     job = _snapshot_job(host, worker_id, child)
     assert job["params"]["allow_sim_prices"] is True and job["params"]["seasons"] == [2025, expect["latest"]]
@@ -175,15 +177,18 @@ def phase_replay(host: Any, state_dir: str, worker_id: str, models: dict[str, An
     snap = entry["snapshot"]
     assert snap["n_games"] == N_SCORED and snap["n_bets"] == N_SCORED and snap["clv_estimated"] is False
     assert abs(snap["avg_clv"] - EXPECTED_CLV) < 1e-6 and entry["rank_mode"] != "snapshot", "below 30 bets: no snapshot rank"
-    page = host.client.get("/models").text
-    row = page[page.index(f'data-model="{root}"'):]
-    row = row[:row.index("</tr>")]
-    assert f'<span class="k">snapshot</span> {N_SCORED} games &middot; {N_SCORED} bets' in row and "snapshot-ci" in row
-    detail = host.client.get(f"/models/{child}").text
-    assert 'id="snapshot"' in detail and "Replayed on recorded <strong>sim</strong> prices" in detail
+    row = page(host.client.get("/models").text).row("model", root)
+    assert f"snapshot {N_SCORED} games · {N_SCORED} bets" in row.text and re.search(r"-?\d\.\d{3} to -?\d\.\d{3}", row.text)
+    detail = page(host.client.get(f"/models/{child}").text)
+    assert "Replayed on recorded sim prices" in detail.card("snapshot").text
     wait_for(settled(host, worker_id, "idle"), "worker idle after the replay")
     host.post("/api/settings", {"allow_sim_prices": False})
     return refused["id"]
+
+
+def _sim_warning(host: Any) -> bool:
+    """The Jobs backtest form carries the "sim prices are not allowed" error."""
+    return any("sim prices are not allowed" in e for e in page(host.client.get("/jobs").text).form("backtest").errors())
 
 
 def seed_signals(host: Any) -> dict[str, Any]:
@@ -237,12 +242,12 @@ def phase_epa(host: Any, state_dir: str, worker_id: str, wait_for: Callable[...,
     ids = [m["id"] for m in created]
     board = host.get("/api/models")
     listed = {m["id"]: m for m in board["ranked"] + board["unranked"]}
-    page = host.client.get("/models").text
+    board_text = page(host.client.get("/models").text).text
     for mid in ids:
         model = host.get(f"/api/models/{mid}")
         assert model["family"] == "epa_blend" and set(model["params"]) == EPA_KEYS, model["params"]
         assert model["validation_metrics"]["seasons"] == result["validation_seasons"] and model["summary"].startswith("EPA blend (")
-        assert listed[mid]["short_params"].startswith("window ") and listed[mid]["short_params"] in page
+        assert listed[mid]["short_params"].startswith("window ") and listed[mid]["short_params"] in board_text
     wait_for(settled(host, worker_id, "idle"), "worker idle after the epa_blend search")
     return ids
 

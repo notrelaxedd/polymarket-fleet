@@ -32,6 +32,7 @@ from fleet.sim.odds import expit, logit
 from host.exchange.adapters.sim import home_mid
 from host.trading.ledger import replay_problems
 from tests.e2e_trading import ExchangeThread, SimClock, orders_of, rows, run_cli, set_min_edge, shifted_game_csv
+from tests.pagecheck import page
 
 SOURCE_GAME = "2025_03_GB_CLE"
 SELL_GAME = "2026_07_GB_CLE"
@@ -212,8 +213,9 @@ def _run(host: Any, worker_id: str, model_id: str, exchange: ExchangeThread, wai
     assert now["positions"][0]["size"] == held - size and now["positions"][0]["basis_cents"] == basis - sold_basis
     buy_fees = sum(int(f["fee_cents"]) for o in buys for f in _db(host, "SELECT fee_cents FROM fills WHERE order_id = %s", (o["id"],)))
     assert now["bankroll"]["realized_pnl_cents"] == sold_realized - buy_fees, "realized: the sale less the buy fees"
-    page = host.client.get("/trading").text
-    assert '<span class="chip chip-sell">sell</span>' in page and f'data-assignment="{aid}"' in page and sell["id"] in page
+    trading = page(host.client.get("/trading").text)
+    sell_rows = [r for r in trading.rows("order") if r.attr("data-id") == str(sell["id"])]
+    assert sell_rows and all("sell" in r.chips() for r in sell_rows) and trading.row("assignment", aid)
 
     # simulate-final, home wins: a sold row and pro-rata buy rows for what is still held.
     summary = run_cli(["simulate-final", SELL_GAME, "--home", "27", "--away", "17"])

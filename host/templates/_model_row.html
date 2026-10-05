@@ -2,18 +2,18 @@
    `unranked_reason` for the others). The validation era leads; the search era follows muted. #}
 {% set v = m.validation %}
 {% set snap = m.snapshot %}
-<tr class="model-row" data-model="{{ m.id }}">
+<tr class="model-row" data-model="{{ m.id }}" data-row="model" data-id="{{ m.id }}">
   <td class="lead c-name">
-    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% if m.rank_mode == 'paper' %}<span class="chip chip-paper" title="ranked on paper CLV">paper</span>{% elif m.rank_mode == 'snapshot' %}<span class="chip chip-snapshot" title="ranked on snapshot replay CLV">snapshot</span>{% endif %}{% endif %}
+    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% if m.rank_mode == 'paper' %}<span class="chip chip-paper" data-chip="rank-paper" title="ranked on paper CLV">paper</span>{% elif m.rank_mode == 'snapshot' %}<span class="chip chip-snapshot" data-chip="rank-snapshot" title="ranked on snapshot replay CLV">snapshot</span>{% endif %}{% endif %}
     <a href="/models/{{ m.id }}"><strong>{{ m.family }}</strong> <span class="params">{{ m.short_params }}</span></a>
-    <span class="badge st-{{ m.status }}">{{ m.status.replace('_', ' ') }}</span>
-    {% if not m.validated %}<span class="chip chip-unvalidated" title="no validation-era metrics yet: send a validate job">not validated</span>{% endif %}
-    {% for f in m.flags %}<span class="chip chip-flag chip-{{ f }}" title="{{ 'overfit: the search era looked better than the held-out era' if f == 'overfit' else 'fragile: worse prices or a parameter nudge remove the edge' if f == 'fragile' else 'regime-dependent: one regime holds the profit' }}">{{ f.replace('_', '-') }}</span>{% endfor %}
-    {% if m.unranked_reason == 'retired' %}{% elif m.unranked_reason and m.unranked_reason != 'not validated' %}<span class="chip">{{ m.unranked_reason }}</span>{% endif %}
-    {% if m.members > 1 %}<span class="chip">{{ m.members }} rows</span>{% endif %}
+    <span class="badge st-{{ m.status }}" data-chip="{{ m.status }}">{{ m.status.replace('_', ' ') }}</span>
+    {% if not m.validated %}<span class="chip chip-unvalidated" data-chip="unvalidated" title="no validation-era metrics yet: send a validate job">not validated</span>{% endif %}
+    {% for f in m.flags %}<span class="chip chip-flag chip-{{ f }}" data-chip="{{ f }}" title="{{ 'overfit: the search era looked better than the held-out era' if f == 'overfit' else 'fragile: worse prices or a parameter nudge remove the edge' if f == 'fragile' else 'regime-dependent: one regime holds the profit' }}">{{ f.replace('_', '-') }}</span>{% endfor %}
+    {% if m.unranked_reason == 'retired' %}{% elif m.unranked_reason and m.unranked_reason != 'not validated' %}<span class="chip" data-chip="unranked">{{ m.unranked_reason }}</span>{% endif %}
+    {% if m.members > 1 %}<span class="chip" data-chip="members">{{ m.members }} rows</span>{% endif %}
   </td>
   <td class="nowrap c-vroi"><span class="k">validation ROI</span> {% if v %}{{ v.roi | signed_pct if v.n_bets else '-' }}{% if v.n_bets and v.ci and v.ci.roi %} <span class="range">{{ v.ci.roi[0] | signed_pct }} to {{ v.ci.roi[1] | signed_pct }}</span>{% endif %}{% else %}-{% endif %}</td>
-  <td class="nowrap c-market"><span class="k">beats market</span> {% if v and v.market_p is not none %}{% if v.beats_market %}<span class="chip chip-beats">yes</span>{% else %}no{% endif %} <span class="muted small">{{ v.market_p | pvalue }}</span>{% else %}-{% endif %}</td>
+  <td class="nowrap c-market"><span class="k">beats market</span> {% if v and v.market_p is not none %}{% if v.beats_market %}<span class="chip chip-beats" data-chip="beats">yes</span>{% else %}no{% endif %} <span class="muted small">{{ v.market_p | pvalue }}</span>{% else %}-{% endif %}</td>
   <td class="nowrap c-bets"><span class="k">bets</span> {% if v %}{{ v.n_bets }}{% else %}-{% endif %} <span class="muted small">search {{ m.metrics.n_bets if m.metrics.n_bets is not none else '-' }}</span></td>
   <td class="nowrap c-roi"><span class="k">search ROI</span> {{ m.metrics.roi | signed_pct if m.metrics.n_bets else '-' }}</td>
   <td class="nowrap c-ll"><span class="k">log-loss</span> {% if v %}{{ v.log_loss | fixed }} <span class="muted">vs {{ v.market_log_loss | fixed }}</span>{% else %}{{ m.metrics.log_loss | fixed }} <span class="muted">vs {{ m.metrics.market_log_loss | fixed }}</span>{% endif %}</td>
@@ -24,7 +24,7 @@
     <p class="summary">{{ m.summary or 'No summary yet.' }}</p>
     <details class="edit">
       <summary>Edit summary</summary>
-      <form method="post" action="/models/{{ m.id }}/summary" class="summary-form">
+      <form method="post" action="/models/{{ m.id }}/summary" class="summary-form" data-form="summary">
         <input type="hidden" name="next" value="/models">
         <label><span class="visually-hidden">Summary</span><textarea name="summary" rows="3" maxlength="600">{{ m.summary or '' }}</textarea></label>
         <button type="submit" class="btn small">Save</button>
@@ -32,8 +32,8 @@
     </details>
   </td>
   <td class="action c-actions">
-    <a class="btn small" href="/jobs?train_model={{ m.id }}#train">Train</a>
-    {% if m.status != 'retired' %}<a class="btn small" href="/jobs?validate_model={{ m.id }}#validate">Validate</a>{% endif %}
-    {% if m.status != 'retired' %}<a class="btn small" href="/trading?model={{ m.id }}#assign">Assign</a>{% endif %}
+    <a class="btn small" href="/jobs?train_model={{ m.id }}#train" data-action="train">Train</a>
+    {% if m.status != 'retired' %}<a class="btn small" href="/jobs?validate_model={{ m.id }}#validate" data-action="validate">Validate</a>{% endif %}
+    {% if m.status != 'retired' %}<a class="btn small" href="/trading?model={{ m.id }}#assign" data-action="assign">Assign</a>{% endif %}
   </td>
 </tr>

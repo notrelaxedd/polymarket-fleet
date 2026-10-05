@@ -2,8 +2,6 @@
 settings they copy, the Jobs form's price source choice and the new Settings keys."""
 from __future__ import annotations
 
-import re
-
 import pytest
 
 from host.errors import BadRequest
@@ -11,6 +9,7 @@ from host.jobparams import prepare_params
 from host.settings import get_settings, validate_settings
 from host.settings_forms import GROUPS, form_values, parse_group
 from tests.conftest import flash_cookie, insert_model, set_setting
+from tests.pagecheck import page
 
 REPLAY_KEYS = {"decision_minutes_before_kickoff", "allow_sim_prices", "price_platform", "participation"}
 
@@ -75,15 +74,15 @@ def test_job_api_stores_the_snapshot_params(client, conn):
 
 
 def test_jobs_page_offers_the_price_source_and_explains_it(client, conn):
-    html = client.get("/jobs").text
-    form = re.search(r'<details class="card send" id="backtest".*?</details>', html, re.S).group(0)
-    assert '<select name="price_source">' in form
-    assert '<option value="closing_line" selected>closing line (every game, CLV 0)</option>' in form
-    assert '<option value="snapshots">snapshots (recorded prices, real CLV)</option>' in form
-    assert "60 minutes before kickoff" in form and "<strong>sim</strong>" in form
-    assert 'class="error small replay-sim"' in form, "sim platform with sim prices off: the form warns"
+    form = page(client.get("/jobs").text).form("backtest")
+    source = form.input("price_source")
+    assert source.tag == "select" and source.one("option[selected]").attr("value") == "closing_line"
+    assert source.one('option[value="closing_line"]').text == "closing line (every game, CLV 0)"
+    assert source.one('option[value="snapshots"]').text == "snapshots (recorded prices, real CLV)"
+    assert "60 minutes before kickoff" in form.text and "the host recorded on sim" in form.text
+    assert any("sim prices are not allowed" in e for e in form.errors()), "sim platform with sim prices off: the form warns"
     set_setting(conn, "allow_sim_prices", True)
-    assert "replay-sim" not in client.get("/jobs").text
+    assert not any("sim prices are not allowed" in e for e in page(client.get("/jobs").text).form("backtest").errors())
 
 
 def test_jobs_form_sends_a_snapshot_backtest(client, conn):
@@ -94,13 +93,14 @@ def test_jobs_form_sends_a_snapshot_backtest(client, conn):
     assert r.status_code == 303 and flash_cookie(r).startswith("backtest job ")
     job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
     assert job["params"]["price_source"] == "snapshots" and job["params"]["price_platform"] == "sim"
-    listing = client.get("/jobs").text
-    assert '<span class="chip chip-snapshot">snapshots</span>' in listing
-    page = client.get(f"/jobs/{job['id']}").text
-    assert "price source <strong>snapshots</strong>: recorded sim prices 60 minutes before kickoff, participation 0.5" in page
+    listing = page(client.get("/jobs").text)
+    assert listing.row("job", job["id"]).chip("snapshots").text == "snapshots"
+    detail = page(client.get(f"/jobs/{job['id']}").text)
+    assert "price source snapshots: recorded sim prices 60 minutes before kickoff, participation 0.5" in detail.text
     r = client.post("/jobs", data={"kind": "backtest", "model_id": str(model["id"]), "price_source": "bogus", "target": "any_idle"})
     assert r.status_code == 400 and "price_source must be one of" in r.text
-    assert 'name="price_source"' in r.text and '<details class="card send" id="backtest" open>' in r.text
+    rejected = page(r.text).form("backtest")
+    assert rejected.input("price_source") and rejected.closest("details").is_open, "the rejected form is open"
 
 
 @pytest.mark.parametrize(
@@ -150,18 +150,23 @@ def test_settings_forms_parse_the_two_new_groups():
 
 
 def test_settings_page_saves_and_rejects_the_new_groups(client, conn):
-    html = client.get("/settings").text
-    replay = re.search(r'<form class="card group" method="post" action="/settings/replay" id="replay">.*?</form>', html, re.S).group(0)
-    assert 'name="decision_minutes_before_kickoff" value="60" inputmode="numeric"' in replay
-    assert 'name="allow_sim_prices" value="true">' in replay and "testing only" in replay
-    signals = re.search(r'<form class="card group" method="post" action="/settings/signals" id="signals">.*?</form>', html, re.S).group(0)
-    assert 'name="signals_refresh_hours" value="24"' in signals and "must contain {season}" in signals
-    assert "injuries_{season}.csv" in signals and "play_by_play_{season}.csv.gz" in signals
+    p = page(client.get("/settings").text)
+    replay = p.form("replay")
+    assert replay.target == "/settings/replay" and replay.attr("method") == "post"
+    minutes = replay.input("decision_minutes_before_kickoff")
+    assert minutes.attr("value") == "60" and minutes.attr("inputmode") == "numeric"
+    sim = replay.input("allow_sim_prices")
+    assert sim.attr("value") == "true" and not sim.has_attr("checked") and "testing only" in replay.field("allow_sim_prices").text
+    signals = p.form("signals")
+    assert signals.target == "/settings/signals" and signals.input("signals_refresh_hours").attr("value") == "24"
+    assert "must contain {season}" in signals.text
+    assert "injuries_{season}.csv" in signals.input("nflverse_injuries_url").attr("value")
+    assert "play_by_play_{season}.csv.gz" in signals.input("nflverse_pbp_url").attr("value")
     r = client.post("/settings/replay", data={"decision_minutes_before_kickoff": "30", "allow_sim_prices": "true"}, follow_redirects=False)
     assert r.status_code == 303
     stored = {r["key"]: r["value"] for r in conn.execute("SELECT key, value FROM settings").fetchall()}
     assert stored["decision_minutes_before_kickoff"] == 30 and stored["allow_sim_prices"] is True
-    assert 'name="allow_sim_prices" value="true" checked>' in client.get("/settings").text
+    assert page(client.get("/settings").text).input("allow_sim_prices").has_attr("checked")
     r = client.post("/settings/replay", data={"decision_minutes_before_kickoff": "301"})
     assert r.status_code == 400 and "must be between 0 and 300" in r.text
     r = client.post("/settings/signals", data={"nflverse_injuries_url": "https://a/injuries.csv", "nflverse_pbp_url": "https://b/{season}.gz",

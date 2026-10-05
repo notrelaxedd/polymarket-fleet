@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 import threading
 from typing import Callable
 
@@ -15,6 +14,7 @@ from host.cli import main
 from host.errors import BadRequest
 from host.settings import ROLES
 from tests.conftest import flash_cookie, heartbeat_body, insert_job, job_row
+from tests.pagecheck import mode_pill, page, topbar
 
 
 def flag(conn) -> object:
@@ -166,36 +166,35 @@ def test_cli_kill_and_reset(cli, conn, monkeypatch):
 
 
 def test_dashboard_shows_the_killed_bar_and_the_reset_form(client, conn):
-    home = client.get("/").text
-    assert 'class="topbar"' in home and 'data-kill="1"' in home and "KILL" in home
-    assert "TRADING KILLED" not in home
-    settings = client.get("/settings").text
-    assert 'action="/kill/reset"' not in settings
+    bar = topbar(page(client.get("/").text))
+    assert not bar.has_class("killed") and bar.has('[data-action="kill"]') and bar.action("kill").text == "KILL"
+    assert "TRADING KILLED" not in bar.text
+    assert not page(client.get("/settings").text).has('[data-form="kill-reset"]')
     r = client.post("/kill", follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/" and flash_cookie(r).startswith("Trading killed")
     assert flag(conn) is True
-    home = client.get("/").text
-    assert 'class="topbar killed"' in home
-    assert "TRADING KILLED. Reset in" in home and "Settings" in home
-    assert 'data-kill="1"' not in home and ">KILLED<" in home
+    bar = topbar(page(client.get("/").text))
+    assert bar.has_class("killed")
+    assert "TRADING KILLED. Reset in Settings." in bar.text and bar.one('a[href="/settings#kill"]')
+    assert not bar.has('[data-action="kill"]') and bar.chip("killed").text == "KILLED"
     # MEDIUM: the mode pill and the P&L stay visible under kill
-    killed_status = re.search(r'id="topbar-status".*?</div>', home, re.S).group(0)
-    assert ">PAPER<" in killed_status and "today $0.00 &middot; all $0.00" in killed_status
-    topbar = client.get("/fragments/topbar").text
-    assert 'data-killed="1"' in topbar and "<html" not in topbar
-    settings = client.get("/settings").text
-    assert 'action="/kill/reset"' in settings and 'name="confirm"' in settings
+    status = bar.one("#topbar-status")
+    assert mode_pill(status) == "PAPER" and "$0.00" in status.text and "today" in status.text
+    fragment = page(client.get("/fragments/topbar").text)
+    assert fragment.has('[data-killed="1"]') and not fragment.has("html")
+    reset = page(client.get("/settings").text).form("kill-reset")
+    assert reset.target == "/kill/reset" and reset.attr("method") == "post" and reset.input("confirm")
     r = client.post("/kill/reset", data={"confirm": "resume"}, follow_redirects=False)
-    assert r.status_code == 400 and "RESUME" in r.text and 'action="/kill/reset"' in r.text
+    assert r.status_code == 400 and "RESUME" in page(r.text).card("kill").text and page(r.text).form("kill-reset").target == "/kill/reset"
     assert flag(conn) is True
     r = client.post("/kill/reset", data={"confirm": " RESUME "}, follow_redirects=False)
     assert r.status_code == 400 and flag(conn) is True, "the form matches exactly, like the API"
     r = client.post("/kill/reset", data={"confirm": "RESUME"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/settings" and flash_cookie(r).startswith("Kill switch reset")
     assert flag(conn) is False
-    assert "TRADING KILLED" not in client.get("/").text
-    confirm = client.get("/kill/confirm").text
-    assert 'method="post" action="/kill"' in confirm and "KILL TRADING" in confirm
+    assert "TRADING KILLED" not in topbar(page(client.get("/").text)).text
+    confirm = page(client.get("/kill/confirm").text).one('form[data-action="kill"]')
+    assert confirm.attr("method") == "post" and confirm.target == "/kill" and "KILL TRADING" in confirm.text
 
 
 # ------------------------------------------------------------------ step 4: the full kill
@@ -763,7 +762,7 @@ def test_auto_kill_reason_cleared_by_resume_and_live_stays_off(client, conn):
     assert client.post("/api/kill/reset", json={"confirm": "RESUME"}).status_code == 200
     state = client.get("/api/live").json()
     assert state["killed"] is False and state["auto_kill_reasons"] == [] and state["live_enabled"] is False
-    assert client.get("/fragments/topbar").text.count(">PAPER<") == 1
+    assert mode_pill(page(client.get("/fragments/topbar").text)) == "PAPER"
 
 
 def test_live_off_halts_live_and_cancels_through_exchange(pool, conn):

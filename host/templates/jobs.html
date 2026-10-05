@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Jobs{% endblock %}
+{% block page %}jobs{% endblock %}
 {# Five send forms, one per kind, each folded into a details card so the job list is
    never two screens down on a phone. `values` holds the defaults (or the submitted
    values after a rejected post), `active` names the one card that is open: the form
@@ -39,9 +40,9 @@
 {% block content %}
 <h1>Jobs</h1>
 <div class="send-grid">
-<details class="card send" id="backtest"{% if active == 'backtest' %} open{% endif %}>
+<details class="card send" id="backtest" data-card="send-backtest"{% if active == 'backtest' %} open{% endif %}>
   <summary><h2>Backtest</h2></summary>
-  <form method="post" action="/jobs">
+  <form method="post" action="/jobs" data-form="backtest">
   {{ form_error('backtest') }}
   <input type="hidden" name="kind" value="backtest">
   <div class="fields">
@@ -61,9 +62,9 @@
   <button type="submit" class="btn primary">Send backtest</button>
   </form>
 </details>
-<details class="card send" id="model_search"{% if active == 'model_search' %} open{% endif %}>
+<details class="card send" id="model_search" data-card="send-model_search"{% if active == 'model_search' %} open{% endif %}>
   <summary><h2>Model search</h2></summary>
-  <form method="post" action="/jobs">
+  <form method="post" action="/jobs" data-form="model_search">
   {{ form_error('model_search') }}
   <input type="hidden" name="kind" value="model_search">
   <div class="fields">
@@ -77,9 +78,9 @@
   <button type="submit" class="btn primary">Send search</button>
   </form>
 </details>
-<details class="card send" id="train"{% if active == 'train' %} open{% endif %}>
+<details class="card send" id="train" data-card="send-train"{% if active == 'train' %} open{% endif %}>
   <summary><h2>Train</h2></summary>
-  <form method="post" action="/jobs">
+  <form method="post" action="/jobs" data-form="train">
   {{ form_error('train') }}
   <input type="hidden" name="kind" value="train">
   <div class="fields">
@@ -92,9 +93,9 @@
   <button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send train</button>
   </form>
 </details>
-<details class="card send" id="validate"{% if active == 'validate' %} open{% endif %}>
+<details class="card send" id="validate" data-card="send-validate"{% if active == 'validate' %} open{% endif %}>
   <summary><h2>Validate</h2></summary>
-  <form method="post" action="/jobs">
+  <form method="post" action="/jobs" data-form="validate">
   {{ form_error('validate') }}
   <input type="hidden" name="kind" value="validate">
   <p class="muted small">Runs the model on the held-out validation era ({{ validation_span }}) with the bootstrap, the market test and the stress tests, then stores the numbers on its lineage.</p>
@@ -108,9 +109,9 @@
   </form>
 </details>
 </div>
-<details class="card send sleep" id="sleep"{% if active == 'sleep' %} open{% endif %}>
+<details class="card send sleep" id="sleep" data-card="send-sleep"{% if active == 'sleep' %} open{% endif %}>
   <summary>Sleep test job</summary>
-  <form method="post" action="/jobs">
+  <form method="post" action="/jobs" data-form="sleep">
     {{ form_error('sleep') }}
     <input type="hidden" name="kind" value="sleep">
     <div class="fields">
@@ -121,23 +122,23 @@
   </form>
 </details>
 <div class="table-wrap">
-<table class="jobs stack">
+<table class="jobs stack" data-list="jobs">
   <thead><tr><th>created</th><th>kind</th><th>status</th><th>worker</th><th>progress</th><th></th></tr></thead>
   <tbody>
   {% for j in jobs %}
   {% set worker = j.lease_worker_id or j.target_worker_id %}
-  <tr>
+  <tr data-row="job" data-id="{{ j.id }}">
     <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
-    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} <span class="chip chip-snapshot">snapshots</span>{% endif %}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% elif j.kind == 'validate' and j.params.model_id %} <span class="muted small">{{ j.params.model_id | short }}</span>{% endif %}</td>
+    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} <span class="chip chip-snapshot" data-chip="snapshots">snapshots</span>{% endif %}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% elif j.kind == 'validate' and j.params.model_id %} <span class="muted small">{{ j.params.model_id | short }}</span>{% endif %}</td>
     <td class="c-status">
-      <span class="badge st-{{ j.status }}">{{ j.status.replace('_', ' ') }}</span>
-      {% if j.status == 'queued' and not j.target_worker_id %}<span class="badge st-waiting">waiting for an idle worker</span>{% endif %}
+      <span class="badge st-{{ j.status }}" data-chip="{{ j.status }}">{{ j.status.replace('_', ' ') }}</span>
+      {% if j.status == 'queued' and not j.target_worker_id %}<span class="badge st-waiting" data-chip="waiting">waiting for an idle worker</span>{% endif %}
     </td>
     <td class="c-worker">{% if worker %}{{ names.get(worker, worker) }}{% else %}<span class="muted">-</span>{% endif %}</td>
     <td class="nowrap c-progress">{{ j.progress | pct }}</td>
     <td class="action">
       {% if j.status in ('queued', 'leased') %}
-      <form method="post" action="/jobs/{{ j.id }}/cancel"><button type="submit" class="btn small">Cancel</button></form>
+      <form method="post" action="/jobs/{{ j.id }}/cancel" data-action="cancel"><button type="submit" class="btn small">Cancel</button></form>
       {% endif %}
     </td>
   </tr>

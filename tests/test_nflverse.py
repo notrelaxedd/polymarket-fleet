@@ -241,18 +241,25 @@ def test_games_etag_moves_when_an_earlier_transaction_commits_last(pool, conn):
     assert float(after.split("-")[1]) > float(middle.split("-")[1]), "the tag only moves forward"
 
 
+def _data_card(client):  # noqa: ANN001, ANN202 - a TestClient
+    """The nflverse games group of the Settings page."""
+    from tests.pagecheck import page
+
+    return page(client.get("/settings").text).card("nflverse")
+
+
 def test_refresh_failures_are_flashed_and_shown_in_settings(client, conn, monkeypatch):
     """MEDIUM: a broken upstream file is a flash and a Settings note, never a 500."""
     from host import data_refresh
 
     data_refresh.STATUS.reset()
-    assert "No refresh since the host started." in client.get("/settings").text
+    assert "No refresh since the host started." in _data_card(client).text
     monkeypatch.setattr(nflverse, "fetch", lambda url, timeout=60, max_bytes=0: "a,b\n1,2\n")
     r = client.post("/data/refresh", follow_redirects=False)
     assert r.status_code == 303 and "refresh failed: not a games.csv" in flash_cookie(r)
     assert client.post("/api/data/refresh").status_code == 400
-    html = client.get("/settings").text
-    assert "Last refresh failed" in html and "not a games.csv" in html
+    card = _data_card(client)
+    assert "Last refresh failed" in card.text and "not a games.csv" in card.text
     assert conn.execute("SELECT count(*) AS n FROM games").fetchone()["n"] == 0
     # A file with a few bad records still loads, and the note reports the skipped count.
     text = FIXTURE_GAMES.read_text(encoding="utf-8")
@@ -260,8 +267,8 @@ def test_refresh_failures_are_flashed_and_shown_in_settings(client, conn, monkey
     monkeypatch.setattr(nflverse, "fetch", lambda url, timeout=60, max_bytes=0: broken)
     r = client.post("/data/refresh", follow_redirects=False)
     assert flash_cookie(r) == "games refreshed: 2761 rows, 2761 updated, 1 skipped"
-    html = client.get("/settings").text
-    assert "Last refresh failed" not in html and "2761 rows, 2761 inserted, 0 changed, 1 skipped." in html
+    card = _data_card(client)
+    assert "Last refresh failed" not in card.text and "2761 rows, 2761 inserted, 0 changed, 1 skipped." in card.text
     body = client.post("/api/data/refresh").json()
     assert body["skipped"] == 1 and body["updated"] == 0 and body["rows"] == 2761
     data_refresh.STATUS.reset()
