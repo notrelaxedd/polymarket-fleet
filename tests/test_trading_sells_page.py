@@ -88,7 +88,9 @@ def test_sell_chip_on_open_and_recent_sell_orders_with_realized_pnl(client, conn
     recent = _section(live, "orders", "fills")
     sold = _row(recent, "data-order", b["sold"]["id"])
     assert '<span class="chip chip-sell">sell</span>' in sold and "sell 10 @ 0.60 (10 filled avg 0.60)" in sold
-    assert '<span class="k">realized</span> <span class="pnl pnl-pos">+$1.76</span>' in sold
+    assert '<span class="muted small">realized</span> <span class="pnl pnl-pos">+$1.76</span>' in sold, \
+        "the realized label stays visible on desktop (a .k key is hidden above 700 px)"
+    assert '<span class="k">realized</span>' not in recent + _section(live, "open-orders", "orders")
     bought = _row(recent, "data-order", b["buy"]["id"])
     assert 'data-side="buy"' in bought and "chip-sell" not in bought and "30 @ 0.40" in bought and "$12.00" in bought
     assert "realized" not in bought
@@ -119,13 +121,15 @@ def test_positions_table_per_assignment_values_at_the_bid(client, conn):
     assert "1 assignment holding" in positions
     home = _row(positions, "data-market", b["home"]["id"])
     assert '<span class="k">size</span> 20</td>' in home
-    assert '<span class="k">avg cost</span> 0.40 <span class="muted small">$8.00</span>' in home
+    assert '<span class="k">avg cost</span> 0.40 <span class="muted small">basis $8.00</span>' in home
+    assert '<span class="k">unrealized, net of sale fee</span> <span class="pnl pnl-pos">+$2.75</span>' in home, \
+        "the phone key says the figure is net of the sale fee (the thead is hidden there)"
     assert '<span class="k">bid</span> 0.55</td>' in home
     assert '<span class="pnl pnl-pos">+$2.75</span>' in home and "home wins" in home
     away = _row(positions, "data-market", b["away"]["id"])
     assert '<span class="k">size</span> 5000</td>' in away and "$2,500.00" in away and '<span class="k">bid</span> 0.20' in away
     assert '<span class="pnl pnl-neg">-$1,540.00</span>' in away, "money as $1,234.56 with the sign, net of the sale fee"
-    total = re.search(r'<span class="positions-total">unrealized (.*?)</span></h3>', positions, re.S).group(1)
+    total = re.search(r'<span class="positions-total">unrealized \(net of sale fee\) (.*?)</span></h3>', positions, re.S).group(1)
     assert total == '<span class="pnl pnl-neg">-$1,537.25</span>'
 
 
@@ -208,11 +212,11 @@ def test_sell_rules_in_css_keep_the_aa_pairs_and_phone_layout(client):
     from tests.test_style import _schemes, contrast
 
     css = client.get("/static/style.css").text
-    assert ".chip.chip-sell { background: var(--accent-fill); color: var(--accent-text);" in css
+    assert ".chip.chip-sell { background: transparent; color: var(--accent); border: 1px solid var(--accent);" in css
     assert ".pnl.pnl-neg { color: var(--red-fg); }" in css
     for tokens in _schemes():
-        assert contrast(tokens["accent-text"], tokens["accent-fill"]) >= 4.5
         for bg in ("card", "live-bg"):
+            assert contrast(tokens["accent"], tokens[bg]) >= 4.5, "the sell chip outline on a paper or live row"
             assert contrast(tokens["red-fg"], tokens[bg]) >= 4.5
     phone = css.split("@media (max-width: 700px)")[-1]
     assert "table.positions td.lead { display: block; padding-right: 0; min-height: 0; }" in phone

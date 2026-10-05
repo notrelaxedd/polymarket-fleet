@@ -52,7 +52,7 @@
 <section class="card group positions" id="positions">
 <h2>Positions <span class="muted small">{{ positions | length }} assignment{{ '' if positions | length == 1 else 's' }} holding</span></h2>
 {% for p in positions %}
-<h3 class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong> <span class="chip mode-{{ p.mode }}">{{ p.mode }}</span> <span class="muted small">{{ p.family or 'model' }} {{ p.model_id | short }} &middot; {{ p.game_id }}</span> <span class="positions-total">unrealized {{ pnl(p.unrealized_cents) }}</span></h3>
+<h3 class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong> <span class="chip mode-{{ p.mode }}">{{ p.mode }}</span> <span class="muted small">{{ p.family or 'model' }} {{ p.model_id | short }} &middot; {{ p.game_id }}</span> <span class="positions-total">unrealized (net of sale fee) {{ pnl(p.unrealized_cents) }}</span></h3>
 <div class="table-wrap">
 <table data-assignment="{{ p.assignment_id }}" class="positions stack">
   <thead><tr><th>market</th><th>size</th><th>avg cost</th><th>bid</th><th>unrealized at bid, net of sale fee</th></tr></thead>
@@ -61,9 +61,9 @@
   <tr class="position-row{% if p.mode == 'live' %} is-live{% endif %}" data-market="{{ r.market_id }}">
     <td class="lead">{{ r.market_title }} <span class="muted small">{{ r.side }} wins</span></td>
     <td class="nowrap c-size"><span class="k">size</span> {{ r.size }}</td>
-    <td class="nowrap c-avg"><span class="k">avg cost</span> {{ r.avg_cost | price }} <span class="muted small">{{ r.basis_cents | money }}</span></td>
+    <td class="nowrap c-avg"><span class="k">avg cost</span> {{ r.avg_cost | price }} <span class="muted small">basis {{ r.basis_cents | money }}</span></td>
     <td class="nowrap c-bid"><span class="k">bid</span> {% if r.bid is not none %}{{ r.bid | price }}{% else %}<span class="muted">no bid</span>{% endif %}</td>
-    <td class="nowrap c-unrealized"><span class="k">unrealized</span> {% if r.unrealized_cents is not none %}{{ pnl(r.unrealized_cents) }}{% else %}<span class="muted">no bid to value it</span>{% endif %}</td>
+    <td class="nowrap c-unrealized"><span class="k">unrealized, net of sale fee</span> {% if r.unrealized_cents is not none %}{{ pnl(r.unrealized_cents) }}{% else %}<span class="muted">no bid to value it</span>{% endif %}</td>
   </tr>
   {% endfor %}
   </tbody>
@@ -91,7 +91,7 @@
     <td class="nowrap lead">{{ o.created_at | ts }}</td>
     <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}{% if o.ingame %} <span class="chip chip-ingame">in-game</span>{% endif %}{% if o.exchange_order_id %} <span class="muted small">#{{ o.exchange_order_id }}</span>{% endif %}</td>
     <td class="c-model"><span class="k">model</span> {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}-{% endif %}</td>
-    <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="k">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
+    <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="muted small">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
     <td class="c-status"><span class="badge st-{{ o.status }}">{{ o.status.replace('_', ' ') }}</span></td>
     <td class="c-worker"><span class="k">worker</span> {{ o.worker_name or o.worker_id or '-' }}</td>
     <td class="action">
@@ -118,7 +118,7 @@
   <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
     <td class="nowrap lead">{{ o.created_at | ts }}</td>
     <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke">smoke</span>{% endif %}{% if o.ingame %} <span class="chip chip-ingame">in-game</span>{% endif %}</td>
-    <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="k">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
+    <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="muted small">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
     <td class="c-status"><span class="badge st-{{ o.status }}">{{ o.status.replace('_', ' ') }}</span>{% if o.reject_reason %} <span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% elif o.last_reason %} <span class="muted small cause">{{ o.last_reason }}</span>{% endif %}</td>
     <td class="nowrap c-edge"><span class="k">edge</span> {{ o.edge | signed_pct }} <span class="muted small">my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}</span></td>
     <td class="wide c-rationale"><span class="rationale muted small">{{ o.rationale or '' }}</span></td>

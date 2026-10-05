@@ -9,9 +9,11 @@ before; snapshot metrics land in `models.snapshot_metrics` on the whole lineage,
 touch `backtest_metrics` and leave the status alone (eligibility does not read them in
 this step). The metrics' own `price_source` must agree with the job's (400), so a
 snapshot run can never overwrite the closing-line numbers the gate judges, nor the
-other way round. A snapshot backtest whose last season is null (in the request or in
-settings backtest_seasons) replays through the latest season in games, the season in
-progress included, not only the last complete one.
+other way round. A snapshot backtest whose last season is null in the request, or
+that names no seasons at all (settings backtest_seasons then gives only the first),
+replays through the latest season in games, the season in progress included, not only
+the last complete one. A replay that scored no game is logged but not stored, so it
+never wipes an earlier replay.
 """
 from __future__ import annotations
 
@@ -97,9 +99,13 @@ def store_snapshot_result(
     conn: psycopg.Connection, model: dict[str, Any], metrics: dict[str, Any], job: dict[str, Any], worker_id: str
 ) -> None:
     """A snapshot result of `model` (row locked by the caller): stored on its lineage
-    and logged as a job event; the status is reported unchanged."""
-    store_snapshot_metrics(conn, model["lineage_id"], metrics)
-    add_job_event(
-        conn, job["id"], "model_snapshot_backtest", worker_id,
-        {"model_id": str(model["id"]), "status": model["status"], "n_bets": metrics.get("n_bets")},
-    )
+    and logged as a job event; the status is reported unchanged. A replay that scored
+    no game (n_games 0 or missing, e.g. no season with recorded markets) is logged
+    with stored false and never replaces the lineage's existing snapshot_metrics."""
+    scored = _is_int(metrics.get("n_games")) and metrics["n_games"] > 0
+    if scored:
+        store_snapshot_metrics(conn, model["lineage_id"], metrics)
+    detail = {"model_id": str(model["id"]), "status": model["status"], "n_bets": metrics.get("n_bets"), "stored": scored}
+    if not scored:
+        detail["note"] = "no game scored; the previous snapshot metrics are kept"
+    add_job_event(conn, job["id"], "model_snapshot_backtest", worker_id, detail)

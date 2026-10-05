@@ -166,15 +166,16 @@ def _replay(params: dict[str, Any]) -> Any:
     """The fleet.sim.prices.Replay of a snapshot backtest, None for closing_line."""
     if price_source(params) != "snapshots":
         return None
-    from fleet.sim.prices import DEFAULT_DECISION_MINUTES, Replay, load_markets
+    from fleet.sim.prices import Replay, load_markets, params_decision_minutes
 
     platform, allow_sim = price_platform(params)
     path = _context(params).get("prices_path")
     if not path:
         raise ValueError("job context has no prices_path for a snapshot backtest")
-    minutes = params.get("decision_minutes_before_kickoff")
-    if not isinstance(minutes, int) or isinstance(minutes, bool):
-        minutes = DEFAULT_DECISION_MINUTES
+    minutes = params_decision_minutes(params)
+    games_minutes = _context(params).get("games_minutes")
+    if games_minutes is not None and games_minutes != minutes:
+        raise ValueError(f"the games feed cut injuries at {games_minutes} minutes, the replay decides at {minutes}")
     return Replay(load_markets(str(path)), platform, minutes, allow_sim)
 
 

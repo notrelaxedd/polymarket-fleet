@@ -1111,7 +1111,7 @@ class _Handler(BaseHTTPRequestHandler):
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, raw, etag = self.host.pbp(w, urlsplit(self.path).query, self.headers.get("If-None-Match"))
                 self._send(status, None, raw=raw, etag=etag, content_type="application/x-ndjson+gzip")
-            elif parts == ["api", "v1", "data", "games"]:
+            elif urlsplit(self.path).path == "/api/v1/data/games":
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, body, etag = self.host.games(w, self.headers.get("If-None-Match"))
                 self._send(status, body, etag=etag)

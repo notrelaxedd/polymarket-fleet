@@ -155,46 +155,56 @@ def record_fill(
         raise Conflict(f"fill of {size} exceeds the {remaining} unfilled contracts of order {order_id}")
     is_sell = order.get("side") == "sell"
     cost_cents = fill_cost_cents(price, size)
-    bank = None
-    if order.get("assignment_id") is not None:
-        # Lock the bankroll before reading the position, so the basis a sale removes
-        # is computed from a position no other fill is changing.
-        bank = ledger.bankroll_for_assignment(conn, order["assignment_id"], for_update=True)
-    basis = _sell_basis(conn, order, size) if is_sell else cost_cents
-    conn.execute(
-        """
-        INSERT INTO fills (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id, basis_cents)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """,
-        (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id, basis),
-    )
-    if bank is not None and is_sell:
-        ledger.sell(conn, bank["id"], basis, cost_cents, fee_cents, order_id)
-    elif bank is not None:
-        ledger.fill(conn, bank["id"], cost_cents, fee_cents, order_id)
-    filled = int(order["filled_size"]) + size
-    prev_avg = float(order["avg_fill_price"] or 0.0)
-    avg = (prev_avg * int(order["filled_size"]) + float(price) * size) / filled
-    new_status = "filled" if filled >= int(order["size"]) else ("partial" if order["status"] != "cancel_requested" else "cancel_requested")
-    detail: dict[str, Any] = {"price": float(price), "size": size, "fee_cents": fee_cents}
-    if is_sell:
-        detail.update(side="sell", basis_cents=basis, realized_cents=cost_cents - fee_cents - basis)
-    row = set_status(
-        conn, order_id, new_status, actor, {"fill": detail},
-        filled_size=filled, avg_fill_price=round(avg, 6),
-    )
-    if new_status == "filled" and not is_sell:
-        # Fees were estimated at approval; whatever reservation is left after the last
-        # fill goes back to the bankroll.
-        release_unfilled(conn, row, note="reservation surplus after fills")
-    return row
+    # One savepoint around the fills row and the money it moves: when the ledger
+    # refuses the post (LedgerError, a Conflict), the fills row and the order update
+    # roll back with it, so a caller that catches the Conflict and commits never
+    # leaves a fill the ledger did not book.
+    with conn.transaction():
+        bank = None
+        if order.get("assignment_id") is not None:
+            # Lock the bankroll before reading the position, so the basis a sale removes
+            # is computed from a position no other fill is changing.
+            bank = ledger.bankroll_for_assignment(conn, order["assignment_id"], for_update=True)
+        basis = _sell_basis(conn, order, size) if is_sell else cost_cents
+        conn.execute(
+            """
+            INSERT INTO fills (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id, basis_cents)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            (order_id, price, size, fee_cents, mode, exchange_fill_id, snapshot_id, basis),
+        )
+        if bank is not None and is_sell:
+            ledger.sell(conn, bank["id"], basis, cost_cents, fee_cents, order_id)
+        elif bank is not None:
+            ledger.fill(conn, bank["id"], cost_cents, fee_cents, order_id)
+        filled = int(order["filled_size"]) + size
+        prev_avg = float(order["avg_fill_price"] or 0.0)
+        avg = (prev_avg * int(order["filled_size"]) + float(price) * size) / filled
+        new_status = "filled" if filled >= int(order["size"]) else ("partial" if order["status"] != "cancel_requested" else "cancel_requested")
+        detail: dict[str, Any] = {"price": float(price), "size": size, "fee_cents": fee_cents}
+        if is_sell:
+            detail.update(side="sell", basis_cents=basis, realized_cents=cost_cents - fee_cents - basis)
+        row = set_status(
+            conn, order_id, new_status, actor, {"fill": detail},
+            filled_size=filled, avg_fill_price=round(avg, 6),
+        )
+        if new_status == "filled" and not is_sell:
+            # Fees were estimated at approval; whatever reservation is left after the last
+            # fill goes back to the bankroll.
+            release_unfilled(conn, row, note="reservation surplus after fills")
+        return row
 
 
 def _sell_basis(conn: psycopg.Connection, order: dict[str, Any], size: int) -> int:
     """The average-cost basis a sell fill of `size` removes; Conflict when the
-    assignment holds fewer contracts than that on the market."""
+    assignment holds fewer contracts than that on the market, or when the market is
+    already resolved (settlement paid the position out, so a late sale has nothing
+    left to draw its basis from)."""
     if order.get("assignment_id") is None:
         return 0
+    market = conn.execute("SELECT status FROM markets WHERE id = %s", (order["market_id"],)).fetchone()
+    if market is not None and market["status"] == "resolved":
+        raise Conflict(f"sell fill of order {order['id']} arrived after its market resolved")
     held_size, held_basis = held(conn, order["assignment_id"], order["market_id"])
     if size > held_size:
         raise Conflict(f"sell fill of {size} exceeds the {held_size} contracts held by order {order['id']}'s assignment")

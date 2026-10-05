@@ -29,9 +29,9 @@
   {% endfor %}
 </select>
 {%- endmacro %}
-{% macro seasons_fields() -%}
+{% macro seasons_fields(replay=false) -%}
 <label>First season <input type="text" name="seasons_first" value="{{ values.seasons_first }}" inputmode="numeric" autocomplete="off"></label>
-<label>Last season <span class="muted small">blank = last complete</span><input type="text" name="seasons_last" value="{{ values.seasons_last }}" inputmode="numeric" autocomplete="off"></label>
+<label>Last season <span class="muted small">blank = last complete{% if replay %} (snapshots: through the season in progress){% endif %}</span><input type="text" name="seasons_last" value="{{ values.seasons_last }}" inputmode="numeric" autocomplete="off"></label>
 {%- endmacro %}
 {% macro form_error(kind) -%}
 {% if error and active == kind %}<p class="error inline-error">{{ error }}</p>{% endif %}
@@ -48,7 +48,7 @@
     <label>Model <span class="muted small">or family + params</span>{{ model_select(true) }}</label>
     <label>Family {{ family_select(pregame_families) }}</label>
     <label>Params <span class="muted small">JSON</span><textarea name="params" rows="2">{{ values.params }}</textarea></label>
-    {{ seasons_fields() }}
+    {{ seasons_fields(replay=true) }}
     <label>Price source
       <select name="price_source">
         {% for source in price_sources %}<option value="{{ source }}"{% if values.price_source == source %} selected{% endif %}>{{ 'closing line (every game, CLV 0)' if source == 'closing_line' else 'snapshots (recorded prices, real CLV)' }}</option>{% endfor %}

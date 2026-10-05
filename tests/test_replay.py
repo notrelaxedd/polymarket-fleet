@@ -78,7 +78,8 @@ def played(games: list[dict], season: int) -> list[dict]:
 @pytest.fixture(scope="module")
 def layout(games: list[dict]) -> dict[str, Any]:
     """Season 2024 markets: 20 games with a bar 10 min before the decision, 5 with one
-    exactly 30 min before, 5 only 31 to 45 min before, 5 only after the decision, 5
+    exactly 30 min before, 5 only 32 to 46 min before (a bar labelled 31 min before closes
+30 min before, so it counts), 5 only in the decision minute or after it, 5
     unconfirmed and 3 on platform sim."""
     g = played(games, 2024)
     markets: list[dict[str, Any]] = []
@@ -87,9 +88,9 @@ def layout(games: list[dict]) -> dict[str, Any]:
     for game in g[20:25]:
         markets += game_markets(game, [-30])
     for game in g[25:30]:
-        markets += game_markets(game, [-45, -31])
+        markets += game_markets(game, [-46, -32])
     for game in g[30:35]:
-        markets += game_markets(game, [1, 5])
+        markets += game_markets(game, [0, 1, 5])
     for game in g[35:40]:
         markets += game_markets(game, [-10], confirmed=False)
     for game in g[40:43]:

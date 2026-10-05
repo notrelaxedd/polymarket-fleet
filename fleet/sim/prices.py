@@ -8,13 +8,17 @@ ask_depth], ...]}], "count"}. Replay indexes the confirmed markets of one platfo
 (platform "sim" is refused unless allow_sim_prices) by game and side.
 
 Facts: for a game, Replay.facts returns what a replayed bet needs, per side whose
-market has a bar within DECISION_WINDOW_S before or at the decision time (kickoff
-minus decision_minutes): the bar's mid (its close, else the bid/ask midpoint), its ask,
-its min_liquidity_usd_cents, the ask levels of the last depth snapshot within
+market has a bar whose minute closed within DECISION_WINDOW_S before the decision time
+(kickoff minus decision_minutes). A bar is labelled with the start of its minute and
+holds the minute's last snapshot, so it is known only once its minute has closed
+(label + 60 <= decision); the bar of the decision minute itself is never used. The fact
+holds the bar's mid (its close, else the bid/ask midpoint), its ask, its
+min_liquidity_usd_cents, the ask levels of the last depth snapshot within
 DEPTH_WINDOW_S before or at the decision time (None when there is none) and the
-closing price (the market's frozen closing_price, else the last bar's mid before
-kickoff). Facts are plain JSON, so a checkpoint stores them and rebuilds the records
-without the prices file.
+closing price (the market's frozen closing_price, else the mid of the last bar whose
+minute closed by kickoff). With a non-empty depth snapshot the ask is that snapshot's
+best ask, so the walk limit and the levels come from the same moment. Facts are plain
+JSON, so a checkpoint stores them and rebuilds the records without the prices file.
 
 Fill: the bet buys the side with the larger edge at its ask (plus the rule's
 price_bump), sized by the closing-line Kelly maths to whole contracts; with depth it
@@ -41,11 +45,21 @@ DEFAULT_DECISION_MINUTES = 60
 MAX_DECISION_MINUTES = 300
 DECISION_WINDOW_S = 30 * 60
 DEPTH_WINDOW_S = 2 * 60
+BAR_S = 60.0
 EPS = 1e-9
 
 
 class SimPricesRefused(ValueError):
     """Platform sim prices were asked for while allow_sim_prices is off."""
+
+
+def params_decision_minutes(params: dict[str, Any]) -> int:
+    """A snapshot backtest's params.decision_minutes_before_kickoff clamped to
+    0..MAX_DECISION_MINUTES; DEFAULT_DECISION_MINUTES when absent or not an integer."""
+    minutes = params.get("decision_minutes_before_kickoff")
+    if not isinstance(minutes, int) or isinstance(minutes, bool):
+        return DEFAULT_DECISION_MINUTES
+    return max(0, min(minutes, MAX_DECISION_MINUTES))
 
 
 def parse_ts(value: Any) -> float | None:
@@ -180,18 +194,27 @@ class Replay:
         return {"game_id": str(game["game_id"]), "sides": out} if out else None
 
 
+def _valid_ask(value: float | None) -> float | None:
+    return value if value is not None and 0.0 < value < 1.0 else None
+
+
 def _side_facts(market: dict[str, Any], decision: float, kickoff: float) -> dict[str, Any] | None:
-    bar = _last_within(market["bars"], decision - DECISION_WINDOW_S, decision)
+    # A bar labelled t holds snapshots from [t, t + 60), so it is usable once t + 60 <= decision.
+    bar = _last_within(market["bars"], decision - DECISION_WINDOW_S - BAR_S, decision - BAR_S)
     if bar is None:
         return None
     _t, mid, ask, liq = bar
+    ask = _valid_ask(ask)
     depth = _last_within(market["depth"], decision - DEPTH_WINDOW_S, decision)
+    levels = None if depth is None else depth[1]
+    offered = [price for price, size in levels or [] if size > 0 and _valid_ask(price) is not None]
+    if offered:
+        ask = offered[0]
     close = market["closing_price"]
     if close is None:
-        before = [b for b in market["bars"] if b[0] < kickoff - EPS]
+        before = [b for b in market["bars"] if b[0] + BAR_S <= kickoff + EPS]
         close = (before or market["bars"])[-1][1]
-    return {"market_id": market["market_id"], "mid": mid, "ask": ask if ask is not None and 0.0 < ask < 1.0 else None,
-            "liq": liq, "levels": None if depth is None else depth[1], "close": close}
+    return {"market_id": market["market_id"], "mid": mid, "ask": ask, "liq": liq, "levels": levels, "close": close}
 
 
 def p_market_of(facts: dict[str, Any]) -> float:

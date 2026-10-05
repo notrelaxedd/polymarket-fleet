@@ -21,10 +21,16 @@ KILL cancelling a resting in-game order, simulate-final scoring the in-game line
 Between the models and the trading phases runs the step 6 Part A phase
 (tests/e2e_validation.py: a pooled search with a held-out validation era, the same
 search single-process giving the same numbers, a validate job on the trained lineage,
-an unvalidated lineage validated by a validate job, the Models page's validation
-columns and chips, the stricter gates). Last runs the paper CLV interval gate
-(tests/e2e_paper_gate.py: settled paper bets whose CLV interval excludes or straddles
-zero, live_eligible or not). Heartbeat 0.3 s, host loop 0.5 s, every wait bounded.
+the Models page's validation columns and chips, the stricter gates). Between the live
+and the crash phases runs the step 6 Part B phase (tests/e2e_signals.py and
+tests/e2e_sells.py: a snapshot replay backtest refused on sim prices and then replayed
+on recorded sim bars with the CLV of a constructed rising close, stored apart from the
+closing-line numbers and shown on the Models page; team stats and injury signals in the
+games feed and an epa_blend search; a paper sell after the market overshoots the
+model, filled partially and then fully, settled into a sold row and pro-rata buy rows).
+Last runs the paper CLV interval gate (tests/e2e_paper_gate.py: settled paper bets whose
+CLV interval excludes or straddles zero, live_eligible or not). Heartbeat 0.3 s, host
+loop 0.5 s, every wait bounded.
 """
 from __future__ import annotations
 
@@ -52,6 +58,7 @@ from tests.e2e_ingame import phase_ingame
 from tests.e2e_live import phase_live
 from tests.e2e_models import CountingRunner, phase_models
 from tests.e2e_paper_gate import phase_paper_gate
+from tests.e2e_signals import phase_signals
 from tests.e2e_trading import phase_trading
 from tests.e2e_validation import phase_validation
 
@@ -543,10 +550,13 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     validated = phase_validation(live_host, worker_id, models, wait_for, settled)
     phase_trading(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_live(live_host, state_dir, worker_id, first, models, tmp_path, monkeypatch, wait_for, settled)
+    refused = phase_signals(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_ingame(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_crash(live_host, state_dir, worker_id, first, agents)
     phase_paper_gate(live_host, validated)
 
     assert time.monotonic() - started < 240.0
-    statuses = {j["status"] for j in live_host.get("/api/jobs")}
+    jobs = live_host.get("/api/jobs?limit=500")
+    assert [j["status"] for j in jobs if j["id"] == refused] == ["failed"], "the sim-refused replay failed on purpose"
+    statuses = {j["status"] for j in jobs if j["id"] != refused}
     assert statuses == {"succeeded", "cancelled"}

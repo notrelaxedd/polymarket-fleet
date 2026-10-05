@@ -97,7 +97,10 @@ a Debian box."
   participation; games without recorded prices are skipped; the result is stored apart
   and never changes a status; a link to `/settings#replay`) and a red line when the
   market source is sim while sim prices are not allowed (such a backtest fails on the
-  worker). (changed: review) Only one card is open:
+  worker). For a snapshot backtest a blank last season means the latest season in
+  `games`, the season in progress included (the backtest card's hint says so: "blank =
+  last complete (snapshots: through the season in progress)"). The field is prefilled
+  from settings `backtest_seasons`, so clear it for that. (changed: review) Only one card is open:
   the backtest card by default, the train card behind `?train_model`, the card whose form
   was just rejected; the others fold to their heading so the job list sits near the top
   on a phone. The sleep test form is the same kind of card under them. Model select
@@ -156,10 +159,11 @@ step 4) Ranking follows docs/TRADING.md: a lineage with at least 5 paper games a
 paper bets ranks on shrunk CLV (`avg_clv * bets / (bets + 25)`, ties by paper ROI) ahead
 of the others and wears a green "paper" chip next to its rank; (step 6B) next, a lineage
 with at least 30 bets replayed on recorded prices ranks on shrunk snapshot CLV (`clv *
-bets / (bets + 25)`, ties by snapshot ROI) and wears a "snapshot" chip; (changed: step 6)
-the rest rank on the validation era, shrunk ROI then the log-loss gain over the market,
-and a lineage without validation metrics is unranked ("not validated") whatever its
-paper or snapshot record. The intro line says this in words and explains CLV. When no lineage is
+bets / (bets + 25)`, ties by snapshot ROI) and wears a "snapshot" chip (an outline in
+the link colour, so it never reads as a status badge); a replay on sim prices is shown but
+never ranks; (changed: step 6) the rest rank on the validation era, shrunk ROI then the
+log-loss gain over the market, and a lineage without validation metrics is unranked
+("not validated") whatever its paper or snapshot record. The intro line says this in words and explains CLV. When no lineage is
 ranked the page says so in one line instead of drawing an empty table: "No lineage is
 validated yet, so none is ranked." above the unranked list, or "No models yet. Send a
 model search from the Jobs page." when there are none. On a phone the row stacks: the
@@ -214,7 +218,10 @@ button when there are no validation numbers; (step 6B) the "Snapshot replay" sec
 its 90% range and what it means, games skipped for lack of recorded prices), the
 labelled pairs and the per-season table of the snapshot metrics, or "No snapshot replay
 yet." with one line on what it does, and a one-tap "Replay on snapshots" form (a backtest
-of this model with price source snapshots to any idle worker; hidden once retired);
+of this model with price source snapshots to any idle worker; hidden once retired; it
+sends no seasons, so it replays from the first season of settings `backtest_seasons`
+through the latest season in `games`, whatever last season the setting stores; a replay
+that scores no game is logged but keeps the lineage's earlier snapshot metrics);
 then the search-era backtest metrics as
 labelled pairs (games, bets, ROI, hit rate, average edge, P&L, log-loss vs market, brier,
 max drawdown with its cents, seasons), the stacked per-season table and the calibration
@@ -264,7 +271,8 @@ validation keep working:
   within 30 minutes before it) and an "Allow sim prices" checkbox (testing only; unticked
   stores false). nflverse signals (`#signals`): refresh hours (1..168), the injuries URL
   and the play-by-play URL, each a template that must contain `{season}` (an inline
-  error otherwise).
+  error otherwise). Unlike the games group, it shows no last-refresh outcome yet: the
+  host keeps it (`host.data_refresh.SIGNALS_STATUS`) and logs it, but no page reads it.
 - (step 4) Trading: one form, `POST /settings/trade`, holding every step 4 key under four
   sub-headings. Order approval: participation, book max age, order lifetime
   (`gtd_seconds`), orphan cancel after, trade tick, max paper models per game, max
@@ -354,8 +362,8 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
     ("worker cancel", "kill", "drain", "owner cancel", "kickoff", "gtd expired"), the
     edge with "my 0.61 vs 0.57", the rationale line and the worker with the model.
   - Fills (`#fills`, last 50): time, market, "18 @ 0.58 of 30 @ 0.58", fee, worker.
-  - (step 6 Part B) Sells: a `sell` chip on sell orders in the open and recent order
-    lists and on sell fills; a sell order reads "sell N @ p" with its realized P&L in
+  - (step 6 Part B) Sells: a `sell` chip (an outline in the link colour, like the
+    "snapshot" chip) on sell orders in the open and recent order lists and on sell fills; a sell order reads "sell N @ p" with its realized P&L in
     place of a cost, a sell fill "sold N @ p" with the realized P&L and the basis it
     removed (the fills table gains a realized column). The reject reasons `no_position`,
     `sell_exceeds_position` and `open_sell_exists` have plain-word texts.
@@ -438,6 +446,13 @@ settings, trading and fleet with live on (`seed_step5.py`: the Live trading grou
 live assignment with its exchange order, a resting smoke order, the LIVE pill), then
 fleet, settings and trading after an auto-kill (the bar naming the reason), at 390 and
 1280 px in light and dark, with the phone layout checks on every capture.
+
+(step 6B review) At desktop width the Models table fits a 1280 screen: the metric
+cells wrap between their parts (a value, its muted note and its range each stay whole),
+the paper and snapshot records wrap into a few lines (at least 9rem wide), the summary
+keeps at least 12rem and the Train / Validate / Assign buttons stack.
+`tests/hw/screenshots.py` checks at 1280 light that no `.table-wrap` on the models page
+scrolls sideways.
 
 ## Step 6 screenshots
 
