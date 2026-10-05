@@ -21,12 +21,12 @@ Nothing fills while the kill switch is on.
 from __future__ import annotations
 
 import logging
-import math
 from datetime import datetime
 from typing import Any
 
 import psycopg
 
+from fleet.sim import book
 from host.settings import get_setting
 from host.trading import orders
 from host.trading.orders import cents, fill_cost_cents
@@ -67,29 +67,14 @@ def simulate(
     resting: bool = False,
     taken: dict[int, int] | None = None,
 ) -> list[dict[str, Any]]:
-    """The fills one snapshot gives an order: [{level, price, size, fee_cents}].
+    """The fills one snapshot gives a buy order: [{level, price, size, fee_cents}].
     `resting` fills at the order's limit; `taken` is what other orders already took
-    from each level of this snapshot."""
+    from each level of this snapshot. The walk itself is fleet.sim.book.walk, shared
+    with the snapshot replay backtests."""
     limit = float(order["price"])
     left = int(order["size"]) - int(order["filled_size"]) if remaining is None else int(remaining)
-    out: list[dict[str, Any]] = []
-    for index, level in enumerate(snapshot.get("ask_depth") or []):
-        if left <= 0:
-            break
-        try:
-            price, depth = float(level[0]), float(level[1])
-        except (TypeError, ValueError, IndexError):
-            continue
-        if price > limit + EPS:
-            break
-        offered = int(math.floor(participation * depth + EPS)) - int((taken or {}).get(index, 0))
-        take = min(left, offered)
-        if take <= 0:
-            continue
-        fill_price = limit if resting else price
-        out.append({"level": index, "price": fill_price, "size": take, "fee_cents": fee_cents(fill_price, take, fee_model)})
-        left -= take
-    return out
+    fills = book.walk(snapshot.get("ask_depth"), limit, left, participation, taken, "buy", resting)
+    return [{**f, "fee_cents": fee_cents(f["price"], f["size"], fee_model)} for f in fills]
 
 
 def kickoff_bound(conn: psycopg.Connection, order: dict[str, Any]) -> datetime | None:
