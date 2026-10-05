@@ -15,7 +15,7 @@ When to run it: after installing a new worker, after changing the agent, the dra
 ## screenshots.py
 
 ```bash
-.venv/bin/python -m pip install playwright   # the python package only; no "playwright install"
+.venv/bin/python -m pip install "playwright==1.56.0"   # the python package only (1.56 pairs with Chromium build 1194); no "playwright install"
 PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers .venv/bin/python tests/hw/screenshots.py /tmp/screenshots-step5
 ```
 

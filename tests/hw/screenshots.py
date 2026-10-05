@@ -55,7 +55,7 @@ from tests.hw.seed_step5 import auto_kill, seed_live, touch_live  # noqa: E402
 from tests.hw.seed_step6 import seed_paper_ci, seed_validation  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 
-DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step5"))
+DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 SCHEMES = ("light", "dark")
 MIN_TAP_PX = 40

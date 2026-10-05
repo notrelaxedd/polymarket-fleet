@@ -2,12 +2,15 @@
 with a held-out validation era runs on the real agent through a two-process pool and
 creates models that carry validation and stress metrics; the same search with one
 process gives the same models and the same numbers; a validate job refills an older
-lineage on the new era; the Models page shows the validation columns, the chips and
-the Robustness section; the stricter gates promote and demote on the stored metrics.
+lineage on the new era; a lineage without validation numbers is listed unranked as
+"not validated" until a validate job validates and ranks it; the Models page shows the
+validation columns, the chips and the Robustness section; the stricter gates promote
+and demote on the stored metrics.
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 import psycopg
@@ -119,7 +122,8 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
     for mid in ids:
         entry = ranked[mid]
         assert entry["validated"] is True and entry["rank_mode"] == "validation" and entry["rank"] >= 1
-        assert entry["validation"]["ci"]["roi"] == entry["validation"]["ci"]["roi"] and "market_p" in entry["validation"]
+        stored = host.get(f"/api/models/{mid}")["validation_metrics"]
+        assert entry["validation"]["ci"]["roi"] == stored["ci"]["roi"] and entry["validation"]["market_p"] == stored["market_p"]
         assert entry["score"] == entry["validation"]["shrunk_roi"] and entry["search_score"] is not None
     page = host.client.get("/models").text
     assert '<span class="k">validation ROI</span>' in page and '<span class="k">beats market</span>' in page
@@ -134,6 +138,38 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
 def _row(page: str, model_id: str) -> str:
     start = page.index(f'data-model="{model_id}"')
     return page[start:page.index("</tr>", start)]
+
+
+def _classes(html: str) -> set[str]:
+    """Every class name used in a fragment (class lookups survive markup changes)."""
+    return {name for attr in re.findall(r'class="([^"]*)"', html) for name in attr.split()}
+
+
+def unvalidated_phase(host: Any, worker_id: str, model_id: str, wait_for: Callable[..., Any],
+                      settled: Callable[..., Any]) -> None:
+    """A lineage without validation numbers (cleared here, as on a step 5 install) is
+    listed unranked as "not validated" with the chip on its row; a validate job on the
+    live agent then validates it and it ranks on the validation era."""
+    set_lineage_metrics(host, model_id, None, None)
+    board = host.get("/api/models")
+    assert model_id not in {m["id"] for m in board["ranked"]}
+    entry = next(m for m in board["unranked"] if m["id"] == model_id)
+    assert entry["unranked_reason"] == "not validated" and entry["validated"] is False and entry["validation"] is None
+    assert "rank" not in entry and host.get(f"/api/models/{model_id}")["validated"] is False
+    classes = _classes(_row(host.client.get("/models").text, model_id))
+    assert "chip-unvalidated" in classes and "rank" not in classes, classes
+    job = send(host, "validate", {"model_id": model_id}, worker_id)
+    done = wait_for(finished(host, job["id"]), "validate of the unvalidated lineage done", timeout=60.0)
+    vm = done["result"]["validation_metrics"]
+    check_validation_shape(vm, [2020, 2021])
+    board = host.get("/api/models")
+    assert model_id not in {m["id"] for m in board["unranked"]}
+    entry = next(m for m in board["ranked"] if m["id"] == model_id)
+    assert entry["validated"] is True and entry["rank_mode"] == "validation" and entry["rank"] >= 1
+    assert entry["score"] == vm["shrunk_roi"] and entry["validation"]["seasons"] == [2020, 2021]
+    classes = _classes(_row(host.client.get("/models").text, model_id))
+    assert "chip-unvalidated" not in classes and "rank" in classes, classes
+    wait_for(settled(host, worker_id, "idle"), "worker idle after validating the unvalidated lineage")
 
 
 def validate_phase(host: Any, worker_id: str, child_id: str, root_id: str,
@@ -170,12 +206,14 @@ def validate_phase(host: Any, worker_id: str, child_id: str, root_id: str,
     wait_for(settled(host, worker_id, "idle"), "worker idle after the validate job")
 
 
-def set_lineage_metrics(host: Any, lineage_id: str, validation: dict[str, Any], stress: dict[str, Any]) -> None:
-    """Force the stored validation and stress metrics of a lineage (every row)."""
+def set_lineage_metrics(host: Any, lineage_id: str, validation: dict[str, Any] | None,
+                        stress: dict[str, Any] | None) -> None:
+    """Force the stored validation and stress metrics of a lineage (every row); None
+    clears them (SQL NULL)."""
     with psycopg.connect(host.database_url, autocommit=True) as conn:
         conn.execute(
             "UPDATE models SET validation_metrics = %s, stress_metrics = %s, updated_at = now() WHERE lineage_id = %s",
-            (Jsonb(validation), Jsonb(stress), lineage_id),
+            (None if validation is None else Jsonb(validation), None if stress is None else Jsonb(stress), lineage_id),
         )
 
 
@@ -247,6 +285,7 @@ def phase_validation(host: Any, worker_id: str, models: dict[str, Any], wait_for
     assert 'id="thresholds"' in settings_page and 'value="2020"' in settings_page
     ids = search_phase(host, worker_id, wait_for, settled)
     validate_phase(host, worker_id, models["child"], models["roots"][0], wait_for, settled)
+    unvalidated_phase(host, worker_id, models["roots"][1], wait_for, settled)
     gates_phase(host, models["child"], models["roots"][0])
     host.post("/api/settings", {key: before[key] for key in ("backtest_seasons", "validation_seasons", "search_workers")})
     return ids

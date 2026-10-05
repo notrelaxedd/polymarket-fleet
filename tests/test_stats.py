@@ -1,5 +1,5 @@
 """Resampling statistics (fleet.sim.stats): bootstrap determinism and sanity, the
-sign-flip market test, the Brier decomposition identity, the recalibration fit and
+sign-flip market test (a shuffled-outcome model never beats the market), the Brier decomposition identity, the recalibration fit and
 the timing budget. Pure functions, no fixture, no database."""
 from __future__ import annotations
 
@@ -107,6 +107,35 @@ def test_permutation_detects_a_clearly_better_and_a_clearly_worse_model() -> Non
     assert mean_b > 0 and p_b < 0.01
     assert mean_w < 0 and p_w > 0.9
     assert permutation_market_test(better, 10_000, random.Random("1:perm")) == (mean_b, p_b)
+
+
+def _log_loss(p: float, y: float) -> float:
+    return -math.log(p if y else 1.0 - p)
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+def test_a_shuffled_outcome_model_never_beats_the_market(seed: int) -> None:
+    """docs/ROBUSTNESS.md: a model with no information about the outcome cannot beat
+    a calibrated market. Two such models per seed: the market's probabilities dealt to
+    shuffled games, and a logistic fit of the market on shuffled outcomes (which learns
+    no slope and predicts about the base rate). Both lose on log-loss, market_p stays
+    far above 0.05."""
+    rng = random.Random(f"shuffle:{seed}")
+    market = [min(max(rng.gauss(0.5, 0.15), 0.05), 0.95) for _ in range(600)]
+    outcomes = [1.0 if rng.random() < q else 0.0 for q in market]
+    dealt = market[:]
+    rng.shuffle(dealt)
+    shuffled = outcomes[:]
+    rng.shuffle(shuffled)
+    slope, intercept = logistic_recalibration(market, shuffled)
+    fitted = [1.0 / (1.0 + math.exp(-(intercept + slope * math.log(q / (1.0 - q))))) for q in market]
+    assert abs(slope) < 0.5, "a fit on shuffled outcomes finds (almost) no signal"
+    for name, model in (("dealt", dealt), ("fitted", fitted)):
+        d = [_log_loss(q, y) - _log_loss(p, y) for q, p, y in zip(market, model, outcomes)]
+        mean, p_value = permutation_market_test(d, 10_000, random.Random(f"{seed}:perm"))
+        assert mean < 0, (name, mean)
+        assert p_value > 0.5, f"{name} model, seed {seed}: market_p {p_value}"
+        assert permutation_market_test(d, 10_000, random.Random(f"{seed}:perm")) == (mean, p_value), "deterministic"
 
 
 def test_permutation_matches_the_exact_enumeration_on_a_small_sample() -> None:

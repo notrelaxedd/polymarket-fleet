@@ -185,7 +185,7 @@ report files changed and the pytest summary lines.
 cd polymarket-fleet
 python3 -m venv .venv
 .venv/bin/pip install -e '.[host,dev]'
-.venv/bin/pip install playwright          # python package only, never "playwright install"
+.venv/bin/pip install "playwright==1.56.0" # python package only (pairs with Chromium build 1194), never "playwright install"
 # Postgres 16: any local cluster with a superuser works
 pg_ctlcluster 16 main start               # the sandbox cluster stops between turns; rerun when "connection refused"
 export FLEET_TEST_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres   # the default
