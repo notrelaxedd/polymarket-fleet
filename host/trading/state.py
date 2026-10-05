@@ -1,6 +1,12 @@
 """The GET /api/v1/trade/state body: one entry per trade job a worker holds, with
 the game, the model artifact, the bankroll, the markets with their latest snapshot,
-the open orders and the positions (docs/PROTOCOL.md "Step 4 additions")."""
+the open orders and the positions (docs/PROTOCOL.md "Step 4 additions").
+
+Step 6 Part B: markets carry `bid_depth` and open orders their `side` ('buy' | 'sell')
+so the worker can propose and cancel sells; positions are host.trading.positions rows
+({"market_id", "side", "size", "basis_cents", "avg_cost"}, signed: buys minus sells);
+the game carries "signals" and "team_stats" from host.signals.game_signals so the
+worker builds features with fleet.sim.data.features_of exactly as a backtest does."""
 from __future__ import annotations
 
 import uuid
@@ -10,6 +16,7 @@ import psycopg
 
 from host.kill import is_killed
 from host.settings import get_int_setting, get_settings
+from host.signals import game_signals
 from host.trading.orders import ACTIVE_STATUSES
 from host.trading.positions import positions, server_now
 
@@ -24,7 +31,8 @@ def _state_markets(conn: psycopg.Connection, game_id: str, floor: int) -> list[d
     rows = conn.execute(
         """
         SELECT m.id, m.side, m.tick, m.min_size, m.status, m.title,
-               s.id AS snapshot_id, s.ts AS snapshot_at, s.bid, s.ask, s.mid, s.ask_depth, s.liquidity_usd_cents
+               s.id AS snapshot_id, s.ts AS snapshot_at, s.bid, s.ask, s.mid, s.ask_depth, s.bid_depth,
+               s.liquidity_usd_cents
           FROM markets m
           LEFT JOIN LATERAL (SELECT * FROM price_snapshots p WHERE p.market_id = m.id
                              ORDER BY p.ts DESC, p.id DESC LIMIT 1) s ON true
@@ -41,6 +49,7 @@ def _state_markets(conn: psycopg.Connection, game_id: str, floor: int) -> list[d
                 "id": r["id"], "side": r["side"], "title": r["title"], "bid": r["bid"], "ask": r["ask"], "mid": r["mid"],
                 "tick": r["tick"], "min_size": r["min_size"], "snapshot_id": r["snapshot_id"],
                 "snapshot_at": r["snapshot_at"], "liquidity_usd_cents": liquidity, "ask_depth": r["ask_depth"],
+                "bid_depth": r["bid_depth"],
                 "status": r["status"], "below_floor": liquidity is None or int(liquidity) < floor,
             }
         )
@@ -61,12 +70,14 @@ def _state_entry(conn: psycopg.Connection, job: dict[str, Any], floor: int) -> d
     bank = conn.execute("SELECT * FROM bankrolls WHERE assignment_id = %s", (a["id"],)).fetchone()
     open_orders = conn.execute(
         f"""
-        SELECT id, market_id, price, size, filled_size, status, snapshot_id, created_at FROM orders
+        SELECT id, market_id, side, price, size, filled_size, status, snapshot_id, created_at FROM orders
          WHERE assignment_id = %s AND status IN ('{ACTIVE_LIST}') ORDER BY created_at
         """,
         (a["id"],),
     ).fetchall()
     game_fields = {k: v for k, v in dict(game or {}).items() if k != "raw"}
+    if game is not None:
+        game_fields.update(game_signals(conn, [a["game_id"]]).get(a["game_id"], {}))
     return {
         "id": a["id"], "job_id": job["id"], "lease_token": job["lease_token"], "status": a["status"], "mode": a["mode"],
         "max_bet_cents": a["max_bet_cents"], "game": game_fields, "model": dict(model) if model else None,

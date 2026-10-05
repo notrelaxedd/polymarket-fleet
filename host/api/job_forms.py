@@ -2,7 +2,8 @@
 
 `parse_job_form` turns a posted form into (kind, params) for queue.create_job, which
 validates ranges and copies the settings in; `jobs_context` builds what the page's
-forms need (models for the selects, families, defaults from settings).
+forms need (models for the selects, families, defaults from settings, and the step 6
+B1 snapshot replay settings the backtest form's price source choice explains).
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ from host.jobparams import SEARCH_DEFAULTS, VALIDATE_DEFAULTS
 from host.leaderboard import short_params
 from host.nflverse import last_complete_season
 from host.settings import get_setting
+from host.snapshot_store import PRICE_SOURCES, snapshot_settings
 
 KINDS = ("backtest", "model_search", "train", "validate", "sleep")
 FAMILY_NAMES = tuple(sorted(FAMILIES))
@@ -70,6 +72,9 @@ def _backtest(form: dict[str, str]) -> dict[str, Any]:
     seasons = _seasons(form)
     if seasons is not None:
         params["seasons"] = seasons
+    source = _text(form, "price_source")
+    if source:
+        params["price_source"] = source  # host.jobparams refuses an unknown one
     return params
 
 
@@ -157,7 +162,7 @@ def jobs_context(
         "n": str(SEARCH_DEFAULTS["n"]), "seed": str(SEARCH_DEFAULTS["seed"]), "top_k": str(SEARCH_DEFAULTS["top_k"]),
         "through_season": "" if last is None else str(last), "through_week": "22", "seconds": "60",
         "params": "{}", "model_id": train_model or validate_model or "", "family": FAMILY_NAMES[0] if FAMILY_NAMES else "",
-        "target": "any_idle", "validate_seed": str(VALIDATE_DEFAULTS["seed"]),
+        "target": "any_idle", "validate_seed": str(VALIDATE_DEFAULTS["seed"]), "price_source": PRICE_SOURCES[0],
     }
     values.update({k: v for k, v in (submitted or {}).items() if k in values})
     active = (submitted or {}).get("kind") or ("train" if train_model else "validate" if validate_model else "backtest")
@@ -170,4 +175,14 @@ def jobs_context(
         "error": error,
         "last_complete_season": last,
         "validation_span": f"{validation[0]}-{validation[1] if validation[1] is not None else (last or 'last complete')}",
+        "price_sources": PRICE_SOURCES,
+        "replay": replay_context(conn),
     }
+
+
+def replay_context(conn: psycopg.Connection) -> dict[str, Any]:
+    """The snapshot replay settings a snapshot backtest would carry, and whether it
+    would be refused (platform sim while allow_sim_prices is off)."""
+    replay = snapshot_settings(conn)
+    replay["sim_refused"] = replay["price_platform"] == "sim" and not replay["allow_sim_prices"]
+    return replay

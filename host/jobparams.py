@@ -28,6 +28,7 @@ from host.leases import as_uuid
 from host.models import known_family
 from host.nflverse import last_complete_season
 from host.settings import FIRST_SEASON, LAST_SEASON, get_setting
+from host.snapshot_store import PRICE_SOURCES, snapshot_settings
 
 COPIED_SETTINGS = ("fee_model", "default_bankroll_cents", "max_bet_cents", "trade_max_games")
 SEARCH_DEFAULTS = {"n": 200, "seed": 0, "top_k": 5}
@@ -36,7 +37,7 @@ ERA_KINDS = ("model_search", "validate")  # the kinds that carry the validation 
 MAX_WEEK = 22
 MIN_HISTORY_SEASONS = 3  # fleet.sim.backtest skips a test season with less history
 KEYS = {
-    "backtest": {"model_id", "family", "params", "seasons"},
+    "backtest": {"model_id", "family", "params", "seasons", "price_source"},
     "model_search": {"family", "n", "seed", "seasons", "top_k"},
     "train": {"model_id", "through"},
     "validate": {"model_id", "seed"},
@@ -170,6 +171,10 @@ def _backtest(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
     if "seasons" in params:
         out["seasons"] = resolve_seasons(conn, params["seasons"])
         check_testable(conn, out["seasons"])
+    if "price_source" in params:  # absent means closing_line (the worker's default too)
+        if params["price_source"] not in PRICE_SOURCES:
+            raise BadRequest(f"price_source must be one of {', '.join(PRICE_SOURCES)}")
+        out["price_source"] = params["price_source"]
     return out
 
 
@@ -253,6 +258,11 @@ def copied_settings(conn: psycopg.Connection, kind: str = "backtest") -> dict[st
     return out
 
 
+def _snapshot_copies(conn: psycopg.Connection, kind: str, out: dict[str, Any]) -> dict[str, Any]:
+    """The replay settings a snapshot backtest carries ({} for any other job)."""
+    return snapshot_settings(conn) if kind == "backtest" and out.get("price_source") == "snapshots" else {}
+
+
 def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) -> dict[str, Any]:
     """Validated params for `kind`, with the settings copied in for the batch kinds."""
     if kind == "sleep":
@@ -268,4 +278,5 @@ def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) 
     else:
         return dict(params)
     out.update(copied_settings(conn, kind))
+    out.update(_snapshot_copies(conn, kind, out))
     return out

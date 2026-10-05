@@ -6,6 +6,14 @@ fill (a fill made today counts from its own price; an older one from the mid of 
 last snapshot before the day started). All-time = every settled bet plus the whole
 unrealized gain of the open positions. Per worker the same sums are restricted to the
 orders that worker requested; per mode likewise.
+
+Sells (step 6 Part B) before settlement: a sell fill on an unresolved market counts
+`proceeds - fee - mark` of its contracts all-time (its realized `proceeds - fee -
+basis` minus the unrealized `mark - basis` the buys still carry for the contracts it
+took away), and today either the same when it filled today or `-(mark - start mark)`
+when it filled earlier. Summed with the buy fills this is exactly the realized gain of
+the sales plus the mark-to-mid of the contracts still held. Once the market settles
+the sell's `bets` row (result `sold`) carries the realized part.
 """
 from __future__ import annotations
 
@@ -15,12 +23,13 @@ from typing import Any
 import psycopg
 
 from host.settings import get_setting
+from host.trading.orders import fill_cost_cents
 from host.web import zone
 
 MODES = ("paper", "live")
 
 OPEN_FILLS_SQL = """
-    SELECT f.price, f.size, f.ts, o.worker_id, o.mode,
+    SELECT f.price, f.size, f.ts, f.fee_cents, f.basis_cents, o.side, o.worker_id, o.mode,
            cur.mid AS mid_now, cur.bid AS bid_now, cur.ask AS ask_now,
            prev.mid AS mid_start, prev.bid AS bid_start, prev.ask AS ask_start,
            m.best_bid, m.best_ask
@@ -88,7 +97,10 @@ class _Sums:
 def _add_open_positions(conn: psycopg.Connection, sums: _Sums, start: datetime) -> None:
     for row in conn.execute(OPEN_FILLS_SQL, {"start": start}).fetchall():
         size = int(row["size"])
+        is_sell = row.get("side") == "sell"
         basis = _cents(float(row["price"]), size)
+        if is_sell and row.get("basis_cents") is not None:
+            basis = int(row["basis_cents"])
         now_mid = _mid(row["mid_now"], row["bid_now"], row["ask_now"])
         if now_mid is None:
             now_mid = _mid(None, row["best_bid"], row["best_ask"])
@@ -96,6 +108,10 @@ def _add_open_positions(conn: psycopg.Connection, sums: _Sums, start: datetime) 
         filled_at = row["ts"] if row["ts"].tzinfo else row["ts"].replace(tzinfo=timezone.utc)
         start_mid = _mid(row["mid_start"], row["bid_start"], row["ask_start"])
         reference = basis if filled_at >= start or start_mid is None else _cents(start_mid, size)
+        if is_sell:
+            sold = fill_cost_cents(row["price"], size) - int(row["fee_cents"] or 0) - mark
+            sums.add(row["worker_id"], row["mode"], sold if filled_at >= start else reference - mark, sold)
+            continue
         sums.add(row["worker_id"], row["mode"], mark - reference, mark - basis)
 
 

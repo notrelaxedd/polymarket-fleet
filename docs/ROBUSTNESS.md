@@ -96,6 +96,30 @@ All on the validation era, each a full backtest with one change:
   bets, ROI, CLV with CI) when a lineage has them, and ranks by snapshot CLV once a
   lineage has 30 snapshot-scored bets.
 
+Delivered in step 6B (host side of B1):
+- Job params (`host/jobparams.py`): a backtest takes `price_source` ("closing_line", the
+  default when absent, or "snapshots"; stored only when named, so older params stay as
+  they were; anything else is a 400, and the key is refused on other kinds). A snapshot backtest also carries the settings in force when it
+  was created: `decision_minutes_before_kickoff` (0..300), `allow_sim_prices`,
+  `price_platform` (= settings `market_source`) and `participation`; a malformed stored
+  value falls back to its default (60, false, 0.5). Deviation: a closing-line backtest
+  does not carry these four keys (they mean nothing to it), so its params stay as before.
+- Storage (`host/snapshot_store.py`): `POST /api/v1/models/{id}/backtest` routes by the
+  job's `price_source`. A snapshot result is stored in `models.snapshot_metrics` on every
+  row of the lineage (a child trained later inherits it), logged as the job event
+  `model_snapshot_backtest`, and never touches `backtest_metrics` or the status. The
+  metrics' own `price_source` must match the job's (400 otherwise), so neither kind of
+  result can overwrite the other.
+- Leaderboard (`host/leaderboard_snapshot.py`): each entry carries `snapshot` (games,
+  bets, ROI, P&L, `avg_clv` with `clv_ci`, platform, games skipped for lack of prices,
+  seasons, `score` = shrunk CLV) and `snapshot_score`. Rank basis: paper (unchanged) >
+  snapshot (at least 30 snapshot-scored bets with a CLV, sorted by `clv * bets / (bets +
+  25)`, ties by snapshot ROI) > validation. Like paper, a snapshot-ranked lineage ranks
+  before it is validated; the unranked reasons are unchanged. The CLV point value is the
+  result's `avg_clv`; when a result does not report one, the middle of `ci.avg_clv` is
+  used (`clv_estimated: true`).
+- Eligibility does not read snapshot metrics in this step.
+
 ### B2. Richer signals
 
 - Quarterback change: `games` already carries starting quarterbacks. Feature
@@ -120,7 +144,14 @@ All on the validation era, each a full backtest with one change:
 Models page columns: validation ROI with its CI, market p, flags; model page Robustness
 section; Jobs page gains the `validate` form and the `price_source` choice on backtests;
 Settings gains the new keys (search and validation seasons, search_workers, the gate
-fields, allow_sim_prices, decision minutes). README: a "Reading a model" guide that
+fields, allow_sim_prices, decision minutes). (Delivered in step 6B: the Models page has a
+"snapshot" column with games, bets, ROI and CLV with its 90% range and a "snapshot" rank
+chip; the model page a "Snapshot replay" section with a one-tap "Replay on snapshots"
+button; the Jobs backtest form a price source select with the replay settings spelled
+out and a warning when the market source is sim while sim prices are off; Settings the
+"Snapshot replay" group (decision minutes, allow sim prices) and the "nflverse signals"
+group (refresh hours, the injuries and play-by-play URL templates, each must contain
+`{season}`). See docs/DASHBOARD.md.) README: a "Reading a model" guide that
 explains each number in plain words and what a trustworthy model looks like.
 
 ## Tests that must exist

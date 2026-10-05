@@ -953,3 +953,78 @@ is `validation_seasons`.
   (unticked = false, an empty list); group `seasons` gains `validation_first`,
   `validation_last` (blank = null) and `search_workers` (blank or `auto` = auto, else an
   integer); group `trade` gains the `paper_clv_ci` checkbox.
+
+## Step 6 additions (Part B: signals and recorded prices for workers, docs/ROBUSTNESS.md B)
+
+### Data for workers
+- `GET /api/v1/data/games` (worker bearer, unchanged route, `ETag`, `304`, `Cache-Control:
+  no-cache`): the body becomes `{"games": [...], "count": n, "team_game_stats": [...]}`.
+  Workers that predate the change ignore the new keys. Each game row gains `"signals":
+  {"home_qb_changed", "away_qb_changed", "home_out_qb", "away_out_qb", "home_out_count",
+  "away_out_count"}` (ints; the flags are 0 or 1):
+  - `*_qb_changed` is 1 when the team's starting quarterback for this game
+    (`games.raw` `home_qb_id` / `away_qb_id`) differs from its last known starter in its
+    previous games, across seasons. A team's first game, and a game whose starter is
+    unknown (an unplayed game), read 0.
+  - `*_out_count` counts the players of the game's (season, game_type, week, team) listed
+    `Out` in `injuries`; `*_out_qb` is 1 when any of them plays QB. Only rows whose
+    `date_modified` is strictly before the decision time (kickoff minus the
+    `decision_minutes_before_kickoff` setting) count; a row modified later, or without a
+    date, never counts, so a backtest cannot use a report written after its bet.
+  `team_game_stats` lists every team-game row `{"game_id", "season", "week", "team",
+  "kickoff_at", "off_epa_per_play", "def_epa_per_play", "pass_rate", "plays",
+  "success_rate"}` sorted by `kickoff_at, game_id, team` (`kickoff_at` from `games` when
+  the game is known, ISO UTC with `Z`). The ETag is
+  `<games count>-<games max updated_at>.<injuries count>-<max updated_at>.<team_game_stats
+  count>-<max updated_at>.d<decision_minutes_before_kickoff>`: it changes when games,
+  injuries or team stats change, or when the decision lead (which the injury signals
+  depend on) does. Clients treat it as opaque.
+- The trade state's `game` carries the same `signals` plus `team_stats: {"home": [...],
+  "away": [...]}`: each side's team_game_stats rows strictly before this game's kickoff,
+  oldest first, at most 16 (`host/signals.py` `game_signals`).
+- `GET /api/v1/data/prices?since=<iso>&platform=<name>` (worker bearer, `ETag`,
+  `If-None-Match` as for games, `304`, `Cache-Control: no-cache`) -> `{"markets":
+  [{"market_id", "game_id", "side": "home"|"away", "platform", "confirmed": true,
+  "closing_price": float|null, "kickoff_at", "bars": [[minute, bid, ask, close,
+  min_liquidity_usd_cents], ...], "depth": [[ts, bid_depth, ask_depth], ...]}], "count":
+  n}`.
+  - Markets: confirmed mappings with a side, of games with `kickoff_at >= since` (every
+    game without `since`; a date means midnight UTC, a naive time is UTC), ordered by
+    kickoff, game, side. `platform` names one platform; without it every platform except
+    `sim` is served, so simulated prices only reach a worker that asks for `platform=sim`
+    (and the worker refuses them unless `allow_sim_prices`).
+  - Bars and depth lie inside `[kickoff - 6 h, kickoff)`. Bars are the rolled-up
+    `price_bars` merged with bars built the same way (last mid as close, last bid and ask,
+    least liquidity) from the raw `price_snapshots` not rolled up yet; for a minute that
+    has both, the raw close, bid and ask win and the liquidity is the least of the two.
+    Depth is the raw snapshots thinned to the last one per minute (`bid_depth` and
+    `ask_depth` are the stored `[[price, size], ...]` levels, best first).
+  - ETag: `<price_bars count>-<max minute>-<max price_snapshots id>-<max markets
+    updated_at>-<games ETag>-<hash of since and platform>`. A bad `since` or `platform`
+    is 400; a missing or unknown token is 401.
+
+### Ingest (host)
+- `injuries` is loaded from nflverse `injuries_{season}.csv` (setting
+  `nflverse_injuries_url`, a template with `{season}`): game_type folds every playoff
+  round into `POST`, team codes take the games aliases (OAK -> LV, SD -> LAC, STL -> LA),
+  a player without a gsis_id is keyed `name:<full name>`, a duplicated key keeps the
+  latest `date_modified`, an unreadable record is skipped and counted. Upserts rewrite a
+  row (and move its `updated_at`) only when a field changed.
+- `team_game_stats` is loaded from nflverse `play_by_play_{season}.csv.gz` (setting
+  `nflverse_pbp_url`), streamed through gzip and csv and folded per (game, team) as it is
+  read (a season is never held in memory; the download is capped at 200 MB). A play
+  counts when its `play_type` is `pass` or `run` and its `epa` is finite: offence is
+  `posteam`, defence `defteam`; `off_epa_per_play` and `def_epa_per_play` (EPA allowed)
+  are means, `pass_rate` the share of offensive plays with `pass = 1`, `success_rate` the
+  share with `success = 1`, `plays` the offensive plays.
+- The host's data thread refreshes both for the current season (the newest season with a
+  game kicking off within 30 days) and the previous one every `signals_refresh_hours`
+  (default 24), first 5 minutes after start when either table is empty, else after a full
+  interval. One season's failure (a 404 before a season's first report) never stops the
+  others; when nothing succeeds it retries after 15 minutes.
+- CLI: `ingest-injuries` and `ingest-pbp`, each with `--season <year>`, `--season all`
+  (the full backfill: injuries from 2009, play-by-play from 1999, through the current
+  season, one season at a time, each committed on its own) or `--file PATH` (a local
+  CSV, or CSV.gz for play-by-play). One line per season (`pbp:2023: R rows, I inserted,
+  C changed, S skipped`); exit 1 when any season failed (the others are still loaded) or
+  when neither `--season` nor `--file` is given.

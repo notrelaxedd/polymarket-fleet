@@ -60,15 +60,17 @@ class Elo:
         self.ratings = {t: START_RATING + (r - START_RATING) * keep for t, r in self.ratings.items()}
         self.season = season
 
-    def expect(self, game: dict[str, Any]) -> float:
-        """P(home win) before the game, with hfa and the clamped rest edge."""
+    def expect(self, game: dict[str, Any], extra: float = 0.0) -> float:
+        """P(home win) before the game, with hfa, the clamped rest edge and `extra` Elo
+        points for the home side (the signal penalties; 0 leaves the result unchanged)."""
         self.begin_season(game["season"])
-        rest_adj = rest_adjustment(self.rest_per_day, game["home_rest"], game["away_rest"])
+        rest_adj = rest_adjustment(self.rest_per_day, game["home_rest"], game["away_rest"]) + extra
         return expected_home(self.rating(game["home_team"]), self.rating(game["away_team"]), self.hfa, rest_adj)
 
-    def update(self, game: dict[str, Any]) -> float:
-        """Apply a finished game's result; returns the home delta (0 for unplayed games,
-        which do not count towards games_seen)."""
+    def update(self, game: dict[str, Any], extra: float = 0.0) -> float:
+        """Apply a finished game's result, judged against the expectation with `extra`;
+        returns the home delta (0 for unplayed games, which do not count towards
+        games_seen)."""
         self.begin_season(game["season"])
         outcome = outcome_of(game)
         if outcome is None:
@@ -76,7 +78,7 @@ class Elo:
         self.games_seen += 1
         home, away = game["home_team"], game["away_team"]
         r_home, r_away = self.rating(home), self.rating(away)
-        rest_adj = rest_adjustment(self.rest_per_day, game["home_rest"], game["away_rest"])
+        rest_adj = rest_adjustment(self.rest_per_day, game["home_rest"], game["away_rest"]) + extra
         e = expected_home(r_home, r_away, self.hfa, rest_adj)
         margin = abs(game["home_score"] - game["away_score"])
         home_adv = r_home + self.hfa + rest_adj - r_away

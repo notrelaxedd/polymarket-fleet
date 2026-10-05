@@ -26,6 +26,7 @@
   </dl>
   <h2>params</h2>
   {% if job.params.model_id %}<p>model <a href="/models/{{ job.params.model_id }}">{{ job.params.model_id | short }}</a></p>{% endif %}
+  {% if job.kind == 'backtest' and job.params.price_source == 'snapshots' %}<p class="price-source">price source <strong>snapshots</strong>: recorded {{ job.params.price_platform }} prices {{ job.params.decision_minutes_before_kickoff }} minutes before kickoff, participation {{ job.params.participation }}{% if job.params.allow_sim_prices %}, sim prices allowed (testing){% endif %}</p>{% endif %}
   <pre>{{ job.params | pretty_json }}</pre>
   <h2>checkpoint</h2>
   <p class="checkpoint">{{ checkpoint_digest }}</p>
@@ -41,6 +42,7 @@
   </p>
   {% endif %}
   {% if job.kind == 'backtest' and result.n_games is defined %}
+  {% if result.price_source == 'snapshots' %}{{ metrics.snapshot_line(result) }}{% endif %}
   {{ metrics.pairs(result) }}
   {% if per_season %}{{ metrics.per_season(per_season) }}{% endif %}
   {% elif job.kind == 'validate' and robustness %}

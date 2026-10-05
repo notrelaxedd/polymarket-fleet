@@ -197,19 +197,22 @@ class LiveGateway(OrderGateway):
         return str(value if value is not None else order.get("id"))
 
     def place(self, order: dict[str, Any]) -> str:
-        """POST the order (client_order_id, BUY, GTD until gtd_at); the exchange order
-        id. The order dict needs `market_ref` (the exchange's market id)."""
+        """POST the order (client_order_id, side_buy or for a sell side_sell, GTD until
+        gtd_at); the exchange order id. The order needs `market_ref`."""
         if not order.get("market_ref"):
             raise SourceError(f"order {order.get('id')} has no market_ref to place against")
         fields = self.live["request_fields"]
         missing = [n for n in REQUIRED_REQUEST_FIELDS if not isinstance(fields.get(n), str) or not fields.get(n)]
         if missing:
             raise NotConfigured(f"live.request_fields {', '.join(missing)} not configured (null or missing)")
+        side_key = "side_sell" if order.get("side") == "sell" else "side_buy"
+        if not isinstance(self.live.get(side_key), str) or not self.live[side_key]:
+            raise NotConfigured(f"live.{side_key} not configured (null or missing)")
         price = lp.number(order.get("price"))
         body: dict[str, Any] = {
             fields["client_order_id"]: self.client_id(order),
             fields["market_id"]: str(order["market_ref"]),
-            fields["side"]: self.live["side_buy"],
+            fields["side"]: self.live[side_key],
             fields["price"]: round(price, 4) if price is not None else None,
             fields["size"]: int(order["size"]),
             fields["time_in_force"]: self.live["time_in_force"],

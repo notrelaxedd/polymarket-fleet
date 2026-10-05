@@ -1,7 +1,8 @@
 """Append-only money ledger and the cached bankroll columns.
 
 Every money movement is one signed ledger row; `bankrolls` caches the running sums and
-`replay_problems` proves the cache matches. Conventions (cents) are in docs/TRADING.md.
+`replay_problems` proves the cache matches. Conventions (cents) are in docs/TRADING.md
+(kinds fund, reserve, release, fill, sell, settle, adjust).
 """
 from __future__ import annotations
 
@@ -112,6 +113,21 @@ def fill(conn: psycopg.Connection, bankroll_id: Any, cost_cents: int, fee_cents:
     return _post(
         conn, bankroll_id, "fill",
         d_reserved=-(cost_cents + fee_cents), d_open=cost_cents, d_realized=-fee_cents,
+        ref_type="order", ref_id=order_id,
+    )
+
+
+def sell(conn: psycopg.Connection, bankroll_id: Any, basis_cents: int, proceeds_cents: int, fee_cents: int, order_id: Any) -> int:
+    """A sell fill: `-basis open, +(proceeds - fee) available, +(proceeds - fee - basis)
+    realized`; proceeds = price * size * 100, basis = the position basis the sale removes
+    (host.trading.positions.sell_basis_cents). Nothing was reserved, so nothing is
+    released."""
+    if basis_cents < 0 or proceeds_cents < 0 or fee_cents < 0:
+        raise LedgerError("a sale needs a non-negative basis, proceeds and fee")
+    net = proceeds_cents - fee_cents
+    return _post(
+        conn, bankroll_id, "sell",
+        d_open=-basis_cents, d_available=net, d_realized=net - basis_cents,
         ref_type="order", ref_id=order_id,
     )
 

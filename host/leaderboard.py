@@ -10,6 +10,11 @@ PAPER_RANK_BETS paper bets; otherwise validation, by the validation era's shrunk
 (roi * n_bets / (n_bets + 100)), ties broken by the mean log-loss gain over the
 market. Paper-ranked lineages come first. A lineage without validation metrics is
 unranked with the reason "not validated"; a retired lineage is always unranked.
+
+Step 6 Part B (host/leaderboard_snapshot.py): a lineage with snapshot replay metrics
+carries a "snapshot" group, and between paper and validation sits rank mode
+"snapshot" (30 snapshot-scored bets, by shrunk snapshot CLV). Like paper, it ranks a
+lineage that is not validated yet.
 """
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ from typing import Any
 import psycopg
 
 from host.eligibility import model_flags
+from host.leaderboard_snapshot import rank_mode, snapshot_key, snapshot_summary
 from host.models import get_model, lineage_rows
 from host.stats import shrunk_roi
 
@@ -143,6 +149,7 @@ def lineage_row(
     paper = records.get((root["lineage_id"], "paper"), EMPTY_RECORD)
     validation = validation_summary(root)
     stress = root.get("stress_metrics") if isinstance(root.get("stress_metrics"), dict) else None
+    snapshot = snapshot_summary(root)
     return {
         "id": root["id"],
         "lineage_id": root["lineage_id"],
@@ -163,7 +170,9 @@ def lineage_row(
         "live": dict(records.get((root["lineage_id"], "live"), EMPTY_RECORD)),
         "paper_score": shrunk_clv(paper),
         "paper_ci": (paper_cis or {}).get(root["lineage_id"]),
-        "rank_mode": "paper" if paper_ranked(paper) else "validation",
+        "snapshot": snapshot,
+        "snapshot_score": snapshot["score"] if snapshot else 0.0,
+        "rank_mode": rank_mode(paper_ranked(paper), snapshot),
         "members": members,
         "created_at": root["created_at"],
         "updated_at": root["updated_at"],
@@ -184,7 +193,7 @@ def unranked_reason(entry: dict[str, Any]) -> str | None:
     """Why a lineage sits in the unranked list, or None when it ranks."""
     if entry["status"] == "retired":
         return UNRANKED_REASONS["retired"]
-    if entry["rank_mode"] == "paper":
+    if entry["rank_mode"] in ("paper", "snapshot"):
         return None
     if not entry["validated"]:
         return UNRANKED_REASONS["not_validated"]
@@ -193,8 +202,8 @@ def unranked_reason(entry: dict[str, Any]) -> str | None:
 
 def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
     """{"ranked": [...], "unranked": [...]} over every lineage with a root row: the
-    paper-ranked lineages first, then the validation-ranked ones, then the rest
-    (each with its `unranked_reason`)."""
+    paper-ranked lineages first, then the snapshot-ranked ones, then the
+    validation-ranked ones, then the rest (each with its `unranked_reason`)."""
     roots = conn.execute(
         """
         SELECT r.*, (SELECT count(*) FROM models m WHERE m.lineage_id = r.lineage_id) AS members
@@ -203,7 +212,7 @@ def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
     ).fetchall()
     records = trading_records(conn)
     cis = paper_intervals(conn)
-    by_paper, by_validation, unranked = [], [], []
+    by_paper, by_snapshot, by_validation, unranked = [], [], [], []
     for root in roots:
         entry = lineage_row(root, int(root["members"]), records, cis)
         reason = unranked_reason(entry)
@@ -212,11 +221,14 @@ def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
             unranked.append(entry)
         elif entry["rank_mode"] == "paper":
             by_paper.append(entry)
+        elif entry["rank_mode"] == "snapshot":
+            by_snapshot.append(entry)
         else:
             by_validation.append(entry)
     by_paper.sort(key=_paper_key)
+    by_snapshot.sort(key=snapshot_key)
     by_validation.sort(key=_rank_key)
-    ranked = by_paper + by_validation
+    ranked = by_paper + by_snapshot + by_validation
     for position, entry in enumerate(ranked, start=1):
         entry["rank"] = position
     return {"ranked": ranked, "unranked": unranked}
@@ -252,7 +264,8 @@ def model_detail(conn: psycopg.Connection, model_id: Any) -> dict[str, Any]:
     model["live"] = dict(records.get((model["lineage_id"], "live"), EMPTY_RECORD))
     model["paper_score"] = shrunk_clv(model["paper"])
     model["paper_ci"] = _paper_ci(conn.execute("SELECT * FROM lineage_paper_ci WHERE lineage_id = %s", (model["lineage_id"],)).fetchone())
-    model["rank_mode"] = "paper" if paper_ranked(model["paper"]) else "validation"
+    model["snapshot"] = snapshot_summary(model)
+    model["rank_mode"] = rank_mode(paper_ranked(model["paper"]), model["snapshot"])
     model["lineage"] = [
         {
             "id": r["id"], "parent_model_id": r["parent_model_id"], "trained_through": r["trained_through"],

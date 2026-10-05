@@ -34,3 +34,15 @@
 </table>
 </div>
 {%- endmacro %}
+{# A snapshot replay result (docs/ROBUSTNESS.md B1): `m` is the raw metrics object with
+   price_source "snapshots". CLV is the frozen closing price minus the price paid; the
+   point value is m.avg_clv when the worker reports it, else the middle of its range. #}
+{% macro snapshot_line(m) -%}
+{% set bets = m.n_bets or 0 %}
+{% set ci = (m.ci or {}).avg_clv if m.ci is mapping else none %}
+{% set has_ci = ci and ci | length == 2 and ci[0] is number and ci[1] is number %}
+{% set clv = m.avg_clv if m.avg_clv is number else ((ci[0] + ci[1]) / 2 if has_ci else none) %}
+<p class="snapshot-line">Replayed on recorded <strong>{{ m.platform or 'unknown' }}</strong> prices: {{ m.n_games or 0 }} games scored, {{ bets }} bets, ROI {{ m.roi | signed_pct if bets else '-' }}.
+  CLV <strong>{{ clv | fixed }}</strong> per contract{% if has_ci %} <span class="range snapshot-ci">(90% range {{ ci[0] | fixed }} to {{ ci[1] | fixed }})</span>{% endif %}: the closing price minus the price paid, so above zero means the market moved the model's way after it bought.
+  {{ m.n_unscored_no_prices or 0 }} games skipped for lack of recorded prices near the decision time.</p>
+{%- endmacro %}

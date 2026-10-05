@@ -20,7 +20,7 @@ from host import eligibility, kill, leases
 from host.config import _as_bool
 from host.errors import BadRequest, Conflict, Forbidden, NotFound
 from host.events import add_audit, add_job_event
-from host.exchange import snapshots
+from host.exchange import settle_sells, snapshots
 from host.exchange.adapters.base import utcnow
 from host.settings import get_setting
 from host.trading import ledger, orders
@@ -103,17 +103,8 @@ def settle_assignment(
     for row in open_rows:
         orders.cancel_order(conn, row["id"], actor, "settlement")
     bank = ledger.bankroll_for_assignment(conn, aid, for_update=True)
-    filled = conn.execute(
-        "SELECT * FROM orders WHERE assignment_id = %s AND filled_size > 0 ORDER BY created_at, id", (aid,)
-    ).fetchall()
-    bets: list[dict[str, Any]] = []
-    total_basis = total_payout = 0
-    for order in filled:
-        market = markets.get(order["market_id"]) or dict(conn.execute("SELECT * FROM markets WHERE id = %s", (order["market_id"],)).fetchone())
-        bet = bet_for(conn, dict(order), market, assignment, game, winner)
-        bets.append(bet)
-        total_basis += bet["cost_cents"]
-        total_payout += bet["payout_cents"]
+    bets = settle_sells.assignment_bets(conn, assignment, game, winner, markets)
+    total_basis, total_payout = settle_sells.settle_totals(bets)
     if total_basis or total_payout:
         ledger.settle(conn, bank["id"], total_basis, total_payout, aid)
     for bet in bets:
@@ -125,59 +116,29 @@ def settle_assignment(
     return score
 
 
-def bet_for(
-    conn: psycopg.Connection,
-    order: dict[str, Any],
-    market: dict[str, Any],
-    assignment: dict[str, Any],
-    game: dict[str, Any],
-    winner: str | None,
-) -> dict[str, Any]:
-    fills = conn.execute("SELECT price, size, fee_cents FROM fills WHERE order_id = %s ORDER BY id", (order["id"],)).fetchall()
-    size = sum(int(f["size"]) for f in fills)
-    basis = sum(orders.fill_cost_cents(f["price"], int(f["size"])) for f in fills)
-    fee = sum(int(f["fee_cents"]) for f in fills)
-    entry = basis / (size * 100.0) if size else float(order["price"])
-    side = market.get("side")
-    if winner is None or side is None:
-        result, payout = "push", basis
-    elif side == winner:
-        result, payout = "win", size * 100
-    else:
-        result, payout = "loss", 0
-    closing = None if market.get("closing_price") is None else float(market["closing_price"])
-    return {
-        "order_id": order["id"], "assignment_id": assignment["id"], "model_id": assignment["model_id"],
-        "lineage_id": assignment["lineage_id"], "game_id": game["game_id"], "worker_id": order.get("worker_id"),
-        "mode": assignment["mode"], "date": game["gameday"], "event": f"{game['away_team']} @ {game['home_team']} {game['gameday']}",
-        "platform": market["platform"], "contract": market["title"], "side": side or "none",
-        "entry_price": round(entry, 6), "fee_cents": fee, "cost_cents": basis, "my_p": order.get("my_p"),
-        "market_p": order.get("market_p"), "edge": order.get("edge"), "stake_cents": basis + fee,
-        "closing_price": closing, "clv": None if closing is None else round(closing - entry, 6),
-        "result": result, "pnl_cents": payout - basis - fee, "payout_cents": payout, "size": size,
-    }
-
-
 def insert_bet(conn: psycopg.Connection, bet: dict[str, Any]) -> None:
     conn.execute(
         """
         INSERT INTO bets (order_id, assignment_id, model_id, lineage_id, game_id, worker_id, mode, date, event,
                           platform, contract, side, entry_price, fee_cents, cost_cents, my_p, market_p, edge,
-                          stake_cents, closing_price, clv, result, pnl_cents)
+                          stake_cents, closing_price, clv, result, pnl_cents, order_side)
         VALUES (%(order_id)s, %(assignment_id)s, %(model_id)s, %(lineage_id)s, %(game_id)s, %(worker_id)s, %(mode)s,
                 %(date)s, %(event)s, %(platform)s, %(contract)s, %(side)s, %(entry_price)s, %(fee_cents)s,
                 %(cost_cents)s, %(my_p)s, %(market_p)s, %(edge)s, %(stake_cents)s, %(closing_price)s, %(clv)s,
-                %(result)s, %(pnl_cents)s)
+                %(result)s, %(pnl_cents)s, %(order_side)s)
         ON CONFLICT (order_id) DO NOTHING
         """,
-        bet,
+        {"order_side": "buy", **bet},
     )
 
 
 def upsert_score(conn: psycopg.Connection, assignment: dict[str, Any], bets: list[dict[str, Any]]) -> dict[str, Any]:
+    """model_scores for one assignment: pnl over every row (sells included), n_bets and
+    the stake-weighted CLV over the buy rows (a sell row has stake 0 and no CLV)."""
+    buys = [b for b in bets if b.get("order_side", "buy") == "buy"]
     stake = sum(b["stake_cents"] for b in bets)
     pnl = sum(b["pnl_cents"] for b in bets)
-    weighted = [(b["clv"], b["stake_cents"]) for b in bets if b["clv"] is not None and b["stake_cents"] > 0]
+    weighted = [(b["clv"], b["stake_cents"]) for b in buys if b["clv"] is not None and b["stake_cents"] > 0]
     avg_clv = None
     if weighted:
         avg_clv = sum(c * s for c, s in weighted) / sum(s for _, s in weighted)
@@ -189,9 +150,9 @@ def upsert_score(conn: psycopg.Connection, assignment: dict[str, Any], bets: lis
             n_bets = EXCLUDED.n_bets, stake_cents = EXCLUDED.stake_cents, pnl_cents = EXCLUDED.pnl_cents,
             avg_clv = EXCLUDED.avg_clv, computed_at = now()
         """,
-        (assignment["model_id"], assignment["game_id"], assignment["mode"], assignment["lineage_id"], len(bets), stake, pnl, avg_clv),
+        (assignment["model_id"], assignment["game_id"], assignment["mode"], assignment["lineage_id"], len(buys), stake, pnl, avg_clv),
     )
-    return {"n_bets": len(bets), "stake_cents": stake, "pnl_cents": pnl, "avg_clv": avg_clv}
+    return {"n_bets": len(buys), "stake_cents": stake, "pnl_cents": pnl, "avg_clv": avg_clv}
 
 
 def complete_trade_job(conn: psycopg.Connection, assignment: dict[str, Any], score: dict[str, Any]) -> None:

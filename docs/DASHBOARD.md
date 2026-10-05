@@ -85,7 +85,14 @@ a Debian box."
   seed, first and last season, keep top), Train (model select, through season and week;
   the button is disabled until a model exists), (step 6) Validate (model select, seed;
   a line names the validation era it will run; disabled until a model exists;
-  `?validate_model=<id>` preselects the model and opens the card). (changed: review) Only one card is open:
+  `?validate_model=<id>` preselects the model and opens the card). (step 6B) The Backtest
+  card gains a "Price source" select: "closing line (every game, CLV 0)" (the default) or
+  "snapshots (recorded prices, real CLV)", with a muted line naming what a snapshot
+  backtest would replay (the market source, the decision minutes before kickoff, the
+  participation; games without recorded prices are skipped; the result is stored apart
+  and never changes a status; a link to `/settings#replay`) and a red line when the
+  market source is sim while sim prices are not allowed (such a backtest fails on the
+  worker). (changed: review) Only one card is open:
   the backtest card by default, the train card behind `?train_model`, the card whose form
   was just rejected; the others fold to their heading so the job list sits near the top
   on a phone. The sleep test form is the same kind of card under them. Model select
@@ -109,7 +116,12 @@ a Debian box."
   shown as buttons linking to `/models/{id}` ("(existing)" when the row was already
   there); (step 6) a validate result renders the same Robustness section as the model
   page; the raw JSON sits in a collapsed "raw result" element. The job list names the
-  model of a validate job next to the kind.
+  model of a validate job next to the kind. (step 6B) A snapshot backtest wears a
+  "snapshots" chip in the list; its page states the replay params ("price source
+  snapshots: recorded polymarket_us prices 60 minutes before kickoff, participation 0.5")
+  and its result opens with the replay line (platform, games scored, bets, ROI, CLV per
+  contract with its 90% range and what CLV means, games skipped for lack of recorded
+  prices) above the usual metrics pairs.
 
 ## Models page `/models` (step 3; changed: step 6)
 One row per lineage from `GET /api/models`, ranked list first (`#1`, `#2`, ...), then an
@@ -125,7 +137,10 @@ p; yes below 0.05), the validation bets with the search bets muted ("130, search
 the search ROI, the validation log-loss "vs" the market's (the search era's when not
 validated), max drawdown (one decimal, "-" when null), (changed: step 4) a paper column
 "5 g · 30 bets · $27.95 · ROI +6.2% · CLV 0.013" pooled from `model_scores` ("-" without
-paper games) followed (step 6) by the cached paper CLV 90% range when one exists, the
+paper games) followed (step 6) by the cached paper CLV 90% range when one exists, (step
+6B) a snapshot column "60 games · 30 bets · ROI +3.1% · CLV 0.020" with the snapshot CLV
+90% range muted beside it ("-" without a snapshot replay; the CLV title reads "closing
+price minus the price paid, per contract"), the
 summary text with an "Edit summary" `<details>` holding a textarea (maxlength 600) and
 Save, a Train button (links to the jobs page with the train form prefilled), (step 6) a
 Validate button (links to the jobs page with the validate form prefilled; hidden on a
@@ -133,9 +148,12 @@ retired lineage) and an Assign button (links to `/trading?model=<id>#assign`, wh
 opens the create form with the model selected; hidden on a retired lineage). (changed:
 step 4) Ranking follows docs/TRADING.md: a lineage with at least 5 paper games and 30
 paper bets ranks on shrunk CLV (`avg_clv * bets / (bets + 25)`, ties by paper ROI) ahead
-of the others and wears a green "paper" chip next to its rank; (changed: step 6) the
-rest rank on the validation era, shrunk ROI then the log-loss gain over the market, and
-a lineage without validation metrics is unranked ("not validated"). When no lineage is
+of the others and wears a green "paper" chip next to its rank; (step 6B) next, a lineage
+with at least 30 bets replayed on recorded prices ranks on shrunk snapshot CLV (`clv *
+bets / (bets + 25)`, ties by snapshot ROI) and wears a "snapshot" chip, validated or
+not; (changed: step 6) the rest rank on the validation era, shrunk ROI then the
+log-loss gain over the market, and a lineage without validation metrics is unranked
+("not validated"). The intro line says this in words and explains CLV. When no lineage is
 ranked the page says so in one line instead of drawing an empty table: "No lineage is
 validated yet, so none is ranked." above the unranked list, or "No models yet. Send a
 model search from the Jobs page." when there are none. On a phone the row stacks: the
@@ -149,7 +167,9 @@ created time with the creating job link, (step 6) the validation shrunk ROI (the
 key, "not validated" when none) and the search shrunk ROI (the selection score), (step
 4) the paper record line (games, bets, P&L, ROI, CLV, the shrunk CLV and "ranked on
 paper" when it is, (step 6) the paper CLV 90% range over N bets when cached, or "no paper
-games yet"); Train / (step 6) Validate (a one-tap form that sends a validate job for this
+games yet"), (step 6B) the snapshot replay line (games, bets, ROI, CLV with its 90%
+range, the shrunk CLV and "ranked on snapshot CLV" or "ranks on it from 30 bets", or "no
+snapshot replay yet"); Train / (step 6) Validate (a one-tap form that sends a validate job for this
 model to any idle worker, seed 1; hidden once retired) / Assign (the same link as the
 list) / "Retire lineage" (a form with a JavaScript confirm, hidden once retired); the
 summary with its edit form folded into an "Edit summary" `<details>` like the list;
@@ -165,7 +185,13 @@ x1.5: bets, ROI, log-loss, log-loss gain), the neighbourhood summary sentence (m
 10th percentile of shrunk ROI and log-loss gain over the 10 perturbations), the regime
 table in its five pairs (games, bets, ROI, P&L, log-loss gain), the validation
 per-season table and the stress seed line; "Not validated yet ..." with the Validate
-button when there are no validation numbers; then the search-era backtest metrics as
+button when there are no validation numbers; (step 6B) the "Snapshot replay" section
+(`#snapshot`): the replay line (platform, games scored, bets, ROI, CLV per contract with
+its 90% range and what it means, games skipped for lack of recorded prices), the
+labelled pairs and the per-season table of the snapshot metrics, or "No snapshot replay
+yet." with one line on what it does, and a one-tap "Replay on snapshots" form (a backtest
+of this model with price source snapshots to any idle worker; hidden once retired);
+then the search-era backtest metrics as
 labelled pairs (games, bets, ROI, hit rate, average edge, P&L, log-loss vs market, brier,
 max drawdown with its cents, seasons), the stacked per-season table and the calibration
 table (ten `p` buckets: games, mean p, mean outcome); the lineage members (id, trained
@@ -195,7 +221,12 @@ validation keep working:
   last refresh outcome of this host process: time and counts including skipped records,
   or "Last refresh failed <time>: <error>" in red, and a "Refresh now" button that
   fetches immediately and reports the counts in the flash; a failed refresh is a flash
-  too, never an error page).
+  too, never an error page). (step 6B) Snapshot replay (`#replay`): decision minutes
+  before kickoff (0..300, the replay bets that long before kickoff on prices recorded
+  within 30 minutes before it) and an "Allow sim prices" checkbox (testing only; unticked
+  stores false). nflverse signals (`#signals`): refresh hours (1..168), the injuries URL
+  and the play-by-play URL, each a template that must contain `{season}` (an inline
+  error otherwise).
 - (step 4) Trading: one form, `POST /settings/trade`, holding every step 4 key under four
   sub-headings. Order approval: participation, book max age, order lifetime
   (`gtd_seconds`), orphan cancel after, trade tick, max paper models per game, max

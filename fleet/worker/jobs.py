@@ -9,6 +9,10 @@ default_bankroll_cents, max_bet_cents, trade_max_games, backtest_seasons, and fo
 model_search validation_seasons and workers); the docs/MODELS.md defaults apply when
 they are absent. Step 6 adds the validate kind (docs/ROBUSTNESS.md): params
 {"model_id", "seed" (default 1), "validation_seasons"}, the model from the context.
+A backtest with params.price_source "snapshots" (docs/ROBUSTNESS.md B1) replays the
+recorded prices of the context's prices_path on params.price_platform (platform sim
+refused unless params.allow_sim_prices) with params.decision_minutes_before_kickoff
+and params.participation (settings copied by the host; defaults 60 and 0.5).
 """
 
 from __future__ import annotations
@@ -30,6 +34,7 @@ DEFAULT_LIMITS: dict[str, Any] = {
     "backtest_seasons": [2010, None],
 }
 DEFAULT_VALIDATION_SEASONS: list[int | None] = [2022, None]
+PRICE_SOURCES = ("closing_line", "snapshots")
 DEFAULT_SEED = 1
 
 
@@ -71,6 +76,9 @@ def limits_from_params(params: dict[str, Any]) -> dict[str, Any]:
             limits[key] = list(value) if isinstance(value, (list, tuple)) and len(value) == 2 else list(default)
         else:
             limits[key] = int(value) if value is not None else default
+    participation = params.get("participation")
+    if isinstance(participation, (int, float)) and not isinstance(participation, bool) and 0 <= participation <= 1:
+        limits["participation"] = float(participation)
     return limits
 
 
@@ -119,15 +127,51 @@ def _seed(params: dict[str, Any]) -> int:
     return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else DEFAULT_SEED
 
 
+def price_source(params: dict[str, Any]) -> str:
+    """params.price_source, "closing_line" when absent; ValueError when unknown."""
+    value = params.get("price_source") or "closing_line"
+    if value not in PRICE_SOURCES:
+        raise ValueError(f"unknown price_source {value!r}")
+    return str(value)
+
+
+def price_platform(params: dict[str, Any]) -> tuple[str, bool]:
+    """(platform, allow_sim_prices) of a snapshot backtest; refuses sim unless allowed."""
+    from fleet.sim.prices import DEFAULT_PLATFORM, SIM_PLATFORM, SimPricesRefused
+
+    platform = str(params.get("price_platform") or DEFAULT_PLATFORM)
+    allow_sim = params.get("allow_sim_prices") is True
+    if platform == SIM_PLATFORM and not allow_sim:
+        raise SimPricesRefused("price platform sim is refused while allow_sim_prices is off")
+    return platform, allow_sim
+
+
+def _replay(params: dict[str, Any]) -> Any:
+    """The fleet.sim.prices.Replay of a snapshot backtest, None for closing_line."""
+    if price_source(params) != "snapshots":
+        return None
+    from fleet.sim.prices import DEFAULT_DECISION_MINUTES, Replay, load_markets
+
+    platform, allow_sim = price_platform(params)
+    path = _context(params).get("prices_path")
+    if not path:
+        raise ValueError("job context has no prices_path for a snapshot backtest")
+    minutes = params.get("decision_minutes_before_kickoff")
+    if not isinstance(minutes, int) or isinstance(minutes, bool):
+        minutes = DEFAULT_DECISION_MINUTES
+    return Replay(load_markets(str(path)), platform, minutes, allow_sim)
+
+
 def run_backtest_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
                      emit: Emit, should_stop: ShouldStop) -> dict[str, Any]:
     from fleet.sim.backtest import run_backtest
 
     limits = limits_from_params(params)
     family, model_params = _family_and_params(params)
+    replay = _replay(params)
     games = _load_games(params)
     return run_backtest(games, family, model_params, _seasons(params, limits), limits, emit, should_stop, checkpoint,
-                        "search", _seed(params))
+                        "search", _seed(params), replay)
 
 
 def run_model_search_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,

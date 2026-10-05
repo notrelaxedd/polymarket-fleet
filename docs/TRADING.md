@@ -87,8 +87,13 @@ replay asserts `initial + realized = available + reserved + open_cost`):
 - `reserve` (approval): `-cost available, +cost reserved` where `cost = size * (price + fee) * 100`.
 - `release` (cancel, expiry, rejection by the exchange, unfilled remainder): the reverse for
   the unfilled part.
-- `fill`: `-(price*size + fee)*100 reserved, +price*size*100 open, -fee*100 realized`.
-- `settle`: `-basis open, +payout available, +(payout - basis) realized`; payout is
+- `fill` (a buy fill): `-(price*size + fee)*100 reserved, +price*size*100 open, -fee*100
+  realized`; `fills.basis_cents = price*size*100`.
+- `sell` (a sell fill, step 6 Part B): `-basis open, +(proceeds - fee) available,
+  +(proceeds - fee - basis) realized` with `proceeds = price*size*100` and `basis` the
+  average-cost basis the sale removes (`fills.basis_cents`); no reservation is touched.
+- `settle`: `-basis open, +payout available, +(payout - basis) realized` over the
+  contracts still held (the remaining basis after any sales); payout is
   `size * 100` on the winning side, 0 on the losing side, `basis` on a push (tie).
 - `adjust`: owner correction with a note (audit row).
 
@@ -312,28 +317,77 @@ handshake), dashboard tests for `/trading`, and the e2e extension.
 
 ## Selling (step 6 Part B): mark-to-model
 
-The buy rule gets its mirror image. Orders gain `side` (`buy` | `sell`); every existing
-order is a buy. On each tick, for every market where the assignment holds contracts:
+The buy rule gets its mirror image. Orders gain `side` (`buy` | `sell`, migration
+`0008_sells.sql`); every existing order is a buy. On each tick, for every market where
+the assignment holds contracts:
 - `p_side` from the model; `proceeds = bid`; `fee = taker_rate * bid * (1 - bid)`;
   `sell_edge = bid - fee - p_side`. If `sell_edge >= min_edge`, propose a limit SELL at the
   bid for `min(position size - open sell size, participation * bid depth at or above the
   price)` contracts. Never more than the position (no shorting); one open sell per market.
-- Approval for sells: kill, lease, assignment active, market confirmed and unresolved,
-  mode gate, stale book, participation (bid side), price band (`>= bid - 0.05`), size
-  within the position; no reservation (a sell frees money) and no daily-loss check, but
-  the order and its events are logged like any other.
-- Paper fills for sells walk bid levels at or above the limit with the same participation
-  rule; resting sells fill when a later bid crosses. Live sells go through the same
-  gateway with `side: SELL`.
-- Ledger on a sell fill: `basis = avg_cost * size * 100`; `-basis open, +(proceeds - fee)
-  available, +(proceeds - fee - basis) realized`. Positions use average cost; a full sale
-  closes the position.
-- Scoring: a sell order gets its own `bets` row with `result = "sold"` and `pnl = proceeds
-  - fee - basis`; at settlement each buy row's pnl covers only the contracts it still holds
-  (pro rata of the remaining position). CLV stays defined for buys only. `model_scores.pnl`
-  includes sells; `n_bets` counts buys.
+- Approval for sells (`host/trading/sells.py`): kill, lease, assignment active, market
+  confirmed and unresolved, mode gate, stale book, participation (bid side), price band
+  (`>= bid - 0.05`), size within the position; no reservation (`orders.cost_cents = 0`,
+  no ledger row) and no daily-loss check, but the order and its events are logged like
+  any other.
+
+Money side, as built:
+
+| Event | Ledger kind | d_available | d_reserved | d_open | d_realized | fills.basis_cents |
+|---|---|---|---|---|---|---|
+| buy approved | `reserve` | `-cost` | `+cost` | 0 | 0 | |
+| buy fill | `fill` | 0 | `-(notional + fee)` | `+notional` | `-fee` | `notional` |
+| sell approved | none | | | | | |
+| sell fill | `sell` | `+(proceeds - fee)` | 0 | `-basis` | `+(proceeds - fee - basis)` | `basis` |
+| sell cancelled, expired or killed | none (nothing reserved) | | | | | |
+| settlement | `settle` | `+payout` | 0 | `-remaining basis` | `+(payout - remaining basis)` | |
+
+`notional = proceeds = price * size * 100` rounded half up (`orders.fill_cost_cents`).
+
+- Positions (`host/trading/positions.py`) are signed sums over fills: `size = bought -
+  sold`, `basis_cents = sum(buy basis) - sum(sell basis)`, `avg_cost = basis_cents /
+  (size * 100)`; rows `{"market_id", "side", "size", "basis_cents", "avg_cost"}` plus
+  the mark fields. A position sold down to zero disappears.
+- Sell basis (`positions.sell_basis_cents`): `remaining basis * size / remaining size`
+  rounded half up to the cent, and exactly the remaining basis when the sale closes the
+  position, so a position sold in any number of steps ends at zero open cost. A sell
+  fill larger than the position is refused (`orders.record_fill` raises; the live path
+  then auto-kills `late_fill` as for any fill the books cannot take). The bankroll row
+  is locked before the position is read.
+- Paper fills for sells (`host/exchange/paper.py`) walk the bid levels at or above the
+  limit with `fleet.sim.book.walk(side="sell")` and the same participation rule; a sell
+  whose first snapshot after submission had its bid below the limit rests and fills at
+  its limit when a later bid crosses. Each snapshot level is shared by all paper orders
+  on the market per side: bid levels among sells, ask levels among buys. Paper fill ids
+  are `paper:{order}:{snapshot}:b{level}` for bid levels (ask levels keep
+  `paper:{order}:{snapshot}:{level}`). A paper sell never fills more than the
+  assignment holds.
+- Live sells go through the same gateway: `market_source_config.polymarket_us.live`
+  gains `side_sell` (default `"SELL"`), sent for a sell order (`side_buy` for a buy); a
+  null side refuses the place (`NotConfigured`, rejected by the exchange). Live fills
+  of sells are booked by the same `record_fill`.
+- Kill and cancels: a kill cancels open sells exactly like buys (paper at once, live
+  `cancel_requested`); there is nothing to release. Positions stay.
+- Settlement (`host/exchange/settle_sells.py`): a filled sell order gets its own `bets`
+  row (`order_side` sell, `result` sold, `entry_price` = average sell price,
+  `cost_cents` = basis sold, `stake_cents` 0, `pnl_cents` = proceeds - fee - basis,
+  `clv` null). Each filled buy row covers only the contracts still held: per market the
+  remaining basis is split over the buy rows by their bought basis and the payout by
+  their bought contracts, floor shares with the rounding residual on the last row, so
+  the rows add up to the ledger `settle` row exactly; `pnl = payout - basis - buy fee`,
+  `stake_cents` stays the whole bought basis plus fee, CLV against the buy VWAP. A
+  fully sold position settles with no `settle` row and its buy rows carry only their
+  fees. `model_scores.pnl` includes sells; `n_bets` counts buys; CLV stays
+  stake-weighted over buys. Bets P&L summed per assignment equals its ledger realized.
+- P&L (`host/pnl.py`): before settlement a sell fill counts `proceeds - fee - mark` of
+  its contracts (today: the same when it filled today, else `-(mark - start mark)`), so
+  open P&L is the realized gain of the sales plus the mark-to-mid of what is still
+  held; after settlement the `sold` bets row carries it.
 - Dashboard: sells shown with a `sell` chip and their realized P&L; positions show size,
   average cost, current bid and unrealized P&L.
-- Tests: sell maths by hand, no-shorting, one open sell per market, ledger invariants after
-  partial and full sales, settlement after a partial sale, kill cancels open sells, the
-  worker proposes a sell when the market overshoots the model and not otherwise.
+- Tests: `tests/test_sell_ledger.py` (sell maths by hand, ledger invariants after
+  partial and full sales, no shorting, P&L), `tests/test_sell_paper.py` (marketable and
+  resting sells, shared participation with a buy on the same snapshot),
+  `tests/test_sell_settlement.py` (exact totals after a partial sale, loss, push, a full
+  sale), `tests/test_sell_kill_live.py` (kill cancels open sells, the live gateway and
+  executor send SELL, a live sell fill); the worker rule and the approval have their
+  own tests.

@@ -1,6 +1,9 @@
 """The closing-line fill rule and stake maths (docs/MODELS.md, "Betting rule").
 
 Prices are probabilities in (0, 1) per $1 contract; stakes and pnl are integer cents.
+The snapshot replay (fleet.sim.prices) shares the rule: it ignores half_spread (the
+recorded ask already holds the spread), adds price_bump to every entry price (the
+price stress) and caps fills at participation of the recorded book.
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 DEFAULT_FEE_MODEL = {"taker_rate": 0.05, "half_spread": 0.01}
+DEFAULT_PARTICIPATION = 0.5
 
 
 @dataclass(frozen=True)
@@ -20,6 +24,8 @@ class BetRule:
     kelly_fraction: float
     bankroll_cents: int
     max_bet_cents: int
+    participation: float = DEFAULT_PARTICIPATION
+    price_bump: float = 0.0
 
     @classmethod
     def build(cls, params: dict[str, Any], limits: dict[str, Any]) -> "BetRule":
@@ -32,6 +38,7 @@ class BetRule:
             kelly_fraction=float(params.get("kelly_fraction", 0.25)),
             bankroll_cents=int(limits.get("default_bankroll_cents", 10000)),
             max_bet_cents=int(limits.get("max_bet_cents", 2500)),
+            participation=float(limits.get("participation", DEFAULT_PARTICIPATION)),
         )
 
 
