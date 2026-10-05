@@ -634,7 +634,8 @@ is retried like any pending post; the job is not completed until every post succ
   sets `retired` on every row of the lineage, which drops it from the ranked list for
   good (eligibility never un-retires it); audit row `model_retired`. Both reply with the
   detail document. A change of `thresholds_backtest` through `POST /api/settings` or the
-  settings form recomputes every lineage.
+  settings form recomputes every lineage; a change of `thresholds_paper` through either
+  recomputes the paper gate of every lineage with a paper record.
 - `POST /api/jobs` accepts the three real kinds with the params above; the dashboard jobs
   page gets one form per kind (backtest, model search, train) with the owner's defaults from
   settings.
