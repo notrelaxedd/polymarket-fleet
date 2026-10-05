@@ -19,6 +19,7 @@ from psycopg_pool import ConnectionPool
 from host import auth, db
 from host.api.app import create_app
 from host.config import Config
+from host.settings import KIND_TO_ROLE
 
 ADMIN_URL = os.environ.get(
     "FLEET_TEST_DATABASE_URL", "postgresql://postgres:postgres@127.0.0.1:5432/postgres"
@@ -264,7 +265,7 @@ def set_heartbeat_age(conn: psycopg.Connection, worker_id: str, seconds: int) ->
 
 def insert_job(conn: psycopg.Connection, kind: str = "sleep", role: str | None = None, **cols: Any) -> dict[str, Any]:
     """Insert a job row directly (e.g. a trade job before step 4 can create one)."""
-    role = role or {"sleep": "backtest"}.get(kind, kind)
+    role = role or KIND_TO_ROLE.get(kind, kind)
     names = ["kind", "role"] + list(cols)
     values = [kind, role] + list(cols.values())
     placeholders = ", ".join(["%s"] * len(values))
@@ -303,6 +304,56 @@ def backtest_metrics(
     return metrics
 
 
+def validation_metrics(
+    n_bets: int = 120, roi: float = 0.04, ci_roi: tuple[float, float] = (0.01, 0.07), market_p: float = 0.02,
+    mean_ll_gain: float = 0.002, flags: list[str] | None = None, log_loss: float = 0.655, market_log_loss: float = 0.659,
+    max_drawdown: float = 0.10, seasons: list[int] | None = None, **extra: Any,
+) -> dict[str, Any]:
+    """A validation-era metrics object of the docs/ROBUSTNESS.md shape (the backtest
+    shape plus the A2 fields, era "validation", flags a subset of {overfit})."""
+    seasons = seasons if seasons is not None else [2022, 2023, 2024, 2025]
+    metrics = backtest_metrics(n_bets=n_bets, roi=roi, log_loss=log_loss, market_log_loss=market_log_loss,
+                               max_drawdown=max_drawdown, seasons=seasons)
+    metrics.update(
+        {
+            "ci": {"roi": list(ci_roi), "avg_clv": [0.0, 0.0], "max_drawdown": [max_drawdown * 0.6, max_drawdown * 1.3],
+                   "hit_rate": [0.49, 0.56], "avg_edge": [0.028, 0.041]},
+            "mean_ll_gain": mean_ll_gain, "market_p": market_p,
+            "brier_decomposition": {"reliability": 0.0021, "resolution": 0.0146, "uncertainty": 0.2487},
+            "calib_slope": 0.97, "calib_intercept": -0.02, "shrunk_roi": roi * n_bets / (n_bets + 100),
+            "era": "validation", "flags": list(flags or []),
+        }
+    )
+    metrics.update(extra)
+    return metrics
+
+
+def _regime(n_games: int, n_bets: int, roi: float, gain: float = 0.001) -> dict[str, Any]:
+    return {"n_games": n_games, "n_bets": n_bets, "roi": roi, "pnl_cents": int(round(n_bets * 1200 * roi)), "mean_ll_gain": gain}
+
+
+def stress_metrics(flags: list[str] | None = None, seed: int = 1, base_bets: int = 120, **extra: Any) -> dict[str, Any]:
+    """A stress_metrics object of the docs/ROBUSTNESS.md A3 shape."""
+    metrics = {
+        "prices": [
+            {"name": "spread+0.01", "n_bets": int(base_bets * 0.8), "roi": 0.025, "log_loss": 0.655, "mean_ll_gain": 0.002},
+            {"name": "spread+0.02", "n_bets": int(base_bets * 0.62), "roi": 0.011, "log_loss": 0.655, "mean_ll_gain": 0.002},
+            {"name": "fee x1.5", "n_bets": int(base_bets * 0.9), "roi": 0.018, "log_loss": 0.655, "mean_ll_gain": 0.002},
+        ],
+        "neighbourhood": {"n": 10, "shrunk_roi_median": 0.019, "shrunk_roi_p10": 0.004, "ll_gain_median": 0.0018, "ll_gain_p10": 0.0007},
+        "regimes": {
+            "favourite": _regime(400, 70, 0.045), "underdog": _regime(400, 50, 0.033),
+            "home": _regime(400, 65, 0.041), "away": _regime(400, 55, 0.039),
+            "divisional": _regime(150, 40, 0.036), "non_divisional": _regime(650, 80, 0.042),
+            "primetime": _regime(120, 20, 0.02), "day": _regime(680, 100, 0.044),
+            "cold_or_windy": _regime(90, 15, 0.01), "other_weather": _regime(710, 105, 0.044),
+        },
+        "flags": list(flags or []), "seed": seed,
+    }
+    metrics.update(extra)
+    return metrics
+
+
 def insert_model(
     conn: psycopg.Connection,
     family: str = "elo_blend",
@@ -313,8 +364,11 @@ def insert_model(
     summary: str | None = None,
     trained_through: list[int] | None = None,
     artifact: dict[str, Any] | None = None,
+    validation: dict[str, Any] | None = None,
+    stress: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert a model row directly (a root, or a child of `parent` in its lineage)."""
+    """Insert a model row directly (a root, or a child of `parent` in its lineage);
+    `validation` and `stress` are the step 6 metrics (a child inherits them)."""
     from psycopg.types.json import Jsonb
 
     from fleet.models.base import params_hash
@@ -325,18 +379,64 @@ def insert_model(
     if parent:
         status = parent["status"]
         metrics = parent["backtest_metrics"] if metrics is None else metrics
+        validation = parent["validation_metrics"] if validation is None else validation
+        stress = parent["stress_metrics"] if stress is None else stress
     return conn.execute(
         """
         INSERT INTO models (id, lineage_id, family, params, params_hash, artifact, parent_model_id,
-                            trained_through, summary, status, backtest_metrics)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                            trained_through, summary, status, backtest_metrics, validation_metrics, stress_metrics)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
         """,
         (
             model_id, lineage_id, family, Jsonb(params), params_hash(params),
             Jsonb(artifact) if artifact is not None else None, parent["id"] if parent else None,
             Jsonb(trained_through) if trained_through is not None else None, summary, status,
             Jsonb(metrics) if metrics is not None else None,
+            Jsonb(validation) if validation is not None else None, Jsonb(stress) if stress is not None else None,
         ),
+    ).fetchone()
+
+
+def insert_validated_model(conn: psycopg.Connection, status: str = "candidate", **kw: Any) -> dict[str, Any]:
+    """A root with search, validation and stress metrics that pass the default gates."""
+    kw.setdefault("metrics", backtest_metrics())
+    kw.setdefault("validation", validation_metrics())
+    kw.setdefault("stress", stress_metrics())
+    return insert_model(conn, status=status, **kw)
+
+
+def insert_paper_bet(
+    conn: psycopg.Connection, model: dict[str, Any], game_id: str, clv: float | None, stake_cents: int = 1000,
+    pnl_cents: int = 0, days_ago: int = 30, mode: str = "paper",
+) -> dict[str, Any]:
+    """A settled bet of `model` on `game_id` with the given CLV (the paper CLV
+    bootstrap resamples these); a market and an order row are made to satisfy the
+    references. The game must exist."""
+    from psycopg.types.json import Jsonb
+
+    market = conn.execute(
+        "SELECT id FROM markets WHERE game_id = %s ORDER BY created_at LIMIT 1", (game_id,)
+    ).fetchone() or insert_market(conn, game_id)
+    order = conn.execute(
+        """
+        INSERT INTO orders (client_request_id, market_id, mode, price, size, cost_cents, status)
+        VALUES (%s, %s, %s, 0.5, 1, 50, 'filled') RETURNING id
+        """,
+        (uuid.uuid4().hex[:32], market["id"], mode),
+    ).fetchone()
+    assignment = conn.execute(
+        "SELECT id FROM assignments WHERE model_id = %s AND game_id = %s LIMIT 1", (model["id"], game_id)
+    ).fetchone()
+    assignment_id = assignment["id"] if assignment else make_assignment(conn, game_id, model["id"], mode)["id"]
+    return conn.execute(
+        """
+        INSERT INTO bets (order_id, assignment_id, model_id, lineage_id, game_id, mode, date, event, platform, contract,
+                          side, entry_price, cost_cents, stake_cents, result, pnl_cents, clv, settled_at)
+        VALUES (%s, %s, %s, %s, %s, %s, current_date, 'e', 'sim', 'c', 'home', 0.5, %s, %s, %s, %s, %s,
+                now() - make_interval(days => %s)) RETURNING *
+        """,
+        (order["id"], assignment_id, model["id"], model["lineage_id"], game_id, mode, stake_cents, stake_cents,
+         "win" if pnl_cents > 0 else "loss", pnl_cents, clv, days_ago),
     ).fetchone()
 
 
@@ -344,7 +444,7 @@ def lease_job(conn: psycopg.Connection, worker: FakeWorker, kind: str = "backtes
     """Insert a job already leased by `worker` (the row carries its lease_token)."""
     from psycopg.types.json import Jsonb
 
-    role = {"sleep": "backtest"}.get(kind, kind)
+    role = KIND_TO_ROLE.get(kind, kind)
     return conn.execute(
         """
         INSERT INTO jobs (kind, role, status, params, lease_worker_id, lease_token, lease_expires_at, started_at)

@@ -23,7 +23,7 @@ from fleet.models.base import params_hash
 from fleet.models.registry import FAMILIES
 from host.eligibility import recompute_lineage, thresholds
 from host.errors import BadRequest, Conflict, NotFound
-from host.events import add_audit, add_job_event
+from host.events import add_job_event
 from host.leases import as_uuid
 
 STATUSES = ("candidate", "paper_ok", "live_eligible", "retired")

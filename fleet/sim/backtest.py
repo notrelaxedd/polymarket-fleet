@@ -4,9 +4,11 @@ For each test season S: replay Elo from the earliest game through S - 1, fit the
 the moneyline games of seasons < S (at least 3 such seasons), then walk S in kickoff order
 predicting, betting and scoring each game before its result updates the ratings. One
 test season is one checkpoint unit; the checkpoint holds, per finished season, the
-sufficient statistics, the blend and the packed per-game records (fleet.sim.records),
+sufficient statistics, the blend and the packed model probabilities of its scored
+games (fleet.sim.records), from which rebuild_records recovers every per-game record,
 so a resumed run finishes with exactly the metrics of an uninterrupted one, including
-the resampling fields (fleet.sim.robust) that need every scored game.
+the resampling fields (fleet.sim.robust) that need every scored game. An entry without
+packed probabilities (an older worker's checkpoint) restarts the run.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from fleet.sim.data import complete_seasons, features_of, has_moneylines, outcom
 from fleet.sim.fills import BetRule
 from fleet.sim.metrics import empty_stats, merge_stats, metrics_from_stats, record_game
 from fleet.sim.odds import devig
-from fleet.sim.records import build_record, pack_all, unpack_all
+from fleet.sim.records import build_record, pack_probs, unpack_probs
 from fleet.sim.robust import robust_fields
 
 MIN_HISTORY_SEASONS = 3
@@ -53,6 +55,20 @@ def season_plan(games: list[dict[str, Any]], seasons: list[int | None] | tuple[i
     return out
 
 
+def scored_pair(game: dict[str, Any]) -> tuple[float, float] | None:
+    """(p_market, outcome) when the game is scored: both moneylines and a result."""
+    outcome = outcome_of(game)
+    p_market = devig(game["home_moneyline"], game["away_moneyline"]) if has_moneylines(game) else None
+    if outcome is None or p_market is None:
+        return None
+    return p_market, outcome
+
+
+def fill_rule(family: str, params: dict[str, Any], limits: dict[str, Any]) -> BetRule:
+    """The fill rule of a model (its params with the family defaults) under the limits."""
+    return BetRule.build(get_family(family)(params).params, limits)
+
+
 def run_fold(games: list[dict[str, Any]], family: str, params: dict[str, Any], season: int,
              limits: dict[str, Any], should_stop: ShouldStop) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """One test season: (per-game records, blend coefficients). Records (fleet.sim.records)
@@ -62,14 +78,24 @@ def run_fold(games: list[dict[str, Any]], family: str, params: dict[str, Any], s
     rule = BetRule.build(model.params, limits)
     records: list[dict[str, Any]] = []
     for game in (g for g in games if g["season"] == season):
-        outcome = outcome_of(game)
-        p_market = devig(game["home_moneyline"], game["away_moneyline"]) if has_moneylines(game) else None
-        if outcome is not None and p_market is not None:
+        scored = scored_pair(game)
+        if scored is not None:
+            p_market, outcome = scored
             p = model.predict(game, p_market, features_of(game))
             records.append(build_record(game, p, p_market, outcome, rule))
         model.observe(game)
     blend = dict(getattr(model, "blend", {}))
     return records, blend
+
+
+def rebuild_records(games: list[dict[str, Any]], season: int, packed: str, rule: BetRule) -> list[dict[str, Any]]:
+    """The records of a finished season from its packed probabilities: the same
+    scored games in the same order under the same fill rule give the same records."""
+    probs = unpack_probs(packed)
+    scored = [(g, pair) for g in games if g["season"] == season for pair in (scored_pair(g),) if pair is not None]
+    if len(scored) != len(probs):
+        raise ValueError(f"season {season}: {len(probs)} stored probabilities for {len(scored)} scored games")
+    return [build_record(g, p, p_market, outcome, rule) for (g, (p_market, outcome)), p in zip(scored, probs)]
 
 
 def stats_of(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -81,26 +107,27 @@ def stats_of(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def season_entry(season: int, records: list[dict[str, Any]], blend: dict[str, Any]) -> dict[str, Any]:
     """The checkpoint entry of a finished test season."""
-    return {"season": season, "stats": stats_of(records), "blend": blend, "records": pack_all(records)}
+    return {"season": season, "stats": stats_of(records), "blend": blend, "records": pack_probs(records)}
 
 
 def _resume(checkpoint: dict[str, Any] | None, seasons: list[int]) -> list[dict[str, Any]]:
     """The per-season entries of a checkpoint when they are a prefix of this run (an
-    entry without records, from an older worker, restarts the run)."""
+    entry without packed probabilities, from an older worker, restarts the run)."""
     if not checkpoint:
         return []
     done = checkpoint.get("per_season") or []
     if [e.get("season") for e in done] != seasons[:len(done)]:
         return []
-    if any(not isinstance(e.get("records"), list) for e in done):
+    if any(not isinstance(e.get("records"), str) for e in done):
         return []
     return list(done)
 
 
-def assemble(per_season: list[dict[str, Any]], limits: dict[str, Any], era: str = ERA_SEARCH,
-             seed: int | str = 1) -> dict[str, Any]:
+def assemble(games: list[dict[str, Any]], family: str, params: dict[str, Any], per_season: list[dict[str, Any]],
+             limits: dict[str, Any], era: str = ERA_SEARCH, seed: int | str = 1) -> dict[str, Any]:
     """The result: whole-backtest metrics (plus the last blend and the robustness
-    fields) and per_season metrics."""
+    fields, computed from the records rebuilt for (family, params)) and per_season
+    metrics."""
     seasons = [e["season"] for e in per_season]
     result = metrics_from_stats(merge_stats([e["stats"] for e in per_season]), limits, seasons)
     result["blend"] = dict(per_season[-1]["blend"]) if per_season else {}
@@ -108,14 +135,17 @@ def assemble(per_season: list[dict[str, Any]], limits: dict[str, Any], era: str 
         {"season": e["season"], **metrics_from_stats(e["stats"], limits, [e["season"]]), "blend": dict(e["blend"])}
         for e in per_season
     ]
-    records = [unpack_all(e["records"], e["season"]) for e in per_season]
+    records = records_of(games, family, params, per_season, limits)
     result.update(robust_fields(records, limits, seed, era, result))
     return result
 
 
-def records_of(per_season: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
-    """The unpacked records per season of a finished run's checkpoint entries."""
-    return [unpack_all(e["records"], e["season"]) for e in per_season]
+def records_of(games: list[dict[str, Any]], family: str, params: dict[str, Any], per_season: list[dict[str, Any]],
+               limits: dict[str, Any]) -> list[list[dict[str, Any]]]:
+    """The records per season of a finished run's checkpoint entries, rebuilt under
+    the model's fill rule."""
+    rule = fill_rule(family, params, limits)
+    return [rebuild_records(games, e["season"], e["records"], rule) for e in per_season]
 
 
 def run_backtest(games: list[dict[str, Any]], family: str, params: dict[str, Any],
@@ -125,7 +155,7 @@ def run_backtest(games: list[dict[str, Any]], family: str, params: dict[str, Any
     """Walk-forward backtest; emits {"next": i, "per_season": [...]} after every season.
     The result is the metrics object with per_season, labelled with the era."""
     per_season = run_seasons(games, family, params, seasons, limits, emit, should_stop, checkpoint)
-    return assemble(per_season, limits, era, seed)
+    return assemble(games, family, params, per_season, limits, era, seed)
 
 
 def run_seasons(games: list[dict[str, Any]], family: str, params: dict[str, Any],

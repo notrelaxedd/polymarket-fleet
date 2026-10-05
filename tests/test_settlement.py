@@ -13,7 +13,7 @@ from host import eligibility
 from host.errors import Conflict, Forbidden, NotFound
 from host.exchange import settle
 from host.trading import ledger, orders
-from tests.conftest import insert_model, job_row, model_row
+from tests.conftest import insert_model, job_row, model_row, validation_metrics
 from tests.test_exchange import (
     NOW, bankroll, make_assignment, make_game, make_market, make_model, make_order, order, snap,
 )
@@ -164,7 +164,7 @@ def _score(conn, model, game_id, n_bets, pnl, clv, stake=1000, mode="paper", fir
         """,
         (model["id"], game_id, mode, model["lineage_id"], n_bets, stake, pnl, clv),
     )
-    if n_bets:
+    for _ in range(n_bets):  # one bets row per bet, each with the CLV (the paper CI resamples these)
         o = conn.execute(
             "INSERT INTO orders (client_request_id, market_id, mode, price, size, cost_cents, status) "
             "SELECT %s, id, %s, 0.5, 1, 50, 'filled' FROM markets LIMIT 1 RETURNING id",
@@ -173,16 +173,18 @@ def _score(conn, model, game_id, n_bets, pnl, clv, stake=1000, mode="paper", fir
         conn.execute(
             """
             INSERT INTO bets (order_id, assignment_id, model_id, lineage_id, game_id, mode, date, event, platform, contract,
-                              side, entry_price, cost_cents, stake_cents, result, pnl_cents, settled_at)
-            SELECT %s, a.id, %s, %s, %s, %s, current_date, 'e', 'sim', 'c', 'home', 0.5, 50, 50, 'win', %s, now() - make_interval(days => %s)
+                              side, entry_price, cost_cents, stake_cents, result, pnl_cents, clv, settled_at)
+            SELECT %s, a.id, %s, %s, %s, %s, current_date, 'e', 'sim', 'c', 'home', 0.5, 50, 50, 'win', %s, %s, now() - make_interval(days => %s)
               FROM assignments a WHERE a.model_id = %s LIMIT 1
             """,
-            (o["id"], model["id"], model["lineage_id"], game_id, mode, pnl, first_bet_days_ago, model["id"]),
+            (o["id"], model["id"], model["lineage_id"], game_id, mode, pnl, clv, first_bet_days_ago, model["id"]),
         )
 
 
 def test_paper_stats_and_thresholds(conn):
-    assert eligibility.paper_thresholds(conn) == {"min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1}
+    assert eligibility.paper_thresholds(conn) == {
+        "min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1, "clv_ci_excludes_zero": True,
+    }
     conn.execute("UPDATE settings SET value = %s WHERE key = 'thresholds_paper'", (Jsonb({"min_games": 2, "min_bets": 3}),))
     assert eligibility.paper_thresholds(conn)["min_games"] == 2 and eligibility.paper_thresholds(conn)["min_days"] == 21
     assert not eligibility.meets_paper_thresholds({"games": 5, "bets": 5, "days": 5, "avg_clv": None, "pnl_cents": 5}, LIMITS), "no CLV yet"
@@ -221,9 +223,9 @@ def test_paper_gate_promotes_pooled_lineage_and_demotion_halts_live(conn):
     assert conn.execute("SELECT status FROM assignments WHERE id = %s", (live["id"],)).fetchone()["status"] == "halted"
     assert order(conn, live_order["id"])["status"] == "cancelled" and bankroll(conn, live)["reserved_cents"] == 0
     assert ledger.replay_problems(conn) == []
-    # The backtest gate still comes first: a lineage whose backtest fails is a candidate whatever its paper record.
+    # The backtest gate still comes first: a lineage whose validation era fails it is a candidate whatever its paper record.
     _score(conn, child, "2026_05_SF_SEA", 1, 500, 0.05)
-    conn.execute("UPDATE models SET backtest_metrics = %s WHERE id = %s", (Jsonb({"n_bets": 1, "roi": 0.0, "max_drawdown": 0.9}), root["id"]))
+    conn.execute("UPDATE models SET validation_metrics = %s WHERE id = %s", (Jsonb(validation_metrics(n_bets=1, roi=0.0, max_drawdown=0.9)), root["id"]))
     assert eligibility.recompute_paper(conn, root["lineage_id"]) == "candidate"
     assert eligibility.recompute_paper(conn, uuid.uuid4()) is None
 

@@ -31,10 +31,12 @@ def neighbourhood_params(family: str, params: dict[str, Any], seed: int | str, i
     return perturb_params(family, params, random.Random(f"{seed}:nbhd:{index}"))
 
 
-def _run_summary(per_season: list[dict[str, Any]], limits: dict[str, Any]) -> dict[str, Any]:
-    """{"shrunk_roi", "mean_ll_gain"} of a finished neighbourhood run."""
+def _run_summary(games: list[dict[str, Any]], family: str, params: dict[str, Any],
+                 per_season: list[dict[str, Any]], limits: dict[str, Any]) -> dict[str, Any]:
+    """{"shrunk_roi", "mean_ll_gain"} of a finished neighbourhood run (params are
+    the perturbed ones, the rule its records are rebuilt under)."""
     metrics = metrics_from_stats(merge_stats([e["stats"] for e in per_season]), limits, [e["season"] for e in per_season])
-    records = [r for season in records_of(per_season) for r in season]
+    records = [r for season in records_of(games, family, params, per_season, limits) for r in season]
     return {"shrunk_roi": shrunk_roi(metrics), "mean_ll_gain": mean_ll_gain(records)}
 
 
@@ -75,13 +77,13 @@ def run_validate(games: list[dict[str, Any]], family: str, params: dict[str, Any
         per_season = run_seasons(games, family, perturbed, validation_seasons, limits,
                                  lambda cp, p: stage_emit(stage, cp, p), should_stop, current)
         current = None
-        runs.append(_run_summary(per_season, limits))
+        runs.append(_run_summary(games, family, perturbed, per_season, limits))
         if plan:
             emit({"stage": stage + 1, "base": base, "runs": runs, "current": {}}, (stage + 1) * n_seasons / units)
 
-    validation_metrics = assemble(base, limits, ERA_VALIDATION, seed)
+    validation_metrics = assemble(games, family, full_params, base, limits, ERA_VALIDATION, seed)
     validation_metrics["flags"] = overfit_flags(search_metrics, validation_metrics)
-    records = [r for season in records_of(base) for r in season]
+    records = [r for season in records_of(games, family, full_params, base, limits) for r in season]
     prices = price_stress(records, full_params, limits)
     neighbourhood = neighbourhood_summary(runs)
     regimes = regime_table(records, limits)

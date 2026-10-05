@@ -90,10 +90,11 @@ def _pool_validate(entry: dict[str, Any]) -> dict[str, Any]:
 class _State:
     """Progress bookkeeping shared by both execution paths."""
 
-    def __init__(self, n: int, top_k: int, plan_len: int, vplan_len: int, checkpoint: dict[str, Any] | None) -> None:
+    def __init__(self, n: int, top_k: int, plan_len: int, vplan_len: int | None, checkpoint: dict[str, Any] | None) -> None:
+        """vplan_len None = no validation era (the validation phase has no units)."""
         self.n = n
         self.search_units = max(1, plan_len)
-        self.validate_units = (1 + NEIGHBOURHOOD_N) * max(1, vplan_len)
+        self.validate_units = 0 if vplan_len is None else (1 + NEIGHBOURHOOD_N) * max(1, vplan_len)
         self.total = max(1, n * self.search_units + top_k * self.validate_units)
         self.top: list[dict[str, Any]] = []
         self.evaluated = 0
@@ -164,7 +165,7 @@ def run_search(games: list[dict[str, Any]], family: str, n: int, seed: int,
     workers = max(1, int(workers))
     plan = season_plan(games, seasons)
     vplan = season_plan(games, validation_seasons) if validation_seasons else []
-    st = _State(n, top_k, len(plan), len(vplan), checkpoint)
+    st = _State(n, top_k, len(plan), len(vplan) if validation_seasons else None, checkpoint)
     ctx = {"games": games, "family": family, "seed": seed, "seasons": seasons, "limits": limits,
            "validation_seasons": validation_seasons}
 

@@ -3,6 +3,7 @@ determinism, resume equivalence and per-unit timing. Fixture based, no database.
 from __future__ import annotations
 
 import copy
+import json
 import math
 import random
 import time
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from fleet.sim.backtest import run_backtest, run_fold, season_plan
+from fleet.sim.records import unpack_probs
 from fleet.sim.control import JobStopped
 from fleet.sim.data import load_games
 from fleet.sim.fills import BetRule, plan_bet, settle, side_cost, stake_cents
@@ -213,3 +215,56 @@ def test_max_drawdown_is_null_without_capital() -> None:
     from host.eligibility import meets_thresholds
 
     assert not meets_thresholds({"n_bets": 500, "roi": 0.5, "max_drawdown": None}, {"min_bets": 1, "min_roi": 0.0, "max_drawdown": 0.3})
+
+
+# step 6: records, era labels and the resampling fields ------------------------------
+
+
+def test_records_carry_the_regime_features_and_log_losses(games: list[dict]) -> None:
+    records, _ = run_fold(games, "elo_blend", PARAMS, 2022, LIMITS, lambda: False)
+    keys = {"game_id", "season", "p", "p_market", "outcome", "bet", "pnl_cents", "ll_model", "ll_market", "lean",
+            "div_game", "hour_et", "temp", "wind", "outdoor"}
+    assert all(set(r) == keys for r in records) and all(r["season"] == 2022 for r in records)
+    for r in records:
+        assert r["ll_model"] == pytest.approx(-(r["outcome"] * math.log(r["p"]) + (1 - r["outcome"]) * math.log(1 - r["p"])))
+        assert r["lean"] in ("home", "away") and 0 <= r["hour_et"] <= 23 and r["div_game"] in (0, 1)
+        if r["bet"] is not None:
+            assert r["bet"]["side"] == r["lean"] and r["bet"]["clv"] == 0.0
+    assert {r["lean"] for r in records} == {"home", "away"}
+    by_id = {g["game_id"]: g for g in games}
+    assert all(r["outdoor"] == ((by_id[r["game_id"]]["roof"] or "").lower() not in ("dome", "closed")) for r in records)
+
+
+def test_backtest_result_has_the_robustness_fields(games: list[dict]) -> None:
+    result = run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: None, lambda: False)
+    assert result["era"] == "search"
+    assert set(result["ci"]) == {"roi", "avg_clv", "max_drawdown", "hit_rate", "avg_edge"}
+    assert result["shrunk_roi"] == pytest.approx(result["roi"] * result["n_bets"] / (result["n_bets"] + 100))
+    assert result["mean_ll_gain"] == pytest.approx(result["market_log_loss"] - result["log_loss"])
+    assert 0 < result["market_p"] <= 1 and set(result["brier_decomposition"]) == {"reliability", "resolution", "uncertainty"}
+    assert isinstance(result["calib_slope"], float) and isinstance(result["calib_intercept"], float)
+    validation = run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: None, lambda: False, era="validation", seed=9)
+    assert validation["era"] == "validation"
+    for key in ("n_bets", "roi", "log_loss", "shrunk_roi", "mean_ll_gain", "per_season"):
+        assert validation[key] == result[key]
+    other_seed = run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: None, lambda: False, seed=9)
+    assert other_seed["ci"] == validation["ci"] and other_seed["market_p"] == validation["market_p"]
+    assert "per_season" in result and "ci" not in result["per_season"][0]
+
+
+def test_checkpoint_entries_carry_packed_records_and_old_ones_restart(games: list[dict]) -> None:
+    emitted: list[dict] = []
+    full = run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: emitted.append(copy.deepcopy(cp)), lambda: False)
+    first = emitted[0]["per_season"][0]
+    assert set(first) == {"season", "stats", "blend", "records"}
+    assert isinstance(first["records"], str) and len(unpack_probs(first["records"])) == first["stats"]["n_games"]
+    assert len(first["records"]) < 12 * first["stats"]["n_games"], "about 11 bytes a scored game"
+    json.dumps(emitted[0])
+    # a resumed run computes the same resampling fields from the packed records
+    resumed = run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: None, lambda: False, json.loads(json.dumps(emitted[0])))
+    assert resumed == full
+    # a checkpoint written by an older worker (no records) is not trusted: the run restarts
+    old = {"next": 1, "per_season": [{"season": 2022, "stats": first["stats"], "blend": first["blend"]}]}
+    progress: list[float] = []
+    assert run_backtest(games, "elo_blend", PARAMS, [2022, 2023], LIMITS, lambda cp, p: progress.append(p), lambda: False, old) == full
+    assert progress == [0.5, 1.0]

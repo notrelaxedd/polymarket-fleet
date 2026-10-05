@@ -8,9 +8,13 @@ models, a trained child, a backtest; tests/hw/seed_step3.py) and the step 4 rows
 upcoming games with sim markets and books, an unmatched market, assignments held by a
 fourth worker in the trade role, open, resting, rejected and cancelled orders, a fill,
 a settled game with its bet and paper score, an exchange heartbeat;
-tests/hw/seed_step4.py), serves the app with FLEET_DEV=1 on a free port, and captures
+tests/hw/seed_step4.py) and the step 6 rows (tests/hw/seed_step6.py: validation-era
+metrics and stress tables on the search lineages, two ranked, one flagged overfit, one
+left "not validated", a finished validate job, the paper CLV interval), serves the app
+with FLEET_DEV=1 on a free port, and captures
 the fleet (with per-worker P&L), jobs, job detail, settings (with the Trading group),
-models (with the paper columns), model detail, search result and trading pages at
+models (with the validation columns and flag chips), model detail (with the Robustness
+section), the flagged model, search result, validate result and trading pages at
 phone (390x844) and laptop (1280x800) widths in the light and dark colour schemes,
 plus the trading page with the create form open, then (step 5, tests/hw/seed_step5.py)
 the settings, trading and fleet pages with live on (the Live trading group on, a live
@@ -47,6 +51,7 @@ from tests.conftest import ADMIN_URL, db_url, insert_job, insert_worker, set_hea
 from tests.hw.seed_step3 import seed_models  # noqa: E402
 from tests.hw.seed_step4 import seed_trading, touch_trading  # noqa: E402
 from tests.hw.seed_step5 import auto_kill, seed_live, touch_live  # noqa: E402
+from tests.hw.seed_step6 import seed_paper_ci, seed_validation  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 
 DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots-step5"))
@@ -100,7 +105,9 @@ def seed(url: str) -> dict[str, str]:
     then the step 4 rows (a trade worker, games, markets, assignments, orders, a bet)."""
     ids = _seed_fleet(url)
     ids.update(seed_models(url, ids["box2"], ids["box1"]))
+    ids.update(seed_validation(url, ids["box2"]))
     ids.update(seed_trading(url, ids["model"]))
+    seed_paper_ci(url)
     return ids
 
 
@@ -171,8 +178,9 @@ def touch(url: str, box1: str) -> None:
 def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
     return [
         ("fleet", "/"), ("jobs", "/jobs"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
-        ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("job-search", f"/jobs/{ids['search_job']}"),
-        ("job-backtest", f"/jobs/{ids['backtest_job']}"),
+        ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("model-overfit", f"/models/{ids['overfit_model']}"),
+        ("job-search", f"/jobs/{ids['search_job']}"), ("job-backtest", f"/jobs/{ids['backtest_job']}"),
+        ("job-validate", f"/jobs/{ids['validate_job']}"),
         ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"),
     ]
 

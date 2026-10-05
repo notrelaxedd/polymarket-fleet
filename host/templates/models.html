@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Models{% endblock %}
-{% set columns = '<th>model</th><th>validation ROI <span class="muted">90% range</span></th><th>beats market</th><th>bets</th><th>search ROI</th><th>log-loss vs market</th><th>drawdown</th><th>paper</th><th>summary</th><th></th>' %}
 {% block content %}
+{% set columns = '<th>model</th><th>validation ROI <span class="muted">90% range</span></th><th>beats market</th><th>bets</th><th>search ROI</th><th>log-loss vs market</th><th>drawdown</th><th>paper</th><th>summary</th><th></th>' %}
 <h1>Models</h1>
 <p class="muted small">One row per lineage. Ranked on paper CLV (shrunk, ties by ROI) once a lineage has 5 paper games and 30 paper bets, otherwise on the held-out validation era: shrunk ROI (ROI x bets / (bets + 100)), ties by the log-loss gain over the market. A lineage keeps its search-era numbers muted beside them; "beats market" is a sign-flip p below 0.05.</p>
 {% if ranked %}

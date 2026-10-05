@@ -129,9 +129,8 @@ def recompute_paper(conn: psycopg.Connection, lineage_id: Any, actor: str | None
     current = recompute_lineage(conn, lineage_id, actor=actor)
     if current is None:
         return None
-    meets = meets_paper_thresholds(paper_stats(conn, lineage_id), paper_limits) and meets_paper_ci(
-        paper_ci(conn, lineage_id), paper_limits
-    )
+    interval = paper_ci(conn, lineage_id)  # always cached, so the leaderboard shows it
+    meets = meets_paper_thresholds(paper_stats(conn, lineage_id), paper_limits) and meets_paper_ci(interval, paper_limits)
     new = current
     if current == "paper_ok" and meets:
         new = "live_eligible"

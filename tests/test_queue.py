@@ -557,8 +557,8 @@ def test_backtest_params_are_validated_and_settings_copied(pool, conn):
     assert job["params"] == {
         "family": "elo_blend", "params": {"k": 20, "hfa": 60.5},
         "fee_model": {"taker_rate": 0.05, "half_spread": 0.01}, "default_bankroll_cents": 10000,
-        "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2025],
-    }, "the limits in force are copied in and the null last season is resolved from the games table"
+        "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2021],
+    }, "the limits in force are copied in; the search era ends before the validation era (step 6 default [2010, 2021])"
     by_model = create(pool, kind="backtest", params={"model_id": str(model["id"]), "seasons": [2018, None]}).job
     assert by_model["params"]["model_id"] == str(model["id"]) and by_model["params"]["seasons"] == [2018, 2025]
     assert "family" not in by_model["params"] and by_model["role"] == "backtest"
@@ -595,9 +595,13 @@ def test_model_search_and_train_params(pool, conn):
     job = create(pool, kind="model_search", params={"family": "elo_blend"}).job
     assert job["role"] == "model_search"
     assert job["params"]["n"] == 200 and job["params"]["seed"] == 0 and job["params"]["top_k"] == 5
-    assert job["params"]["backtest_seasons"] == [2010, None], "no games yet: the null stays"
+    assert job["params"]["backtest_seasons"] == [2010, 2021], "the step 6 default search era"
+    assert job["params"]["validation_seasons"] == [2022, None] and job["params"]["workers"] == "auto", "no games yet: the null stays"
     full = create(pool, kind="model_search", params={"family": "elo_blend", "n": 5000, "seed": -7, "top_k": 20, "seasons": [2016, 2019]}).job
     assert full["params"]["n"] == 5000 and full["params"]["seed"] == -7 and full["params"]["seasons"] == [2016, 2019]
+    with pytest.raises(BadRequest) as info:
+        create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2016, 2022]})
+    assert info.value.message == "seasons must end before the validation era (which starts in 2022)", "selection never sees the held-out era"
     for params in [
         {}, {"family": "elo_blend", "n": 0}, {"family": "elo_blend", "n": 5001}, {"family": "elo_blend", "n": 2.5},
         {"family": "elo_blend", "top_k": 0}, {"family": "elo_blend", "top_k": 21}, {"family": "elo_blend", "seed": "x"},
@@ -609,6 +613,7 @@ def test_model_search_and_train_params(pool, conn):
     train = create(pool, kind="train", params={"model_id": str(model["id"]), "through": {"season": 2024, "week": 10}}).job
     assert train["role"] == "train" and train["params"]["through"] == {"season": 2024, "week": 10}
     assert train["params"]["model_id"] == str(model["id"]) and train["params"]["trade_max_games"] == 6
+    assert "validation_seasons" not in train["params"] and "workers" not in train["params"], "only a search and a validate carry the era"
     for params in [
         {}, {"model_id": str(model["id"])}, {"model_id": str(uuid.uuid4()), "through": {"season": 2024, "week": 1}},
         {"model_id": str(model["id"]), "through": [2024, 1]}, {"model_id": str(model["id"]), "through": {"season": 2024, "week": 0}},
@@ -617,12 +622,34 @@ def test_model_search_and_train_params(pool, conn):
     ]:
         with pytest.raises(BadRequest):
             create(pool, kind="train", params=params)
+    # validate: model_id required and existing, seed optional (default 1), the era and the pool copied in.
+    validate = create(pool, kind="validate", params={"model_id": str(model["id"])}).job
+    assert validate["role"] == "backtest" and validate["kind"] == "validate"
+    assert validate["params"]["model_id"] == str(model["id"]) and validate["params"]["seed"] == 1
+    assert validate["params"]["validation_seasons"] == [2022, None] and validate["params"]["workers"] == "auto"
+    assert validate["params"]["backtest_seasons"] == [2010, 2021] and validate["params"]["fee_model"] == {"taker_rate": 0.05, "half_spread": 0.01}
+    assert create(pool, kind="validate", params={"model_id": str(model["id"]), "seed": -3}).job["params"]["seed"] == -3
+    for params in [
+        {}, {"seed": 1}, {"model_id": "garbage"}, {"model_id": str(uuid.uuid4())}, {"model_id": str(model["id"]), "seed": "x"},
+        {"model_id": str(model["id"]), "seed": 1.5}, {"model_id": str(model["id"]), "n": 3}, {"model_id": str(model["id"]), "seasons": [2022, 2025]},
+    ]:
+        with pytest.raises(BadRequest):
+            create(pool, kind="validate", params=params)
+    with pytest.raises(BadRequest) as info:
+        create(pool, kind="validate", params={"model_id": str(uuid.uuid4())})
+    assert info.value.message == "unknown model"
     # sleep keeps its shape: seconds in range when present, other keys tolerated, nothing copied in.
     assert create(pool, kind="sleep", params={"seconds": 3, "note": "x"}).job["params"] == {"seconds": 3, "note": "x"}
     assert create(pool, kind="sleep", params={}).job["params"] == {}
     for params in [{"seconds": 0}, {"seconds": 86401}, {"seconds": "7"}]:
         with pytest.raises(BadRequest):
             create(pool, kind="sleep", params=params)
+
+
+def insert_model_for(conn):
+    from tests.conftest import insert_model
+
+    return insert_model(conn, params={"k": 41.0})
 
 
 def test_batch_jobs_refuse_untestable_seasons_and_unknown_param_names(pool, conn):
@@ -636,8 +663,11 @@ def test_batch_jobs_refuse_untestable_seasons_and_unknown_param_names(pool, conn
         with pytest.raises(BadRequest) as info:
             create(pool, kind="backtest", params=params)
         assert info.value.message.startswith("unknown elo_blend params: ")
-    # Without games there is nothing to judge a range against.
-    assert create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2030, 2030]}).job["params"]["seasons"] == [2030, 2030]
+    # Without games there is nothing to judge a range against (but the search era still has to end before the validation era).
+    assert create(pool, kind="backtest", params={"family": "elo_blend", "params": {}, "seasons": [2030, 2030]}).job["params"]["seasons"] == [2030, 2030]
+    with pytest.raises(BadRequest) as info:
+        create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2030, 2030]})
+    assert "before the validation era" in info.value.message
     ingest_fixture(conn)  # 2016-2025, every season with moneylines
     for seasons in ([2030, 2030], [2016, 2018], [2017, 2018]):
         for kind, params in (("backtest", {"family": "elo_blend", "params": {}}), ("model_search", {"family": "elo_blend"})):
@@ -646,7 +676,18 @@ def test_batch_jobs_refuse_untestable_seasons_and_unknown_param_names(pool, conn
             assert info.value.message.startswith(f"no testable season in [{seasons[0]}, {seasons[1]}]"), (kind, seasons)
     ok = create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2016, 2019]}).job
     assert ok["params"]["seasons"] == [2016, 2019], "2019 has three earlier seasons with lines"
+    assert ok["params"]["validation_seasons"] == [2022, 2025], "the validation era's null last season is the last complete one"
     assert create(pool, kind="backtest", params={"family": "elo_blend", "params": {"k": 30}, "seasons": [2019, None]}).job["params"]["seasons"] == [2019, 2025]
+    with pytest.raises(BadRequest) as info:
+        create(pool, kind="model_search", params={"family": "elo_blend", "seasons": [2016, None]})
+    assert "before the validation era" in info.value.message, "a null last season would run to 2025"
+    # A null last search season in settings is capped at the season before the validation era.
+    with pool.connection() as c:
+        c.execute("UPDATE settings SET value = '[2010, null]' WHERE key = 'backtest_seasons'")
+        c.execute("UPDATE settings SET value = '[2020, null]' WHERE key = 'validation_seasons'")
+    capped = create(pool, kind="model_search", params={"family": "elo_blend"}).job["params"]
+    assert capped["backtest_seasons"] == [2010, 2019] and capped["validation_seasons"] == [2020, 2025]
+    assert create(pool, kind="validate", params={"model_id": str(insert_model_for(conn)["id"])}).job["params"]["validation_seasons"] == [2020, 2025]
 
 
 # ------------------------------------------------------------------ step 4: trade claims

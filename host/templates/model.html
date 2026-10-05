@@ -1,9 +1,10 @@
 {% extends "base.html" %}
 {% import "_metrics.html" as metrics_view %}
+{% import "_robustness.html" as rob %}
 {% block title %}Model {{ model.id | short }}{% endblock %}
 {% block content %}
 <p><a href="/models">&larr; Models</a></p>
-<h1>{{ model.family }} <span class="params">{{ model.short_params }}</span> <span class="badge st-{{ model.status }}">{{ model.status.replace('_', ' ') }}</span></h1>
+<h1>{{ model.family }} <span class="params">{{ model.short_params }}</span> <span class="badge st-{{ model.status }}">{{ model.status.replace('_', ' ') }}</span>{% if not model.validated %} <span class="chip chip-unvalidated">not validated</span>{% endif %}{% for f in model.flags %} <span class="chip chip-flag chip-{{ f }}">{{ f.replace('_', '-') }}</span>{% endfor %}</h1>
 <div class="card">
   <dl class="props">
     <dt>id</dt><dd><code>{{ model.id }}</code></dd>
@@ -11,11 +12,21 @@
     {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
     <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
     <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
-    <dt>shrunk ROI</dt><dd>{{ model.score | signed_pct(2) }} <span class="muted small">ROI x bets / (bets + 100)</span></dd>
-    <dt>paper record</dt><dd>{% if model.paper.games %}{{ model.paper.games }} games &middot; {{ model.paper.bets }} bets &middot; {{ model.paper.pnl_cents | money }} &middot; ROI {{ model.paper.roi | signed_pct }} &middot; CLV {{ model.paper.avg_clv | fixed }} <span class="muted small">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
+    <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %} <span class="muted small">ROI x bets / (bets + 100), the rank key</span></dd>
+    <dt>search shrunk ROI</dt><dd>{{ model.search_score | signed_pct(2) }} <span class="muted small">search era, the selection score</span></dd>
+    <dt>paper record</dt><dd>{% if model.paper.games %}{{ model.paper.games }} games &middot; {{ model.paper.bets }} bets &middot; {{ model.paper.pnl_cents | money }} &middot; ROI {{ model.paper.roi | signed_pct }} &middot; CLV {{ model.paper.avg_clv | fixed }} <span class="muted small">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bets</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
   </dl>
   <div class="actions">
     <a class="btn" href="/jobs?train_model={{ model.id }}#train">Train</a>
+    {% if model.status != 'retired' %}
+    <form method="post" action="/jobs" class="inline validate-form">
+      <input type="hidden" name="kind" value="validate">
+      <input type="hidden" name="model_id" value="{{ model.id }}">
+      <input type="hidden" name="validate_seed" value="1">
+      <input type="hidden" name="target" value="any_idle">
+      <button type="submit" class="btn">Validate</button>
+    </form>
+    {% endif %}
     {% if model.status != 'retired' %}<a class="btn" href="/trading?model={{ model.id }}#assign">Assign</a>{% endif %}
     {% if model.status != 'retired' %}
     <form method="post" action="/models/{{ model.id }}/retire" class="inline" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
@@ -40,7 +51,20 @@
   <pre>{{ model.params | pretty_json }}</pre>
 </div>
 
-<h2>backtest</h2>
+{% if robustness %}
+{{ rob.section(robustness) }}
+{% if validation_per_season %}
+<h3>validation per season</h3>
+{{ metrics_view.per_season(validation_per_season) }}
+{% endif %}
+{% else %}
+<section class="robustness" id="robustness">
+<h2>Robustness</h2>
+<p class="muted">Not validated yet: no held-out numbers, no confidence interval, no market test. Press Validate to run the validation era with the stress tests on an idle worker.</p>
+</section>
+{% endif %}
+
+<h2>backtest <span class="muted small">search era</span></h2>
 {% if metrics %}
 {{ metrics_view.pairs(metrics, detail=true) }}
 {% if per_season %}

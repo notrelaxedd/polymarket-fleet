@@ -59,11 +59,16 @@ def test_search_result_shape_and_ordering(games: list[dict]) -> None:
         assert e["score"] == pytest.approx(shrunk_roi(e["metrics"]))
         assert "per_season" not in e["metrics"] and e["metrics"]["seasons"] == result["seasons"]
     created = result["create_models"]
-    assert [set(c) for c in created] == [{"family", "params", "artifact", "backtest_metrics", "summary", "trained_through"}] * 3
+    assert [set(c) for c in created] == [{"family", "params", "artifact", "backtest_metrics", "summary", "trained_through",
+                                          "validation_metrics", "stress_metrics"}] * 3
     for c, e in zip(created, top):
         assert c["family"] == "elo_blend" and c["artifact"] is None and c["trained_through"] is None
         assert c["params"] == e["params"] and c["backtest_metrics"] == e["metrics"]
+        assert c["backtest_metrics"]["era"] == "search" and "ci" in c["backtest_metrics"]
+        assert c["validation_metrics"] is None and c["stress_metrics"] is None, "no validation era given"
         assert sentences(c["summary"]) == 3 and c["summary"] == EloBlend.summary(e["params"], e["metrics"])
+    assert result["validated"] == [] and result["validation_seasons"] == []
+    assert "no validation era" in result["validation_note"]
     json.dumps(result)
 
 
@@ -92,7 +97,7 @@ def test_search_resume_equivalence(games: list[dict]) -> None:
     checkpoint, progress = emitted[-1]
     assert checkpoint["next"] == [1, 3] and checkpoint["evaluated"] == 1 and len(checkpoint["top"]) == 1
     assert checkpoint["current"]["next"] == 3 and progress == pytest.approx(10 / 28)
-    assert set(checkpoint) == {"next", "current", "top", "evaluated"}
+    assert set(checkpoint) == {"next", "current", "top", "evaluated", "validated"} and checkpoint["validated"] == []
     resumed = run_search(games, emit=emit, should_stop=lambda: False, checkpoint=checkpoint, **SEARCH_KW)
     assert resumed == full
     progresses = [p for _, p in emitted]
@@ -142,8 +147,8 @@ def test_train_rejects_missing_model_or_bad_through(games: list[dict]) -> None:
 # worker jobs ----------------------------------------------------------------------
 
 
-def test_registry_has_the_four_kinds() -> None:
-    assert set(JOBS) == {"sleep", "backtest", "model_search", "train"}
+def test_registry_has_the_five_kinds() -> None:
+    assert set(JOBS) == {"sleep", "backtest", "model_search", "train", "validate"}
     assert jobs.JobStopped is JobStopped
 
 

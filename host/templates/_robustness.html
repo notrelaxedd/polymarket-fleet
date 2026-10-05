@@ -6,7 +6,7 @@
 {% macro flag_chips(flags) -%}
 {% for f in flags %}<span class="chip chip-flag chip-{{ f.name }}" title="{{ f.meaning }}">{{ f.name.replace('_', '-') }}</span> {% endfor %}
 {%- endmacro %}
-{% macro section(r, per_season=none) -%}
+{% macro section(r) -%}
 {% set m = r.metrics %}
 {% set bets = m.n_bets or 0 %}
 <section class="robustness" id="robustness">
@@ -68,10 +68,6 @@
 </table>
 </div>
 {% else %}<p class="muted">No regime table yet.</p>{% endif %}
-{% if per_season %}
-<h3>validation per season</h3>
-{{ caller() if caller else '' }}
-{% endif %}
 {% if r.seed is not none %}<p class="muted small">Stress seed {{ r.seed }}; bootstrap B = 1000, 10 000 sign flips.</p>{% endif %}
 </section>
 {%- endmacro %}

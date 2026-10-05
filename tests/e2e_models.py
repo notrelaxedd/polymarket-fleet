@@ -2,6 +2,11 @@
 through the CLI, a model search runs on the real runner and creates models, one of them
 is trained and backtested, and a longer search is preempted by a role change and resumed
 on the next model_search worker without repeating more than one candidate-season.
+
+Since step 6 every search ends below the validation era (settings `validation_seasons`,
+[2022, null] by default) and validates the models it keeps on that era; the
+checkpoints of that validation phase are not candidate-seasons, so the counting here
+leaves them out (`is_search_unit`).
 """
 from __future__ import annotations
 
@@ -17,12 +22,12 @@ from tests.conftest import FIXTURE_GAMES
 
 FIXTURE_ROWS = 2761
 SHORT_SEARCH = {"family": "elo_blend", "n": 3, "seasons": [2019, 2021], "top_k": 2}
-LONG_SEARCH = {"family": "elo_blend", "n": 40, "seed": 3, "seasons": [2019, 2025], "top_k": 3}
-LONG_PLAN = [2019, 2020, 2021, 2022, 2023, 2024, 2025]
+LONG_SEARCH = {"family": "elo_blend", "n": 40, "seed": 3, "seasons": [2019, 2021], "top_k": 3}
+LONG_PLAN = [2019, 2020, 2021]
 
 
 class CountingRunner(runner_module.Runner):
-    """A Runner that counts the checkpoints each child printed, per job id.
+    """A Runner that counts the search-phase checkpoints each child printed, per job id.
 
     The search emits exactly one checkpoint per candidate-season, so the counts of the
     runs before and after a preemption say how many units were repeated.
@@ -37,8 +42,17 @@ class CountingRunner(runner_module.Runner):
 
     def _apply(self, msg: dict[str, Any]) -> None:
         super()._apply(msg)
-        if "checkpoint" in msg and isinstance(msg["checkpoint"], dict) and not msg.get("stopped"):
+        cp = msg.get("checkpoint")
+        if isinstance(cp, dict) and not msg.get("stopped") and is_search_unit(cp):
             self.counts[self.job_id][self._slot] += 1  # the final "stopped" line repeats the last checkpoint
+
+
+def is_search_unit(checkpoint: dict[str, Any]) -> bool:
+    """True for a checkpoint of the search phase (one per candidate-season); the
+    validation of the kept candidates that follows carries its own checkpoint under
+    `current` (with a `stage`) and then fills `validated`."""
+    current = checkpoint.get("current")
+    return not checkpoint.get("validated") and not (isinstance(current, dict) and "stage" in current)
 
 
 def unit_index(checkpoint: dict[str, Any] | None, plan_len: int) -> int:
@@ -160,10 +174,17 @@ def backtest_phase(host: Any, worker_id: str, model_id: str, root_id: str, wait_
 
 def preempt_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settled: Callable[..., Any]) -> None:
     """A 40-candidate search is moved off the worker mid-job (role train) and resumes on
-    the next model_search worker; the two runs together repeat at most one unit."""
+    the next model_search worker; the two runs together repeat at most one unit.
+
+    Single-process (settings `search_workers` 1 for this search): the unit is a
+    candidate-season. A pooled search checkpoints per candidate and may repeat up to
+    `search_workers` candidates on resume (tests/test_search_parallel.py covers that
+    through the real runner)."""
     plan_len = len(LONG_PLAN)
     units = LONG_SEARCH["n"] * plan_len
+    host.post("/api/settings", {"search_workers": 1})
     job = send(host, "model_search", LONG_SEARCH, worker_id)
+    assert job["params"]["workers"] == 1 and job["params"]["validation_seasons"] == [2022, 2025]
     job_id = job["id"]
     wait_for(settled(host, worker_id, "model_search"), "worker in model_search for the long search")
     seen: list[float] = []
@@ -202,6 +223,7 @@ def preempt_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settl
     assert host.events(job_id).count("claimed") == 2
     host.set_role(worker_id, "idle")  # the manual role sets above cleared auto_role, so no auto-return
     wait_for(settled(host, worker_id, "idle"), "worker idle after the resumed search")
+    host.post("/api/settings", {"search_workers": "auto"})
 
 
 def phase_models(host: Any, state_dir: str, worker_id: str, monkeypatch: Any,

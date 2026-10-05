@@ -12,6 +12,8 @@ import time
 import psycopg
 
 from host import auth
+from host.api.app import MAX_BODY_BYTES
+from host.api.limits import MAX_PAYLOAD_BYTES
 from tests.conftest import heartbeat_body
 
 REGISTER = "/api/v1/workers/register"
@@ -260,7 +262,7 @@ def test_worker_payload_limits(client, make_worker):
     """LOW: oversized checkpoints, non-finite floats, long job lists and huge bodies are refused."""
     w = make_worker("box1", role="backtest")
     url = f"/api/v1/workers/{w.id}/heartbeat"
-    big = {"blob": "x" * (64 * 1024 + 1)}
+    big = {"blob": "x" * (MAX_PAYLOAD_BYTES + 1)}
     entry = {"id": "00000000-0000-0000-0000-000000000000", "lease_token": "00000000-0000-0000-0000-000000000000"}
     r = client.post(url, json=heartbeat_body("backtest", jobs=[{**entry, "checkpoint": big}]), headers=w.headers)
     assert r.status_code == 400 and "checkpoint" in r.json()["detail"]
@@ -275,7 +277,7 @@ def test_worker_payload_limits(client, make_worker):
     assert r.status_code == 400 and "jobs" in r.json()["detail"]
     r = client.post(url, json=heartbeat_body("backtest", jobs=[entry] * 64), headers=w.headers)
     assert r.status_code == 200 and len(r.json()["lost"]) == 64
-    r = client.post(url, content=json.dumps(heartbeat_body("backtest", pad="x" * (256 * 1024 + 1))).encode(),
+    r = client.post(url, content=json.dumps(heartbeat_body("backtest", pad="x" * (MAX_BODY_BYTES + 1))).encode(),
                     headers=json_headers)
     assert r.status_code == 413
     job = client.post("/api/jobs", json={"kind": "sleep", "params": {"seconds": 1}}).json()

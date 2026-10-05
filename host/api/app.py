@@ -19,7 +19,7 @@ from host.errors import QueueError
 
 log = logging.getLogger(__name__)
 
-MAX_BODY_BYTES = 256 * 1024
+MAX_BODY_BYTES = 1024 * 1024  # above every payload cap (host.api.limits) with room for a heartbeat's job list
 
 # The dashboard is authenticated by the network (tailscale serve adds the owner login),
 # so any page the owner visits could frame it and click-jack a form: refuse framing on

@@ -7,6 +7,9 @@
   <input type="text" name="{{ name }}" value="{{ values[name] }}"{% if mode %} inputmode="{{ mode }}"{% endif %} autocomplete="off">
 </label>
 {%- endmacro %}
+{% macro check(name, label, hint='') -%}
+<label class="check"><input type="checkbox" name="{{ name }}" value="true"{% if values[name] %} checked{% endif %}> <span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span></label>
+{%- endmacro %}
 {% block content %}
 <h1>Settings</h1>
 
@@ -64,6 +67,7 @@
     {{ field('paper_min_days', 'Min days', 'since the first paper bet', 'numeric') }}
     {{ field('paper_min_clv', 'Min avg CLV', '-1..1', 'decimal') }}
     {{ field('paper_min_pnl', 'Min P&L', '$', 'decimal') }}
+    {{ check('paper_clv_ci', 'CLV interval above zero', 'the 5th percentile of the bootstrapped paper CLV must be above 0 over at least min bets') }}
   </div>
   <h3>Rate limits <span class="muted small">per second, fleet-wide</span></h3>
   <div class="fields">
@@ -107,22 +111,31 @@
 </form>
 
 <form class="card group" method="post" action="/settings/thresholds" id="thresholds">
-  <h2>Backtest thresholds <span class="muted small">candidate to paper_ok</span></h2>
+  <h2>Backtest thresholds <span class="muted small">candidate to paper_ok, judged on the validation era</span></h2>
   {% if errors.thresholds %}<p class="error inline-error">{{ errors.thresholds }}</p>{% endif %}
   <div class="fields">
-    {{ field('min_bets', 'Min bets', '', 'numeric') }}
+    {{ field('min_bets', 'Min bets', 'in the validation era (about 4 seasons)', 'numeric') }}
     {{ field('min_roi', 'Min ROI', '-1..1', 'decimal') }}
     {{ field('max_drawdown', 'Max drawdown', '0..1', 'decimal') }}
+    {{ field('min_roi_ci_low', 'Min ROI, 5th percentile', 'the bootstrap lower bound; 0 = the interval must not reach below zero', 'decimal') }}
+    {{ field('max_market_p', 'Max market p', '0..1; 0.1 = suggestive, 0.05 = beats the market', 'decimal') }}
+    {{ check('require_validation', 'Require validation', 'off = judge the search-era backtest with the first three rules only, as in step 3') }}
+    {{ check('forbid_overfit', 'Forbid overfit', 'search era much better than the held-out era') }}
+    {{ check('forbid_fragile', 'Forbid fragile', 'edge gone with worse prices or a parameter nudge') }}
+    {{ check('forbid_regime_dependent', 'Forbid regime-dependent', 'one regime holds the profit') }}
   </div>
   <button type="submit" class="btn primary">Save</button>
 </form>
 
 <form class="card group" method="post" action="/settings/seasons" id="seasons">
-  <h2>Backtest seasons</h2>
+  <h2>Seasons and search <span class="muted small">the search era, the held-out validation era, the search pool</span></h2>
   {% if errors.seasons %}<p class="error inline-error">{{ errors.seasons }}</p>{% endif %}
   <div class="fields">
-    {{ field('seasons_first', 'First season', '1999..', 'numeric') }}
-    {{ field('seasons_last', 'Last season', 'blank = last complete season', 'numeric') }}
+    {{ field('seasons_first', 'Search first season', '1999..', 'numeric') }}
+    {{ field('seasons_last', 'Search last season', 'blank = the season before the validation era', 'numeric') }}
+    {{ field('validation_first', 'Validation first season', 'must come after the search era', 'numeric') }}
+    {{ field('validation_last', 'Validation last season', 'blank = last complete season', 'numeric') }}
+    {{ field('search_workers', 'Search workers', 'auto = cores minus one, or 1..64 processes per search') }}
   </div>
   <button type="submit" class="btn primary">Save</button>
 </form>

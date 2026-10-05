@@ -9,8 +9,8 @@ on workers (the host may use pandas/pyarrow for ingest).
 
 ### A1. Held-out validation era
 
-- Settings: `search_seasons [2010, 2021]` (renames `backtest_seasons` for the search era)
-  and `validation_seasons [2022, null]` (null = last complete season). The two must not
+- Settings: `backtest_seasons [2010, 2021]` (the search era keeps this existing key; it is
+  not renamed) and `validation_seasons [2022, null]` (null = last complete season). The two must not
   overlap; validation must come after search.
 - `model_search` evaluates every candidate on the search era only and keeps `top_k` by
   the search score. It then runs the kept candidates on the validation era and stores

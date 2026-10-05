@@ -4,14 +4,20 @@
 A record is a dict: game_id, season, p (model P(home)), p_market, outcome, bet (None or
 {"side", "stake_cents", "edge", "clv", ...}), pnl_cents, ll_model, ll_market, lean (the
 side with the larger edge, "home" or "away", whether or not it was bet), div_game,
-hour_et (kickoff hour, US Eastern), temp, wind, outdoor. Checkpoints carry the packed
-form, one flat list per game (PACKED_FIELDS order), which unpacks to the same dict
-minus game_id.
+hour_et (kickoff hour, US Eastern), temp, wind, outdoor.
+
+Everything in a record but `p` is a function of the game, the outcome and the fill
+rule, so a checkpoint carries only the model probabilities of a season's scored games
+in kickoff order (pack_probs: base64 of little-endian float64s, about 11 bytes a game);
+fleet.sim.backtest.rebuild_records walks the same games under the same rule and gets
+the identical records back.
 """
 
 from __future__ import annotations
 
+import base64
 import math
+import struct
 from datetime import datetime
 from typing import Any
 
@@ -19,10 +25,6 @@ from fleet.sim.data import _eastern
 from fleet.sim.fills import BetRule, best_side, plan_bet, settle
 from fleet.sim.metrics import log_loss
 
-PACKED_FIELDS = ("p", "p_market", "outcome", "pnl_cents", "stake_cents", "edge", "clv", "side", "lean",
-                 "div_game", "hour_et", "temp", "wind", "outdoor")
-SIDE_CODES = {None: 0, "home": 1, "away": 2}
-CODE_SIDES = {0: None, 1: "home", 2: "away"}
 INDOOR_ROOFS = ("dome", "closed")
 _TZ = _eastern()
 
@@ -70,36 +72,21 @@ def replan(record: dict[str, Any], rule: BetRule) -> dict[str, Any]:
     return out
 
 
-def pack(record: dict[str, Any]) -> list[Any]:
-    bet = record.get("bet") or {}
-    return [
-        record["p"], record["p_market"], record["outcome"], record["pnl_cents"],
-        int(bet.get("stake_cents", 0)) if bet else 0, float(bet.get("edge", 0.0)) if bet else 0.0,
-        float(bet.get("clv", 0.0)) if bet else 0.0, SIDE_CODES[bet.get("side") if bet else None],
-        SIDE_CODES[record["lean"]], int(record["div_game"]), int(record["hour_et"]),
-        record.get("temp"), record.get("wind"), 1 if record["outdoor"] else 0,
-    ]
+def pack_probs(records: list[dict[str, Any]]) -> str:
+    """The model probabilities of the records, in order, as base64 of float64s
+    (little-endian, so a checkpoint reads the same on every worker)."""
+    probs = [float(r["p"]) for r in records]
+    return base64.b64encode(struct.pack(f"<{len(probs)}d", *probs)).decode("ascii")
 
 
-def unpack(row: list[Any], season: int) -> dict[str, Any]:
-    p, p_market, outcome, pnl, stake, edge, clv, side, lean, div, hour, temp, wind, outdoor = row
-    bet = None
-    if side:
-        bet = {"side": CODE_SIDES[int(side)], "stake_cents": int(stake), "edge": float(edge), "clv": float(clv)}
-    return {
-        "game_id": None, "season": season, "p": p, "p_market": p_market, "outcome": outcome, "bet": bet,
-        "pnl_cents": int(pnl), "ll_model": log_loss(p, outcome), "ll_market": log_loss(p_market, outcome),
-        "lean": CODE_SIDES[int(lean)], "div_game": int(div), "hour_et": int(hour), "temp": temp, "wind": wind,
-        "outdoor": bool(outdoor),
-    }
-
-
-def pack_all(records: list[dict[str, Any]]) -> list[list[Any]]:
-    return [pack(r) for r in records]
-
-
-def unpack_all(rows: list[list[Any]], season: int) -> list[dict[str, Any]]:
-    return [unpack(r, season) for r in rows]
+def unpack_probs(packed: str) -> list[float]:
+    """The probabilities pack_probs encoded; ValueError on a malformed string."""
+    if not isinstance(packed, str):
+        raise ValueError("packed probabilities must be a string")
+    data = base64.b64decode(packed.encode("ascii"), validate=True)
+    if len(data) % 8:
+        raise ValueError("packed probabilities are not whole float64s")
+    return list(struct.unpack(f"<{len(data) // 8}d", data))
 
 
 def bet_rows(records: list[dict[str, Any]]) -> list[tuple[float, float, float, float, float]]:

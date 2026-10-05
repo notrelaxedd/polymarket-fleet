@@ -203,7 +203,7 @@ def test_roletest_fails_when_the_worker_never_acks(run, make_worker, conn) -> No
 
 
 def test_ingest_games_from_a_file_and_models_table(run, conn) -> None:
-    from tests.conftest import FIXTURE_GAMES, backtest_metrics, insert_model
+    from tests.conftest import FIXTURE_GAMES, backtest_metrics, insert_model, stress_metrics, validation_metrics
 
     code, out, _ = run("ingest-games", "--file", str(FIXTURE_GAMES))
     assert code == 0, out
@@ -218,7 +218,9 @@ def test_ingest_games_from_a_file_and_models_table(run, conn) -> None:
         "rank", "id", "status", "family", "params", "roi", "bets", "log_loss", "market", "drawdown", "seasons", "rows",
     ]
     assert len(out.splitlines()) == 1
-    top = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=300, roi=0.05), status="paper_ok")
+    # The rank follows the validation era (docs/ROBUSTNESS.md A1); the table keeps the search-era columns.
+    top = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=300, roi=0.05),
+                       validation=validation_metrics(), stress=stress_metrics(), status="paper_ok")
     insert_model(conn, params={"k": 21.0}, metrics=backtest_metrics(n_bets=10, roi=0.5))
     code, out, _ = run("models")
     lines = out.splitlines()

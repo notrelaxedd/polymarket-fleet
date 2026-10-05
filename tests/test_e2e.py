@@ -14,7 +14,11 @@ held_jobs are re-adopted). Between the trading and the crash phases runs the ste
 live phase (tests/e2e_live.py: the exchange loop with a fake live gateway, the typed
 switch, a live assignment placed, filled, timed out and reconciled, an auto-kill from
 an unknown exchange order, the smoke order, cancel-all --direct, live settlement).
-Heartbeat 0.3 s, host loop 0.5 s, every wait bounded.
+Between the models and the trading phases runs the step 6 Part A phase
+(tests/e2e_validation.py: a pooled search with a held-out validation era, the same
+search single-process giving the same numbers, a validate job on the trained lineage,
+the Models page's validation columns and chips, the stricter gates). Heartbeat 0.3 s,
+host loop 0.5 s, every wait bounded.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ from tests.conftest import flash_cookie, heartbeat_body
 from tests.e2e_live import phase_live
 from tests.e2e_models import CountingRunner, phase_models
 from tests.e2e_trading import phase_trading
+from tests.e2e_validation import phase_validation
 
 HEARTBEAT = 0.3
 LOOP = 0.5
@@ -527,6 +532,7 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     phase_dashboard(live_host, state_dir, worker_id, first)
     phase_reoffer(live_host, worker_id, first, drop_box)
     models = phase_models(live_host, state_dir, worker_id, monkeypatch, wait_for, settled)
+    phase_validation(live_host, worker_id, models, wait_for, settled)
     phase_trading(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_live(live_host, state_dir, worker_id, first, models, tmp_path, monkeypatch, wait_for, settled)
     phase_crash(live_host, state_dir, worker_id, first, agents)

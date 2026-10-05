@@ -1,8 +1,6 @@
 """The Models pages: leaderboard, model detail, summary edit and retire forms."""
 from __future__ import annotations
 
-from typing import Any
-
 import psycopg
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response

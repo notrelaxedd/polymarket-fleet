@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Jobs{% endblock %}
-{# Four send forms, one per kind, each folded into a details card so the job list is
+{# Five send forms, one per kind, each folded into a details card so the job list is
    never two screens down on a phone. `values` holds the defaults (or the submitted
    values after a rejected post), `active` names the one card that is open: the form
    that was posted, the train form behind ?train_model, else the backtest form. #}
@@ -85,6 +85,21 @@
   <button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send train</button>
   </form>
 </details>
+<details class="card send" id="validate"{% if active == 'validate' %} open{% endif %}>
+  <summary><h2>Validate</h2></summary>
+  <form method="post" action="/jobs">
+  {{ form_error('validate') }}
+  <input type="hidden" name="kind" value="validate">
+  <p class="muted small">Runs the model on the held-out validation era ({{ validation_span }}) with the bootstrap, the market test and the stress tests, then stores the numbers on its lineage.</p>
+  <div class="fields">
+    <label>Model {{ model_select(false) }}</label>
+    <label>Seed <span class="muted small">bootstrap and perturbations</span><input type="text" name="validate_seed" value="{{ values.validate_seed }}" inputmode="numeric" autocomplete="off"></label>
+    {{ target_select() }}
+  </div>
+  {% if not models %}<p class="muted small">No models yet: run a model search first.</p>{% endif %}
+  <button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send validate</button>
+  </form>
+</details>
 </div>
 <details class="card send sleep" id="sleep"{% if active == 'sleep' %} open{% endif %}>
   <summary>Sleep test job</summary>
@@ -106,7 +121,7 @@
   {% set worker = j.lease_worker_id or j.target_worker_id %}
   <tr>
     <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
-    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% endif %}</td>
+    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% elif j.kind == 'validate' and j.params.model_id %} <span class="muted small">{{ j.params.model_id | short }}</span>{% endif %}</td>
     <td class="c-status">
       <span class="badge st-{{ j.status }}">{{ j.status.replace('_', ' ') }}</span>
       {% if j.status == 'queued' and not j.target_worker_id %}<span class="badge st-waiting">waiting for an idle worker</span>{% endif %}

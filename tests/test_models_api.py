@@ -5,7 +5,10 @@ import json
 import uuid
 
 from fleet.models.base import params_hash
-from tests.conftest import backtest_metrics, ingest_fixture, insert_model, lease_job, model_row
+from tests.conftest import (
+    backtest_metrics, ingest_fixture, insert_model, insert_validated_model, lease_job, model_row, set_setting, stress_metrics,
+    validation_metrics,
+)
 
 PARAMS = {"k": 24.0, "hfa": 55.0, "regress": 0.33, "rest_per_day": 1.0, "mov_scale": 1, "min_edge": 0.03, "kelly_fraction": 0.25}
 
@@ -43,7 +46,7 @@ def test_create_root_is_its_own_lineage_and_candidate(client, conn, make_worker)
     # The worker view of a model.
     r = client.get(f"/api/v1/models/{body['id']}", headers=w.headers)
     assert r.status_code == 200
-    assert set(r.json()) == {"id", "lineage_id", "family", "params", "artifact", "parent_model_id", "trained_through", "status", "backtest_metrics"}
+    assert set(r.json()) == {"id", "lineage_id", "family", "params", "artifact", "parent_model_id", "trained_through", "status", "backtest_metrics", "validation_metrics", "stress_metrics"}
     assert r.json()["params"] == PARAMS
     assert client.get(f"/api/v1/models/{uuid.uuid4()}", headers=w.headers).status_code == 404
     assert client.get("/api/v1/models/garbage", headers=w.headers).status_code == 404
@@ -51,24 +54,39 @@ def test_create_root_is_its_own_lineage_and_candidate(client, conn, make_worker)
 
 
 def test_root_with_good_metrics_is_paper_ok_at_creation(client, conn, make_worker):
+    """A search posts its kept candidates with the validation-era metrics and the
+    stress table (docs/ROBUSTNESS.md A1); the gate judges the validation era."""
     w = make_worker("box1", role="model_search")
     job = lease_job(conn, w, "model_search")
-    r = client.post("/api/v1/models", json=_body(job, backtest_metrics=backtest_metrics(n_bets=400, roi=0.04, max_drawdown=0.1)), headers=w.headers)
+    validation, stress = validation_metrics(n_bets=90, roi=0.05), stress_metrics(seed=7)
+    body = _body(job, backtest_metrics=backtest_metrics(n_bets=400, roi=0.04, max_drawdown=0.1), validation_metrics=validation, stress_metrics=stress)
+    r = client.post("/api/v1/models", json=body, headers=w.headers)
     assert r.status_code == 201 and r.json()["status"] == "paper_ok"
-    assert model_row(conn, r.json()["id"])["status"] == "paper_ok"
+    row = model_row(conn, r.json()["id"])
+    assert row["status"] == "paper_ok" and row["validation_metrics"] == validation and row["stress_metrics"] == stress
+    # Search-era numbers alone never promote while validation is required.
+    unvalidated = _body(job, params={**PARAMS, "k": 30.0}, backtest_metrics=backtest_metrics(n_bets=400, roi=0.04, max_drawdown=0.1))
+    r = client.post("/api/v1/models", json=unvalidated, headers=w.headers)
+    assert r.status_code == 201 and r.json()["status"] == "candidate"
+    assert model_row(conn, r.json()["id"])["validation_metrics"] is None
+    flagged = _body(job, params={**PARAMS, "k": 31.0}, validation_metrics=validation_metrics(flags=["overfit"]), stress_metrics=stress)
+    assert client.post("/api/v1/models", json=flagged, headers=w.headers).json()["status"] == "candidate"
+    assert client.post("/api/v1/models", json={**flagged, "params": {**PARAMS, "k": 32.0}, "stress_metrics": []}, headers=w.headers).status_code == 400
 
 
 def test_child_inherits_lineage_status_and_metrics(client, conn, make_worker):
     w = make_worker("box1", role="train")
-    root = insert_model(conn, params=PARAMS, metrics=backtest_metrics(n_bets=400, roi=0.04), status="paper_ok")
+    root = insert_validated_model(conn, params=PARAMS, metrics=backtest_metrics(n_bets=400, roi=0.04), status="paper_ok")
     job = lease_job(conn, w, "train", {"model_id": str(root["id"]), "through": {"season": 2024, "week": 10}})
-    body = _body(job, parent_model_id=str(root["id"]), trained_through=[2024, 10], artifact={"ratings": {"KC": 1600.0}})
+    body = _body(job, parent_model_id=str(root["id"]), trained_through=[2024, 10], artifact={"ratings": {"KC": 1600.0}},
+                 validation_metrics=validation_metrics(roi=-0.5), stress_metrics=stress_metrics(flags=["fragile"]))
     r = client.post("/api/v1/models", json=body, headers=w.headers)
     assert r.status_code == 201, r.text
     child = model_row(conn, r.json()["id"])
     assert r.json()["lineage_id"] == str(root["id"]) and r.json()["status"] == "paper_ok"
     assert child["lineage_id"] == root["id"] and child["parent_model_id"] == root["id"]
     assert child["status"] == "paper_ok" and child["backtest_metrics"] == root["backtest_metrics"]
+    assert child["validation_metrics"] == root["validation_metrics"] and child["stress_metrics"] == root["stress_metrics"], "a child's own metrics are ignored"
     assert child["trained_through"] == [2024, 10] and child["artifact"] == {"ratings": {"KC": 1600.0}}
     # Same params trained to a different point is a new row; the same point is the same row.
     later = client.post("/api/v1/models", json={**body, "trained_through": [2024, 12]}, headers=w.headers)
@@ -105,6 +123,8 @@ def test_job_id_must_be_leased_by_the_caller(client, conn, make_worker):
 
 
 def test_backtest_metrics_update_runs_eligibility_lineage_wide(client, conn, make_worker):
+    """With require_validation off the search-era backtest is the gate, as in step 3."""
+    set_setting(conn, "thresholds_backtest", {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.3, "require_validation": False})
     w = make_worker("box1", role="backtest")
     root = insert_model(conn)
     child = insert_model(conn, parent=root, trained_through=[2024, 10])
@@ -152,28 +172,44 @@ def test_games_feed_with_etag(client, conn, make_worker):
 
 
 def test_owner_leaderboard_ranking_and_unranked(client, conn):
-    best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, log_loss=0.65), status="paper_ok", summary="Best.")
+    """Ranked by the validation era: shrunk ROI, then the log-loss gain over the
+    market; lineages without validation numbers are unranked as "not validated"."""
+    best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.02, log_loss=0.65),
+                        validation=validation_metrics(n_bets=400, roi=0.05, ci_roi=(0.02, 0.08), market_p=0.01, flags=["overfit"]),
+                        stress=stress_metrics(flags=["regime_dependent"]), status="paper_ok", summary="Best.")
     insert_model(conn, parent=best, trained_through=[2024, 10])
-    tie_a = insert_model(conn, params={"k": 30.0}, metrics=backtest_metrics(n_bets=100, roi=0.04, log_loss=0.670))
-    tie_b = insert_model(conn, params={"k": 31.0}, metrics=backtest_metrics(n_bets=100, roi=0.04, log_loss=0.660))
-    few = insert_model(conn, params={"k": 32.0}, metrics=backtest_metrics(n_bets=49, roi=0.5))
+    tie_a = insert_model(conn, params={"k": 30.0}, metrics=backtest_metrics(n_bets=900, roi=0.9), validation=validation_metrics(n_bets=100, roi=0.04, mean_ll_gain=0.001))
+    tie_b = insert_model(conn, params={"k": 31.0}, metrics=backtest_metrics(n_bets=10, roi=-0.5), validation=validation_metrics(n_bets=100, roi=0.04, mean_ll_gain=0.003))
+    search_only = insert_model(conn, params={"k": 32.0}, metrics=backtest_metrics(n_bets=490, roi=0.5))
     none = insert_model(conn, params={"k": 33.0})
-    retired = insert_model(conn, params={"k": 34.0}, metrics=backtest_metrics(n_bets=900, roi=0.9), status="retired")
+    retired = insert_model(conn, params={"k": 34.0}, metrics=backtest_metrics(n_bets=900, roi=0.9), validation=validation_metrics(n_bets=900, roi=0.9), status="retired")
     r = client.get("/api/models")
     assert r.status_code == 200
     board = r.json()
     ranked = [m["id"] for m in board["ranked"]]
-    assert ranked == [str(best["id"]), str(tie_b["id"]), str(tie_a["id"])], "shrunk ROI, then lower log-loss"
-    assert [m["rank"] for m in board["ranked"]] == [1, 2, 3]
-    assert {m["id"] for m in board["unranked"]} == {str(few["id"]), str(none["id"]), str(retired["id"])}
+    assert ranked == [str(best["id"]), str(tie_b["id"]), str(tie_a["id"])], "validation shrunk ROI, then the larger log-loss gain"
+    assert [m["rank"] for m in board["ranked"]] == [1, 2, 3] and all(m["rank_mode"] == "validation" for m in board["ranked"])
+    unranked = {m["id"]: m for m in board["unranked"]}
+    assert set(unranked) == {str(search_only["id"]), str(none["id"]), str(retired["id"])}
+    assert unranked[str(search_only["id"])]["unranked_reason"] == "not validated" and unranked[str(none["id"])]["unranked_reason"] == "not validated"
+    assert unranked[str(retired["id"])]["unranked_reason"] == "retired" and unranked[str(search_only["id"])]["validated"] is False
+    assert unranked[str(search_only["id"])]["validation"] is None and unranked[str(search_only["id"])]["score"] == 0.0
+    assert unranked[str(search_only["id"])]["search_score"] == 0.5 * 490 / 590
     top = board["ranked"][0]
     assert top["short_params"] == "K 20 · HFA 50 · MOV on" and top["members"] == 2 and top["status"] == "paper_ok"
     assert top["summary"] == "Best." and top["lineage_id"] == str(best["id"]) and top["family"] == "elo_blend"
-    assert top["score"] == 0.05 * 400 / 500 and set(top["metrics"]) >= {"roi", "n_bets", "log_loss", "market_log_loss", "max_drawdown", "seasons"}
+    assert top["score"] == 0.05 * 400 / 500 and top["search_score"] == 0.02 * 400 / 500 and top["validated"] is True
+    assert set(top["metrics"]) >= {"roi", "n_bets", "log_loss", "market_log_loss", "max_drawdown", "seasons"}
+    assert top["validation"]["ci"]["roi"] == [0.02, 0.08] and top["validation"]["market_p"] == 0.01 and top["validation"]["beats_market"] is True
+    assert top["validation"]["shrunk_roi"] == 0.05 * 400 / 500 and top["validation"]["n_bets"] == 400 and top["ll_gain"] == 0.002
+    assert top["flags"] == ["overfit", "regime_dependent"] and top["stress_flags"] == ["regime_dependent"] and top["paper_ci"] is None
     assert "rank" not in board["unranked"][0]
     detail = client.get(f"/api/models/{best['id']}").json()
     assert detail["id"] == str(best["id"]) and len(detail["lineage"]) == 2 and detail["lineage"][0]["is_root"] is True
     assert detail["jobs"] == [] and detail["short_params"] == "K 20 · HFA 50 · MOV on" and detail["params"]["k"] == 20.0
+    assert detail["flags"] == ["overfit", "regime_dependent"] and set(detail["flag_meanings"]) == {"overfit", "regime_dependent"}
+    assert detail["validation_metrics"]["market_p"] == 0.01 and detail["stress_metrics"]["seed"] == 1 and detail["paper_ci"] is None
+    assert detail["validated"] is True and detail["score"] == top["score"] and detail["rank_mode"] == "validation"
     assert client.get(f"/api/models/{uuid.uuid4()}").status_code == 404
     assert client.get("/api/models/garbage").status_code == 404
 
@@ -252,12 +288,20 @@ def test_data_refresh_route_reads_the_configured_url(client, conn, monkeypatch):
 
 
 def test_thresholds_change_recomputes_lineages(client, conn):
-    root = insert_model(conn, metrics=backtest_metrics(n_bets=120, roi=0.03))
+    root = insert_validated_model(conn, validation=validation_metrics(n_bets=120, roi=0.03, ci_roi=(0.005, 0.06), market_p=0.08))
+    set_setting(conn, "thresholds_backtest", {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.3})
     assert model_row(conn, root["id"])["status"] == "candidate"
     r = client.post("/api/settings", json={"thresholds_backtest": {"min_bets": 100, "min_roi": 0.02, "max_drawdown": 0.3}})
-    assert r.status_code == 200
+    assert r.status_code == 200, "a legacy three-key object is accepted; the new rules keep their defaults"
     assert model_row(conn, root["id"])["status"] == "paper_ok"
     client.post("/api/settings", json={"thresholds_backtest": {"min_bets": 200, "min_roi": 0.02, "max_drawdown": 0.3}})
+    assert model_row(conn, root["id"])["status"] == "candidate"
+    full = {"min_bets": 100, "min_roi": 0.02, "max_drawdown": 0.3, "require_validation": True, "min_roi_ci_low": 0.005, "max_market_p": 0.05, "forbid_flags": []}
+    assert client.post("/api/settings", json={"thresholds_backtest": full}).status_code == 200
+    assert model_row(conn, root["id"])["status"] == "candidate", "market_p 0.08 is over 0.05"
+    assert client.post("/api/settings", json={"thresholds_backtest": {**full, "max_market_p": 0.1}}).status_code == 200
+    assert model_row(conn, root["id"])["status"] == "paper_ok", "CI lower bound exactly at the floor passes"
+    assert client.post("/api/settings", json={"thresholds_backtest": {**full, "max_market_p": 0.1, "min_roi_ci_low": 0.0051}}).status_code == 200
     assert model_row(conn, root["id"])["status"] == "candidate"
 
 
@@ -301,17 +345,23 @@ def test_identity_hit_takes_the_latest_metrics(client, conn, make_worker):
     r = client.post("/api/v1/models", json=_body(first, backtest_metrics=empty), headers=w.headers)
     assert r.status_code == 201 and r.json()["status"] == "candidate"
     model_id = r.json()["id"]
-    second = lease_job(conn, w, "model_search", {"family": "elo_blend", "seasons": [2010, 2025]})
-    real = backtest_metrics(n_bets=400, roi=0.04, max_drawdown=0.1, seasons=list(range(2010, 2026)))
-    r = client.post("/api/v1/models", json=_body(second, backtest_metrics=real, summary="newer"), headers=w.headers)
+    second = lease_job(conn, w, "model_search", {"family": "elo_blend", "seasons": [2010, 2021]})
+    real = backtest_metrics(n_bets=400, roi=0.04, max_drawdown=0.1, seasons=list(range(2010, 2022)))
+    validation, stress = validation_metrics(), stress_metrics(seed=3)
+    r = client.post("/api/v1/models", json=_body(second, backtest_metrics=real, validation_metrics=validation, stress_metrics=stress, summary="newer"), headers=w.headers)
     assert r.status_code == 200 and r.json() == {"id": model_id, "lineage_id": model_id, "created": False, "status": "paper_ok"}
     row = model_row(conn, model_id)
     assert row["backtest_metrics"] == real and row["status"] == "paper_ok" and row["summary"] is None
+    assert row["validation_metrics"] == validation and row["stress_metrics"] == stress
     events = conn.execute("SELECT event, detail FROM job_events WHERE job_id = %s", (second["id"],)).fetchall()
     assert events[0]["event"] == "model_exists" and events[0]["detail"]["status"] == "paper_ok"
     # A post without metrics keeps what is stored; a child's identity hit never touches the lineage.
     assert client.post("/api/v1/models", json=_body(second), headers=w.headers).json()["status"] == "paper_ok"
-    assert model_row(conn, model_id)["backtest_metrics"] == real
+    assert model_row(conn, model_id)["backtest_metrics"] == real and model_row(conn, model_id)["validation_metrics"] == validation
+    # Newer validation numbers alone replace the stored ones and re-run the gate.
+    worse = validation_metrics(roi=-0.02)
+    assert client.post("/api/v1/models", json=_body(second, validation_metrics=worse), headers=w.headers).json()["status"] == "candidate"
+    assert model_row(conn, model_id)["validation_metrics"] == worse and model_row(conn, model_id)["stress_metrics"] == stress
 
 
 def test_non_finite_numbers_are_a_400_not_a_500(client, conn, make_worker):
@@ -386,7 +436,7 @@ def test_child_creation_waits_for_a_committing_backtest(pool, conn, make_worker)
     from host import models
 
     w = make_worker("box1", role="train")
-    root = insert_model(conn, params=PARAMS, metrics=backtest_metrics(n_bets=10))
+    root = insert_validated_model(conn, params=PARAMS, metrics=backtest_metrics(n_bets=10))
     bt = lease_job(conn, w, "backtest", {"model_id": str(root["id"])})
     train = lease_job(conn, w, "train", {"model_id": str(root["id"]), "through": {"season": 2024, "week": 10}})
     child_body = _body(train, parent_model_id=str(root["id"]), trained_through=[2024, 10])
@@ -405,3 +455,49 @@ def test_child_creation_waits_for_a_committing_backtest(pool, conn, make_worker)
     assert "error" not in box, box
     assert box["value"]["backtest_metrics"]["n_bets"] == 999 and box["value"]["status"] == "paper_ok"
     assert model_row(conn, box["value"]["id"])["backtest_metrics"]["n_bets"] == 999
+
+
+def test_validation_endpoint_attribution_and_lineage_propagation(client, conn, make_worker):
+    """POST /api/v1/models/{id}/validation: the job must be the validate job of that
+    model or the search job that created it; the metrics land on every row of the
+    lineage and the gate runs on them."""
+    w = make_worker("box1", role="backtest")
+    root = insert_model(conn, params=PARAMS, metrics=backtest_metrics(n_bets=400, roi=0.05))
+    child = insert_model(conn, parent=root, trained_through=[2024, 10])
+    job = lease_job(conn, w, "validate", {"model_id": str(child["id"]), "seed": 1})
+    good = {"job_id": str(job["id"]), "validation_metrics": validation_metrics(n_bets=90, roi=0.05), "stress_metrics": stress_metrics(seed=1)}
+    assert client.post(f"/api/v1/models/{root['id']}/validation", json=good, headers=w.headers).status_code == 409, "the job validates the child"
+    r = client.post(f"/api/v1/models/{child['id']}/validation", json=good, headers=w.headers)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"id": str(child["id"]), "lineage_id": str(root["id"]), "status": "paper_ok"}
+    for m in (root, child):
+        row = model_row(conn, m["id"])
+        assert row["validation_metrics"] == good["validation_metrics"] and row["stress_metrics"] == good["stress_metrics"]
+        assert row["status"] == "paper_ok" and row["backtest_metrics"]["n_bets"] == 400, "the search-era metrics stay"
+    fragile = {**good, "stress_metrics": stress_metrics(flags=["fragile"])}
+    assert client.post(f"/api/v1/models/{child['id']}/validation", json=fragile, headers=w.headers).json()["status"] == "candidate"
+    assert model_row(conn, root["id"])["status"] == "candidate" and model_row(conn, root["id"])["stress_metrics"]["flags"] == ["fragile"]
+    events = conn.execute("SELECT event, detail FROM job_events WHERE job_id = %s ORDER BY id", (job["id"],)).fetchall()
+    assert [e["event"] for e in events] == ["model_validation", "model_validation"]
+    assert events[0]["detail"] == {"model_id": str(child["id"]), "status": "paper_ok"}
+    # Fencing: another worker's lease, a sleep job, a backtest job, a search job that did not create the model.
+    other = make_worker("box2", role="backtest")
+    assert client.post(f"/api/v1/models/{child['id']}/validation", json=good, headers=other.headers).status_code == 409
+    for kind, params in (("sleep", {"seconds": 5}), ("backtest", {"model_id": str(child["id"])}), ("model_search", {"family": "elo_blend"})):
+        wrong = lease_job(conn, w, kind, params)
+        r = client.post(f"/api/v1/models/{child['id']}/validation", json={**good, "job_id": str(wrong["id"])}, headers=w.headers)
+        assert r.status_code == 409, (kind, r.text)
+    # The search job that created (or found) the model may post its validation.
+    search = lease_job(conn, w, "model_search", {"family": "elo_blend"})
+    created = client.post("/api/v1/models", json=_body(search, params={**PARAMS, "k": 40.0}), headers=w.headers).json()
+    r = client.post(f"/api/v1/models/{created['id']}/validation", json={**good, "job_id": str(search["id"])}, headers=w.headers)
+    assert r.status_code == 200 and r.json()["status"] == "paper_ok"
+    assert client.post(f"/api/v1/models/{child['id']}/validation", json={**good, "job_id": str(search["id"])}, headers=w.headers).status_code == 409
+    # Bad bodies and unknown models.
+    assert client.post(f"/api/v1/models/{child['id']}/validation", json={**good, "validation_metrics": []}, headers=w.headers).status_code == 400
+    assert client.post(f"/api/v1/models/{child['id']}/validation", json={"job_id": str(job["id"]), "validation_metrics": {}}, headers=w.headers).status_code == 400, "stress_metrics is required"
+    nan = '{"job_id": "%s", "validation_metrics": {"roi": NaN}, "stress_metrics": {}}' % job["id"]
+    assert client.post(f"/api/v1/models/{child['id']}/validation", content=nan, headers={**w.headers, "Content-Type": "application/json"}).status_code == 400
+    assert client.post(f"/api/v1/models/{uuid.uuid4()}/validation", json=good, headers=w.headers).status_code == 404
+    assert client.post(f"/api/v1/models/{child['id']}/validation", json=good).status_code == 401
+    assert model_row(conn, root["id"])["stress_metrics"]["flags"] == ["fragile"], "nothing above changed the lineage"

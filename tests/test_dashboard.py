@@ -12,13 +12,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from host import kill
-from host.api.app import create_app
+from host.api.app import MAX_BODY_BYTES, create_app
 from host.trading.positions import owner_tz
 from tests.conftest import (
-    FIXTURE_GAMES, GAME_ID, approve, approved_order, assignment_row, auth_state, backtest_metrics, enable_live,
-    flash_cookie, heartbeat_body, ingest_fixture, insert_game, insert_market, insert_model, insert_snapshot,
-    insert_worker, job_row, lease_job, make_assignment, model_row, order_row, set_heartbeat_age, set_setting,
-    trade_setup, worker_row,
+    GAME_ID, approve, approved_order, assignment_row, auth_state, backtest_metrics, enable_live,
+    flash_cookie, heartbeat_body, ingest_fixture, insert_game, insert_market, insert_model, insert_paper_bet,
+    insert_snapshot, insert_validated_model, insert_worker, job_row, lease_job, make_assignment, model_row, order_row,
+    set_heartbeat_age, set_setting, stress_metrics, trade_setup, validation_metrics, worker_row,
 )
 
 
@@ -293,17 +293,20 @@ def test_settings_inputs_open_the_number_keyboard(client):
     """MEDIUM: every numeric field carries an inputmode; the tz field does not."""
     html = client.get("/settings").text
     decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction",
-               "taker_rate", "half_spread", "min_roi", "max_drawdown", "participation", "max_exposure_paper", "max_exposure_live",
-               "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s", "market_data_per_s", "account_per_s")
+               "taker_rate", "half_spread", "min_roi", "max_drawdown", "min_roi_ci_low", "max_market_p", "participation",
+               "max_exposure_paper", "max_exposure_live", "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s",
+               "market_data_per_s", "account_per_s")
     numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries",
-               "min_bets", "seasons_first", "seasons_last", "nflverse_refresh_hours", "book_max_age_s", "gtd_seconds",
-               "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game", "market_lookahead_days", "snapshot_active_s",
-               "snapshot_idle_s", "snapshot_retention_days", "paper_min_games", "paper_min_bets", "paper_min_days")
+               "min_bets", "seasons_first", "seasons_last", "validation_first", "validation_last", "nflverse_refresh_hours",
+               "book_max_age_s", "gtd_seconds", "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game",
+               "market_lookahead_days", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days", "paper_min_games",
+               "paper_min_bets", "paper_min_days")
     for name in decimal:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="decimal"', html), name
     for name in numeric:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="numeric"', html), name
     assert re.search(r'<input type="text" name="tz" value="[^"]*" autocomplete="off">', html)
+    assert re.search(r'<input type="text" name="search_workers" value="auto" autocomplete="off">', html), "auto or a number: no number keyboard"
     assert re.search(r'<input type="text" name="nflverse_url" value="https://[^"]*" autocomplete="off">', html)
     assert re.search(r'<input type="text" name="scores_url" value="https://[^"]*" autocomplete="off">', html)
     assert html.count("inputmode=") == len(decimal) + len(numeric)
@@ -386,9 +389,9 @@ def test_chunked_body_over_the_limit_is_refused(client):
 
     r = client.post("/kill/reset", content=chunks(), headers=form)
     assert r.status_code == 413 and r.headers["content-type"].startswith("text/html") and "413 Too large" in r.text
-    r = client.post("/kill/reset", content=b"confirm=" + b"x" * 300_000, headers=form)
+    r = client.post("/kill/reset", content=b"confirm=" + b"x" * (MAX_BODY_BYTES + 1), headers=form)
     assert r.status_code == 413 and r.headers["content-type"].startswith("text/html")
-    r = client.post("/api/kill/reset", content=b"x" * 300_000, headers={"Content-Type": "application/json"})
+    r = client.post("/api/kill/reset", content=b"x" * (MAX_BODY_BYTES + 1), headers={"Content-Type": "application/json"})
     assert r.status_code == 413 and r.json() == {"detail": "request body too large"}
     assert client.get("/api/settings").json()["kill_switch"] is True
 
@@ -402,12 +405,16 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     assert 'id="unranked"' not in html and 'id="ranked"' not in html and "<table" not in html
     only_unranked = insert_model(conn, params={"k": 19.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
     html = client.get("/models").text
-    assert "No lineage has 50 backtest bets yet, so none is ranked." in html and "No models yet" not in html
+    assert "No lineage is validated yet, so none is ranked." in html and "No models yet" not in html
     assert 'id="ranked"' not in html and 'id="unranked"' in html, "no empty ranked header above the unranked table"
+    assert '<span class="chip chip-unvalidated" title="no validation-era metrics yet: send a validate job">not validated</span>' in html
     conn.execute("DELETE FROM models WHERE id = %s", (only_unranked["id"],))
-    best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, log_loss=0.65, market_log_loss=0.659, max_drawdown=0.14, seasons=[2016, 2017, 2018, 2019]), status="paper_ok", summary="Best lineage.")
+    best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, log_loss=0.65, market_log_loss=0.659, max_drawdown=0.14, seasons=[2016, 2017, 2018, 2019]),
+                        validation=validation_metrics(n_bets=130, roi=0.041, ci_roi=(-0.012, 0.094), market_p=0.012, log_loss=0.651, market_log_loss=0.658, max_drawdown=0.09),
+                        stress=stress_metrics(), status="paper_ok", summary="Best lineage.")
     insert_model(conn, parent=best, trained_through=[2024, 10])
-    second = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=120, roi=0.03))
+    second = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=120, roi=0.03),
+                          validation=validation_metrics(n_bets=80, roi=0.02, market_p=0.31, flags=["overfit"]), stress=stress_metrics(flags=["fragile", "regime_dependent"]))
     few = insert_model(conn, params={"k": 31.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
     none = insert_model(conn, params={"k": 32.0}, summary="<b>bold</b>")
     html = client.get("/models").text
@@ -418,9 +425,22 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     assert "#1" in ranked and "#2" in ranked
     assert '<span class="badge st-paper_ok">paper ok</span>' in ranked and '<span class="badge st-candidate">candidate</span>' in html
     assert "K 20 · HFA 50 · MOV on" in ranked and "K 30 · HFA 60 · MOV off" in ranked
-    assert "+5.0%" in ranked and ">400<" not in ranked and "400" in ranked and "0.650" in ranked and "vs 0.659" in ranked
-    assert "14.0%" in ranked and "2016-2019" in ranked and "Best lineage." in ranked and '<span class="chip">2 rows</span>' in ranked
+    first = re.search(rf'<tr class="model-row" data-model="{best["id"]}">.*?</tr>', html, re.S).group(0)
+    assert '<span class="k">validation ROI</span> +4.1% <span class="range">-1.2% to +9.4%</span>' in first, "the validation ROI with its 90% range"
+    assert '<span class="k">beats market</span> <span class="chip chip-beats">yes</span> <span class="muted small">p 0.012</span>' in first
+    assert '<span class="k">bets</span> 130 <span class="muted small">search 400</span>' in first and '<span class="k">search ROI</span> +5.0%' in first
+    assert "0.651" in first and "vs 0.658" in first and '<span class="k">drawdown</span> 9.0%' in first and "chip-flag" not in first
+    assert "Best lineage." in first and '<span class="chip">2 rows</span>' in first and "not validated" not in first
+    row2 = re.search(rf'<tr class="model-row" data-model="{second["id"]}">.*?</tr>', html, re.S).group(0)
+    assert '<span class="chip chip-flag chip-overfit"' in row2 and '>overfit</span>' in row2 and '>fragile</span>' in row2 and '>regime-dependent</span>' in row2
+    assert '<span class="k">beats market</span> no <span class="muted small">p 0.310</span>' in row2
+    unranked = html.split('id="unranked"')[1]
+    assert unranked.count("not validated</span>") == 2 and "<th>validation ROI" in html and "<th>beats market</th>" in html
+    assert '<span class="k">validation ROI</span> -' in unranked and '<span class="k">beats market</span> -' in unranked
+    assert '<span class="k">bets</span> - <span class="muted small">search 20</span>' in unranked
+    assert "not validated, or retired" in unranked
     assert f'href="/jobs?train_model={best["id"]}#train"' in ranked and ">Train</a>" in ranked
+    assert f'<a class="btn small" href="/jobs?validate_model={best["id"]}#validate">Validate</a>' in ranked
     assert f'<a class="btn small" href="/trading?model={best["id"]}#assign">Assign</a>' in ranked
     assert f'action="/models/{best["id"]}/summary"' in ranked and 'maxlength="600"' in ranked
     assert "&lt;b&gt;bold&lt;/b&gt;" in html and "<b>bold</b>" not in html
@@ -430,7 +450,7 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
 
 
 def test_model_detail_page(client, conn, make_worker):
-    root = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, per_season=[
+    root = insert_validated_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, per_season=[
         {"season": 2016, "n_games": 200, "n_bets": 50, "roi": 0.02, "pnl_cents": 1200, "log_loss": 0.66, "market_log_loss": 0.655, "max_drawdown": 0.05},
         {"season": 2017, "n_games": 210, "n_bets": 60, "roi": -0.01, "pnl_cents": -700, "log_loss": 0.67, "market_log_loss": 0.665, "max_drawdown": 0.08},
     ]), status="paper_ok", summary="Root summary.")
@@ -452,6 +472,11 @@ def test_model_detail_page(client, conn, make_worker):
     assert f'href="/jobs/{bt["id"]}"' in html and "ran against it" in html and "created this model" not in html
     assert f'action="/models/{root["id"]}/retire"' in html and 'data-confirm="Retire this whole lineage?' in html
     assert f'href="/jobs?train_model={root["id"]}#train"' in html and f'action="/models/{root["id"]}/summary"' in html
+    assert '<form method="post" action="/jobs" class="inline validate-form">' in html and f'<input type="hidden" name="model_id" value="{root["id"]}">' in html
+    assert '<input type="hidden" name="kind" value="validate">' in html and ">Validate</button>" in html
+    assert '<h2>Robustness <span class="muted small">validation era 2022-2025, held out of the search</span></h2>' in html
+    assert "<dt>validation shrunk ROI</dt><dd>+2.18%" in html and "<dt>search shrunk ROI</dt><dd>+4.00%" in html
+    assert '<h2>backtest <span class="muted small">search era</span></h2>' in html
     child_html = client.get(f"/models/{child['id']}").text
     assert f'href="/models/{root["id"]}">{str(root["id"])[:8]}</a>' in child_html and "(this)" in child_html
     assert "No backtest metrics yet" not in child_html, "a child shows the lineage metrics"
@@ -486,8 +511,8 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
     ingest_fixture(conn)
     model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1})
     html = client.get("/jobs").text
-    assert html.count('action="/jobs"') == 4 and html.count('<option value="any_idle">Any idle worker</option>') == 4
-    assert 'name="seasons_first" value="2010"' in html and 'name="seasons_last" value=""' in html
+    assert html.count('action="/jobs"') == 5 and html.count('<option value="any_idle">Any idle worker</option>') == 5
+    assert 'name="seasons_first" value="2010"' in html and 'name="seasons_last" value="2021"' in html
     assert 'name="n" value="200"' in html and 'name="top_k" value="5"' in html and 'name="through_season" value="2025"' in html
     assert f'<option value="{model["id"]}">K 20 · HFA 50 · MOV on · untrained · {str(model["id"])[:8]}</option>' in html
     assert '<option value="elo_blend" selected>elo_blend</option>' in html
@@ -497,7 +522,7 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
     assert r.status_code == 303 and r.headers["location"] == "/jobs" and flash_cookie(r).startswith("backtest job ")
     job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
     assert job["kind"] == "backtest" and job["params"]["family"] == "elo_blend" and job["params"]["params"] == {"k": 22}
-    assert job["params"]["seasons"] == [2018, 2025] and job["params"]["backtest_seasons"] == [2010, 2025]
+    assert job["params"]["seasons"] == [2018, 2025] and job["params"]["backtest_seasons"] == [2010, 2021]
     assert job["target_worker_id"] == w.id and worker_row(conn, w.id)["desired_role"] == "backtest"
     # Backtest by model.
     r = client.post("/jobs", data={"kind": "backtest", "model_id": str(model["id"]), "family": "elo_blend", "params": "{}",
@@ -521,10 +546,19 @@ def test_three_job_forms_post_valid_jobs(client, conn, make_worker):
     job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
     assert job["kind"] == "train" and job["params"] == {
         "model_id": str(model["id"]), "through": {"season": 2024, "week": 10}, "fee_model": {"taker_rate": 0.05, "half_spread": 0.01},
-        "default_bankroll_cents": 10000, "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2025],
+        "default_bankroll_cents": 10000, "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2021],
     }
+    # Validate, prefilled from the models page link.
+    html = client.get(f"/jobs?validate_model={model['id']}").text
+    assert '<details class="card send" id="validate" open>' in html and 'name="validate_seed" value="1"' in html
+    assert "held-out validation era (2022-2025)" in html
+    r = client.post("/jobs", data={"kind": "validate", "model_id": str(model["id"]), "validate_seed": "4", "target": "any_idle"}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r).startswith("validate job ")
+    job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
+    assert job["kind"] == "validate" and job["role"] == "backtest" and job["params"]["model_id"] == str(model["id"]) and job["params"]["seed"] == 4
+    assert job["params"]["validation_seasons"] == [2022, 2025] and job["params"]["workers"] == "auto"
     listing = client.get("/jobs").text
-    assert "elo_blend n 50" in listing and listing.count('<tr>') == 5
+    assert "elo_blend n 50" in listing and listing.count('<tr>') == 6 and f"validate <span class=\"muted small\">{str(model['id'])[:8]}</span>" in listing
 
 
 def test_invalid_job_params_rerender_with_an_inline_error(client, conn):
@@ -541,6 +575,8 @@ def test_invalid_job_params_rerender_with_an_inline_error(client, conn):
         ({"kind": "model_search", "family": "elo_blend", "n": "1.5", "target": "any_idle"}, "Candidates must be a whole number"),
         ({"kind": "train", "model_id": "", "through_season": "2024", "through_week": "", "target": "any_idle"}, "Through season and week are required"),
         ({"kind": "train", "model_id": "garbage", "through_season": "2024", "through_week": "3", "target": "any_idle"}, "model_id must be a uuid"),
+        ({"kind": "validate", "model_id": "garbage", "validate_seed": "1", "target": "any_idle"}, "model_id must be a uuid"),
+        ({"kind": "validate", "model_id": "00000000-0000-0000-0000-000000000000", "validate_seed": "x", "target": "any_idle"}, "Seed must be a whole number"),
         ({"kind": "sleep", "seconds": "0", "target": "any_idle"}, "seconds must be between 1 and 86400"),
     ]:
         r = client.post("/jobs", data=data, follow_redirects=False)
@@ -552,6 +588,8 @@ def test_invalid_job_params_rerender_with_an_inline_error(client, conn):
             assert r.text.index('inline-error') < r.text.index('id="model_search"'), "the error sits in the posted form"
         if data["kind"] == "sleep":
             assert 'id="sleep" open>' in r.text
+        if data["kind"] == "validate":
+            assert 'id="validate" open>' in r.text
     assert conn.execute("SELECT count(*) AS n FROM jobs").fetchone()["n"] == 0, "nothing was created"
 
 
@@ -609,12 +647,13 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
     assert "+0.0%" not in html.split("<h2>lineage</h2>")[0]
     assert f'<a class="btn" href="/trading?model={model["id"]}#assign">Assign</a>' in html
     assert '<details class="edit">' in html and html.count("No summary yet.") == 1, "the summary editor is folded"
-    assert "<dt>shrunk ROI</dt><dd>+0.00%" in html
+    assert '<dt>validation shrunk ROI</dt><dd><span class="muted">not validated</span>' in html and "<dt>search shrunk ROI</dt><dd>+0.00%" in html
+    assert "Not validated yet: no held-out numbers" in html and ">Validate</button>" in html
     tables = re.findall(r"<table class=\"([^\"]+)\"", html)
     assert all("stack" in t for t in tables if "calibration" not in t), tables
     # The leaderboard row: "-" for ROI without bets, one-decimal drawdown.
     row = client.get("/models").text
-    assert '<span class="k">ROI</span> -' in row and '<span class="k">drawdown</span> 0.4%' in row
+    assert '<span class="k">search ROI</span> -' in row and '<span class="k">drawdown</span> 0.4%' in row
     assert '<span class="k">paper</span> -' in row and 'href="/trading?model=' in row
     # The search result page: a stacked top list with a shrunk ROI percentage.
     top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": -0.0103, "metrics": backtest_metrics(n_bets=5, roi=-0.355, max_drawdown=0.5)}]
@@ -640,7 +679,7 @@ def test_send_cards_fold_so_the_job_list_is_near_the_top(client, conn):
     html = client.get("/jobs").text
     assert '<details class="card send" id="backtest" open>' in html
     assert '<details class="card send" id="model_search">' in html and '<details class="card send" id="train">' in html
-    assert html.count("<summary><h2>") == 3 and "<summary>Sleep test job</summary>" in html
+    assert html.count("<summary><h2>") == 4 and "<summary>Sleep test job</summary>" in html
     assert html.index('<table class="jobs stack">') > html.index('id="train"')
     assert f'K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model["id"])[:8]}</option>' in html, "the select label fits a phone"
     html = client.get(f"/jobs?train_model={model['id']}").text
@@ -1016,7 +1055,7 @@ def test_pnl_maths(client, conn, make_worker):
 def test_leaderboard_paper_columns_and_ranking(client, conn):
     """A lineage with 5 paper games and 30 paper bets ranks on shrunk CLV ahead of the
     backtest-ranked ones; the others keep the step 3 order; paper columns show per row."""
-    backtested = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05), status="paper_ok")
+    backtested = insert_validated_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05), validation=validation_metrics(n_bets=400, roi=0.05), status="paper_ok")
     papered = insert_model(conn, params={"k": 30.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="paper_ok")
     better = insert_model(conn, params={"k": 31.0, "hfa": 60.0, "mov_scale": 0}, metrics=backtest_metrics(n_bets=10, roi=0.01), status="live_eligible")
     almost = insert_model(conn, params={"k": 32.0}, metrics=backtest_metrics(n_bets=10, roi=0.01))
@@ -1031,14 +1070,15 @@ def test_leaderboard_paper_columns_and_ranking(client, conn):
     board = client.get("/api/models").json()
     ranked = board["ranked"]
     assert [m["id"] for m in ranked] == [str(better["id"]), str(papered["id"]), str(backtested["id"])]
-    assert [m["rank"] for m in ranked] == [1, 2, 3] and [m["rank_mode"] for m in ranked] == ["paper", "paper", "backtest"]
+    assert [m["rank"] for m in ranked] == [1, 2, 3] and [m["rank_mode"] for m in ranked] == ["paper", "paper", "validation"]
     assert ranked[0]["paper"] == {"games": 5, "bets": 30, "pnl_cents": -300, "stake_cents": 30000, "roi": -0.01, "avg_clv": pytest.approx(0.03)}
     assert ranked[0]["paper_score"] == pytest.approx(0.03 * 30 / 55) and ranked[1]["paper_score"] == pytest.approx(0.02 * 30 / 55)
     assert ranked[2]["paper"]["games"] == 0 and ranked[2]["paper"]["roi"] is None and ranked[2]["score"] == 0.05 * 400 / 500
     assert ranked[0]["live"] == {"games": 0, "bets": 0, "pnl_cents": 0, "stake_cents": 0, "roi": None, "avg_clv": None}
     unranked = {m["id"]: m for m in board["unranked"]}
     assert set(unranked) == {str(almost["id"]), str(retired["id"])}
-    assert unranked[str(almost["id"])]["paper"]["games"] == 4 and unranked[str(almost["id"])]["rank_mode"] == "backtest", "4 games: not yet"
+    assert unranked[str(almost["id"])]["paper"]["games"] == 4 and unranked[str(almost["id"])]["rank_mode"] == "validation", "4 games: not yet"
+    assert unranked[str(almost["id"])]["unranked_reason"] == "not validated"
     assert unranked[str(retired["id"])]["paper"]["games"] == 5, "retired lineages are never ranked, however good"
     # ties on shrunk CLV break on paper ROI
     _score(conn, almost, "2026_05_A_B", 10, 1000, 1000, 0.06)
@@ -1079,11 +1119,15 @@ def test_settings_trade_group_round_trip(client, conn):
     assert s["participation"] == 0.4 and s["book_max_age_s"] == 45 and s["gtd_seconds"] == 600 and s["trade_tick_s"] == 4
     assert s["trade_pregame_only"] is False, "an unticked checkbox sends nothing"
     assert s["market_source"] == "polymarket_clob" and s["market_source_config"]["polymarket_clob"]["gamma_url"] == "https://g.example"
-    assert s["thresholds_paper"] == {"min_games": 8, "min_bets": 20, "min_days": 14, "min_clv": 0.005, "min_pnl_cents": 250}
+    assert s["thresholds_paper"] == {"min_games": 8, "min_bets": 20, "min_days": 14, "min_clv": 0.005, "min_pnl_cents": 250, "clv_ci_excludes_zero": False}, "the unticked CLV box stores false"
     assert s["max_exposure_cents"] == {"paper": 100000, "live": 0} and s["scores_url"] == "https://example.com/scores"
     assert s["rate_limits"] == {"orders_per_s": 4, "cancels_per_s": 8, "market_data_per_s": 9.5, "account_per_s": 1}
     html = client.get("/settings").text
     assert '<option value="polymarket_clob" selected>' in html and 'name="trade_pregame_only" value="true">' in html
+    assert 'name="paper_clv_ci" value="true">' in html and "CLV interval above zero" in html
+    r = client.post("/settings/trade", data={**good, "paper_clv_ci": "true"}, follow_redirects=False)
+    assert r.status_code == 303 and client.get("/api/settings").json()["thresholds_paper"]["clv_ci_excludes_zero"] is True
+    assert 'name="paper_clv_ci" value="true" checked>' in client.get("/settings").text
     assert 'name="max_exposure_paper" value="1000.00"' in html and "&#34;gamma_url&#34;: &#34;https://g.example&#34;" in html
     for bad, message in [
         ({**good, "participation": "2"}, "participation must be between 0 and 1"),
@@ -1100,7 +1144,7 @@ def test_settings_trade_group_round_trip(client, conn):
         assert 'name="participation" value="%s"' % bad["participation"] in r.text, "submitted values are kept"
     assert client.get("/api/settings").json()["participation"] == 0.4
     audited = [a["entity"] for a in conn.execute("SELECT entity FROM audit_log WHERE action = 'settings_changed' ORDER BY id").fetchall()]
-    assert "market_source" in audited and "thresholds_paper" in audited and "trade_pregame_only" in audited and len(audited) == 17
+    assert "market_source" in audited and "thresholds_paper" in audited and "trade_pregame_only" in audited and len(audited) == 18
     # saving the group again with a paper record present recomputes paper eligibility without error
     model = insert_model(conn, status="paper_ok", metrics=backtest_metrics())
     insert_game(conn, "2026_01_A_B", kickoff_in_s=-86400)
@@ -1401,3 +1445,122 @@ def test_live_phone_layout_and_colour_rules(client, conn):
             assert 'autocapitalize="characters" spellcheck="false"' in html, "a phone keyboard must not mangle the phrase"
     for path in ("/settings", "/trading"):
         assert chr(0x2014) not in client.get(path).text
+
+
+# ------------------------------------------------------------------ step 6: robustness on the dashboard
+
+
+def test_model_page_robustness_section_renders_every_element(client, conn, make_worker):
+    """The Robustness section: flags with their meanings, the CI line, the market test
+    sentence, calibration slope and intercept, the price stress table, the
+    neighbourhood summary and the regime table; the validate job page shows the same."""
+    validation = validation_metrics(n_bets=130, roi=0.041, ci_roi=(-0.012, 0.094), market_p=0.012, mean_ll_gain=0.0021, flags=["overfit"],
+                                    per_season=[{"season": 2022, "n_games": 270, "n_bets": 30, "roi": 0.05, "pnl_cents": 1800, "log_loss": 0.65, "market_log_loss": 0.655, "max_drawdown": 0.04}])
+    stress = stress_metrics(flags=["regime_dependent"], seed=9)
+    model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(), validation=validation, stress=stress)
+    html = client.get(f"/models/{model['id']}").text
+    assert '<section class="robustness" id="robustness">' in html
+    assert '<span class="chip chip-flag chip-overfit" title="the search era looked better' in html and '<span class="chip chip-flag chip-regime_dependent"' in html
+    assert "<strong>overfit</strong>: the search era looked better than the held-out era" in html
+    assert "<strong>regime-dependent</strong>: one game regime" in html
+    assert 'Validation ROI <strong>+4.1%</strong> <span class="range">(90% range -1.2% to +9.4%)</span> over 130 bets, shrunk +2.32%.' in html
+    assert "Hit rate 52.0% <span class=\"range\">(49.0% to 56.0%)</span>" in html and "average edge +3.4%" in html
+    assert "CLV range <span class=\"range\">0.000 to 0.000</span>" in html
+    assert '<p class="market-line beats">Beats the market on log-loss: mean gain +0.0021 per game, p = 0.012 (sign-flip test, 10 000 flips; beaten means p &lt; 0.05).</p>' in html
+    assert '<span class="chip chip-beats">beats market</span>' in html
+    assert "<dt>calibration slope</dt><dd>0.970" in html and "<dt>calibration intercept</dt><dd>-0.020" in html
+    assert "<dt>reliability</dt><dd>0.0021</dd>" in html and "<dt>resolution</dt><dd>0.0146</dd>" in html and "<dt>uncertainty</dt><dd>0.2487</dd>" in html
+    assert '<table class="metrics stress stack">' in html and "<strong>spread+0.01</strong>" in html and "<strong>spread+0.02</strong>" in html and "<strong>fee x1.5</strong>" in html
+    assert '<span class="k">bets</span> 96' in html and '<span class="k">ROI</span> +2.5%' in html and '<span class="k">gain</span> 0.0020' in html
+    assert "10 perturbations (every numeric parameter scaled by 0.9 to 1.1): shrunk ROI median +1.90%, 10th percentile +0.40%; log-loss gain median 0.0018, 10th percentile 0.0007." in html
+    assert '<table class="metrics regimes stack">' in html
+    for label in ("favourite", "underdog", "home", "away", "divisional", "non-divisional", "primetime", "day", "cold or windy", "other weather"):
+        assert f"<strong>{label}</strong>" in html, label
+    assert html.index("<strong>favourite</strong>") < html.index("<strong>underdog</strong>") < html.index("<strong>home</strong>")
+    assert "<h3>validation per season</h3>" in html and ">2022<" in html and "Stress seed 9; bootstrap B = 1000, 10 000 sign flips." in html
+    assert html.index('id="robustness"') < html.index("<h2>backtest"), "the validation era leads"
+    tables = re.findall(r"<table class=\"([^\"]+)\"", html)
+    assert all("stack" in t for t in tables if "calibration" not in t), tables
+    assert chr(0x2014) not in html
+    # No flags, market not beaten: the honest sentence and a "no flags" chip.
+    plain = insert_model(conn, params={"k": 21.0}, validation=validation_metrics(market_p=0.4), stress=stress_metrics())
+    html = client.get(f"/models/{plain['id']}").text
+    assert '<span class="chip chip-ok">no flags</span>' in html and "Does not beat the market on log-loss" in html and "chip-beats" not in html
+    # A validate job renders its result the same way, and the kind is listed with the model.
+    w = make_worker("box1", role="backtest")
+    job = client.post("/api/jobs", json={"kind": "validate", "params": {"model_id": str(model["id"])}, "target": w.id}).json()
+    conn.execute("UPDATE jobs SET status = 'succeeded', result = %s, checkpoint = %s WHERE id = %s",
+                 (__import__("psycopg").types.json.Jsonb({"validation_metrics": validation, "stress_metrics": stress}), __import__("psycopg").types.json.Jsonb({"stage": "regimes"}), job["id"]))
+    html = client.get(f"/jobs/{job['id']}").text
+    assert '<section class="robustness" id="robustness">' in html and "<strong>spread+0.02</strong>" in html and "stage regimes" in html
+    assert f'href="/models/{model["id"]}"' in html and "raw result" in html
+
+
+def test_leaderboard_shows_the_paper_clv_interval(client, conn):
+    model = insert_validated_model(conn, status="paper_ok", params={"k": 22.0})
+    for i, clv in enumerate((0.03, 0.02, 0.04, 0.03)):
+        insert_game(conn, f"2026_0{i + 1}_C_D", kickoff_in_s=-(i + 1) * 86400)
+        insert_paper_bet(conn, model, f"2026_0{i + 1}_C_D", clv, pnl_cents=50)
+        _score(conn, model, f"2026_0{i + 1}_C_D", 1, 50, 1000, clv)
+    from host import eligibility
+
+    eligibility.recompute_paper(conn, model["lineage_id"])
+    row = client.get("/api/models").json()["ranked"][0]
+    assert row["paper_ci"]["n_bets"] == 4 and row["paper_ci"]["ci"][0] > 0 and row["paper_ci"]["avg_clv"] == pytest.approx(0.03)
+    html = client.get("/models").text
+    assert re.search(r'<span class="range paper-ci">0\.0\d\d to 0\.0\d\d</span>', html), "the 90% CLV range next to the paper record"
+    detail = client.get(f"/models/{model['id']}").text
+    assert re.search(r'<span class="paper-ci">CLV 90% range 0\.0\d\d to 0\.0\d\d over 4 bets</span>', detail)
+
+
+def test_settings_step6_groups_round_trip(client, conn):
+    """The thresholds group with the gate fields and the seasons group with the
+    validation era and the search pool; an overlapping era is an inline error."""
+    html = client.get("/settings").text
+    form = html.split('id="thresholds"')[1].split("</form>")[0]
+    assert 'name="min_bets" value="50"' in form and 'name="min_roi_ci_low" value="0.0"' in form and 'name="max_market_p" value="0.1"' in form
+    assert 'name="require_validation" value="true" checked>' in form and 'name="forbid_overfit" value="true" checked>' in form
+    assert 'name="forbid_fragile" value="true" checked>' in form and 'name="forbid_regime_dependent" value="true">' in form
+    assert "judged on the validation era" in form and "the bootstrap lower bound" in form and "0.05 = beats the market" in form
+    seasons = html.split('id="seasons"')[1].split("</form>")[0]
+    assert 'name="seasons_first" value="2010"' in seasons and 'name="seasons_last" value="2021"' in seasons
+    assert 'name="validation_first" value="2022"' in seasons and 'name="validation_last" value=""' in seasons and 'name="search_workers" value="auto"' in seasons
+    assert "blank = the season before the validation era" in seasons and "auto = cores minus one" in seasons
+    model = insert_validated_model(conn, validation=validation_metrics(n_bets=60, roi=0.03, ci_roi=(-0.01, 0.07), market_p=0.08), stress=stress_metrics(flags=["regime_dependent"]))
+    assert model_row(conn, model["id"])["status"] == "candidate"
+    good = {"min_bets": "60", "min_roi": "0.02", "max_drawdown": "0.3", "min_roi_ci_low": "-0.01", "max_market_p": "0.08", "require_validation": "true", "forbid_overfit": "true", "forbid_fragile": "true"}
+    r = client.post("/settings/thresholds", data=good, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "thresholds settings saved"
+    s = client.get("/api/settings").json()["thresholds_backtest"]
+    assert s == {"min_bets": 60, "min_roi": 0.02, "max_drawdown": 0.3, "require_validation": True, "min_roi_ci_low": -0.01, "max_market_p": 0.08, "forbid_flags": ["overfit", "fragile"]}
+    assert model_row(conn, model["id"])["status"] == "paper_ok", "saving recomputes every lineage on the new rules"
+    r = client.post("/settings/thresholds", data={**good, "forbid_regime_dependent": "true"}, follow_redirects=False)
+    assert r.status_code == 303 and model_row(conn, model["id"])["status"] == "candidate"
+    for bad, message in [
+        ({**good, "min_roi_ci_low": "2"}, "min_roi_ci_low must be between -1 and 1"),
+        ({**good, "max_market_p": "x"}, "Max market p must be a number"),
+        ({**good, "min_bets": "1.5"}, "Min bets must be a whole number"),
+    ]:
+        r = client.post("/settings/thresholds", data=bad, follow_redirects=False)
+        assert r.status_code == 400 and message in r.text, (bad, message)
+    r = client.post("/settings/thresholds", data={k: v for k, v in good.items() if k not in ("require_validation", "forbid_overfit", "forbid_fragile")}, follow_redirects=False)
+    assert r.status_code == 303
+    s = client.get("/api/settings").json()["thresholds_backtest"]
+    assert s["require_validation"] is False and s["forbid_flags"] == [], "unticked boxes store false and an empty list"
+    assert 'name="require_validation" value="true">' in client.get("/settings").text
+    # Seasons: the validation era must start after the search era; a blank search last season is allowed.
+    r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "2022", "validation_first": "2022", "validation_last": "", "search_workers": "4"}, follow_redirects=False)
+    assert r.status_code == 400 and "validation_seasons must start after the search era ends (2022)" in r.text
+    assert 'name="search_workers" value="4"' in r.text, "submitted values are kept"
+    r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "", "validation_first": "2023", "validation_last": "2025", "search_workers": "4"}, follow_redirects=False)
+    assert r.status_code == 303 and flash_cookie(r) == "seasons settings saved"
+    s = client.get("/api/settings").json()
+    assert s["backtest_seasons"] == [2012, None] and s["validation_seasons"] == [2023, 2025] and s["search_workers"] == 4
+    r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "", "validation_first": "2023", "validation_last": "", "search_workers": "lots"}, follow_redirects=False)
+    assert r.status_code == 400 and "Search workers must be auto or a whole number" in r.text
+    r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "", "validation_first": "2023", "validation_last": "", "search_workers": "0"}, follow_redirects=False)
+    assert r.status_code == 400 and 'search_workers must be "auto" or an integer between 1 and 64' in r.text.replace("&#34;", '"')
+    r = client.post("/settings/seasons", data={"seasons_first": "2012", "seasons_last": "", "validation_first": "2023", "validation_last": "", "search_workers": ""}, follow_redirects=False)
+    assert r.status_code == 303 and client.get("/api/settings").json()["search_workers"] == "auto", "blank means auto"
+    ingest_fixture(conn)
+    assert client.get("/jobs").text.count("held-out validation era (2023-2025)") == 1

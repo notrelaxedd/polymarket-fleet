@@ -232,3 +232,48 @@ def test_pnl_and_audit_routes(client, make_worker):
     assert set(rows[1]) >= {"id", "ts", "actor", "action", "entity", "before", "after", "confirmation_text"}
     assert len(client.get("/api/audit", params={"limit": 1}).json()) == 1
     assert client.get("/api/audit", params={"limit": 0}).status_code == 400
+
+
+def test_step6_settings_defaults_and_validators(client, conn):
+    """The migration seeds the robustness keys; the eras, the search pool and the new
+    gate fields are checked with no coercion, and the validation era must start after
+    the search era."""
+    s = client.get("/api/settings").json()
+    assert s["validation_seasons"] == [2022, None] and s["search_workers"] == "auto" and s["backtest_seasons"] == [2010, 2021]
+    assert s["thresholds_backtest"] == {"min_bets": 50, "min_roi": 0.02, "max_drawdown": 0.3, "require_validation": True,
+                                        "min_roi_ci_low": 0.0, "max_market_p": 0.1, "forbid_flags": ["overfit", "fragile"]}
+    assert s["thresholds_paper"] == {"min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1, "clv_ci_excludes_zero": True}
+    base = s["thresholds_backtest"]
+    bad = [
+        {"validation_seasons": [2022]}, {"validation_seasons": [2025, 2022]}, {"validation_seasons": ["2022", None]},
+        {"validation_seasons": [1990, None]}, {"validation_seasons": [2021, None]}, {"validation_seasons": [2010, 2020]},
+        {"backtest_seasons": [2010, 2022]}, {"backtest_seasons": [2010, 2021], "validation_seasons": [2021, None]},
+        {"search_workers": 0}, {"search_workers": 65}, {"search_workers": "many"}, {"search_workers": 2.5}, {"search_workers": True},
+        {"thresholds_backtest": {**base, "min_roi_ci_low": 2}}, {"thresholds_backtest": {**base, "max_market_p": 1.5}},
+        {"thresholds_backtest": {**base, "max_market_p": -0.1}}, {"thresholds_backtest": {**base, "require_validation": "yes"}},
+        {"thresholds_backtest": {**base, "forbid_flags": ["nope"]}}, {"thresholds_backtest": {**base, "forbid_flags": "overfit"}},
+        {"thresholds_backtest": {**base, "forbid_flags": ["overfit", "overfit"]}}, {"thresholds_backtest": {**base, "extra": 1}},
+        {"thresholds_backtest": {"min_bets": 50}},
+        {"thresholds_paper": {"min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1, "clv_ci_excludes_zero": 1}},
+    ]
+    for body in bad:
+        r = client.post("/api/settings", json=body)
+        assert r.status_code == 400, (body, r.text)
+        assert next(iter(body)) in r.json()["detail"] or "validation_seasons" in r.json()["detail"], (body, r.text)
+    assert client.get("/api/settings").json() == s, "nothing changed"
+    r = client.post("/api/settings", json={"backtest_seasons": [2010, 2022]})
+    assert "validation_seasons must start after the search era ends (2022)" in r.json()["detail"]
+    good = {
+        "backtest_seasons": [2012, None], "validation_seasons": [2023, 2025], "search_workers": 3,
+        "thresholds_backtest": {**base, "min_roi_ci_low": -0.01, "max_market_p": 0.05, "forbid_flags": ["overfit", "fragile", "regime_dependent"], "require_validation": False},
+        "thresholds_paper": {"min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1, "clv_ci_excludes_zero": False},
+    }
+    r = client.post("/api/settings", json=good)
+    assert r.status_code == 200, r.text
+    assert client.get("/api/settings").json()["search_workers"] == 3
+    assert client.post("/api/settings", json={"backtest_seasons": [2012, 2022], "validation_seasons": [2023, None]}).status_code == 200
+    assert client.post("/api/settings", json={"search_workers": "auto"}).status_code == 200
+    assert client.post("/api/settings", json={"thresholds_backtest": {"min_bets": 50, "min_roi": 0.02, "max_drawdown": 0.3}}).status_code == 200, "legacy shape"
+    assert client.post("/api/settings", json={"thresholds_paper": {"min_games": 10, "min_bets": 40, "min_days": 21, "min_clv": 0.0, "min_pnl_cents": 1}}).status_code == 200
+    audited = [a["entity"] for a in conn.execute("SELECT entity FROM audit_log WHERE action = 'settings_changed' ORDER BY id").fetchall()]
+    assert audited[:5] == ["backtest_seasons", "validation_seasons", "search_workers", "thresholds_backtest", "thresholds_paper"]

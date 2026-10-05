@@ -282,6 +282,21 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
 .auto-kill strong { text-decoration: underline; }
 .killed-text .auto-reason { text-decoration: underline; }
 
+/* step 6: robustness chips, the 90% ranges and the robustness section */
+.chip.chip-flag { background: var(--amber-fill); color: #fff; }
+.chip.chip-overfit { background: var(--red); color: var(--red-text); }
+.chip.chip-unvalidated { background: var(--badge); color: var(--chip-text); border: 1px dashed var(--muted); }
+.chip.chip-beats { background: var(--green-fill); color: #fff; }
+.range { color: var(--muted); font-size: 0.8rem; white-space: nowrap; }
+.flags-line { margin: 0.25rem 0; }
+.flags-line .chip { margin-right: 0.3rem; }
+.flag-meanings { margin: 0 0 0.75rem; padding-left: 1.2rem; }
+.robustness h3 { font-size: 0.9rem; margin: 0.75rem 0 0.4rem; color: var(--muted); }
+.market-line { font-weight: 600; }
+.market-line.beats { color: var(--green-fill); }
+.validate-form { display: inline; }
+.validate-form .btn { min-height: 36px; }
+
 @media (max-width: 700px) {
   .banner { font-size: 0.85rem; }
   /* step 5: the phrase input takes the full width and the live buttons are full-width tap targets */
@@ -299,4 +314,8 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
   table.markets td.lead { display: block; padding-right: 0; }
   table.markets td.lead .small { word-break: break-all; }
   label.check { min-height: var(--tap); }
+  /* step 6: the 90% range wraps under its ROI, the Validate button is a full-width tap target */
+  table.models td.c-vroi .range { white-space: normal; }
+  .validate-form { display: block; flex: 1; }
+  .validate-form .btn { width: 100%; min-height: var(--tap); }
 }

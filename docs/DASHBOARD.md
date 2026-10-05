@@ -1,4 +1,4 @@
-# Dashboard spec (step 2; step 3, step 4 and step 5 additions marked)
+# Dashboard spec (step 2; step 3, step 4, step 5 and step 6 additions marked)
 
 Very simple and clean. Phone first. No framework, no build step, no external assets
 (the dashboard is tailnet-only and phones may be offline from the public internet).
@@ -83,7 +83,9 @@ a Debian box."
   button: Backtest (model select with a "(none: use family + params)" option, family
   select, params JSON textarea, first and last season), Model search (family, candidates,
   seed, first and last season, keep top), Train (model select, through season and week;
-  the button is disabled until a model exists). (changed: review) Only one card is open:
+  the button is disabled until a model exists), (step 6) Validate (model select, seed;
+  a line names the validation era it will run; disabled until a model exists;
+  `?validate_model=<id>` preselects the model and opens the card). (changed: review) Only one card is open:
   the backtest card by default, the train card behind `?train_model`, the card whose form
   was just rejected; the others fold to their heading so the job list sits near the top
   on a phone. The sleep test form is the same kind of card under them. Model select
@@ -96,7 +98,7 @@ a Debian box."
 - Table (newest first, 50 rows): created, kind, status badge (queued / leased / cancel
   requested / succeeded / failed / cancelled, colours muted), worker, progress, Cancel
   button for queued and leased. "waiting for an idle worker" badge on untargeted queued jobs.
-- `/jobs/{id}`: params, status, worker, progress, checkpoint (a one-line digest such as "candidate 12, season index 3; 12 evaluated", the raw JSON behind a collapsed "raw checkpoint" element: a search checkpoint carries the whole top list), result or
+- `/jobs/{id}`: params, status, worker, progress, checkpoint (a one-line digest such as "candidate 12, season index 3; 12 evaluated", (step 6) "stage regimes" for a validate job, the raw JSON behind a collapsed "raw checkpoint" element: a search checkpoint carries the whole top list), result or
   error, events timeline (ts, event, worker, detail). (changed: step 3) A `params.model_id`
   links to the model; a backtest result renders its whole-run metrics as labelled pairs
   (games, bets, ROI, hit rate, avg edge, P&L, log-loss vs market, max drawdown with one
@@ -105,44 +107,70 @@ a Debian box."
   the top list as a stacked table (candidate params, shrunk ROI as a signed percent, ROI,
   bets, log-loss, market, drawdown, the created model link); any `created_models` are
   shown as buttons linking to `/models/{id}` ("(existing)" when the row was already
-  there); the raw JSON sits in a collapsed "raw result" element.
+  there); (step 6) a validate result renders the same Robustness section as the model
+  page; the raw JSON sits in a collapsed "raw result" element. The job list names the
+  model of a validate job next to the kind.
 
-## Models page `/models` (step 3)
+## Models page `/models` (step 3; changed: step 6)
 One row per lineage from `GET /api/models`, ranked list first (`#1`, `#2`, ...), then an
-"Unranked" section (fewer than 50 bets, no backtest yet, or retired). Each row: status
-badge (`candidate` grey, `paper_ok` green, `live_eligible` blue, `retired` muted), family
-in bold with the short params ("K 24 · HFA 55 · MOV on"), a "N rows" chip when the
-lineage has children, ROI (signed percent, "-" without bets), bets, log-loss "vs" the
-market's, max drawdown (one decimal, "-" when null), seasons span, (changed: step 4) a paper
-column "5 g · 30 bets · $27.95 · ROI +6.2% · CLV 0.013" pooled from `model_scores` ("-"
-without paper games), the summary text with
-an "Edit summary" `<details>` holding a textarea (maxlength 600) and Save, a Train
-button (links to the jobs page with the train form prefilled) and an Assign button
-(links to `/trading?model=<id>#assign`, which opens the create form with the model
-selected; hidden on a retired lineage). (changed: step 4) Ranking follows
-docs/TRADING.md: a lineage with at least 5 paper games and 30 paper bets ranks on shrunk
-CLV (`avg_clv * bets / (bets + 25)`, ties by paper ROI) ahead of the backtest-ranked
-ones and wears a green "paper" chip next to its rank; the rest keep the step 3 order. When no lineage is ranked
-the page says so in one line instead of drawing an empty table: "No lineage has 50
-backtest bets yet, so none is ranked." above the unranked list, or "No models yet. Send
-a model search from the Jobs page." when there are none. On a phone the
-row stacks: the name line first, the metrics as labelled pairs, the summary on its own
-line and the two buttons side by side at 44 px. The page ends with the nflverse
-attribution line (CC BY 4.0, links to nflverse-data and the licence).
+"Unranked" section (not validated, or retired). Each row: status badge (`candidate`
+grey, `paper_ok` green, `live_eligible` blue, `retired` muted), family in bold with the
+short params ("K 24 · HFA 55 · MOV on"), (step 6) a dashed "not validated" chip when the
+lineage has no validation-era metrics and one amber chip per flag (`overfit` red,
+`fragile`, `regime-dependent`; the title holds the one-line meaning), a "N rows" chip when
+the lineage has children, (step 6) the validation ROI (signed percent, "-" without bets)
+with its 90% range muted beside it ("-1.2% to +9.4%", the bootstrap 5th and 95th
+percentiles), "beats market" as a green "yes" chip or "no" with "p 0.012" (the sign-flip
+p; yes below 0.05), the validation bets with the search bets muted ("130, search 400"),
+the search ROI, the validation log-loss "vs" the market's (the search era's when not
+validated), max drawdown (one decimal, "-" when null), (changed: step 4) a paper column
+"5 g · 30 bets · $27.95 · ROI +6.2% · CLV 0.013" pooled from `model_scores` ("-" without
+paper games) followed (step 6) by the cached paper CLV 90% range when one exists, the
+summary text with an "Edit summary" `<details>` holding a textarea (maxlength 600) and
+Save, a Train button (links to the jobs page with the train form prefilled), (step 6) a
+Validate button (links to the jobs page with the validate form prefilled; hidden on a
+retired lineage) and an Assign button (links to `/trading?model=<id>#assign`, which
+opens the create form with the model selected; hidden on a retired lineage). (changed:
+step 4) Ranking follows docs/TRADING.md: a lineage with at least 5 paper games and 30
+paper bets ranks on shrunk CLV (`avg_clv * bets / (bets + 25)`, ties by paper ROI) ahead
+of the others and wears a green "paper" chip next to its rank; (changed: step 6) the
+rest rank on the validation era, shrunk ROI then the log-loss gain over the market, and
+a lineage without validation metrics is unranked ("not validated"). When no lineage is
+ranked the page says so in one line instead of drawing an empty table: "No lineage is
+validated yet, so none is ranked." above the unranked list, or "No models yet. Send a
+model search from the Jobs page." when there are none. On a phone the row stacks: the
+name line first, the metrics as labelled pairs (the 90% range wraps under its ROI), the
+summary on its own line and the three buttons side by side at 44 px. The page ends with
+the nflverse attribution line (CC BY 4.0, links to nflverse-data and the licence).
 
-`/models/{id}`: family, short params and status badge in the heading; id, lineage (root
-chip), parent link, trained-through point, created time with the creating job link,
-shrunk ROI (signed percent), (step 4) the paper record line (games, bets, P&L, ROI, CLV,
-the shrunk CLV and "ranked on paper" when it is, or "no paper games yet"); Train / Assign
-(the same link as the list) / "Retire lineage" (a form with a
-JavaScript confirm, hidden once retired); the summary with its edit form folded into an
-"Edit summary" `<details>` like the list; params as JSON; the backtest metrics as
+`/models/{id}`: family, short params, status badge and (step 6) the "not validated" or
+flag chips in the heading; id, lineage (root chip), parent link, trained-through point,
+created time with the creating job link, (step 6) the validation shrunk ROI (the rank
+key, "not validated" when none) and the search shrunk ROI (the selection score), (step
+4) the paper record line (games, bets, P&L, ROI, CLV, the shrunk CLV and "ranked on
+paper" when it is, (step 6) the paper CLV 90% range over N bets when cached, or "no paper
+games yet"); Train / (step 6) Validate (a one-tap form that sends a validate job for this
+model to any idle worker, seed 1; hidden once retired) / Assign (the same link as the
+list) / "Retire lineage" (a form with a JavaScript confirm, hidden once retired); the
+summary with its edit form folded into an "Edit summary" `<details>` like the list;
+params as JSON; (step 6) the "Robustness" section (`#robustness`), before the search-era
+backtest: the flag chips (or a green "no flags" chip) and a "beats market" chip, one
+line per flag with its meaning, the CI line ("Validation ROI +4.1% (90% range -1.2% to
++9.4%) over 130 bets, shrunk +2.32%" then hit rate, average edge, max drawdown and CLV
+each with its range), the market test sentence ("Beats the market on log-loss: mean
+gain +0.0021 per game, p = 0.012 ..." or "Does not beat ..."), labelled pairs with the
+log-loss vs market, calibration slope and intercept, brier and its reliability,
+resolution and uncertainty, the price stress table (base, spread+0.01, spread+0.02, fee
+x1.5: bets, ROI, log-loss, log-loss gain), the neighbourhood summary sentence (median and
+10th percentile of shrunk ROI and log-loss gain over the 10 perturbations), the regime
+table in its five pairs (games, bets, ROI, P&L, log-loss gain), the validation
+per-season table and the stress seed line; "Not validated yet ..." with the Validate
+button when there are no validation numbers; then the search-era backtest metrics as
 labelled pairs (games, bets, ROI, hit rate, average edge, P&L, log-loss vs market, brier,
 max drawdown with its cents, seasons), the stacked per-season table and the calibration
-table (ten `p`
-buckets: games, mean p, mean outcome); the lineage members (id, trained through, status,
-created, job) and the related jobs (created, kind, status, "created this model" or "ran
-against it").
+table (ten `p` buckets: games, mean p, mean outcome); the lineage members (id, trained
+through, status, created, job) and the related jobs (created, kind, status, "created
+this model" or "ran against it").
 
 ## Settings page `/settings`
 Groups, each its own form with a Save button and inline validation errors. Every field is
@@ -156,8 +184,13 @@ validation keep working:
   Checked together: lease >= 2 x heartbeat + 5 and online-after > heartbeat.
 - Time zone (IANA name).
 - (changed: step 3) Fee model (taker fee rate, half spread), Backtest thresholds (min bets,
-  min ROI, max drawdown; saving recomputes every lineage's status), Backtest seasons
-  (first season, last season blank = last complete), nflverse games (refresh hours, the
+  min ROI, max drawdown; (step 6) min ROI 5th percentile, max market p, and the
+  checkboxes "Require validation", "Forbid overfit", "Forbid fragile", "Forbid
+  regime-dependent", each with a one-line hint of what it means; saving recomputes every
+  lineage's status), (changed: step 6) Seasons and search (search first and last season,
+  blank last = the season before the validation era; validation first and last season,
+  blank last = last complete; search workers, "auto" = cores minus one or 1..64; an
+  overlapping era is an inline error), nflverse games (refresh hours, the
   games.csv URL, the row count and last complete season in the heading, a line with the
   last refresh outcome of this host process: time and counts including skipped records,
   or "Last refresh failed <time>: <error>" in red, and a "Refresh now" button that
@@ -172,8 +205,8 @@ validation keep working:
   lookahead days, snapshot cadence active and idle, snapshot retention days, the scores
   URL, and `market_source_config` as a JSON textarea (must parse to an object). Paper
   thresholds (`thresholds_paper`): min games, min bets, min days, min avg CLV, min P&L in
-  dollars; saving them recomputes the paper eligibility of every lineage with paper
-  scores. Rate limits: the four per-second numbers. Errors re-render inline like the
+  dollars, (step 6) a "CLV interval above zero" checkbox; saving them recomputes the paper
+  eligibility of every lineage with paper scores. Rate limits: the four per-second numbers. Errors re-render inline like the
   other groups.
 - Enroll: "New enroll token" button; the response page shows the token once with the two
   install one-liners (argument form and `FLEET_ENROLL_TOKEN` form) and a Copy button.
@@ -275,3 +308,13 @@ settings, trading and fleet with live on (`seed_step5.py`: the Live trading grou
 live assignment with its exchange order, a resting smoke order, the LIVE pill), then
 fleet, settings and trading after an auto-kill (the bar naming the reason), at 390 and
 1280 px in light and dark, with the phone layout checks on every capture.
+
+## Step 6 screenshots
+
+`tests/hw/seed_step6.py` adds, right after the step 3 rows, validation-era metrics and
+stress tables on the search lineages (two ranked, one flagged overfit and fragile, one
+left "not validated"), a finished validate job and the cached paper CLV interval of
+the lineage that paper trades; `tests/hw/screenshots.py` captures the models page (the
+validation columns, the chips), the model detail (the Robustness section), the flagged
+model and the validate job page at 390 and 1280 px in light and dark, with the phone
+layout checks on every capture.

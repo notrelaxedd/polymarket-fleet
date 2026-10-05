@@ -1072,7 +1072,8 @@ def test_create_models_are_posted_in_order_before_complete(host: FakeHost, enrol
     assert [c["body"]["params"]["k"] for c in calls] == [20.0, 30.0], "posted in result order"
     for call in calls:
         assert call["body"]["job_id"] == job["id"]
-        assert set(call["body"]) == {"job_id", "family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through"}
+        assert set(call["body"]) == {"job_id", "family", "params", "artifact", "backtest_metrics", "summary", "parent_model_id", "trained_through",
+                                     "validation_metrics", "stress_metrics"}
         assert call["body"]["parent_model_id"] is None
     result = job["result"]
     assert "create_models" not in result
@@ -1199,6 +1200,64 @@ def test_pending_post_sequence_round_trips_through_json() -> None:
     assert posts.PendingPost.from_dict(data).index == 2, "a stale index is clamped to the step count"
     plain = posts.complete_post({"id": "j1", "kind": "sleep", "params": {"seconds": 1}}, "tok", {"slept": 1})
     assert plain.steps == [] and plain.to_dict() == {"path": "/api/v1/jobs/j1/complete", "body": {"lease_token": "tok", "result": {"slept": 1}}, "job_id": "j1", "progress": 1.0, "attempts": 0}
+
+
+def test_validate_with_model_id_posts_validation_before_complete(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    """Step 6: a validate job's result goes to POST /api/v1/models/{id}/validation
+    (job_id, validation_metrics, stress_metrics) before /complete; the host stores both."""
+    host.set_games(_games_rows(10))
+    model_id = host.add_model({"family": "elo_blend", "params": {"k": 24.0}, "backtest_metrics": {"n_bets": 300, "roi": 0.05}})
+    validation = {"n_games": 1100, "n_bets": 80, "roi": 0.03, "era": "validation", "ci": {"roi": [-0.01, 0.07]}, "market_p": 0.2, "flags": []}
+    stress = {"prices": [{"name": "spread+0.02", "n_bets": 60, "roi": 0.01, "log_loss": 0.6, "mean_ll_gain": 0.0}], "neighbourhood": {"n": 10}, "regimes": {}, "flags": ["fragile"], "seed": 1}
+    job = _run_batch_job(host, enrolled, "validate", {"model_id": model_id, "seed": 1, "result": {"validation_metrics": validation, "stress_metrics": stress}})
+    assert job["status"] == "succeeded", job["error"]
+    calls = host.model_posts()
+    assert len(calls) == 1 and calls[0]["path"] == f"/api/v1/models/{model_id}/validation"
+    assert set(calls[0]["body"]) == {"job_id", "validation_metrics", "stress_metrics"}
+    assert calls[0]["body"]["job_id"] == job["id"]
+    assert calls[0]["body"]["validation_metrics"] == validation and calls[0]["body"]["stress_metrics"] == stress
+    stored = host.models()[0]
+    assert stored["validation_metrics"] == validation and stored["stress_metrics"] == stress
+    assert stored["backtest_metrics"] == {"n_bets": 300, "roi": 0.05}, "the search-era metrics are untouched"
+    assert _request_index(host, "POST", f"/models/{model_id}/validation", 200) < _request_index(host, "POST", f"/jobs/{job['id']}/complete", 200)
+    assert job["result"]["model"]["id"] == model_id, "the validate runner gets the model in its context"
+    assert job["result"]["games_rows"] == 10 and "created_models" not in job["result"]
+    assert job["result"]["validation_metrics"] == validation
+
+
+def test_validate_refused_by_the_host_fails_the_job(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    model_id = host.add_model({"family": "elo_blend", "params": {"k": 24.0}})
+    job = _run_batch_job(host, enrolled, "validate", {"model_id": model_id, "result": {"validation_metrics": {"n_bets": 1}, "stress_metrics": None}})
+    assert job["status"] == "failed" and f"/api/v1/models/{model_id}/validation refused (400" in job["error"], job["error"]
+    assert host.models()[0]["validation_metrics"] is None
+
+
+def test_search_create_models_carry_validation_fields_through_unchanged(host: FakeHost, enrolled: str, running: AgentThread, test_jobs) -> None:
+    host.set_games(_games_rows(10))
+    validation = {"n_bets": 40, "roi": 0.02, "era": "validation", "flags": ["overfit"]}
+    stress = {"prices": [], "neighbourhood": {"n": 10}, "regimes": {}, "flags": [], "seed": 7}
+    entries = [_candidate(20.0, validation_metrics=validation, stress_metrics=stress), _candidate(30.0, validation_metrics=None, stress_metrics=None)]
+    job = _run_batch_job(host, enrolled, "model_search", {"family": "elo_blend", "n": 2, "seed": 7, "result": {"create_models": entries, "validation_note": "x"}})
+    assert job["status"] == "succeeded", job["error"]
+    calls = host.model_posts()
+    assert [c["body"]["validation_metrics"] for c in calls] == [validation, None]
+    assert [c["body"]["stress_metrics"] for c in calls] == [stress, None]
+    assert [m["validation_metrics"] for m in host.models()] == [validation, None]
+    assert job["result"]["validation_note"] == "x" and len(job["result"]["created_models"]) == 2
+
+
+def test_validate_pending_post_sequence_round_trips_through_json() -> None:
+    job = {"id": "v9", "kind": "validate", "params": {"model_id": "m1", "seed": 2}}
+    result = {"validation_metrics": {"n_bets": 1, "era": "validation"}, "stress_metrics": {"flags": [], "seed": 2}}
+    post = posts.complete_post(job, "tok", result)
+    assert [s["kind"] for s in post.steps] == ["validation"]
+    assert post.steps[0]["path"] == "/api/v1/models/m1/validation"
+    assert post.steps[0]["body"] == {"job_id": "v9", "validation_metrics": result["validation_metrics"], "stress_metrics": result["stress_metrics"]}
+    assert post.body == {"lease_token": "tok", "result": result}
+    assert posts.PendingPost.from_dict(json.loads(json.dumps(post.to_dict()))) == post
+    assert posts.complete_post({"id": "v1", "kind": "validate", "params": {}}, "tok", result).steps == [], "no model_id, nothing to post"
+    assert posts.complete_post({"id": "b1", "kind": "backtest", "params": {"model_id": "m1"}}, "tok", result).steps[0]["kind"] == "backtest"
 
 
 # ------------------------------------------------- step 4: trade role

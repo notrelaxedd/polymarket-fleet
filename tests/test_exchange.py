@@ -21,7 +21,7 @@ from host.exchange.adapters.sim import SimSource
 from host.exchange.main import ExchangeLoop, run_once
 from host.exchange.paper import fee_per_contract
 from host.trading import ledger, orders
-from tests.conftest import backtest_metrics, insert_model
+from tests.conftest import backtest_metrics, insert_model, stress_metrics, validation_metrics
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
 # Two days out at 13:00 Eastern, so the mapping tests' +1 h / +2 h starts stay on the
@@ -51,7 +51,11 @@ def make_game(
 
 
 def make_model(conn: psycopg.Connection, status: str = "paper_ok", **kw: Any) -> dict[str, Any]:
+    """A root that clears the backtest gate on both eras (docs/ROBUSTNESS.md A4), so
+    the paper gate alone decides what the trading tests look at."""
     kw.setdefault("params", {"k": 24.0, "hfa": 55.0, "mov_scale": 1, "seed": uuid.uuid4().hex[:6]})
+    kw.setdefault("validation", validation_metrics())
+    kw.setdefault("stress", stress_metrics())
     return insert_model(conn, metrics=backtest_metrics(), status=status, **kw)
 
 

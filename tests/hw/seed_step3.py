@@ -18,8 +18,9 @@ from fleet.worker.jobs import DEFAULT_LIMITS
 from host import nflverse
 from tests.conftest import FIXTURE_GAMES, insert_job, insert_model
 
-SEARCH = {"family": "elo_blend", "n": 6, "seed": 7, "seasons": [2019, 2025], "top_k": 5}
-LIMITS = dict(DEFAULT_LIMITS, backtest_seasons=[2010, 2025])
+SEARCH = {"family": "elo_blend", "n": 6, "seed": 7, "seasons": [2019, 2021], "top_k": 5}
+# The search era ends before the step 6 validation era (2022 on); the host copies both in.
+LIMITS = dict(DEFAULT_LIMITS, backtest_seasons=[2010, 2021], validation_seasons=[2022, 2025], workers="auto")
 
 
 def _noop(_checkpoint: dict[str, Any], _progress: float) -> None:

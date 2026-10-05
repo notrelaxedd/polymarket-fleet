@@ -281,6 +281,39 @@ Model-driven live orders only begin when a lineage is `live_eligible`. That requ
 - A Windows host that sleeps, updates or reboots is an outage. Turn sleep off (Settings, System, Power) and set active hours so updates do not restart it mid-game.
 - Account terms (server-side API trading, geofencing, device binding) are unconfirmed. Check the Polymarket US terms before relying on this.
 
+## Reading a model
+
+**Search era and validation era.** A model search tries many parameter settings and keeps the best by their results on the search era (the Settings key `backtest_seasons`, for example 2010 to 2021). The kept models are then run once on the validation era (`validation_seasons`, for example 2022 to the last complete season), seasons the search never looked at. The split matters because the best of many tries looks good partly by luck; the search-era number is the winner's curse, while the validation number is an honest second test. Selection never sees validation results. Trust the validation columns, and treat the search columns as context.
+
+**The 90% range on ROI.** ROI comes from a limited number of bets, so it is noisy. The range is the 5th to 95th percentile of ROI over 1000 resamples of the bets (seeded, so it is the same every time). If the range includes zero, the data cannot tell the model from a coin flip with fees, and a positive average ROI is not evidence of anything. Only a range whose low end is above zero counts, and even then only for the era it was measured on.
+
+**Beats market p.** For every game the model's log-loss is compared with the market's. Beats market p is the chance of seeing a gain at least this large if the model had no real advantage over the market (a sign-flip permutation test, 10 000 flips). Below 0.05 is the bar for "beats the market". A model near 0.5 matches the market; that is the usual and acceptable outcome.
+
+**Flags.**
+- `overfit`: the search-era ROI is clearly better than the validation ROI (by more than 3 points of shrunk ROI), or the search era beat the market and the validation era did not. The search found noise.
+- `fragile`: the result falls apart under small changes: a wider spread (+0.02 half-spread) removes half the bets or turns a profit into a loss, or nudging the parameters by up to 10% makes the typical shrunk ROI negative.
+- `regime_dependent`: more than 80% of the profit comes from one slice (favourites, home teams, primetime, cold or windy games and so on) and the model loses elsewhere.
+
+A flagged model should be retired, or the search rerun with another seed or a wider space. Do not tune it until the flag goes away on the same validation data; that spends the validation era and brings the overfit back.
+
+**Price stress and neighbourhood.** The price stress table reruns the validation era with a worse market (half-spread +0.01 and +0.02, taker fee x1.5) and shows how many bets and how much ROI survive; a real edge shrinks gently, a fake one vanishes. The neighbourhood numbers rerun ten slightly perturbed copies of the parameters and report the median and the 10th percentile of shrunk ROI and log-loss gain. A trustworthy model has a median near its base result and a 10th percentile that is not much worse. The regime table shows where the profit comes from.
+
+**How the gates use this.** A lineage becomes `paper_ok` only with validation numbers (`require_validation`): enough validation bets, an ROI range whose low end clears `min_roi_ci_low`, a market p at or below `max_market_p`, and none of the forbidden flags (`overfit`, `fragile` by default). It becomes `live_eligible` only after that and with paper trading whose closing line value (CLV) range excludes zero (5th percentile above 0 over the minimum number of bets), plus the paper thresholds from step 4. Eligibility is recomputed after every validation and settlement, and a lineage that stops qualifying drops a step. The leaderboard ranks by validation numbers; models never validated are listed unranked as "not validated". Full spec: `docs/ROBUSTNESS.md`.
+
+**What a closing-line backtest can and cannot say.** Backtests here bet against sportsbook closing lines, the sharpest and most efficient prices there are, so they measure calibration and discipline rather than true edge. A model that really beats the market on them is rare, and a significant result deserves suspicion before celebration. A model that merely matches the market (market p well above 0.05, ROI range spanning zero, no flags) is a fine candidate for paper trading, where Polymarket prices may differ from the closing line and where CLV measures what a backtest cannot.
+
+## How to test step 6A
+
+Needs the stack and at least one idle worker as in step 3, with games ingested.
+
+1. Open Settings. It shows the search seasons (`backtest_seasons`), the validation seasons (`validation_seasons`, the end may be empty for the last complete season) and `search_workers` (`auto` or a number). The two season ranges must not overlap and validation must come after search.
+2. Start a model search from the Jobs page. When it finishes, open Models: the new candidates now have validation columns (ROI with its range, market p, flags) next to the search-era ones.
+3. Find an older model with no validation numbers (it shows "not validated") and press Validate. A `validate` job runs; when it finishes the row fills in.
+4. Open the model page and read the Robustness section: the ROI range, the market test, the stress table, the neighbourhood summary and the regime table. Flags appear as chips on the leaderboard.
+5. Watch a search on a 4-core box: with `search_workers` at `auto` it uses three processes and finishes about three times faster than with `search_workers` set to 1, with identical results.
+
+Step 6B (snapshot replay backtests, quarterback and injury signals, an EPA model) is still to come.
+
 ## Data
 
 Game schedules, scores and closing lines come from [nflverse](https://github.com/nflverse/nflverse-data) (`games.csv`), licensed CC BY 4.0. Attribution: "Data: nflverse (https://nflverse.com), CC BY 4.0." It is also shown on the Models page.
@@ -304,5 +337,8 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
 3. [x] Step 3: nflverse data, models, backtest / search / train jobs, leaderboard
 4. [x] Step 4: fleet-exchange, paper trading, approval limits, ledger, scoring
 5. [x] Step 5: Polymarket US live adapter, live switch, smoke order
+6. Step 6: robustness (`docs/ROBUSTNESS.md`)
+   - [x] 6A: validation era, confidence intervals, market test, stress tests, stricter gates, multi-core search
+   - [ ] 6B: snapshot replay backtests, richer signals (pending)
 
 Data is free-only for now; paid sources are considered once profit comes in.
