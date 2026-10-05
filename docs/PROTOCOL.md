@@ -774,7 +774,8 @@ has been handed back.
   `GET /api/markets?unmatched=1`, `POST /api/markets/{id}/link` `{"game_id", "side"}`.
   (changed: detail) `status` is one order status or `active`; `&assignment_id=` filters;
   rows carry `market_title`, `side`, `game_id`, `platform`, `worker_name`, `model_id`,
-  `family`; `GET /api/orders/{id}` adds `events` and `fills`. `GET /api/fills?limit=` rows
+  `family` and (step 6C) `in_play` (an untagged order approved under the in-game rules);
+  `GET /api/orders/{id}` adds `events` and `fills`. `GET /api/fills?limit=` rows
   carry the order's `assignment_id`, `worker_id`, `market_id`, `side`, `game_id`. Markets
   carry `snapshot_age_s`; `link` writes audit `market_linked` and answers the market.
   `POST /api/cancel-all` `{"mode": "paper"|"live"|null}` cancels every active order (one

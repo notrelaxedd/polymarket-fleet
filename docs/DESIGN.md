@@ -49,12 +49,12 @@ host/{models,model_owner,model_validation,jobparams,ingame_jobparams,snapshot_st
 host/trading/{assignments,assignments_ingame,ledger,limits,sells,ingame,orders,positions,state,live,views,views_positions,views_ingame}.py
 host/migrations/0001_init.sql .. 0009_ingame.sql
 host/api/{app,deps,workers,jobs,data,data_pbp,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,dashboard_ingame,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
-host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,feedlag}.py   fleet-exchange
+host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,gamestate_rate,feedlag}.py   fleet-exchange
 host/exchange/adapters/{base,sim,polymarket_us,polymarket_us_live,polymarket_clob,live_http,live_parse,live_policy,signing,teams}.py
 host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | ingest-pbp-rows | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
 host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U]
 deploy/{install_worker.sh,fleet-worker.service}
-tests/test_*.py + hw/{roletest.sh,screenshots.py,seed_step*.py}
+tests/test_*.py + hw/{roletest.sh,screenshots.py,layout_checks.py,seed_step*.py}
 tools/workflows/                     the build orchestration scripts
 ```
 

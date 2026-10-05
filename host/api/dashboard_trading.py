@@ -70,7 +70,7 @@ def reason_text(order: dict[str, Any], settings: dict[str, Any]) -> str | None:
         own = order.get("assignment_max_bet_cents")
         if own is not None:
             limit = min(limit, int(own))
-        if order.get("ingame") and settings.get("ingame_max_bet_cents") is not None:
+        if (order.get("ingame") or order.get("in_play")) and settings.get("ingame_max_bet_cents") is not None:
             limit = min(limit, int(settings["ingame_max_bet_cents"]))
         return f"over max bet {web.format_cents(int(order['cost_cents']))} > {web.format_cents(limit)}"
     if code == "participation":

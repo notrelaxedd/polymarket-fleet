@@ -8,8 +8,10 @@ from datetime import timedelta
 from typing import Any
 
 from host import eligibility, model_owner
+from host.api.dashboard_trading import reason_text
 from host.exchange import paper, settle
 from host.exchange.executor import Executor
+from host.settings import get_settings
 from host.trading import assignments_ingame, ledger
 from host.trading.state import trade_state
 from host.trading.views import list_orders
@@ -242,3 +244,15 @@ def test_order_rows_name_the_model_that_placed_them(conn):
     wp = _assignment(conn, s)["ingame_model_id"]
     assert (rows[in_order]["model_id"], rows[in_order]["family"]) == (wp, "ingame_wp")
     assert rows[pre_order]["model_id"] == pre.model["id"] and rows[pre_order]["family"] != "ingame_wp"
+
+
+def test_an_untagged_order_rejected_in_play_names_the_ingame_max_bet(conn):
+    s = ingame_setup(conn)
+    put_state(conn, s.game["game_id"])
+    set_setting(conn, "trade_pregame_only", False)
+    set_setting(conn, "ingame_max_bet_cents", 10)
+    decision = ask(conn, s, size=1, ingame_flag=False)
+    assert decision["reason"] == "max_bet"
+    row = {str(r["id"]): r for r in list_orders(conn)}[decision["order_id"]]
+    assert (row["ingame"], row["in_play"]) == (False, True)
+    assert reason_text(row, get_settings(conn)).endswith("> $0.10"), "the in-game cap it broke, not the pre-game one"
