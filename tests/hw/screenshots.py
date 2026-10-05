@@ -14,7 +14,8 @@ left "not validated", a finished validate job, the paper CLV interval), serves t
 with FLEET_DEV=1 on a free port, and captures
 the fleet (with per-worker P&L), jobs, job detail, settings (with the Trading group),
 models (with the validation columns and flag chips), model detail (with the Robustness
-section), the flagged model, search result, validate result and trading pages at
+section), the flagged model, search result, validate result, the Jobs page with the
+validate form open, and trading pages at
 phone (390x844) and laptop (1280x800) widths in the light and dark colour schemes,
 plus the trading page with the create form open, then (step 5, tests/hw/seed_step5.py)
 the settings, trading and fleet pages with live on (the Live trading group on, a live
@@ -181,6 +182,7 @@ def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
         ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("model-overfit", f"/models/{ids['overfit_model']}"),
         ("job-search", f"/jobs/{ids['search_job']}"), ("job-backtest", f"/jobs/{ids['backtest_job']}"),
         ("job-validate", f"/jobs/{ids['validate_job']}"),
+        ("jobs-validate-form", f"/jobs?validate_model={ids['model']}"),
         ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"),
     ]
 
