@@ -182,8 +182,10 @@ a.row-main:hover .row-title { text-decoration: underline; }
 /* the in-game models row's second grey line is its status reason, a sentence: it wraps, never cut */
 .ingame-row .row-meta2 { white-space: normal; }
 /* the flag chips under the title (overfit, fragile, beats market, ...): they wrap, never cut */
-.row-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s1); margin: 2px 0 1px; }
-.row-title .chip, .row-meta .chip, .row-flags .chip { min-height: 1.25rem; }
+.row-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 1px var(--s1); margin: 1px 0 0; }
+.row-title .chip, .row-meta .chip { min-height: 1.25rem; }
+/* flag chips are read, never tapped: shorter, so two wrapped lines keep a row under 88 px */
+.row-flags .chip { min-height: 1.1rem; }
 .row-value { flex: none; max-width: 40%; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
 /* a number that is a link (a model's "job e12e5e85") is a 44 px target like the row link */
 a.row-value { line-height: var(--tap); }
