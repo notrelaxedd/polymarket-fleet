@@ -6,6 +6,12 @@ two teams and date (through the alias table) and sets the scores, `status final`
 `raw.score_source = "espn"`; the nflverse refresh confirms later. Parsing is
 fixture-driven and defensive: an event without teams, scores or a completed status
 changes nothing.
+
+In the exchange the fetch goes through the game-state feed's ESPN budget
+(host/exchange/gamestate.py `scores_fetch`): one sliding window and one 429/403
+backoff for every ESPN request. A fetch that may not go out now raises Deferred and
+the pass reports `deferred` instead of an error (the exchange asks again a second
+later, after the feed's next pass asked the scoreboard).
 """
 from __future__ import annotations
 
@@ -26,15 +32,22 @@ log = logging.getLogger(__name__)
 
 DEFAULT_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
 WINDOW = timedelta(hours=36)
+MAX_SCORE = 999
+
+
+class Deferred(Exception):
+    """The fetch may not go out now (ESPN backoff or rate window); nothing failed."""
 
 
 def _int(value: Any) -> int | None:
+    """A score: a whole number 0..999, else None (an event without it changes nothing)."""
     if isinstance(value, bool):
         return None
     try:
-        return int(float(value))
-    except (TypeError, ValueError):
+        number = int(float(value))
+    except (TypeError, ValueError, OverflowError):
         return None
+    return number if 0 <= number <= MAX_SCORE else None
 
 
 def _competitor(entry: dict[str, Any]) -> tuple[str | None, int | None]:
@@ -169,12 +182,16 @@ def fetch_scoreboard(url: str, timeout: float = 15.0) -> str:
 
 
 def poll(conn: psycopg.Connection, now: datetime | None = None, fetch: Any = None) -> dict[str, Any]:
-    """Fetch and apply finals when a game with assignments awaits a score."""
+    """Fetch and apply finals when a game with assignments awaits a score; with
+    "deferred" (the reason) when the fetch may not go out now."""
     now = now or utcnow()
     waiting = games_awaiting_scores(conn, now)
     if not waiting:
         return {"waiting": 0, "changed": []}
     url = str(get_setting(conn, "scores_url", DEFAULT_URL) or DEFAULT_URL)
-    text = (fetch or fetch_scoreboard)(url)
+    try:
+        text = (fetch or fetch_scoreboard)(url)
+    except Deferred as exc:
+        return {"waiting": len(waiting), "changed": [], "deferred": str(exc)}
     changed = apply(conn, parse_scoreboard(text))
     return {"waiting": len(waiting), "changed": changed}

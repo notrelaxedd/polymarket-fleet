@@ -295,12 +295,16 @@ def test_settings_inputs_open_the_number_keyboard(client):
     decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction",
                "taker_rate", "half_spread", "min_roi", "max_drawdown", "min_roi_ci_low", "max_market_p", "participation",
                "max_exposure_paper", "max_exposure_live", "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s",
-               "market_data_per_s", "account_per_s")
+               "market_data_per_s", "account_per_s",
+               "ingame_dead_zone", "ingame_min_edge", "ingame_max_bet", "ingame_max_lag_s", "gamestate_poll_s",
+               "gamestate_max_rps")
     numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries",
                "min_bets", "seasons_first", "seasons_last", "validation_first", "validation_last", "nflverse_refresh_hours",
                "book_max_age_s", "gtd_seconds", "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game",
                "market_lookahead_days", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days", "paper_min_games",
-               "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours")
+               "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours",
+               "ingame_tick_s", "ingame_max_state_age_s", "ingame_quiet_seconds", "ingame_cutoff_seconds",
+               "ingame_gtd_seconds", "ingame_lag_min_events", "yahoo_poll_s")
     for name in decimal:
         assert re.search(rf'<input type="text" name="{name}" value="[^"]*" inputmode="decimal"', html), name
     for name in numeric:
