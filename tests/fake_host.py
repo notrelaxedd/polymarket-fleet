@@ -27,8 +27,9 @@ Step 4: the trade role. A trade worker's heartbeat claims up to want_jobs queued
 jobs (none under kill). TradeStore holds assignments (game, model, bankroll, two
 markets with a snapshot each), orders and the trade settings behind
 GET /api/v1/trade/state, POST /api/v1/orders/request (a small approval: duplicate,
-killed, lease, assignment, market, kickoff, bankroll; approved orders are paper and
-open at once with the reservation taken), POST /api/v1/orders/{id}/cancel and
+killed, lease, assignment, market, kickoff (not for "ingame" requests), bankroll;
+approved orders are paper and open at once with the reservation taken, and echo
+"ingame"; an assignment given an "ingame" block serves it in the state), POST /api/v1/orders/{id}/cancel and
 POST /api/v1/trade/release (cancels the orders, requeues the jobs). Controls:
 add_assignment(), set_snapshot()/set_ask(), halt_assignment(), set_kickoff_past(),
 set_trade_settings(); orders() and trade_calls() expose the store and the calls.
@@ -256,10 +257,12 @@ class TradeStore:
                     "max_bet_cents": a["max_bet_cents"], "game": dict(a["game"]), "model": dict(a["model"]), "bankroll": dict(a["bankroll"]),
                     "markets": [{k: v for k, v in self.markets[m].items() if k != "assignment_id"} for m in a["market_ids"].values()],
                     "open_orders": [
-                        {k: o[k] for k in ("id", "market_id", "price", "size", "filled_size", "status", "snapshot_id", "created_at")}
+                        {**{k: o[k] for k in ("id", "market_id", "price", "size", "filled_size", "status", "snapshot_id", "created_at")},
+                         "ingame": bool(o.get("ingame"))}
                         for o in self.orders.values() if o["assignment_id"] == a["id"] and o["status"] in OPEN_ORDER_STATUSES
                     ],
                     "positions": [],
+                    **({"ingame": a["ingame"]} if a.get("ingame") is not None else {}),
                 })
             return {"kill": self.host.kill_switch, "server_time": _iso(time.time()), "settings": dict(self.settings), "assignments": entries}
 
@@ -276,6 +279,7 @@ class TradeStore:
             "price": float(body["price"]), "size": int(body["size"]), "cost_cents": cost, "snapshot_id": body.get("snapshot_id"),
             "status": status, "reject_reason": None, "filled_size": 0, "my_p": body.get("my_p"), "market_p": body.get("market_p"),
             "edge": body.get("edge"), "rationale": body.get("rationale"), "created_at": _iso(time.time()),
+            "ingame": body.get("ingame") is True,
         }
 
     def request(self, w: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
@@ -305,7 +309,8 @@ class TradeStore:
                 return self._reject(w, body, "assignment", cost)
             if market["assignment_id"] != a["id"]:
                 return self._reject(w, body, "market", cost)
-            if self.settings.get("trade_pregame_only") and _parse_iso(a["game"]["kickoff_at"]) <= time.time():
+            if (self.settings.get("trade_pregame_only") and not body.get("ingame")
+                    and _parse_iso(a["game"]["kickoff_at"]) <= time.time()):
                 return self._reject(w, body, "kickoff", cost)
             if cost > a["bankroll"]["available_cents"]:
                 return self._reject(w, body, "bankroll", cost)
@@ -1035,6 +1040,8 @@ class _Handler(BaseHTTPRequestHandler):
     def _send(self, status: int, payload: Any, raw: bytes | None = None, etag: str | None = None,
               content_type: str | None = None) -> None:
         body = b"" if status == 304 else (raw if raw is not None else json.dumps(payload).encode("utf-8"))
+        with self.host.lock:  # logged before the answer leaves, so a test that saw its effect sees the request
+            self.host.requests.append((self.command, self.path, status))
         self.send_response(status)
         if etag is not None:
             self.send_header("ETag", etag)
@@ -1045,8 +1052,6 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if body:
             self.wfile.write(body)
-        with self.host.lock:
-            self.host.requests.append((self.command, self.path, status))
 
     def _drop_connection(self) -> None:
         """Simulate a network failure: no answer at all."""

@@ -1,6 +1,6 @@
 # Design
 
-Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
+Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`, robustness (step 6A and 6B) in `docs/ROBUSTNESS.md`, in-game trading (step 6C) in `docs/INGAME.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
 
 ## Summary
 
@@ -49,7 +49,7 @@ host/api/{app,workers,jobs,trade,dashboard}.py + templates/ + static/style.css  
 host/exchange/{main,adapter,polymarket_us,paper,reconcile}.py                  fleet-exchange
 host/data/{nflverse,espn,nws}.py
 host/cli.py                          enroll-token | send-job | role | workers | jobs | cancel | kill | cancel-all | roletest | audit
-host/exchange/cli.py                 exchange-smoke | cancel-all --direct | probe-account | auth-check | simulate-final | probe | run-once
+host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U]
 deploy/{install_worker.sh,fleet-worker.service}
 tests/test_{limits,kill_switch,queue,role_change,paper_fills,executor,models,scoring,live_switch,auth}.py + hw/{roletest,netcheck}.sh
 ```
@@ -148,10 +148,14 @@ Free only for now. Paid sources are considered only after the system shows profi
 | Source | Use | Cost |
 |---|---|---|
 | nflverse `games.csv` + schedules (CC-BY-4.0, attribution shown) | schedule, scores, closing spread/ML, temp/wind/roof; host-cached | free |
-| ESPN scoreboard JSON (unofficial) | live finals; 1 req/10 s; nflverse fallback next day | free |
+| ESPN scoreboard JSON (unofficial) | live finals, polled every 60 s while an assigned game is in play (from step 6C through the in-game feed's request window and backoff); nflverse fallback next day; also the fallback state of a game whose summary cannot be parsed | free |
+| ESPN summary JSON (unofficial, step 6C) | live game state (score, clock, possession, down and distance, plays) of assigned games in play, every `gamestate_poll_s` (4 s) per game, at most `gamestate_max_rps` (1.0) ESPN requests per second, jittered backoff on 429 or 403 (`docs/INGAME.md`) | free |
+| nflverse play-by-play `play_by_play_{season}.csv.gz` (CC BY 4.0) | step 6B team EPA stats; step 6C one row per play in `pbp_rows`, the `ingame_wp` training data with nflverse's `vegas_wp` as the baseline | free |
+| nflverse injury reports `injuries_{season}.csv` (CC BY 4.0, step 6B) | players listed Out | free |
+| Yahoo play-by-play (step 6C) | opt-in cross-check, not fetched until its parser is written from the owner's probe | free |
 | Polymarket US gateway (public) | markets, books into own `price_snapshots` from day one | free (A1) |
 | NWS `api.weather.gov` (public domain, User-Agent required) | forecasts for outdoor games, host-cached hourly | free |
-| The Odds API, Kalshi historical, SportsDataIO/Sportradar, Open-Meteo, offshore CLOB history | not used | deferred until profit |
+| The Odds API, Kalshi historical, SportsDataIO/Sportradar, Open-Meteo, offshore CLOB history, NFL.com live feeds (rotating app tokens), broadcast capture | not used | deferred until profit (broadcasts never) |
 
 ## Dashboard
 
@@ -193,7 +197,9 @@ The step 2 dashboard (pages, fragments, forms, auth, empty states) is specified 
 | 3 (done) | Delivered: nflverse ingest (`host.cli ingest-games`, Settings Refresh, `GET /api/v1/data/games`), `fleet/models` (`Model` interface, registry, `elo_blend`), `fleet/sim` (walk-forward backtest, model search, train) with sub-3 s checkpointed units, jobs page and `/jobs/{id}`, Models page with per-season table and Train, leaderboard by lineage on the root model's backtest, eligibility candidate to paper_ok, three-sentence summaries; spec in `docs/MODELS.md` | Model search on any idle: box switches, 5 models with summaries appear, box returns to idle; role switch mid-search resumes elsewhere repeating at most one candidate-season; Train gives a child row in the same lineage |
 | 4 (done) | `fleet-exchange` container (heartbeat, watchdog), adapter interface, snapshots + partitions/bars, matching UI, approval with all three limits, ledger, executor outbox, `order_events`, `/api/trade/release`, paper simulator, trade tick, `/trading`, settlement/scoring, paper eligibility, kill end to end, orphan rule | Three paper models on one game: approvals/rejections with reasons, realistic fills; tiny paper daily loss gives `daily_loss`; KILL cancels all paper orders in under 2 s; stopping fleet-exchange with an open order shows the banner within 15 s; next day: bets rows, lineage paper line, ledger replay OK |
 | 5 (done) | Delivered, spec in `docs/LIVE.md`: `polymarket_us.py` (Ed25519, place/cancel/open/fills/balance), restart reconciliation, rate buckets + 429 backoff, live switch, live halt, buying-power check, GTD, auto-kill triggers, `exchange-smoke`, `cancel-all --direct` | Keys in `exchange.env` give "auth OK"; typed dated phrase gives LIVE; `exchange-smoke` order visible in the exchange UI; KILL cancels it and live flips off; restart mid-order gives no duplicate. Steps 1 to 5 are complete |
-| 6A (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part A: held-out validation era (`validation_seasons`; the search era keeps the `backtest_seasons` key), `validate` job, bootstrap intervals and market test, stress tests and flags, stricter gates, multi-core search (`search_workers`) | Settings shows validation seasons and search workers; a search fills validation columns on Models; Validate on an older model; Robustness section on the model page; a search on 4 cores runs about 3x faster. Step 6B (snapshot replay, richer signals) is pending |
+| 6A (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part A: held-out validation era (`validation_seasons`; the search era keeps the `backtest_seasons` key), `validate` job, bootstrap intervals and market test, stress tests and flags, stricter gates, multi-core search (`search_workers`) | Settings shows validation seasons and search workers; a search fills validation columns on Models; Validate on an older model; Robustness section on the model page; a search on 4 cores runs about 3x faster |
+| 6B (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part B and `docs/TRADING.md` "Selling": quarterback, injury and play-by-play signals (`ingest-injuries`, `ingest-pbp`), the `epa_blend` family, snapshot replay backtests on recorded prices, selling a held position | Signals load; an `epa_blend` search; a snapshot backtest on recorded prices; a paper sell with its `sell` chip and the positions table |
+| 6C (done) | Delivered, spec in `docs/INGAME.md`: the ESPN game-state feed (`gamestate` exchange task, `game_state`, rate cap and backoff, `probe-gamestate`), feed-lag measurement and buy suspension (`feed_lag`), `pbp_rows` (`ingest-pbp-rows`, weekly refresh, `GET /api/v1/data/pbp`), the `ingame_wp` family and its search validated against `vegas_wp`, in-game assignments (`ingame_model_id`, `trade_ingame`), worker in-game rules, in-game approval checks (paper only), in-game settlement and scoring, the in-game dashboard parts | The in-game toggle on a paper assignment; during a game the Trading page shows score, clock, state age and the model probability, in-game orders and the In-game feed block; `probe-gamestate` output pasted back; `ingest-pbp-rows --season 2012-2025` and an `ingame_wp` search on Models. Step 7 (UI overhaul) is pending |
 
 ## Risks
 
@@ -202,6 +208,7 @@ The step 2 dashboard (pages, fragments, forms, auth, empty states) is specified 
 - Single host is a single point of failure, and a Windows desktop can sleep, update or reboot: with the host down, resting live orders depend on GTD expiry and the kill is unavailable. Disable sleep, keep Docker Desktop starting at login, back up the Postgres volume.
 - Docker Desktop port publishing and `tailscale serve` must both be healthy for workers to reach the host; the dashboard should show stale workers promptly.
 - ESPN is unofficial; settlement may lag a day. Pure-Python models cap complexity.
+- The in-game feed lags the field (15 to 60 s) and the market moves first, so in-game buys are adversely selected; in-game orders are paper-only in step 6C, buying pauses while the measured feed lag is too high, and the ESPN payloads are unverified until the owner's `probe-gamestate` output is checked.
 
 ## Decisions
 

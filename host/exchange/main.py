@@ -7,7 +7,8 @@ probe (`auth_probe_interval_s`, and at start), market discovery (5 min), snapsho
 (`open_orders_audit_s`, and at start), the executor outbox (250 ms), paper fills
 (1 s), live fills (`live_fills_poll_s`, only while live orders are active), the
 game-state feed (every second, right after snapshots, with its own per-game cadence
-and rate cap inside: host/exchange/gamestate.py), the scores poll (60 s), settlement
+and rate cap inside: host/exchange/gamestate.py), the scores poll (60 s, through the
+feed's ESPN window and backoff; deferred, it asks again a second later), settlement
 (30 s) and retention (nightly). Every task runs in its own transaction and an
 exception, or a soft error a task reports, is logged and remembered as `last_error`
 without stopping the loop. With credentials the loop runs
@@ -78,7 +79,7 @@ class ExchangeLoop:
         self.last_run: dict[str, float] = {}
         self.errors: dict[str, str] = {}
         self.retention_day: Any = None
-        self.gamestate_poller = gamestate.PollerState()
+        self.gamestate_poller = gamestate.PollerState(clock=lambda: self.clock().timestamp())
 
     @property
     def last_error(self) -> str | None:
@@ -210,7 +211,10 @@ class ExchangeLoop:
         return result
 
     def task_scores(self, conn: Any, now: datetime) -> Any:
-        return scores.poll(conn, now)
+        result = scores.poll(conn, now, gamestate.scores_fetch(conn, self.gamestate_poller, now))
+        if result.get("deferred"):
+            self.last_run["scores"] = now.timestamp() - self.intervals["scores"] + self.intervals["gamestate"]
+        return result
 
     def task_settle(self, conn: Any, now: datetime) -> Any:
         errors: list[str] = []

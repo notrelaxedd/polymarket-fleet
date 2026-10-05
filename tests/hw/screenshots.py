@@ -7,21 +7,26 @@ tests/hw/seed_step3.py (the nflverse fixture, a real search, its models, a train
 child, a backtest), seed_step6.py (validation and stress tables: two lineages ranked,
 one flagged overfit, one "not validated", a validate job), seed_step4.py (games with
 sim markets, a trade worker, assignments, orders in every state, a fill, a settled
-bet), the paper CLV interval, and seed_step6b.py (an epa_blend lineage ranked on
-snapshot replay CLV, snapshot columns on two more, a snapshot backtest job, a partly
-sold position with a filled and an open sell, a second position). It serves the app
-with FLEET_DEV=1 on a free port and captures fleet, jobs (backtest form with its price
-source), job detail, settings (Trading, Snapshot replay, nflverse signals), models
-(validation, paper and snapshot columns), model detail, the flagged model, the
-snapshot-ranked model, the search, backtest, validate and snapshot backtest results,
-the validate form, trading (positions, sell chips) and its create form, at 390x844
-and 1280x800 in light and dark; then (seed_step5.py) settings, trading and fleet with
-live on, after an auto-kill, after a hand POST /kill, and trading after the reset. At
-phone width it fails on horizontal scroll, on a visible button, select or link in a
-worker card or a form control (a checkbox through its label) under 40 px tall, and
-when the fragment refresh does not reset "updated N s ago". It needs the Chromium
-build the installed Playwright expects under PLAYWRIGHT_BROWSERS_PATH; it never
-downloads a browser.
+bet), the paper CLV interval, seed_step6b.py (an epa_blend lineage ranked on snapshot
+replay CLV, snapshot columns on two more, a snapshot backtest job, a partly sold
+position with a filled and an open sell, a second position) and, once check_step6b
+has passed, seed_step6c.py (two ingame_wp lineages, a third-quarter game with a fresh
+game state, an in-game assignment holding a partly filled in-game buy, ESPN feed lag
+rows, yesterday's game settled with in-game bets). It serves the app with FLEET_DEV=1
+on a free port and captures fleet, jobs (backtest form with its price source), job
+detail, settings (Trading, Snapshot replay, nflverse signals, In-game), models
+(validation, paper and snapshot columns, In-game models), model detail, the flagged
+model, the snapshot-ranked model, the ingame_wp model, the search, backtest, validate
+and snapshot backtest results, the validate form, trading (positions, sell chips, live
+score, in-game chips, In-game feed), its create form (also with an ingame_wp model
+preselected) and the game-state probe page (the "Probe game state" form submitted
+against a stubbed ESPN payload), at 390x844 and 1280x800 in light and dark; then
+(seed_step5.py) settings, trading and fleet with live on, after an auto-kill, after a
+hand POST /kill, and trading after the reset. At phone width it fails on horizontal
+scroll, on a visible button, select or link in a worker card or a form control (a
+checkbox through its label) under 40 px tall, and when the fragment refresh does not
+reset "updated N s ago". It needs the Chromium build the installed Playwright expects
+under PLAYWRIGHT_BROWSERS_PATH; it never downloads a browser.
 """
 from __future__ import annotations
 
@@ -49,6 +54,7 @@ from tests.hw.seed_step4 import seed_trading, touch_trading  # noqa: E402
 from tests.hw.seed_step5 import auto_kill, seed_live, touch_live  # noqa: E402
 from tests.hw.seed_step6 import seed_paper_ci, seed_validation  # noqa: E402
 from tests.hw.seed_step6b import check_step6b, seed_sells, seed_snapshot  # noqa: E402
+from tests.hw.seed_step6c import check_step6c, probe, seed_ingame, stub_espn, touch_ingame  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 
 DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots"))
@@ -98,7 +104,8 @@ def _event(conn: psycopg.Connection, job_id: Any, event: str, worker_id: str | N
 
 def seed(url: str) -> dict[str, str]:
     """Three workers (running, switching, offline) and a few jobs, then the step 3, 6,
-    4 and 6B rows (the module docstring lists them); returns the ids the captures need."""
+    4 and 6B rows (the module docstring lists them; capture_all adds the 6C rows after
+    check_step6b); returns the ids the captures need."""
     ids = _seed_fleet(url)
     ids.update(seed_models(url, ids["box2"], ids["box1"]))
     ids.update(seed_validation(url, ids["box2"]))
@@ -168,12 +175,14 @@ def touch(url: str, box1: str) -> None:
         conn.execute("UPDATE jobs SET lease_expires_at = now() + interval '30 seconds' WHERE status = 'leased'")
         touch_trading(conn)
         touch_live(conn)
+        touch_ingame(conn)
 
 
 # ---------------------------------------------------------------- captures and checks
 
 
-def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
+def pages(ids: dict[str, str]) -> list[tuple[Any, ...]]:
+    """(name, path) or (name, path, action): the action runs on the loaded page before the capture."""
     return [
         ("fleet", "/"), ("jobs", "/jobs"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
         ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("model-overfit", f"/models/{ids['overfit_model']}"),
@@ -182,6 +191,8 @@ def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
         ("job-replay", f"/jobs/{ids['replay_job']}"),
         ("jobs-validate-form", f"/jobs?validate_model={ids['model']}"),
         ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"),
+        ("model-ingame", f"/models/{ids['ingame_model']}"), ("trading-assign-ingame", f"/trading?model={ids['ingame_model']}"),
+        ("probe-gamestate", "/trading", probe),
     ]
 
 
@@ -244,12 +255,14 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
 
-        def shoot(path: str, name: str, width: str, scheme: str, check: bool) -> None:
+        def shoot(path: str, name: str, width: str, scheme: str, check: bool, act: Any = None) -> None:
             w, h = VIEWPORTS[width]
             context = browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
             page = context.new_page()
             touch(database_url, ids["box1"])
             page.goto(server_url + path, wait_until="networkidle")
+            if act is not None:
+                act(page)
             target = out / f"{name}-{width}-{scheme}.png"
             page.screenshot(path=str(target), full_page=True)
             written.append(str(target))
@@ -261,13 +274,16 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
                 check_models_desktop(page, problems)
             context.close()
 
-        def shoot_all(captures: list[tuple[str, str]]) -> None:
-            for name, path in captures:
+        def shoot_all(captures: list[tuple[Any, ...]]) -> None:
+            for name, path, *act in captures:
                 for width in VIEWPORTS:
                     for scheme in SCHEMES:
-                        shoot(path, name, width, scheme, check=(width == "390" and scheme == "light"))
+                        shoot(path, name, width, scheme, check=(width == "390" and scheme == "light"), act=act[0] if act else None)
 
-        check_step6b(server_url, ids)
+        check_step6b(server_url, ids)  # before the 6C rows add a third position
+        ids.update(seed_ingame(database_url, ids["trader"], ids["model"]))
+        stub_espn()
+        check_step6c(server_url, ids)
         shoot_all(pages(ids))
 
         # Step 5: live on (the settings group on, the live assignment, the smoke order, the

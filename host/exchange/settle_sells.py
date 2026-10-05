@@ -16,8 +16,9 @@ Per market the assignment traded:
 Without sells every buy row is the whole order, exactly as before step 6 Part B.
 
 Step 6 Part C: the row of an in-game order (orders.ingame) carries ingame true, a null
-CLV and `state_at_entry` (period, clock, score and possession of the newest game_state
-at or before the order's created_at, null without one), and is attributed to the
+CLV and `state_at_entry` (period, clock, score and possession at approval: the one the
+approval event recorded, else the newest game_state at or before the order's
+created_at, null without one), and is attributed to the
 assignment's in-game model (its model_id and lineage_id) instead of the pre-game one.
 The money (basis, payout, pnl) is split exactly as for any other order.
 """
@@ -151,7 +152,7 @@ def assignment_bets(
         if bet["ingame"]:
             owner = owner or ingame_owner(conn, assignment)
             bet.update(model_id=owner["id"], lineage_id=owner["lineage_id"], clv=None,
-                       state_at_entry=state_at(conn, game["game_id"], order["created_at"]))
+                       state_at_entry=state_at(conn, game["game_id"], order["created_at"], order["id"]))
     return [rows[str(o["id"])] for o in filled]
 
 
@@ -167,8 +168,18 @@ def ingame_owner(conn: psycopg.Connection, assignment: dict[str, Any]) -> dict[s
     return {"id": assignment["model_id"], "lineage_id": assignment["lineage_id"]}
 
 
-def state_at(conn: psycopg.Connection, game_id: str, ts: Any) -> dict[str, Any] | None:
-    """The game situation of the newest game_state row at or before `ts` (None without one)."""
+def state_at(conn: psycopg.Connection, game_id: str, ts: Any, order_id: Any = None) -> dict[str, Any] | None:
+    """The game situation at approval: the `state_at_entry` the order's approval event
+    recorded (host.trading.limits), else the newest game_state row at or before `ts`
+    (None without one)."""
+    if order_id is not None:
+        event = conn.execute(
+            "SELECT detail->'state_at_entry' AS s FROM order_events WHERE order_id = %s AND detail ? 'state_at_entry'"
+            " ORDER BY id LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if event is not None and isinstance(event["s"], dict):
+            return {key: event["s"].get(key) for key in STATE_KEYS}
     row = conn.execute(
         f"SELECT {', '.join(STATE_KEYS)} FROM game_state WHERE game_id = %s AND ts <= %s ORDER BY ts DESC, id DESC LIMIT 1",
         (game_id, ts),

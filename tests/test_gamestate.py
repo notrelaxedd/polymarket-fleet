@@ -166,21 +166,22 @@ def test_raw_fragment_is_truncated_to_8_kb():
 
 # ------------------------------------------------------------------------ poller
 
-def test_poll_stores_plays_once_and_the_situation_on_change(conn):
+def test_poll_stores_plays_once_and_the_situation_on_every_observation(conn):
     live_game(conn)
     feed, state = Feed(), PollerState()
     first = run(conn, feed, T0, state)
     assert first == {"polled": 1, "rows": 6, "backoff_until": None, "errors": []}
     assert feed.calls[0][1] == "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event=401800001"
     assert run(conn, feed, T0 + timedelta(seconds=2), state)["polled"] == 0, "the per-game cadence (4 s) is not up"
-    assert run(conn, feed, T0 + timedelta(seconds=4), state) == {"polled": 1, "rows": 0, "backoff_until": None, "errors": []}
+    assert run(conn, feed, T0 + timedelta(seconds=4), state) == {"polled": 1, "rows": 1, "backoff_until": None, "errors": []}, \
+        "no new play: the unchanged situation is still one row per observation"
     data = fixture("in")
     data["drives"]["current"]["plays"].append({**copy.deepcopy(data["drives"]["current"]["plays"][-1]), "id": "401800001106"})
     data["header"]["competitions"][0]["status"].update({"clock": 470.0, "displayClock": "7:50"})
     feed.answer = data
     assert run(conn, feed, T0 + timedelta(seconds=8), state)["rows"] == 2, "the new play and the new situation"
     rows = conn.execute("SELECT * FROM game_state ORDER BY id").fetchall()
-    assert len(rows) == 8 and len({r["play_id"] for r in rows if r["play_id"]}) == 6
+    assert len(rows) == 9 and len({r["play_id"] for r in rows if r["play_id"]}) == 6
     assert rows[0]["source"] == "espn_summary" and rows[0]["raw"]["id"] == "401800001101" and rows[0]["ts"] == T0
     latest = latest_state(conn, "2026_05_KC_LV", T0 + timedelta(seconds=10))
     assert latest["state"]["clock_seconds"] == 470 and latest["source"] == "espn_summary" and latest["age_s"] == 2.0
@@ -269,7 +270,7 @@ def test_unparseable_summary_falls_back_to_the_scoreboard(conn):
     assert result["polled"] == 2 and result["rows"] == 1 and "not understood" in result["errors"][0]
     row = conn.execute("SELECT * FROM game_state").fetchone()
     assert (row["source"], row["status"], row["home_score"], row["away_score"], row["period"]) == ("espn_scoreboard", "in", 14, 20, 3)
-    assert run(conn, feed, T0 + timedelta(seconds=4), state)["rows"] == 0, "an unchanged scoreboard state is not stored again"
+    assert run(conn, feed, T0 + timedelta(seconds=4), state)["rows"] == 1, "every observation is stored, unchanged or not"
 
 
 def test_yahoo_is_opt_in_and_not_fetched_without_a_parser(conn):

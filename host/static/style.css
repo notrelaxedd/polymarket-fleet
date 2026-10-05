@@ -332,6 +332,8 @@ table.assignments td.c-ingame { min-width: 15rem; }
 .probe-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.6rem; }
 .probe-gamestate { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
 .probe-gamestate input { width: 9rem; }
+.ingame-eras { border: 0; padding: 0; margin: 0.6rem 0; min-width: 0; }
+.ingame-eras legend { padding: 0; font-weight: 600; }
 
 @media (max-width: 700px) {
   .banner { font-size: 0.85rem; }

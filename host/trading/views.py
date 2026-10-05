@@ -108,7 +108,7 @@ def list_fills(conn: psycopg.Connection, limit: int = 50, assignment_id: Any = N
     rows = conn.execute(
         f"""
         SELECT f.*, o.assignment_id, o.worker_id, o.market_id, o.price AS order_price, o.size AS order_size,
-               o.side AS order_side, CASE WHEN o.side = 'sell' THEN {FILL_REALIZED} END AS realized_cents,
+               o.side AS order_side, o.ingame, CASE WHEN o.side = 'sell' THEN {FILL_REALIZED} END AS realized_cents,
                m.title AS market_title, m.side, m.game_id
           FROM fills f
           JOIN orders o ON o.id = f.order_id

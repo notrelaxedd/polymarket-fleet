@@ -130,9 +130,11 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
 
 
 def trading_context(
-    conn: psycopg.Connection, model: str | None = None, error: str | None = None, submitted: dict[str, str] | None = None
+    conn: psycopg.Connection, model: str | None = None, error: str | None = None,
+    submitted: dict[str, str] | None = None, ingame_model: str | None = None,
 ) -> dict[str, Any]:
-    """The whole page: the live region plus the create form's selects and defaults."""
+    """The whole page: the live region plus the create form's selects and defaults
+    (?ingame_model=<id> preselects the in-game model, as the Models pages link)."""
     tz = get_setting(conn, "tz")
     values = {
         "game_id": "", "model_id": model or "", "mode": "paper",
@@ -143,10 +145,10 @@ def trading_context(
         **live_context(conn),
         "games": [{**g, "label": _game_label(g, tz)} for g in views.upcoming_games(conn)],
         "models": [{"id": str(m["id"]), "label": _model_label(m)} for m in views.assignable_models(conn) if m["family"] != INGAME_FAMILY],
-        **form_context(conn, submitted, model),
+        **form_context(conn, submitted, ingame_model or model),
         "values": values,
         "error": error,
-        "assign_open": bool(model or error),
+        "assign_open": bool(model or ingame_model or error),
         "live_mode": get_setting(conn, "live_enabled") is True,
     }
 
@@ -157,10 +159,12 @@ def trading_page_response(request: Request, conn: psycopg.Connection, status: in
 
 @router.get("/trading", response_class=HTMLResponse)
 def trading_page(
-    request: Request, model: str | None = Query(default=None, max_length=64), conn: psycopg.Connection = DB
+    request: Request, model: str | None = Query(default=None, max_length=64),
+    ingame_model: str | None = Query(default=None, max_length=64), conn: psycopg.Connection = DB,
 ) -> HTMLResponse:
-    """The trading page; ?model=<id> opens the create form with that model selected."""
-    return trading_page_response(request, conn, model=model)
+    """The trading page; ?model=<id> (or ?ingame_model=<id>) opens the create form with
+    that model selected."""
+    return trading_page_response(request, conn, model=model, ingame_model=ingame_model)
 
 
 @router.get("/fragments/trading", response_class=HTMLResponse)

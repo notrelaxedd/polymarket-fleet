@@ -228,7 +228,11 @@ cancelled the same way; its trade jobs follow the normal lease expiry.
 ## Settlement, bets, scoring, eligibility (`host/exchange/settle.py`)
 
 Finals: on game days the exchange polls the ESPN scoreboard (`settings.scores_url`) every
-60 s for games with assignments that have kicked off; a completed game updates
+60 s for games with assignments that have kicked off. From step 6C the poll shares the
+in-game feed's ESPN request window and 429/403 backoff (docs/INGAME.md, "Cadence, rate
+cap and backoff"): it reuses a scoreboard answer of the last 5 s, and when the window or
+the backoff holds it back it reports `deferred` (not an error) and asks again a second
+later; its request times out after 3 s. A completed game updates
 `games` (scores, status `final`, `raw.score_source = "espn"`); the nflverse refresh confirms
 later. With `market_source = sim`, `host.cli simulate-final <game_id> --home N --away M`
 sets a final for testing (refused for other sources unless `FLEET_DEV`).
@@ -443,15 +447,28 @@ Assignments (`host/trading/assignments_ingame.py`, migration `0009_ingame.sql`):
 - Kill and halt are unchanged: they cancel every open order of the assignment, in-game
   ones included, and nothing else.
 
+Orders (`host/trading/ingame.py`, `host/exchange/executor.py`, `host/exchange/paper.py`):
+- `POST /api/v1/orders/request` takes `"ingame": true` (and an optional `gtd_seconds`,
+  1..86400, only recorded). An in-game request runs the in-game checks in place of
+  `kickoff` (`ingame_disabled`, `ingame_paper_only`, `ingame_stale`, `ingame_quiet`,
+  `ingame_cutoff`, and `ingame_lag_suspended` for buys; order and boundaries in
+  docs/INGAME.md), then the usual buy or sell checks, with `max_bet` also capped by
+  `ingame_max_bet_cents`.
+- The order row has `orders.ingame` true; its first `order_events` detail carries
+  `ingame`, `state_at_entry`, `gtd_seconds` and `gtd_seconds_requested`.
+- The executor gives an in-game order `gtd_at = submitted + ingame_gtd_seconds` with no
+  kickoff cap, `cancel_at_kickoff` leaves in-game orders alone, and the paper simulator
+  fills them on snapshots taken after kickoff (`kickoff_bound` is none for them).
+
 Settlement (`host/exchange/settle.py`, `host/exchange/settle_sells.py`):
 - The money is split exactly as before (buy rows pro rata over the contracts still
   held, a sell gets its own `sold` row), so the bets of an assignment still add up to
   its ledger `realized` and the replay identity holds; an in-game order is just an order.
 - The `bets` row of an in-game order (`orders.ingame`) has `ingame = true`, `clv = null`
   (CLV excludes in-game rows: the closing price is a pre-game price) and
-  `state_at_entry` = `{period, clock_seconds, home_score, away_score, possession}` of the
-  newest `game_state` row of the game at or before the order's `created_at` (its
-  approval), null when there was none. It is attributed to the assignment's in-game
+  `state_at_entry` = `{period, clock_seconds, home_score, away_score, possession}`: the
+  state the order's approval event recorded, else the newest `game_state` row of the
+  game at or before the order's `created_at`, null when there was none. It is attributed to the assignment's in-game
   model: `model_id` and `lineage_id` are the `ingame_model_id`'s, so the `ingame_wp`
   lineage gets its own paper record. That includes an in-game sell of contracts a
   pre-game buy bought: the in-game model chose the sale, so its realized P&L is its.

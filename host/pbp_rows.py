@@ -13,6 +13,12 @@ family (docs/INGAME.md, contract section 3):
   (quarter_seconds_remaining) with half 3.
 - yardline_100 is nflverse's own: the distance to the opponent's end zone for the team
   in possession; posteam_is_home says which team that is (null without a possession).
+  Kickoffs (play_type "kickoff", onside and safety free kicks too) are the exception:
+  nflverse gives them to the receiving team (yardline_100 35 for a normal kickoff),
+  while the live ESPN feed hands the model the kicking team (start.team, yardsToEndzone
+  65). They are stored in the live convention, the kicking team in possession at
+  100 - yardline_100, so the same kickoff is the same state in training and in trading
+  (kickoff_possession). Rows ingested before this rule need a re-ingest.
 - vegas_wp is nflverse's vegas_home_wp, home_win comes from the final score (1, 0.5 for
   a tie, 0; null while a game has no final score) and pregame_p_home is the game's
   closing moneyline from `games`, devigged as fleet.sim.odds does (null when missing).
@@ -120,6 +126,19 @@ def keep(record: dict[str, str]) -> bool:
     return _text(record.get("play_type")) == "kickoff" or _int(record.get("timeout")) == 1
 
 
+def kickoff_possession(record: dict[str, str], posteam_is_home: bool | None,
+                       yardline: int | None) -> tuple[bool | None, int | None]:
+    """(posteam_is_home, yardline_100) in the live feed's kickoff convention.
+
+    nflverse puts the receiving team in possession of a kickoff at the kicking team's
+    35 (yardline_100 35); ESPN's play start is the kicking team at its own 35
+    (yardsToEndzone 65). A kickoff record is turned into the kicking team (the other
+    side) at 100 - yardline_100; every other record is returned unchanged."""
+    if _text(record.get("play_type")) != "kickoff" or posteam_is_home is None:
+        return posteam_is_home, yardline
+    return (not posteam_is_home), (None if yardline is None else 100 - yardline)
+
+
 def map_record(record: dict[str, str], score_before: tuple[int, int], pregame: float | None) -> dict[str, Any]:
     """One kept nflverse record to a `pbp_rows` row; score_before is (home, away) before the play."""
     half = HALVES[record["game_half"]]
@@ -130,6 +149,9 @@ def map_record(record: dict[str, str], score_before: tuple[int, int], pregame: f
     down = _int(record.get("down"))
     posteam = _text(record.get("posteam"))
     home = (record.get("home_team") or "").strip()
+    posteam_is_home, yardline = kickoff_possession(
+        record, None if posteam is None else posteam == home,
+        _int(record.get("yardline_100")) if posteam else None)
     return {
         "game_id": record["game_id"].strip(),
         "play_id": _play_id(record.get("play_id")),
@@ -140,8 +162,8 @@ def map_record(record: dict[str, str], score_before: tuple[int, int], pregame: f
         "half": half,
         "down": down,
         "ydstogo": _int(record.get("ydstogo")) if down is not None else None,
-        "yardline_100": _int(record.get("yardline_100")) if posteam else None,
-        "posteam_is_home": None if posteam is None else posteam == home,
+        "yardline_100": yardline,
+        "posteam_is_home": posteam_is_home,
         "home_timeouts": _int(record.get("home_timeouts_remaining")),
         "away_timeouts": _int(record.get("away_timeouts_remaining")),
         "pregame_p_home": pregame,

@@ -64,11 +64,13 @@ def test_row_mapping_on_real_plays() -> None:
     records = _records()
     assert len(rows) < len(records), "game start and end-of-quarter markers are dropped"
     assert not any(r["play_id"] == "1" for r in rows)
+    # nflverse gives the opening kickoff to DET (receiving) at 35; it is stored as the live
+    # feed sees it: KC (home, kicking) at its own 35, 65 yards to go.
     kickoff = _by_play(rows, DET_KC, "40")
     assert kickoff == {
         "game_id": DET_KC, "play_id": "40", "season": 2023, "home_win": 0.0, "score_diff": 0,
-        "seconds_remaining": 3600, "half": 1, "down": None, "ydstogo": None, "yardline_100": 35,
-        "posteam_is_home": False, "home_timeouts": 3, "away_timeouts": 3, "pregame_p_home": 0.6,
+        "seconds_remaining": 3600, "half": 1, "down": None, "ydstogo": None, "yardline_100": 65,
+        "posteam_is_home": True, "home_timeouts": 3, "away_timeouts": 3, "pregame_p_home": 0.6,
         "vegas_wp": pytest.approx(0.644948393106461),
     }
     first_down = _by_play(rows, DET_KC, "56")
@@ -102,8 +104,10 @@ def test_every_row_agrees_with_nflverse_columns() -> None:
         if posteam and rec["score_differential"]:
             sign = 1 if posteam == rec["home_team"] else -1
             assert row["score_diff"] == sign * int(float(rec["score_differential"])), row
-            assert row["posteam_is_home"] is (posteam == rec["home_team"])
-            assert row["yardline_100"] == int(float(rec["yardline_100"]))
+            kick = rec["play_type"] == "kickoff"  # stored as the kicking team (live convention)
+            assert row["posteam_is_home"] is ((posteam == rec["home_team"]) != kick)
+            yardline = int(float(rec["yardline_100"]))
+            assert row["yardline_100"] == (100 - yardline if kick else yardline)
         assert row["vegas_wp"] == pytest.approx(float(rec["vegas_home_wp"]))
         assert row["home_timeouts"] == int(rec["home_timeouts_remaining"])
         assert row["away_timeouts"] == int(rec["away_timeouts_remaining"])
@@ -217,7 +221,7 @@ def test_feed_auth_etag_and_body(client, conn, make_worker) -> None:
     assert list(lines[0]) == list(pbp_rows.COLUMNS)
     assert lines[0]["game_id"] == BUF_NYJ, "game then play order"
     kickoff = next(r for r in lines if r["game_id"] == DET_KC and r["play_id"] == "40")
-    assert kickoff["vegas_wp"] == 0.644948 and kickoff["posteam_is_home"] is False and kickoff["home_win"] == 0.0
+    assert kickoff["vegas_wp"] == 0.644948 and kickoff["posteam_is_home"] is True and kickoff["home_win"] == 0.0
     assert kickoff["pregame_p_home"] == round(devig(-198, 164) or 0.0, 6)
     ot = [r for r in lines if r["half"] == 3]
     assert ot and all(r["game_id"] == BUF_NYJ and r["seconds_remaining"] <= 600 for r in ot)

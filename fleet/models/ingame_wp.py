@@ -6,7 +6,9 @@ A logistic regression on engineered features of the state dict
 "distance", "yardline_100", "home_timeouts", "away_timeouts"} and the pre-game home
 probability, fitted by Newton (fleet.models.newton.fit_logistic, intercept unpenalised)
 on nflverse play-by-play rows. Training rows go through state_from_row first, so the
-model sees exactly the representation the live feed hands it.
+model sees exactly the representation the live feed hands it; kickoffs included, which
+host/pbp_rows stores as the live feed shows them (the kicking team in possession at
+its own 35, yardline_100 65), not as nflverse does (the receiver at 35).
 
 Features (FEATURE_NAMES order), with s = game seconds left (3600 at kickoff, 0 at the end
 of regulation, the overtime clock in overtime), t = s / 3600 and sign = +1 when the home

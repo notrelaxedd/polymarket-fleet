@@ -85,7 +85,12 @@ a Debian box."
   seed, first and last season, keep top), Train (model select, through season and week;
   the button is disabled until a model exists), (step 6) Validate (model select, seed;
   a line names the validation era it will run; disabled until a model exists;
-  `?validate_model=<id>` preselects the model and opens the card). (step 6B) The Backtest
+  `?validate_model=<id>` preselects the model and opens the card). (step 6C) The Model
+  search card lists `ingame_wp`; for it the four "ingame_wp only" fields (train first
+  and last, validation first and last; blank = the host defaults [2012, 2021] and
+  [2022, open]) are sent as `train_seasons` and `validation_seasons` instead of the
+  pre-game seasons. The Backtest family select and the Backtest, Train and Validate
+  model selects leave ingame_wp out (the host refuses those jobs for it). (step 6B) The Backtest
   card gains a "Price source" select: "closing line (every game, CLV 0)" (the default) or
   "snapshots (recorded prices, real CLV)", with a muted line naming what a snapshot
   backtest would replay (the market source, the decision minutes before kickoff, the
@@ -162,6 +167,22 @@ name line first, the metrics as labelled pairs (the 90% range wraps under its RO
 summary on its own line and the three buttons side by side at 44 px. The page ends with
 the nflverse attribution line (CC BY 4.0, links to nflverse-data and the licence).
 
+(step 6C) In-game models (`host/leaderboard_ingame.py`, `host/ingame_eligibility.py`):
+ingame_wp lineages are never ranked with the pre-game ones (in `GET /api/models` they are
+in `unranked` with the reason "in-game model", after the others); the page lists them in
+their own section "In-game models" (`#ingame`, table `.ingame-models`, before the
+attribution line), the ones beating vegas_wp first, then by the log-loss gain over it.
+Each row: family with short params ("L2 1.00 · time 1.00 · field 1.00"), status badge,
+a "not validated" chip without stored validation, the one-line status reason
+("beats the vegas_wp baseline over N held-out plays; paper only ...", "its validation
+log-loss is worse than the vegas_wp baseline", "validated on N plays, fewer than
+10000"), plays with the validation season range, log-loss "vs" vegas_wp's, "beats
+vegas_wp" as a green "yes" chip (with the gain) or "no", the in-game paper record
+("N bets · $P&L" from `model_scores.ingame_n_bets` and `ingame_pnl_cents`, "-"
+without), the summary, and an "Assign in-game" button (`/trading?ingame_model=<id>#assign`;
+hidden on a retired lineage). The main tables gain an "in-game" column (bets, P&L) only
+when one of their lineages has in-game bets.
+
 `/models/{id}`: family, short params, status badge and (step 6) the "not validated" or
 flag chips in the heading; id, lineage (root chip), parent link, trained-through point,
 created time with the creating job link, (step 6) the validation shrunk ROI (the rank
@@ -200,6 +221,19 @@ max drawdown with its cents, seasons), the stacked per-season table and the cali
 table (ten `p` buckets: games, mean p, mean outcome); the lineage members (id, trained
 through, status, created, job) and the related jobs (created, kind, status, "created
 this model" or "ran against it").
+
+(step 6C) On an ingame_wp model the page drops the pre-game parts (the validation and
+search shrunk ROI, paper and snapshot lines, the Robustness, snapshot and backtest
+sections, and the Train, Validate and Assign buttons) and shows instead: "held-out
+validation" (log-loss vs vegas_wp over N plays with the seasons, a "beats vegas_wp" chip
+or "does not beat vegas_wp"), "status rule" (the reason line; paper ok needs a log-loss at
+or below vegas_wp over at least 10000 plays, in-game orders are paper-only), "in-game
+paper record" (games, bets, P&L; CLV is not defined in-game), an "Assign in-game" button,
+and the "In-game validation" section (`#ingame-validation`): the overall log-loss and
+Brier against vegas_wp, then tables by period (Q1 to Q4, OT), by score (home minus away
+before the play: <=-9, -8..-1, 0, 1..8, >=9) and the calibration buckets (plays, mean p,
+mean outcome, vegas_wp mean), or "No held-out validation stored." A pre-game model whose
+lineage has in-game bets gets an "in-game bets" line.
 
 ## Settings page `/settings`
 Groups, each its own form with a Save button and inline validation errors. Every field is
@@ -268,6 +302,17 @@ validation keep working:
   are loaded, and the kill card names the recovery for the newest automatic kill
   as red chips ("none since the last reset"). `live_enabled` has no field in any generic
   group and `POST /settings/live` is never treated as a settings group.
+- (step 6C) In-game (`#ingame`, `POST /settings/ingame`, `host/settings_forms_ingame.py`,
+  validators in `host/settings_schema_ingame.py`), with a line saying in-game orders are
+  paper-only, in three sub-headings. Trade rules: "Trade in-game by default"
+  (`trade_ingame`), in-game tick (1..60 s), max game-state age (5..300 s), quiet seconds
+  (0..300), cutoff (0..900 game seconds), dead zone (0..0.5), in-game min edge (0..0.5),
+  in-game max bet in dollars (`ingame_max_bet_cents`), in-game order lifetime (10..3600
+  s). Feed lag: max feed lag (above 0, at most 600 s), min measured events (1..100).
+  Game-state feed: poll each live game every 3..5 s (`gamestate_poll_s`), ESPN max
+  requests per second (above 0, at most 10), one checkbox per source (ESPN, Yahoo; stored
+  as `gamestate_sources`), the ESPN summary URL (must contain `{event_id}`), the Yahoo
+  play-by-play URL (empty = off, else must contain `{event_id}`), Yahoo poll (5..120 s).
 - Kill switch: state, and when killed a reset form with a text field that must contain
   exactly `RESUME` (no surrounding whitespace, like the API). (step 5) When the kill was
   automatic the card adds "Killed automatically by the exchange process: <reason> at
@@ -354,8 +399,8 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
     ticked by default when `settings.trade_ingame` is true). A hidden `ingame_form=1`
     marker tells an unticked box (explicit off) from a post without the fields (the step
     4 call). The pre-game model select no longer lists ingame_wp models (they trade only
-    in-game); an Assign button on an ingame_wp model (`?model=`) preselects it in the
-    in-game select. `create_assignment` checks the fields; a refusal re-renders the form.
+    in-game); `?ingame_model=<id>` (the "Assign in-game" buttons on the Models pages)
+    or `?model=<id>` of an ingame_wp model preselects it in the in-game select. `create_assignment` checks the fields; a refusal re-renders the form.
   - Assignments: a new "in-game" column (`td.c-ingame`, a full-width line on a phone)
     with an "in-game on" chip (in-game model set and `trade_ingame` on) or "in-game off",
     the latest game state as "Q3 4:12 · 17-14 · 3 s ago" (away-home score as in the "KC @
@@ -403,3 +448,15 @@ the lineage that paper trades; `tests/hw/screenshots.py` captures the models pag
 validation columns, the chips), the model detail (the Robustness section), the flagged
 model and the validate job page at 390 and 1280 px in light and dark, with the phone
 layout checks on every capture.
+
+## Step 6C screenshots
+
+`tests/hw/seed_step6c.py` adds, after the step 6B rows, two ingame_wp lineages (one
+`paper_ok`, one `candidate`), a game in its third quarter with a fresh game state parsed
+from `tests/fixtures/espn_summary_in.json`, an in-game paper assignment holding a partly
+filled in-game buy, feed_lag rows (12 measured ESPN summary events, 3 scoreboard events)
+and a settled game with in-game bets; `tests/hw/screenshots.py` captures the in-game
+model page (`model-ingame`), the New assignment form with an ingame_wp model preselected
+(`trading-assign-ingame`) and the game-state probe page (`probe-gamestate`, the form
+submitted in the browser against a stubbed ESPN), and the trading, settings and models
+pages now show their in-game parts, at 390 and 1280 px in light and dark.
