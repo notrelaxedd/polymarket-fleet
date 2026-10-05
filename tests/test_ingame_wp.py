@@ -211,7 +211,10 @@ def test_search_space_and_summary() -> None:
     empty = IngameWP.summary(params, {})
     for text in (good, bad, empty):
         assert text.count(". ") == 2 and text.endswith(".") and chr(0x2014) not in text
-    assert "2022-2024" in good and "not worse" in good and "must not be used" in bad
+    assert "2022-2024" in good and "not worse" in good
+    assert bad.endswith("It is worse than the baseline: paper trade it only to gather evidence."), (
+        "the Models page offers Assign in-game for it (paper only), so the summary must not forbid it")
+    assert "must not be used" not in bad
 
 
 def test_calibration_and_vegas_baseline_where_truth_is_known() -> None:

@@ -224,6 +224,22 @@ def check_desktop_tables(page: Any, name: str, problems: list[str]) -> None:
         problems.append(f"{name}: a table-wrap scrolls sideways at desktop width ({scroll_w} > {client_w})")
 
 
+def check_phone_tables(page: Any, name: str, problems: list[str]) -> None:
+    """At 390 px a non-stacked table on the Models pages fits its wrapper (the in-game
+    calibration once hid its vegas_wp column) and the in-game reason is not clipped."""
+    wide, clipped = page.evaluate(
+        """() => [Array.from(document.querySelectorAll('.table-wrap'))
+                    .filter(el => !el.querySelector('table.stack') && el.scrollWidth > el.clientWidth + 1)
+                    .map(el => [el.querySelector('table').className, el.scrollWidth, el.clientWidth]),
+                  Array.from(document.querySelectorAll('.ingame-reason'))
+                    .filter(el => el.scrollWidth > el.clientWidth + 1).length]"""
+    )
+    for cls, scroll_w, client_w in wide:
+        problems.append(f"{name} at 390: table.{cls} scrolls sideways ({scroll_w} > {client_w})")
+    if clipped:
+        problems.append(f"{name} at 390: {clipped} in-game reason lines clipped")
+
+
 def check_models_desktop(page: Any, problems: list[str]) -> None:
     """At 1280 px the Models table keeps every summary at least 200 px wide and every
     action button inside its table's visible box (the table scrolls inside .table-wrap,
@@ -280,6 +296,8 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             written.append(str(target))
             if check:
                 check_phone_layout(page, name, problems)
+                if name in ("models", "model-ingame"):
+                    check_phone_tables(page, name, problems)
                 if name == "fleet":
                     check_refresh_counter(page, problems)
             if width == "1280" and scheme == "light" and name.startswith("models"):

@@ -288,5 +288,5 @@ def build_summary(params: dict[str, Any], metrics: dict[str, Any]) -> str:
     if metrics.get("beats_baseline"):
         third = "It is not worse than the baseline, so it is usable, but in-game edge is proven only by paper trading."
     else:
-        third = "It is worse than the baseline, so it must not be used for in-game trading."
+        third = "It is worse than the baseline: paper trade it only to gather evidence."
     return f"{first} {second} {third}"

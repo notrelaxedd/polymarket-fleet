@@ -8,9 +8,13 @@ after `submitting_grace_s`), never resubmitted blind. `cancel_requested` rows go
 the gateway with retries at 1, 2, 4, 8 s (then every 8 s) until `open_orders()` no
 longer lists them, their last fills absorbed before the release (and never closed
 while the fills call fails); `open`/`partial` rows past `gtd_at` expire: paper at
-once with the release (an in-game order, `orders.ingame`, gets a GTD of
-`ingame_gtd_seconds` and is never bounded or cancelled by kickoff), live through the same cancel path (reason `gtd`), closed as
-`expired` once the exchange no longer lists them. Nothing is ever submitted while the
+once with the release, live through the same cancel path (reason `gtd`), closed as
+`expired` once the exchange no longer lists them. A pre-game order is bounded and
+cancelled by kickoff whatever trade_pregame_only says; an order approved under the
+in-game rules (`orders.ingame`, or an untagged one approved in play:
+host.trading.orders.in_play_order) gets a GTD of `ingame_gtd_seconds` and is never
+bounded or cancelled by kickoff. Every tick also switches trade_ingame off where the
+in-game model's lineage is retired (host.trading.assignments_ingame.turn_off_retired). Nothing is ever submitted while the
 kill switch is on: the kill flag is read FOR SHARE in the transaction that marks a
 row `submitting`, so a kill in flight is waited for and an approved row found under
 kill is cancelled with release. While `live_blocked` is set (clock skew over the
@@ -29,8 +33,8 @@ from host.errors import Conflict
 from host.exchange import live_sync
 from host.exchange.adapters.base import NotConfigured, OrderGateway, PaperGateway, utcnow
 from host.exchange.ratelimit import RateLimiter
-from host.settings import get_int_setting, get_setting
-from host.trading import orders
+from host.settings import get_int_setting
+from host.trading import assignments_ingame, orders
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +109,8 @@ class Executor:
 
     def tick(self, conn: psycopg.Connection, now: datetime | None = None) -> dict[str, int]:
         now = now or utcnow()
-        counts = {"submitted": 0, "cancelled_under_kill": 0, "reconciled": 0, "kickoff": 0, "cancels": 0, "expired": 0}
+        counts = {"submitted": 0, "cancelled_under_kill": 0, "reconciled": 0, "kickoff": 0, "ingame_retired": 0,
+                  "cancels": 0, "expired": 0}
         if killed(conn):
             counts["cancelled_under_kill"] = self.cancel_approved_under_kill(conn)
         else:
@@ -114,6 +119,8 @@ class Executor:
         counts["reconciled"] = self.reconcile_submitting(conn, now)
         _commit(conn)
         counts["kickoff"] = self.cancel_at_kickoff(conn, now)
+        _commit(conn)
+        counts["ingame_retired"] = len(assignments_ingame.turn_off_retired(conn, self.actor))
         _commit(conn)
         counts["expired"] = self.expire_orders(conn, now)
         _commit(conn)
@@ -130,13 +137,14 @@ class Executor:
         return len(rows)
 
     def submit_approved(self, conn: psycopg.Connection, now: datetime) -> int:
-        """Move approved rows through the outbox one transaction at a time. The order
-        lives until `gtd_seconds` after submission, or until kickoff when
-        `trade_pregame_only` is on, whichever comes first. An in-game order lives
-        `ingame_gtd_seconds` after submission, kickoff aside (docs/INGAME.md)."""
+        """Move approved rows through the outbox one transaction at a time. A pre-game
+        order lives until `gtd_seconds` after submission or until kickoff, whichever
+        comes first (whatever trade_pregame_only says: an order approved before kickoff
+        never trades the game in play). An order approved under the in-game rules
+        (orders.in_play_order) lives `ingame_gtd_seconds` after submission, kickoff
+        aside (docs/INGAME.md)."""
         gtd = get_int_setting(conn, "gtd_seconds", 900)
         ingame_gtd = max(1, get_int_setting(conn, "ingame_gtd_seconds", 60))
-        pregame = get_setting(conn, "trade_pregame_only", True) is not False
         submitted = 0
         while True:
             if killed(conn):
@@ -153,9 +161,9 @@ class Executor:
             if row["mode"] == "live" and not self._take(self.gateway_for(row), "orders", now):
                 _commit(conn)
                 break
-            ingame = bool(row.get("ingame"))
+            ingame = orders.in_play_order(conn, dict(row))
             gtd_at = now + timedelta(seconds=ingame_gtd if ingame else gtd)
-            kickoff = kickoff_of(conn, row) if pregame and not ingame else None
+            kickoff = kickoff_of(conn, row) if not ingame else None
             if kickoff is not None and kickoff < gtd_at:
                 gtd_at = kickoff
             order = orders.set_status(
@@ -259,17 +267,17 @@ class Executor:
     # ----------------------------------------------------------------- kickoff
 
     def cancel_at_kickoff(self, conn: psycopg.Connection, now: datetime) -> int:
-        """With trade_pregame_only: cancel every active pre-game order whose game has
-        kicked off (actor exchange, reason kickoff); in-game orders are left alone. Paper cancels at once with the release;
-        live rows become cancel_requested for process_cancels."""
-        if get_setting(conn, "trade_pregame_only", True) is False:
-            return 0
+        """Cancel every active pre-game order whose game has kicked off (actor exchange,
+        reason kickoff), whatever trade_pregame_only says; orders approved under the
+        in-game rules (orders.in_play_order) are left alone. Paper cancels at once with
+        the release; live rows become cancel_requested for process_cancels."""
         rows = conn.execute(
-            """
+            f"""
             SELECT o.id FROM orders o
               JOIN assignments a ON a.id = o.assignment_id
               JOIN games g ON g.game_id = a.game_id
              WHERE o.status IN ('approved', 'submitting', 'open', 'partial') AND NOT o.ingame
+               AND NOT {orders.IN_PLAY_EVENT.format(alias="o")}
                AND g.kickoff_at IS NOT NULL AND g.kickoff_at <= %s
              ORDER BY o.created_at FOR UPDATE OF o SKIP LOCKED
             """,

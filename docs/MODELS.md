@@ -232,10 +232,10 @@ ROI, no CLV); they are listed apart as "in-game model" (in the API among the unr
 after the others), the ones beating vegas_wp first, then by the log-loss gain over it.
 Their row shows the plays, the log-loss against vegas_wp, whether it beats the baseline
 and the in-game paper record (in-game bets and P&L from `model_scores.ingame_n_bets`
-and `ingame_pnl_cents`). The pre-game tables gain the same in-game column only when one
-of their lineages has in-game bets (settlement credits in-game bets to the in-game
-model's lineage, so this is rare); the pooled paper record still counts every bet, and
-CLV only pre-game buys. The model
+and `ingame_pnl_cents`). The pre-game tables have no in-game column: settlement
+credits every in-game bet to the assignment's in-game model's lineage, so a pre-game
+lineage never has one; the pooled paper record still counts every bet, and CLV only
+pre-game buys. The model
 page of an ingame_wp model shows the validation per period, per score bucket and the
 calibration, each against vegas_wp.
 
@@ -347,8 +347,9 @@ and backtest metrics. Unit = one season of Elo replay.
 position (L2 1 per 1000 plays, time exponent 1.00, field scale 1.00).", then "On N
 held-out plays from 2022-2025 its log-loss is 0.447 against vegas_wp's 0.452." and
 either "It is not worse than the baseline, so it is usable, but in-game edge is proven
-only by paper trading." or "It is worse than the baseline, so it must not be used for
-in-game trading."; without validation the last two say it has not been validated yet.
+only by paper trading." or "It is worse than the baseline: paper trade it only to
+gather evidence." (the Models page still offers "Assign in-game" for it, paper-only);
+without validation the last two say it has not been validated yet.
 The owner can edit the text on the Models page.
 
 ## Eligibility (host, `host/eligibility.py`)

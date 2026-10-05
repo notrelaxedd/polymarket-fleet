@@ -90,14 +90,17 @@ def pregame_p_home(conn: psycopg.Connection, game: dict[str, Any] | None) -> flo
 def ingame_block(conn: psycopg.Connection, a: dict[str, Any], game: dict[str, Any] | None,
                  lag: dict[str, Any], now: Any) -> dict[str, Any]:
     """The per-assignment "ingame" entry: {"enabled", "model", "game_state",
-    "pregame_p_home", "lag": {"suspended", "median_lag_s", "n"}}."""
+    "pregame_p_home", "lag": {"suspended", "median_lag_s", "n"}}. "enabled" is false
+    when the in-game model or its lineage is retired (approval rejects it anyway)."""
+    from host.trading.ingame import model_retired
+
     model = None
     if a.get("ingame_model_id") is not None:
         model = conn.execute(
             "SELECT id, family, params, artifact FROM models WHERE id = %s", (a["ingame_model_id"],)
         ).fetchone()
     return {
-        "enabled": bool(a.get("trade_ingame")) and model is not None,
+        "enabled": bool(a.get("trade_ingame")) and model is not None and not model_retired(conn, model["id"]),
         "model": dict(model) if model is not None else None,
         "game_state": latest_state(conn, a["game_id"], now) if game is not None else None,
         "pregame_p_home": pregame_p_home(conn, game),

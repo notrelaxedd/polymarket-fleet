@@ -319,8 +319,10 @@ tr.is-live td.lead { box-shadow: inset 4px 0 0 var(--green-fill); padding-left: 
    width (one unbreakable line per cell pushed the summary and the actions off screen) */
 table.models td.nowrap { white-space: normal; }
 table.models td .muted, table.models td .range { white-space: nowrap; }
-table.models td.c-paper, table.models td.c-snapshot { min-width: 9rem; }
-table.models td.c-summary { min-width: 12rem; }
+/* the in-game status reason is a sentence: it wraps on its own line under the name */
+table.models td .ingame-reason { white-space: normal; display: block; }
+table.models td.c-paper, table.models td.c-snapshot { min-width: 8.5rem; }
+table.models td.c-summary { min-width: 12.5rem; }
 table.models td.c-actions { white-space: normal; }
 table.models td.c-actions .btn { margin: 0 0 0.3rem; }
 .pnl { font-weight: 600; white-space: nowrap; }

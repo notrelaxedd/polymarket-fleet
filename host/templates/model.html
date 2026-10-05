@@ -10,18 +10,21 @@
     <dt>id</dt><dd><code>{{ model.id }}</code></dd>
     <dt>lineage</dt><dd><code>{{ model.lineage_id }}</code>{% if model.id == model.lineage_id %} <span class="chip">root</span>{% endif %}</dd>
     {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
+    {% if model.is_ingame %}{% set fit = (model.backtest_metrics or {}).get('seasons') or [] %}
+    <dt>fitted on</dt><dd>{% if fit %}train seasons {{ fit[0] }}{% if fit[-1] != fit[0] %}-{{ fit[-1] }}{% endif %}{% else %}the train seasons of its model search{% endif %} <span class="muted small">fitted by the model search; an in-game model is not trained week by week</span></dd>
+    {% else %}
     <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
+    {% endif %}
     <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
     {% if model.is_ingame %}
     <dt>held-out validation</dt><dd>{% if iv %}log-loss {{ iv.log_loss | fixed }} vs vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays }} plays{% if iv.seasons %} ({{ iv.seasons[0] }}-{{ iv.seasons[-1] }}){% endif %} &middot; {% if iv.beats_baseline %}<span class="chip chip-beats">beats vegas_wp</span>{% else %}does not beat vegas_wp{% endif %}{% else %}<span class="muted">not validated</span>{% endif %}</dd>
     <dt>status rule</dt><dd>{{ model.ingame_reason }} <span class="muted small">paper ok needs a log-loss at or below vegas_wp over at least 10000 plays; in-game orders are paper-only</span></dd>
-    <dt>in-game paper record</dt><dd>{% if model.ingame %}{{ model.ingame.games }} games &middot; {{ model.ingame.bets }} bets &middot; {{ model.ingame.pnl_cents | money }} <span class="muted small">CLV is not defined in-game</span>{% else %}<span class="muted">no in-game bets yet</span>{% endif %}</dd>
+    <dt>in-game paper record</dt><dd>{% if model.ingame %}{{ model.ingame.games }} game{{ '' if model.ingame.games == 1 else 's' }} &middot; {{ model.ingame.bets }} bet{{ '' if model.ingame.bets == 1 else 's' }} &middot; {{ model.ingame.pnl_cents | money }} <span class="muted small">CLV is not defined in-game</span>{% else %}<span class="muted">no in-game bets yet</span>{% endif %}</dd>
     {% else %}
     <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %} <span class="muted small">ROI x bets / (bets + 100), the rank key</span></dd>
     <dt>search shrunk ROI</dt><dd>{{ model.search_score | signed_pct(2) }} <span class="muted small">search era, the selection score</span></dd>
     <dt>paper record</dt><dd>{% if model.paper.games %}{{ model.paper.games }} games &middot; {{ model.paper.bets }} bets &middot; {{ model.paper.pnl_cents | money }} &middot; ROI {{ model.paper.roi | signed_pct }} &middot; CLV {{ model.paper.avg_clv | fixed }} <span class="muted small">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bet{{ "" if model.paper_ci.n_bets == 1 else "s" }}</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
     <dt>snapshot replay</dt><dd>{% if model.snapshot %}{{ model.snapshot.n_games }} games &middot; {{ model.snapshot.n_bets }} bets &middot; ROI {{ model.snapshot.roi | signed_pct if model.snapshot.n_bets else '-' }} &middot; CLV {{ model.snapshot.avg_clv | fixed }}{% if model.snapshot.clv_ci %} <span class="range snapshot-ci">90% range {{ model.snapshot.clv_ci[0] | fixed }} to {{ model.snapshot.clv_ci[1] | fixed }}</span>{% endif %} <span class="muted small">shrunk {{ model.snapshot.score | fixed }}{% if model.rank_mode == 'snapshot' %}, ranked on snapshot CLV{% else %}, ranks on it from 30 bets{% endif %}</span>{% else %}<span class="muted">no snapshot replay yet</span>{% endif %}</dd>
-    {% if model.ingame %}<dt>in-game bets</dt><dd>{{ model.ingame.bets }} bets &middot; {{ model.ingame.pnl_cents | money }} <span class="muted small">in-game orders of this lineage</span></dd>{% endif %}
     {% endif %}
   </dl>
   <div class="actions">
@@ -90,7 +93,7 @@
 <h3>calibration</h3>
 <div class="table-wrap">
 <table class="metrics calibration ingame-calibration">
-  <thead><tr><th>p bucket</th><th>plays</th><th>mean p</th><th>mean outcome</th><th>vegas_wp mean</th></tr></thead>
+  <thead><tr><th>p</th><th>plays</th><th title="mean model p">model</th><th title="mean outcome">actual</th><th title="mean vegas_wp">vegas_wp</th></tr></thead>
   <tbody>
   {% for b in iv.calibration %}<tr><td>{{ b.bucket }}</td><td>{{ b.count }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td><td>{{ b.vegas_mean_p | fixed }}</td></tr>{% endfor %}
   </tbody>

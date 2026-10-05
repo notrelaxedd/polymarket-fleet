@@ -219,3 +219,22 @@ def sum_consumed(conn: psycopg.Connection, order_id: Any) -> int:
         (str(order_id),),
     ).fetchone()
     return int(row["s"])
+
+
+IN_PLAY_EVENT = """EXISTS (SELECT 1 FROM order_events ie WHERE ie.order_id = {alias}.id
+                       AND ie.detail @> '{{"in_play": true}}'::jsonb)"""
+
+
+def in_play_order(conn: psycopg.Connection, order: dict[str, Any]) -> bool:
+    """Approved under the in-game rules: an in-game order (orders.ingame), or a request
+    without the flag approved on a game in play (its approval event carries
+    "in_play": true, host.trading.ingame.route). The executor and the paper simulator
+    treat both alike: in-game GTD, never bounded or cancelled by kickoff."""
+    if order.get("ingame"):
+        return True
+    if order.get("id") is None:
+        return False
+    row = conn.execute(
+        f"SELECT {IN_PLAY_EVENT.format(alias='o')} AS p FROM orders o WHERE o.id = %s", (order["id"],)
+    ).fetchone()
+    return bool(row and row["p"])

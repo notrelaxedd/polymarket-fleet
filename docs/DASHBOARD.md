@@ -184,8 +184,9 @@ log-loss is worse than the vegas_wp baseline", "validated on N plays, fewer than
 vegas_wp" as a green "yes" chip (with the gain) or "no", the in-game paper record
 ("N bets · $P&L" from `model_scores.ingame_n_bets` and `ingame_pnl_cents`, "-"
 without), the summary, and an "Assign in-game" button (`/trading?ingame_model=<id>#assign`;
-hidden on a retired lineage). The main tables gain an "in-game" column (bets, P&L) only
-when one of their lineages has in-game bets.
+hidden on a retired lineage). The main (pre-game) tables have no in-game column:
+settlement credits every in-game bet to the assignment's in-game model, so only an
+ingame_wp lineage has an in-game record.
 
 `/models/{id}`: family, short params, status badge and (step 6) the "not validated" or
 flag chips in the heading; id, lineage (root chip), parent link, trained-through point,
@@ -239,8 +240,10 @@ paper record" (games, bets, P&L; CLV is not defined in-game), an "Assign in-game
 and the "In-game validation" section (`#ingame-validation`): the overall log-loss and
 Brier against vegas_wp, then tables by period (Q1 to Q4, OT), by score (home minus away
 before the play: <=-9, -8..-1, 0, 1..8, >=9) and the calibration buckets (plays, mean p,
-mean outcome, vegas_wp mean), or "No held-out validation stored." A pre-game model whose
-lineage has in-game bets gets an "in-game bets" line.
+mean outcome, vegas_wp mean, headed "p, plays, model, actual, vegas_wp" so the table
+fits a phone), or "No held-out validation stored." An ingame_wp model shows "fitted on
+train seasons X-Y" (from its search-era metrics) instead of the trained-through point:
+the search fits it and it is not trained week by week. Counts read "1 game", "1 bet".
 
 ## Settings page `/settings`
 Groups, each its own form with a Save button and inline validation errors. Every field is
@@ -449,10 +452,14 @@ fleet, settings and trading after an auto-kill (the bar naming the reason), at 3
 
 (step 6B review) At desktop width the Models table fits a 1280 screen: the metric
 cells wrap between their parts (a value, its muted note and its range each stay whole),
-the paper and snapshot records wrap into a few lines (at least 9rem wide), the summary
-keeps at least 12rem and the Train / Validate / Assign buttons stack.
+the paper and snapshot records wrap into a few lines (at least 8.5rem wide), the summary
+keeps at least 12.5rem (200 px) and the Train / Validate / Assign buttons stack; (6C)
+the in-game status reason under an ingame_wp name wraps on its own line.
 `tests/hw/screenshots.py` checks at 1280 light that no `.table-wrap` on the models page
-scrolls sideways.
+scrolls sideways, that every summary is at least 200 px wide and every action button
+inside the table, and at 390 light that no non-stacked table on the Models and
+ingame_wp model pages scrolls sideways (the in-game calibration) and no in-game reason
+is clipped.
 
 ## Step 6 screenshots
 

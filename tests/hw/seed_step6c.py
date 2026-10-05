@@ -93,7 +93,8 @@ def validation(n_plays: int, log_loss: float, vegas: float) -> dict[str, Any]:
 
 def _ingame_model(conn: psycopg.Connection, params: dict[str, Any], val: dict[str, Any], coef: list[float]) -> dict[str, Any]:
     artifact = {"coef": coef, "features": list(FEATURE_NAMES), "n_train": 318_204, "train_seasons": [2012, 2021]}
-    model = insert_model(conn, "ingame_wp", params, {"era": "search", "log_loss": round(val["log_loss"] - 0.006, 4)},
+    model = insert_model(conn, "ingame_wp", params, {"era": "search", "log_loss": round(val["log_loss"] - 0.006, 4),
+                                                   "seasons": list(range(2012, 2022))},
                          summary=IngameWP.summary(params, val), artifact=artifact, validation=val)
     eligibility.recompute_lineage(conn, model["lineage_id"])
     return conn.execute("SELECT * FROM models WHERE id = %s", (model["id"],)).fetchone()
@@ -263,6 +264,8 @@ def check_step6c(server_url: str, ids: dict[str, str]) -> None:
         assert 'id="ingame"' in models and models.count("ingame-row") >= 2 and "in-game paper</span> 2 bets" in models
         model = client.get(f"/models/{ids['ingame_model']}").text
         assert 'id="ingame-validation"' in model and "beats vegas_wp" in model and "Assign in-game" in model
+        assert "1 game &middot; 2 bets" in model and "train seasons 2012-2021" in model, "plurals, fitted-on line"
+        assert "c-ingame" not in models.split('id="ingame"')[0], "the pre-game tables carry no in-game column"
         board = client.get("/api/models").json()
         found = {m["id"]: m["status"] for m in board["ranked"] + board["unranked"]}
         assert found.get(ids["ingame_model"]) == "paper_ok" and found.get(ids["ingame_weak"]) == "candidate", found

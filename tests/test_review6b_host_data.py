@@ -128,5 +128,5 @@ def test_models_record_cells_can_wrap(client, conn):
     row = re.search(rf'<tr class="model-row" data-model="{model["id"]}">.*?</tr>', html, re.S).group(0)
     assert '<td class="c-paper">' in row and '<td class="c-snapshot">' in row, "no nowrap on the two long record cells"
     css = client.get("/static/style.css").text
-    assert "table.models td.c-paper, table.models td.c-snapshot { min-width: 9rem; }" in css
+    assert "table.models td.c-paper, table.models td.c-snapshot { min-width: 8.5rem; }" in css, "8.5rem (6C) leaves the summary 200 px at 1280"
     assert ".chip.chip-snapshot { background: transparent; color: var(--accent); border: 1px solid var(--accent); }" in css

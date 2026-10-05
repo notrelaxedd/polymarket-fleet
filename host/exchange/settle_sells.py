@@ -22,7 +22,10 @@ CLV and `state_at_entry` (period, clock, score and possession at approval: the o
 approval event recorded, else the newest game_state at or before the order's
 created_at, null without one), and is attributed to the
 assignment's in-game model (its model_id and lineage_id) instead of the pre-game one.
-The money (basis, payout, pnl) is split exactly as for any other order.
+On a market only one of the two models traded the money (basis, payout, pnl) is split
+exactly as for any other order; on a market both traded, a contract belongs to the
+model that bought it, so a sell that closes the other model's contracts realizes that
+part on the other model's buy rows (host.exchange.settle_owners).
 """
 from __future__ import annotations
 
@@ -123,11 +126,25 @@ def current_lot(conn: psycopg.Connection, market_orders: list[dict[str, Any]]) -
     return lot
 
 
+def buy_bet(order: dict[str, Any], t: dict[str, Any], market: dict[str, Any], assignment: dict[str, Any],
+            game: dict[str, Any], result: str, basis: int, payout: int) -> dict[str, Any]:
+    """The bets row of one filled buy order covering `basis` and `payout` of what is held."""
+    entry = t["basis"] / (t["size"] * 100.0) if t["size"] else float(order["price"])
+    closing = None if market.get("closing_price") is None else float(market["closing_price"])
+    return {
+        **_common(order, market, assignment, game), "order_side": "buy",
+        "entry_price": round(entry, 6), "fee_cents": t["fee"], "cost_cents": basis,
+        "stake_cents": t["basis"] + t["fee"], "clv": None if closing is None else round(closing - entry, 6),
+        "result": result, "pnl_cents": payout - basis - t["fee"], "payout_cents": payout, "size": t["size"],
+    }
+
+
 def market_bets(
     conn: psycopg.Connection, market_orders: list[dict[str, Any]], market: dict[str, Any],
     assignment: dict[str, Any], game: dict[str, Any], winner: str | None,
 ) -> list[dict[str, Any]]:
-    """Bets rows of one market's filled orders (in the given order, buys and sells)."""
+    """Bets rows of one market's filled orders (in the given order, buys and sells). A
+    market both of the assignment's models traded goes through host.exchange.settle_owners."""
     totals = {str(o["id"]): _fill_totals(conn, o["id"]) for o in market_orders}
     buys = [o for o in market_orders if o.get("side") != "sell"]
     sells = [o for o in market_orders if o.get("side") == "sell"]
@@ -136,6 +153,15 @@ def market_bets(
     held = max(0, bought - sold)
     basis_left = sum(totals[str(o["id"])]["basis"] for o in buys) - sum(totals[str(o["id"])]["basis"] for o in sells)
     result = outcome(market, winner)
+    from host.exchange import settle_owners  # settle_owners builds on this module
+
+    if settle_owners.mixed(market_orders):
+        rows = settle_owners.owner_bets(
+            conn, market_orders, totals, result, (basis_left, held),
+            lambda o, t, basis, payout: buy_bet(o, t, market, assignment, game, result, basis, payout),
+            lambda o, t: sell_bet(o, t, market, assignment, game),
+        )
+        return [rows[str(o["id"])] for o in market_orders]
     lot = current_lot(conn, market_orders)
     basis_parts = split(basis_left, [lot.get(str(o["id"]), (0, 0))[1] for o in buys])
     if result == "win":
@@ -144,17 +170,9 @@ def market_bets(
         payout_parts = list(basis_parts)
     else:
         payout_parts = [0] * len(buys)
-    rows: dict[str, dict[str, Any]] = {}
+    rows = {}
     for order, basis, payout in zip(buys, basis_parts, payout_parts):
-        t = totals[str(order["id"])]
-        entry = t["basis"] / (t["size"] * 100.0) if t["size"] else float(order["price"])
-        closing = None if market.get("closing_price") is None else float(market["closing_price"])
-        rows[str(order["id"])] = {
-            **_common(order, market, assignment, game), "order_side": "buy",
-            "entry_price": round(entry, 6), "fee_cents": t["fee"], "cost_cents": basis,
-            "stake_cents": t["basis"] + t["fee"], "clv": None if closing is None else round(closing - entry, 6),
-            "result": result, "pnl_cents": payout - basis - t["fee"], "payout_cents": payout, "size": t["size"],
-        }
+        rows[str(order["id"])] = buy_bet(order, totals[str(order["id"])], market, assignment, game, result, basis, payout)
     for order in sells:
         rows[str(order["id"])] = sell_bet(order, totals[str(order["id"])], market, assignment, game)
     return [rows[str(o["id"])] for o in market_orders]
@@ -219,6 +237,8 @@ def state_at(conn: psycopg.Connection, game_id: str, ts: Any, order_id: Any = No
 
 
 def settle_totals(bets: list[dict[str, Any]]) -> tuple[int, int]:
-    """(remaining basis, payout) the ledger `settle` row moves: the buy rows' sums."""
+    """(remaining basis, payout) the ledger `settle` row moves: the buy rows' sums (their
+    settle_basis_cents and settle_payout_cents where host.exchange.settle_owners set them)."""
     buys = [b for b in bets if b.get("order_side", "buy") == "buy"]
-    return sum(b["cost_cents"] for b in buys), sum(b["payout_cents"] for b in buys)
+    return (sum(b.get("settle_basis_cents", b["cost_cents"]) for b in buys),
+            sum(b.get("settle_payout_cents", b["payout_cents"]) for b in buys))

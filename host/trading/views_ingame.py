@@ -19,6 +19,7 @@ from host.exchange.feedlag import lag_status
 from host.exchange.gamestate import latest_state
 from host.leaderboard import short_params
 from host.settings import get_setting
+from host.trading.ingame import model_retired
 from host.web import ago
 
 INGAME_FAMILY = "ingame_wp"
@@ -145,7 +146,7 @@ def assignment_ingame(conn: psycopg.Connection, a: dict[str, Any], markets: list
         "model_id": str(model_id) if model_id else None,
         "model_label": short_params(INGAME_FAMILY, loaded["row"]["params"]) if loaded else None,
         "trade_ingame": bool(flags and flags["trade_ingame"]),
-        "enabled": bool(flags and flags["trade_ingame"] and model_id),
+        "enabled": bool(flags and flags["trade_ingame"] and model_id) and not model_retired(conn, model_id),
         "state": None, "label": None, "line": None, "age_s": None, "stale": False, "source": None,
         "p_home": None, "mid_home": home_mid(markets, a["game_id"]), "pregame_p_home": None,
     }

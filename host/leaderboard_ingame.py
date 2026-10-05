@@ -1,9 +1,11 @@
 """The in-game parts of the leaderboard and the model detail (docs/INGAME.md "Scoring
 and dashboard", contract sections 11 and 12).
 
-- The in-game column group: a lineage's in-game paper (and live) record from
-  model_scores (`ingame_n_bets`, `ingame_pnl_cents`, summed over its games); None for
-  a lineage without in-game bets. The pooled `paper` record keeps counting every bet.
+- The in-game record: a lineage's in-game paper (and live) record from model_scores
+  (`ingame_n_bets`, `ingame_pnl_cents`, summed over its games); None for a lineage
+  without in-game bets. Settlement credits every in-game bet to the assignment's
+  in-game model, so only an ingame_wp lineage has one; the Models page shows it in the
+  In-game models table. The pooled `paper` record keeps counting every bet.
 - An ingame_wp lineage is not ranked with the pre-game models (it has no moneyline ROI
   or CLV): it is listed apart, ordered by its validation, the models beating the
   vegas_wp baseline first, then by the log-loss gain over the baseline (vegas_wp
@@ -141,10 +143,5 @@ def ingame_key(entry: dict[str, Any]) -> tuple[int, float, Any]:
             -created.timestamp() if hasattr(created, "timestamp") else 0)
 
 
-def has_ingame_columns(entries: list[dict[str, Any]]) -> bool:
-    """Whether the Models page shows the in-game column group."""
-    return any(e.get("ingame") for e in entries)
-
-
-__all__ = ["INGAME_FAMILY", "INGAME_REASON", "decorate", "has_ingame_columns", "ingame_key", "ingame_records",
+__all__ = ["INGAME_FAMILY", "INGAME_REASON", "decorate", "ingame_key", "ingame_records",
            "ingame_validation", "lineage_ingame_record", "short_params"]

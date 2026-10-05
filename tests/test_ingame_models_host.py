@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -210,21 +211,41 @@ def test_models_pages_show_the_ingame_group(client, conn):
     html = client.get("/models").text
     assert 'id="ingame"' not in html and "c-ingame" not in html, "no in-game group without in-game lineages or bets"
     model = insert_ingame(conn, status="paper_ok", validation=ingame_validation(log_loss=0.44))
-    add_score(conn, pregame, game["game_id"], ingame_bets=2, ingame_pnl=-120)
-    add_score(conn, model, game["game_id"], clv=None, ingame_bets=3, ingame_pnl=480)
+    conn.execute("UPDATE models SET backtest_metrics = backtest_metrics || %s WHERE id = %s",
+                 (Jsonb({"seasons": list(range(2012, 2022))}), model["id"]))
+    add_score(conn, pregame, game["game_id"])
+    add_score(conn, model, game["game_id"], n_bets=1, clv=None, ingame_bets=1, ingame_pnl=480)
     html = client.get("/models").text
     assert 'id="ingame"' in html and "In-game models" in html and f'data-model="{model["id"]}"' in html
-    assert '<th class="c-ingame">in-game' in html, "the in-game column group shows once a lineage has in-game bets"
-    assert "2 bets &middot; -$1.20" in html and "3 bets &middot; $4.80" in html
     assert "/trading?ingame_model=" in html and "beats vegas_wp" in html
+    assert "in-game paper</span> 1 bet &middot; $4.80" in html, "one bet reads 1 bet"
+    ingame_table = html.split('id="ingame"')[1]
+    pregame_tables = html.split('id="ingame"')[0]
+    assert "c-ingame" in ingame_table and "c-ingame" not in pregame_tables, (
+        "settlement credits in-game bets to the in-game model, so the pre-game tables have no in-game column")
+    assert 'class="muted small ingame-reason"' in ingame_table
     page = client.get(f"/models/{model['id']}").text
     assert "In-game validation" in page and "ingame-by-period" in page and "ingame-by-score" in page
     assert "ingame-calibration" in page and "Q4" in page and "OT" in page
     assert 'class="inline validate-form"' not in page and "Replay on snapshots" not in page, "no pre-game jobs offered"
-    assert "Assign in-game" in page and "3 bets" in page
+    assert "Assign in-game" in page and "1 game &middot; 1 bet &middot; $4.80" in page
+    assert "not trained (search candidate)" not in page and "<dt>fitted on</dt><dd>train seasons 2012-2021" in page
+    calibration = page.split('class="metrics calibration ingame-calibration"')[1].split("</thead>")[0]
+    assert ">p</th><th>plays</th>" in calibration and ">actual</th>" in calibration and ">vegas_wp</th>" in calibration
+    assert ">mean outcome<" not in calibration and ">vegas_wp mean<" not in calibration, "short headers fit a phone"
     pre_page = client.get(f"/models/{pregame['id']}").text
     assert "Replay on snapshots" in pre_page and "In-game validation" not in pre_page
-    assert "in-game bets" in pre_page
+    assert "in-game bets" not in pre_page and "<dt>trained through</dt>" in pre_page
+
+
+def test_models_css_wraps_the_ingame_reason():
+    """The reason sentence wraps under the name (it once kept the 6B nowrap of .muted and
+    pushed the In-game models table past 1280 px); the rule must outrank that one."""
+    css = (Path(__file__).parents[1] / "host" / "static" / "style.css").read_text()
+    nowrap = "table.models td .muted, table.models td .range { white-space: nowrap; }"
+    wrap = "table.models td .ingame-reason { white-space: normal; display: block; }"
+    assert nowrap in css and wrap in css and css.index(wrap) > css.index(nowrap), "same specificity, declared later"
+    assert "table.models td.c-summary { min-width: 12.5rem; }" in css, "the summary keeps 200 px at 1280"
 
 
 # ------------------------------------------------------------------ data refresh and seed

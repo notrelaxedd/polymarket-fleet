@@ -6,7 +6,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, Response
 
 from host import leaderboard, models, nflverse, web
-from host.leaderboard_ingame import has_ingame_columns
 from host.api.dashboard import page
 from host.api.dashboard_forms import FORM
 from host.api.deps import DB, require_owner
@@ -25,14 +24,15 @@ NFLVERSE_ATTRIBUTION = (
 @router.get("/models", response_class=HTMLResponse)
 def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     """The leaderboard: ranked lineages, then the unranked ones, then the in-game
-    (ingame_wp) lineages in their own table; the in-game column group shows when any
-    lineage has in-game bets."""
+    (ingame_wp) lineages in their own table with their in-game paper record (settlement
+    credits every in-game bet to the assignment's in-game model, so a pre-game lineage
+    has none and its tables carry no in-game column)."""
     board = leaderboard.leaderboard(conn)
     ingame = [m for m in board["unranked"] if m.get("is_ingame")]
     unranked = [m for m in board["unranked"] if not m.get("is_ingame")]
     return page(
         request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, ranked=board["ranked"], unranked=unranked,
-        ingame_models=ingame, show_ingame=has_ingame_columns(board["ranked"] + unranked),
+        ingame_models=ingame,
     )
 
 

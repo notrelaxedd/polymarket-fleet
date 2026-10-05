@@ -279,7 +279,9 @@ def test_rejects_after_kickoff(conn):
     s = trade_setup(conn, kickoff_in_s=-60)
     assert approve(conn, s)["reason"] == "kickoff"
     set_setting(conn, "trade_pregame_only", False)
-    assert approve(conn, s)["status"] == "approved"
+    # Not a pre-game rule any more, but the game is in play: the in-game rules apply
+    # (tests/test_review6c_trading.py), and this assignment has no in-game trading.
+    assert approve(conn, s)["reason"] == "ingame_disabled"
     conn.execute("UPDATE games SET status = 'final' WHERE game_id = %s", (GAME_ID,))
     assert approve(conn, s)["reason"] == "kickoff", "a final game is never traded"
 

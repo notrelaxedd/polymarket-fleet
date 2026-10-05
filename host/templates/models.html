@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Models{% endblock %}
 {% block content %}
-{% set columns = '<th>model</th><th>validation ROI <span class="muted">90% range</span></th><th>beats market</th><th>bets</th><th>search ROI</th><th>log-loss vs market</th><th>drawdown</th><th>paper</th><th>snapshot <span class="muted">CLV 90% range</span></th>' ~ ('<th class="c-ingame">in-game <span class="muted">bets, P&amp;L</span></th>' if show_ingame else '') ~ '<th>summary</th><th></th>' %}
+{% set columns = '<th>model</th><th>validation ROI <span class="muted">90% range</span></th><th>beats market</th><th>bets</th><th>search ROI</th><th>log-loss vs market</th><th>drawdown</th><th>paper</th><th>snapshot <span class="muted">CLV 90% range</span></th>' ~ '<th>summary</th><th></th>' %}
 <h1>Models</h1>
 <p class="muted small">One row per lineage. Ranked on paper CLV (shrunk, ties by ROI) once a lineage has 5 paper games and 30 paper bets, then on snapshot replay CLV (shrunk, ties by ROI) once a lineage has 30 bets replayed on recorded prices, otherwise on the held-out validation era: shrunk ROI (ROI x bets / (bets + 100)), ties by the log-loss gain over the market. CLV is the closing price minus the price paid: above zero means the market moved the model's way after it bought. A lineage keeps its search-era numbers muted beside them; "beats market" is a sign-flip p below 0.05.</p>
 {% if ranked %}
@@ -55,7 +55,7 @@
     <td class="nowrap c-plays"><span class="k">plays</span> {{ iv.n_plays if iv else '-' }}{% if iv and iv.seasons %} <span class="muted small">{{ iv.seasons[0] }}-{{ iv.seasons[-1] }}</span>{% endif %}</td>
     <td class="nowrap c-ll"><span class="k">log-loss</span> {% if iv %}{{ iv.log_loss | fixed }} <span class="muted">vs {{ iv.vegas_log_loss | fixed }}</span>{% else %}-{% endif %}</td>
     <td class="nowrap c-market"><span class="k">beats vegas_wp</span> {% if iv %}{% if iv.beats_baseline %}<span class="chip chip-beats">yes</span>{% else %}no{% endif %}{% if iv.ll_gain is not none %} <span class="muted small">gain {{ iv.ll_gain | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
-    <td class="nowrap c-ingame"><span class="k">in-game paper</span> {% if m.ingame %}{{ m.ingame.bets }} bets &middot; {{ m.ingame.pnl_cents | money }}{% else %}-{% endif %}</td>
+    <td class="nowrap c-ingame"><span class="k">in-game paper</span> {% if m.ingame %}{{ m.ingame.bets }} bet{{ '' if m.ingame.bets == 1 else 's' }} &middot; {{ m.ingame.pnl_cents | money }}{% else %}-{% endif %}</td>
     <td class="wide c-summary"><p class="summary">{{ m.summary or 'No summary yet.' }}</p></td>
     <td class="action c-actions">{% if m.status != 'retired' %}<a class="btn small" href="/trading?ingame_model={{ m.id }}#assign">Assign in-game</a>{% endif %}</td>
   </tr>
