@@ -24,7 +24,9 @@ on recorded sim bars with the CLV of a constructed rising close, stored apart fr
 closing-line numbers and shown on the Models page; team stats and injury signals in the
 games feed and an epa_blend search; a paper sell after the market overshoots the
 model, filled partially and then fully, settled into a sold row and pro-rata buy rows).
-Heartbeat 0.3 s, host loop 0.5 s, every wait bounded.
+Last runs the paper CLV interval gate (tests/e2e_paper_gate.py: settled paper bets whose
+CLV interval excludes or straddles zero, live_eligible or not). Heartbeat 0.3 s, host
+loop 0.5 s, every wait bounded.
 """
 from __future__ import annotations
 
@@ -50,6 +52,7 @@ from host.loop import LoopThread
 from tests.conftest import flash_cookie, heartbeat_body
 from tests.e2e_live import phase_live
 from tests.e2e_models import CountingRunner, phase_models
+from tests.e2e_paper_gate import phase_paper_gate
 from tests.e2e_signals import phase_signals
 from tests.e2e_trading import phase_trading
 from tests.e2e_validation import phase_validation
@@ -539,11 +542,12 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     phase_dashboard(live_host, state_dir, worker_id, first)
     phase_reoffer(live_host, worker_id, first, drop_box)
     models = phase_models(live_host, state_dir, worker_id, monkeypatch, wait_for, settled)
-    phase_validation(live_host, worker_id, models, wait_for, settled)
+    validated = phase_validation(live_host, worker_id, models, wait_for, settled)
     phase_trading(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_live(live_host, state_dir, worker_id, first, models, tmp_path, monkeypatch, wait_for, settled)
     refused = phase_signals(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_crash(live_host, state_dir, worker_id, first, agents)
+    phase_paper_gate(live_host, validated)
 
     assert time.monotonic() - started < 240.0
     jobs = live_host.get("/api/jobs?limit=500")

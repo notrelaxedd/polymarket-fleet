@@ -277,7 +277,7 @@ cleared. Terminal (an explicit failure is not retried; only lease expiry retries
   | `fee_model` | object | `{"taker_rate": 0..1, "half_spread": 0..1}` (step 3) |
   | `thresholds_backtest` | object | `{"min_bets": int 0..10^6, "min_roi": -1..1, "max_drawdown": 0..1}` (step 3) plus, optional with defaults (step 6): `"require_validation": bool`, `"min_roi_ci_low": -1..1`, `"max_market_p": 0..1`, `"forbid_flags": [overfit, fragile, regime_dependent]` (distinct) |
   | `backtest_seasons` | array | `[first, last]`, ints 1999..2100, `last` may be null, `last >= first` (step 3); the search era |
-  | `validation_seasons` | array | same shape (step 6); `first` must be after `backtest_seasons[1]` when that is set (cross-field, 400 naming both) |
+  | `validation_seasons` | array | same shape (step 6); `first` must be after `backtest_seasons[1]` when that is set, and after `backtest_seasons[0]` when it is null (cross-field, 400 naming both) |
   | `search_workers` | `"auto"` or int | 1..64 (step 6) |
   | `thresholds_paper` | object | the step 4 keys plus optional `"clv_ci_excludes_zero": bool` (step 6) |
   | `nflverse_refresh_hours` | int | 1..168 (step 3) |
@@ -900,18 +900,32 @@ is `validation_seasons`.
   `clv_ci_excludes_zero true`. The migration (`0006_robustness.sql`) rewrites the
   thresholds rows to the new objects, adds the key to the paper thresholds, and moves a
   still-default `backtest_seasons [2010, null]` to `[2010, 2021]`. The two eras must not
-  overlap: `validation_seasons[0] > backtest_seasons[1]` whenever the latter is set.
+  overlap: `validation_seasons[0] > backtest_seasons[1]` whenever the latter is set, and
+  `validation_seasons[0] > backtest_seasons[0]` when it is null (so the capped search era
+  is never empty).
 - Model rows gain `validation_metrics` and `stress_metrics` (held on every row of the
   lineage like the backtest metrics); `lineage_paper_ci` caches the paper CLV bootstrap
   per lineage (`n_bets`, `avg_clv`, `clv_low`, `clv_high`, `computed_at`).
 - Job kind `validate` (`{"model_id", "seed"}`, role `backtest`); the model must exist.
   The host copies into a `model_search` and a `validate` job, besides the step 3 limits,
   `validation_seasons` (null last resolved to the last complete season) and `workers`
-  (`search_workers`). The search era never reaches into the validation era: a null last
-  `backtest_seasons` resolves to the last complete season capped at the season before
-  the validation era, and a `model_search` whose own `seasons` end in or after the
-  validation era is 400 (`seasons must end before the validation era (which starts in
-  2022)`); a plain `backtest` may still test any seasons.
+  (`search_workers`). The search era never reaches into the validation era
+  (`host/eras.py`): a null last `backtest_seasons` resolves to the last complete season
+  capped at the season before the validation era, and these are 400, never run on a
+  fallback era: a `model_search` whose own `seasons` end in or after the validation era
+  (`seasons must end before the validation era (which starts in 2022)`); a `backtest` with
+  `model_id` (its result becomes the lineage's search-era `backtest_metrics`) whose
+  `seasons` do; a `backtest`, `model_search` or `validate` when `backtest_seasons` is
+  malformed, empty once capped, or reaches into the validation era; a `model_search` or
+  `validate` when `validation_seasons` does not resolve (for example it starts after the
+  last complete season); and a `validate` of a model whose lineage was searched on a
+  season at or after the first validation season (the root's `backtest_metrics.seasons`,
+  else the range of the search job that created it): its validation would be in-sample,
+  so models searched on the step 3 default `[2010, null]` must be searched again. A
+  `backtest` by `family` and `params` may still test any seasons. The worker refuses the
+  same overlap (a validate job errors when the context model's `backtest_metrics.seasons`
+  reach the validation era) so the overfit flag never compares overlapping eras. A `train`
+  job, which never reads the eras, keeps the old fallback.
 - `POST /api/v1/models` accepts `validation_metrics | null` and `stress_metrics | null`
   (objects, 256 KiB each, no NaN or Infinity) and stores them on creation; an identity hit
   on a root replaces the stored validation and stress metrics too (latest wins, each
@@ -936,7 +950,11 @@ is `validation_seasons`.
   <lineage_id>:boot")`, percentiles by linear interpolation) must be above 0 over at least
   `min_bets` such bets; the interval is cached in `lineage_paper_ci` on every paper
   recompute (settlement, a paper thresholds save). Demotion halts live assignments as
-  before.
+  before. The host recomputes every lineage once at startup, after the migrations
+  (`host/startup.py`: the backtest gate on every lineage, the paper gate on every lineage
+  with a paper record), so a gate a migration made stricter demotes existing lineages
+  (and halts their live assignments) on the first boot instead of at their next
+  settlement.
 - Owner API: each leaderboard entry gains `validation` (`roi, n_bets, log_loss,
   market_log_loss, max_drawdown, seasons, hit_rate, avg_edge, pnl_cents, shrunk_roi, ci,
   mean_ll_gain, market_p, flags, calib_slope, calib_intercept, brier_decomposition,
@@ -944,7 +962,8 @@ is `validation_seasons`.
   ROI, 0 when not validated), `search_score` (the search-era shrunk ROI), `ll_gain`,
   `flags` (validation then stress flags), `stress_flags`, `paper_ci` (`{n_bets, avg_clv,
   ci: [low, high], computed_at}` or null) and `rank_mode` `paper | validation`; an
-  unranked entry carries `unranked_reason` (`not validated` or `retired`). Ranked: the
+  unranked entry carries `unranked_reason` (`not validated` or `retired`; a lineage
+  without validation metrics is unranked whatever its paper record). Ranked: the
   paper-ranked lineages first (unchanged), then every validated, non-retired lineage by
   validation shrunk ROI desc, `mean_ll_gain` desc, `created_at`. The detail adds
   `validation_metrics`, `stress_metrics`, `validation`, `validated`, `score`,

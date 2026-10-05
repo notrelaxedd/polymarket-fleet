@@ -592,7 +592,9 @@ def test_release_now_5xx_is_carried_in_next_heartbeat(host: FakeHost, enrolled: 
     assert "released" in host.job_events(job_id)
     assert host.job(job_id)["checkpoint"]["elapsed"] >= 1
     assert any(any(r["id"] == job_id for r in hb["request"]["released"]) for hb in host.heartbeats), "release must ride a heartbeat after the 500"
-    assert running.agent.pending_releases == []
+    # The host requeues the job while handling that heartbeat; the agent clears the
+    # release once it has the reply, so wait for that instead of racing it.
+    host.wait_for(lambda: running.agent.pending_releases == [], timeout=8.0)
 
 
 def test_checkpoint_is_resent_when_heartbeat_fails(state_dir: str, monkeypatch) -> None:
@@ -1477,10 +1479,12 @@ def test_lost_trade_job_is_dropped_and_reclaimed(host: FakeHost, enrolled: str, 
     host.expire_lease(job_id)
     host.wait_for(lambda: any(job_id in hb["response"]["lost"] for hb in host.heartbeats), timeout=8.0)
     host.wait_for(lambda: host.job(job_id)["status"] == "leased" and host.job(job_id)["lease_token"] != token, timeout=8.0)
-    # The host grants the new lease in a heartbeat response the agent applies just after;
-    # wait for the agent to have taken it rather than racing the response handling.
-    host.wait_for(lambda: job_id in dict(trader.agent.trade_jobs), timeout=8.0)
-    assert list(trader.agent.trade_jobs) == [job_id] and trader.agent.trade_jobs[job_id]["lease_token"] == host.job(job_id)["lease_token"]
+    # The host leases the job again while answering a heartbeat; the agent adopts it
+    # once it has read that answer, so wait for the adoption instead of racing it.
+    new_token = host.job(job_id)["lease_token"]
+    host.wait_for(lambda: job_id in trader.agent.trade_jobs, timeout=8.0)
+    assert list(trader.agent.trade_jobs) == [job_id] and trader.agent.trade_jobs[job_id]["lease_token"] == new_token
+    assert host.job(job_id)["lease_token"] == new_token
 
 
 def test_shutdown_releases_trade_jobs_through_the_handshake(host: FakeHost, enrolled: str, trader: AgentThread) -> None:

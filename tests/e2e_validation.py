@@ -2,12 +2,15 @@
 with a held-out validation era runs on the real agent through a two-process pool and
 creates models that carry validation and stress metrics; the same search with one
 process gives the same models and the same numbers; a validate job refills an older
-lineage on the new era; the Models page shows the validation columns, the chips and
-the Robustness section; the stricter gates promote and demote on the stored metrics.
+lineage on the new era; a lineage without validation numbers is listed unranked as
+"not validated" until a validate job validates and ranks it; the Models page shows the
+validation columns, the chips and the Robustness section; the stricter gates promote
+and demote on the stored metrics.
 """
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Callable
 
 import psycopg
@@ -17,7 +20,7 @@ from host.eligibility import DEFAULT_THRESHOLDS
 from tests.conftest import stress_metrics, validation_metrics
 from tests.e2e_models import finished, send
 
-ERAS = {"backtest_seasons": [2016, 2019], "validation_seasons": [2020, 2021]}
+ERAS = {"backtest_seasons": [2016, 2019], "validation_seasons": [2022, 2023]}
 SEARCH = {"family": "elo_blend", "n": 4, "seed": 6, "seasons": [2016, 2019], "top_k": 2}
 CI_KEYS = {"roi", "avg_clv", "max_drawdown", "hit_rate", "avg_edge"}
 PRICE_NAMES = ["spread+0.01", "spread+0.02", "fee x1.5"]
@@ -41,7 +44,7 @@ def check_validation_shape(vm: dict[str, Any], seasons: list[int]) -> None:
     assert vm["ci"]["roi"][0] <= vm["roi"] <= vm["ci"]["roi"][1] or vm["n_bets"] == 0
     assert vm["ci"]["avg_clv"] == [0.0, 0.0], "closing-line fills carry no CLV"
     assert 0.0 <= vm["market_p"] <= 1.0 and isinstance(vm["mean_ll_gain"], float)
-    assert set(vm["brier_decomposition"]) == {"reliability", "resolution", "uncertainty"}
+    assert set(vm["brier_decomposition"]) == {"reliability", "resolution", "uncertainty", "within_variance", "within_covariance"}
     assert set(vm["flags"]) <= {"overfit"} and len(vm["calibration"]) == 10
     assert abs(vm["shrunk_roi"] - vm["roi"] * vm["n_bets"] / (vm["n_bets"] + 100)) < 1e-9
 
@@ -73,7 +76,7 @@ def validated_search(host: Any, worker_id: str, workers: int, wait_for: Callable
     wait_for(settled(host, worker_id, "model_search"), f"agent in model_search (workers {workers})")
     done = wait_for(finished(host, job["id"]), f"validated search done (workers {workers})", timeout=90.0)
     result = done["result"]
-    assert result["evaluated"] == 4 and result["seasons"] == [2019] and result["validation_seasons"] == [2020, 2021]
+    assert result["evaluated"] == 4 and result["seasons"] == [2019] and result["validation_seasons"] == [2022, 2023]
     assert len(result["top"]) == 2 and len(result["validated"]) == 2 and len(result["created_models"]) == 2
     assert [v["index"] for v in result["validated"]] == [t["index"] for t in result["top"]]
     assert "validation_note" not in result and done["progress"] == 1
@@ -95,7 +98,7 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
         assert model["params"] == top["params"] and model["backtest_metrics"] == top["metrics"]
         assert model["validation_metrics"] == validated["validation_metrics"], "the search stores what it validated"
         assert model["stress_metrics"] == validated["stress_metrics"]
-        check_validation_shape(model["validation_metrics"], [2020, 2021])
+        check_validation_shape(model["validation_metrics"], [2022, 2023])
         check_stress_shape(model["stress_metrics"], seed=SEARCH["seed"])
         search_era = model["backtest_metrics"]
         assert search_era["era"] == "search" and set(search_era["ci"]) == CI_KEYS and 0 <= search_era["market_p"] <= 1
@@ -119,7 +122,8 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
     for mid in ids:
         entry = ranked[mid]
         assert entry["validated"] is True and entry["rank_mode"] == "validation" and entry["rank"] >= 1
-        assert entry["validation"]["ci"]["roi"] == entry["validation"]["ci"]["roi"] and "market_p" in entry["validation"]
+        stored = host.get(f"/api/models/{mid}")["validation_metrics"]
+        assert entry["validation"]["ci"]["roi"] == stored["ci"]["roi"] and entry["validation"]["market_p"] == stored["market_p"]
         assert entry["score"] == entry["validation"]["shrunk_roi"] and entry["search_score"] is not None
     page = host.client.get("/models").text
     assert '<span class="k">validation ROI</span>' in page and '<span class="k">beats market</span>' in page
@@ -136,6 +140,38 @@ def _row(page: str, model_id: str) -> str:
     return page[start:page.index("</tr>", start)]
 
 
+def _classes(html: str) -> set[str]:
+    """Every class name used in a fragment (class lookups survive markup changes)."""
+    return {name for attr in re.findall(r'class="([^"]*)"', html) for name in attr.split()}
+
+
+def unvalidated_phase(host: Any, worker_id: str, model_id: str, wait_for: Callable[..., Any],
+                      settled: Callable[..., Any]) -> None:
+    """A lineage without validation numbers (cleared here, as on a step 5 install) is
+    listed unranked as "not validated" with the chip on its row; a validate job on the
+    live agent then validates it and it ranks on the validation era."""
+    set_lineage_metrics(host, model_id, None, None)
+    board = host.get("/api/models")
+    assert model_id not in {m["id"] for m in board["ranked"]}
+    entry = next(m for m in board["unranked"] if m["id"] == model_id)
+    assert entry["unranked_reason"] == "not validated" and entry["validated"] is False and entry["validation"] is None
+    assert "rank" not in entry and host.get(f"/api/models/{model_id}")["validated"] is False
+    classes = _classes(_row(host.client.get("/models").text, model_id))
+    assert "chip-unvalidated" in classes and "rank" not in classes, classes
+    job = send(host, "validate", {"model_id": model_id}, worker_id)
+    done = wait_for(finished(host, job["id"]), "validate of the unvalidated lineage done", timeout=60.0)
+    vm = done["result"]["validation_metrics"]
+    check_validation_shape(vm, [2022, 2023])
+    board = host.get("/api/models")
+    assert model_id not in {m["id"] for m in board["unranked"]}
+    entry = next(m for m in board["ranked"] if m["id"] == model_id)
+    assert entry["validated"] is True and entry["rank_mode"] == "validation" and entry["rank"] >= 1
+    assert entry["score"] == vm["shrunk_roi"] and entry["validation"]["seasons"] == [2022, 2023]
+    classes = _classes(_row(host.client.get("/models").text, model_id))
+    assert "chip-unvalidated" not in classes and "rank" in classes, classes
+    wait_for(settled(host, worker_id, "idle"), "worker idle after validating the unvalidated lineage")
+
+
 def validate_phase(host: Any, worker_id: str, child_id: str, root_id: str,
                    wait_for: Callable[..., Any], settled: Callable[..., Any]) -> None:
     """A validate job on the trained child: the whole lineage gets the new era's
@@ -144,24 +180,24 @@ def validate_phase(host: Any, worker_id: str, child_id: str, root_id: str,
     assert before["validation_metrics"]["seasons"] == [2022, 2023, 2024, 2025], "the step 3 search validated on the default era"
     job = send(host, "validate", {"model_id": child_id}, worker_id)
     params = job["params"]
-    assert job["role"] == "backtest" and params["seed"] == 1 and params["validation_seasons"] == [2020, 2021], job
+    assert job["role"] == "backtest" and params["seed"] == 1 and params["validation_seasons"] == [2022, 2023], job
     assert params["model_id"] == child_id and params["workers"] == 1
     wait_for(settled(host, worker_id, "backtest"), "worker in backtest for the validate job")
     done = wait_for(finished(host, job["id"]), "validate done", timeout=60.0)
     result = done["result"]
     assert set(result) == {"validation_metrics", "stress_metrics"}
     vm, sm = result["validation_metrics"], result["stress_metrics"]
-    check_validation_shape(vm, [2020, 2021])
+    check_validation_shape(vm, [2022, 2023])
     check_stress_shape(sm, seed=1)
-    assert vm["per_season"][0]["season"] == 2020
+    assert vm["per_season"][0]["season"] == 2022
     events = host.events(job["id"])
     assert "model_validation" in events and events[-1] == "succeeded", events
     for mid in (child_id, root_id):
         stored = host.get(f"/api/models/{mid}")
         assert stored["validation_metrics"] == vm and stored["stress_metrics"] == sm, "the lineage shares the validation"
-        assert stored["validation"]["seasons"] == [2020, 2021]
+        assert stored["validation"]["seasons"] == [2022, 2023]
     page = host.client.get(f"/models/{child_id}").text
-    assert 'id="robustness"' in page and "validation era 2020-2021" in page and 'class="ci-line"' in page
+    assert 'id="robustness"' in page and "validation era 2022-2023" in page and 'class="ci-line"' in page
     assert "spread+0.02" in page and "primetime" in page.lower()
     detail = host.client.get(f"/jobs/{job['id']}").text
     assert 'id="robustness"' in detail, "the validate job's result renders like the model's section"
@@ -170,12 +206,14 @@ def validate_phase(host: Any, worker_id: str, child_id: str, root_id: str,
     wait_for(settled(host, worker_id, "idle"), "worker idle after the validate job")
 
 
-def set_lineage_metrics(host: Any, lineage_id: str, validation: dict[str, Any], stress: dict[str, Any]) -> None:
-    """Force the stored validation and stress metrics of a lineage (every row)."""
+def set_lineage_metrics(host: Any, lineage_id: str, validation: dict[str, Any] | None,
+                        stress: dict[str, Any] | None) -> None:
+    """Force the stored validation and stress metrics of a lineage (every row); None
+    clears them (SQL NULL)."""
     with psycopg.connect(host.database_url, autocommit=True) as conn:
         conn.execute(
             "UPDATE models SET validation_metrics = %s, stress_metrics = %s, updated_at = now() WHERE lineage_id = %s",
-            (Jsonb(validation), Jsonb(stress), lineage_id),
+            (None if validation is None else Jsonb(validation), None if stress is None else Jsonb(stress), lineage_id),
         )
 
 
@@ -244,9 +282,10 @@ def phase_validation(host: Any, worker_id: str, models: dict[str, Any], wait_for
     settings_page = host.client.get("/settings").text
     for name in ("seasons_first", "seasons_last", "validation_first", "validation_last", "search_workers"):
         assert f'name="{name}"' in settings_page, name
-    assert 'id="thresholds"' in settings_page and 'value="2020"' in settings_page
+    assert 'id="thresholds"' in settings_page and 'value="2023"' in settings_page
     ids = search_phase(host, worker_id, wait_for, settled)
     validate_phase(host, worker_id, models["child"], models["roots"][0], wait_for, settled)
+    unvalidated_phase(host, worker_id, models["roots"][1], wait_for, settled)
     gates_phase(host, models["child"], models["roots"][0])
     host.post("/api/settings", {key: before[key] for key in ("backtest_seasons", "validation_seasons", "search_workers")})
     return ids

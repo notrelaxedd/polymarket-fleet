@@ -123,27 +123,30 @@ def test_rank_mode_precedence_and_the_30_bet_boundary():
 
 
 def test_leaderboard_order_with_three_rank_bases(client, conn):
-    papered = with_snapshot(conn, insert_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=200, clv=0.09))
+    papered = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=200, clv=0.09))
     paper_score(conn, papered, games=5, bets_each=6, clv=0.001)
-    snap_low = with_snapshot(conn, insert_model(conn, params={"k": 2.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.01))
+    snap_low = with_snapshot(conn, insert_validated_model(conn, params={"k": 2.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.01))
     snap_high = with_snapshot(conn, insert_validated_model(conn, params={"k": 3.0}), snapshot_metrics(n_bets=40, clv=0.03))
     at29 = with_snapshot(conn, insert_validated_model(conn, params={"k": 4.0}, validation=validation_metrics(n_bets=200, roi=0.01)),
                          snapshot_metrics(n_bets=29, clv=0.5))
     validated = insert_validated_model(conn, params={"k": 5.0}, validation=validation_metrics(n_bets=200, roi=0.05))
     unvalidated29 = with_snapshot(conn, insert_model(conn, params={"k": 6.0}), snapshot_metrics(n_bets=29, clv=0.5))
     retired = with_snapshot(conn, insert_model(conn, params={"k": 7.0}, status="retired"), snapshot_metrics(n_bets=500, clv=0.5))
+    unvalidated_snap = with_snapshot(conn, insert_model(conn, params={"k": 8.0}), snapshot_metrics(n_bets=400, clv=0.5))
     board = client.get("/api/models").json()
     ranked = board["ranked"]
     assert [m["id"] for m in ranked] == [str(m["id"]) for m in (papered, snap_high, snap_low, validated, at29)]
     assert [m["rank_mode"] for m in ranked] == ["paper", "snapshot", "snapshot", "validation", "validation"]
     assert [m["rank"] for m in ranked] == [1, 2, 3, 4, 5]
     assert ranked[1]["snapshot_score"] == pytest.approx(0.03 * 40 / 65) and ranked[2]["snapshot_score"] == pytest.approx(0.02 * 30 / 55)
-    assert ranked[2]["validated"] is False, "a snapshot-ranked lineage ranks before it is validated, like a paper-ranked one"
+    assert all(m["validated"] for m in ranked), "only lineages the held-out era has judged rank (step 6A review)"
     assert ranked[4]["snapshot"]["n_bets"] == 29, "29 snapshot bets: still ranked on the validation era"
     unranked = {m["id"]: m for m in board["unranked"]}
     assert unranked[str(unvalidated29["id"])]["unranked_reason"] == "not validated"
     assert unranked[str(retired["id"])]["unranked_reason"] == "retired"
     assert unranked[str(unvalidated29["id"])]["rank_mode"] == "validation"
+    assert unranked[str(unvalidated_snap["id"])]["unranked_reason"] == "not validated", \
+        "400 snapshot bets never rank a lineage that is not validated"
     # One more snapshot bet promotes the 29-bet lineage onto the snapshot basis.
     with_snapshot(conn, at29, snapshot_metrics(n_bets=30, clv=0.5))
     ranked = client.get("/api/models").json()["ranked"]
@@ -151,8 +154,8 @@ def test_leaderboard_order_with_three_rank_bases(client, conn):
 
 
 def test_snapshot_ties_break_on_roi(client, conn):
-    worse = with_snapshot(conn, insert_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.01))
-    better = with_snapshot(conn, insert_model(conn, params={"k": 2.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.04))
+    worse = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.01))
+    better = with_snapshot(conn, insert_validated_model(conn, params={"k": 2.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.04))
     ranked = client.get("/api/models").json()["ranked"]
     assert [m["id"] for m in ranked] == [str(better["id"]), str(worse["id"])]
 
@@ -160,7 +163,7 @@ def test_snapshot_ties_break_on_roi(client, conn):
 # ------------------------------------------------------------------ pages
 
 def test_models_page_shows_the_snapshot_group(client, conn):
-    ranked = with_snapshot(conn, insert_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.031))
+    ranked = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.031))
     plain = insert_validated_model(conn, params={"k": 2.0})
     html = client.get("/models").text
     assert '<th>snapshot <span class="muted">CLV 90% range</span></th>' in html

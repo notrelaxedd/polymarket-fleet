@@ -559,8 +559,10 @@ def test_backtest_params_are_validated_and_settings_copied(pool, conn):
         "fee_model": {"taker_rate": 0.05, "half_spread": 0.01}, "default_bankroll_cents": 10000,
         "max_bet_cents": 2500, "trade_max_games": 6, "backtest_seasons": [2010, 2021],
     }, "the limits in force are copied in; the search era ends before the validation era (step 6 default [2010, 2021])"
-    by_model = create(pool, kind="backtest", params={"model_id": str(model["id"]), "seasons": [2018, None]}).job
-    assert by_model["params"]["model_id"] == str(model["id"]) and by_model["params"]["seasons"] == [2018, 2025]
+    by_model = create(pool, kind="backtest", params={"model_id": str(model["id"]), "seasons": [2018, 2021]}).job
+    assert by_model["params"]["model_id"] == str(model["id"]) and by_model["params"]["seasons"] == [2018, 2021]
+    with pytest.raises(BadRequest, match="before the validation era"):  # stored as the lineage's search-era metrics
+        create(pool, kind="backtest", params={"model_id": str(model["id"]), "seasons": [2018, None]})
     assert "family" not in by_model["params"] and by_model["role"] == "backtest"
     with pool.connection() as c:
         c.execute("UPDATE settings SET value = '{\"taker_rate\": 0.02, \"half_spread\": 0.0}' WHERE key = 'fee_model'")

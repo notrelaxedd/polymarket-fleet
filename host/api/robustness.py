@@ -7,6 +7,7 @@ from typing import Any
 
 from host.eligibility import model_flags
 from host.leaderboard import FLAG_MEANINGS, MARKET_BEATEN_P, validation_summary
+from host.web import pvalue
 
 REGIME_PAIRS = (
     ("favourite", "underdog"), ("home", "away"), ("divisional", "non_divisional"), ("primetime", "day"),
@@ -33,12 +34,19 @@ def _pair(value: Any) -> list[float | None] | None:
 
 def market_sentence(metrics: dict[str, Any]) -> str:
     """"Beats the market on log-loss: mean gain 0.0021 per game, p = 0.012" or the
-    honest negative."""
+    honest negative ("p < 0.001" below 0.001, host.web.pvalue)."""
     gain, p = _num(metrics.get("mean_ll_gain")), _num(metrics.get("market_p"))
     if gain is None or p is None:
         return "The market test has not been run."
     verdict = "Beats the market on log-loss" if p < MARKET_BEATEN_P else "Does not beat the market on log-loss"
-    return f"{verdict}: mean gain {gain:+.4f} per game, p = {p:.3f} (sign-flip test, 10 000 flips; beaten means p < {MARKET_BEATEN_P})."
+    return f"{verdict}: mean gain {gain:+.4f} per game, {pvalue(p)} (sign-flip test, 10 000 flips; beaten means p < {MARKET_BEATEN_P})."
+
+
+def _within(decomposition: dict[str, Any]) -> float | None:
+    """within_variance - within_covariance, the binning term that makes reliability -
+    resolution + uncertainty add up to the Brier score; None for older metrics."""
+    variance, covariance = _num(decomposition.get("within_variance")), _num(decomposition.get("within_covariance"))
+    return None if variance is None or covariance is None else variance - covariance
 
 
 def calibration_rows(metrics: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -83,6 +91,7 @@ def robustness_context(validation: dict[str, Any] | None, stress: Any) -> dict[s
         "calib_slope": _num(validation.get("calib_slope")),
         "calib_intercept": _num(validation.get("calib_intercept")),
         "brier_decomposition": {key: _num(decomposition.get(key)) for key in ("reliability", "resolution", "uncertainty")},
+        "brier_within": _within(decomposition),
         "calibration": calibration_rows(validation),
         "prices": [p for p in (stress.get("prices") or []) if isinstance(p, dict)],
         "neighbourhood": neighbourhood,

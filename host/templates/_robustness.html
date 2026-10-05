@@ -34,6 +34,7 @@
   <div><dt>reliability</dt><dd>{{ r.brier_decomposition.reliability | fixed(4) }}</dd></div>
   <div><dt>resolution</dt><dd>{{ r.brier_decomposition.resolution | fixed(4) }}</dd></div>
   <div><dt>uncertainty</dt><dd>{{ r.brier_decomposition.uncertainty | fixed(4) }}</dd></div>
+  {% if r.brier_within is not none %}<div><dt>within buckets</dt><dd>{{ r.brier_within | fixed(4) }} <span class="muted small">brier = rel - res + unc + this</span></dd></div>{% endif %}
   <div><dt>games</dt><dd>{{ m.n_games }}</dd></div>
   <div><dt>P&amp;L</dt><dd>{{ m.pnl_cents | money }}</dd></div>
 </dl>

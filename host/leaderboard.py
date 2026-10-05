@@ -9,12 +9,13 @@ cached paper CLV interval. Rank mode: paper, by shrunk CLV (avg_clv * bets / (be
 PAPER_RANK_BETS paper bets; otherwise validation, by the validation era's shrunk ROI
 (roi * n_bets / (n_bets + 100)), ties broken by the mean log-loss gain over the
 market. Paper-ranked lineages come first. A lineage without validation metrics is
-unranked with the reason "not validated"; a retired lineage is always unranked.
+unranked with the reason "not validated", whatever its paper record; a retired
+lineage is always unranked.
 
 Step 6 Part B (host/leaderboard_snapshot.py): a lineage with snapshot replay metrics
 carries a "snapshot" group, and between paper and validation sits rank mode
-"snapshot" (30 snapshot-scored bets, by shrunk snapshot CLV). Like paper, it ranks a
-lineage that is not validated yet.
+"snapshot" (30 snapshot-scored bets, by shrunk snapshot CLV). Like paper, it only
+ranks a lineage the held-out era has judged.
 """
 from __future__ import annotations
 
@@ -39,8 +40,9 @@ FLAG_MEANINGS = {
                "or it beat the market on log-loss while the validation era did not",
     "fragile": "a spread two cents wider removes half the bets or turns the ROI negative, or a 10% nudge of the "
                "parameters does",
-    "regime_dependent": "one game regime (favourites, home, primetime, cold weather...) holds more than 80% of the "
-                        "profit and the model loses elsewhere",
+    "regime_dependent": "in one regime pair (favourite or underdog, home or away, divisional, primetime, cold or "
+                        "windy) one side makes the profit while the other, holding at least a fifth of the bets, "
+                        "gives back more than half of it",
 }
 UNRANKED_REASONS = {"retired": "retired", "not_validated": "not validated"}
 
@@ -200,9 +202,7 @@ def unranked_reason(entry: dict[str, Any]) -> str | None:
     """Why a lineage sits in the unranked list, or None when it ranks."""
     if entry["status"] == "retired":
         return UNRANKED_REASONS["retired"]
-    if entry["rank_mode"] in ("paper", "snapshot"):
-        return None
-    if not entry["validated"]:
+    if not entry["validated"]:  # a paper record never ranks a lineage the held-out era has not judged
         return UNRANKED_REASONS["not_validated"]
     return None
 

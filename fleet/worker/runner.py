@@ -152,8 +152,11 @@ def _seed_progress(value: Any) -> float:
 class Runner:
     """Parent-side handle on one runner child process.
 
-    The child starts in its own session (process group) so terminate() and kill()
-    reach grandchildren (multiprocessing pools, BLAS threads' helpers) as well.
+    The child starts in its own session (and process group). terminate() signals the
+    group (the child's search workers sit in groups of their own, so only the child
+    sees the stop and ends them itself, fleet/sim/parallel.py); kill() and
+    reap_group() SIGKILL the group and then every other process of the session, so
+    no grandchild outlives a kill.
     """
 
     def __init__(
@@ -245,6 +248,21 @@ class Runner:
             except OSError:
                 pass
 
+    def _kill_session(self) -> int:
+        """SIGKILL every process left in the child's session (its pid is the session
+        id); the number signalled."""
+        from fleet.common.sysinfo import session_pids
+
+        assert self._proc is not None
+        count = 0
+        for pid in session_pids(self._proc.pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                count += 1
+            except OSError:
+                pass
+        return count
+
     def terminate(self) -> None:
         """Send SIGTERM to the process group (the child sets its stop flag)."""
         if self._proc is None or self._proc.poll() is not None:
@@ -253,11 +271,12 @@ class Runner:
         self._signal_group(signal.SIGTERM)
 
     def kill(self) -> None:
-        """Send SIGKILL to the process group."""
+        """Send SIGKILL to the process group, then to the rest of the session."""
         if self._proc is None:
             return
         self.kill_sent = True
         self._signal_group(signal.SIGKILL)
+        self._kill_session()
 
     def stop(self, grace: float = 3.0) -> None:
         """SIGTERM, wait up to grace seconds, then SIGKILL survivors."""
@@ -274,7 +293,9 @@ class Runner:
 
     def reap_group(self, timeout: float = 2.0) -> None:
         """Call once the child exited: a grandchild still holding its stdout keeps the
-        reader alive, so SIGKILL the whole group and then wait for the reader."""
+        reader alive, so SIGKILL the whole group and then wait for the reader; then
+        SIGKILL whatever is left in the session (processes in other groups, such as
+        search workers, do not hold the pipe and would otherwise run on unseen)."""
         self.join_reader(0.2)
         if self._reader is not None and self._reader.is_alive():
             log.warning("runner %s left children behind; killing its process group", self.job_id)
@@ -282,6 +303,9 @@ class Runner:
             if self._proc is not None:
                 self._signal_group(signal.SIGKILL)
             self.join_reader(timeout)
+        if self._proc is not None and self._proc.poll() is not None and self._kill_session():
+            log.warning("runner %s left processes in its session; killed them", self.job_id)
+            self.group_killed = True
 
     # state -----------------------------------------------------------------
 

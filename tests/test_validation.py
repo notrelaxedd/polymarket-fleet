@@ -50,7 +50,7 @@ def _check_shapes(validation: dict, stress: dict) -> None:
     for lo, hi in validation["ci"].values():
         assert lo <= hi
     assert 0.0 < validation["market_p"] <= 1.0
-    assert set(validation["brier_decomposition"]) == {"reliability", "resolution", "uncertainty"}
+    assert set(validation["brier_decomposition"]) == {"reliability", "resolution", "uncertainty", "within_variance", "within_covariance"}
     assert set(stress) == {"prices", "neighbourhood", "regimes", "flags", "seed"}
     assert [p["name"] for p in stress["prices"]] == ["spread+0.01", "spread+0.02", "fee x1.5"]
     assert set(stress["neighbourhood"]) == {"n", "shrunk_roi_median", "shrunk_roi_p10", "ll_gain_median", "ll_gain_p10"}
