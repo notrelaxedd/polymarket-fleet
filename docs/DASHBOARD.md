@@ -280,7 +280,9 @@ validation keep working:
   sub-headings. Order approval: participation, book max age, order lifetime
   (`gtd_seconds`), orphan cancel after, trade tick, max paper models per game, max
   exposure paper and live (dollars, 0 = off), a "Pregame only" checkbox
-  (`trade_pregame_only`; unticked sends nothing and stores false). Market source and
+  (`trade_pregame_only`; unticked sends nothing and stores false; its hint says that
+  unticked, orders after kickoff go only through the in-game rules, paper only, since
+  step 6C). Market source and
   snapshots: `market_source` as a select (sim, polymarket_us, polymarket_clob), market
   lookahead days, snapshot cadence active and idle, snapshot retention days, the scores
   URL, and `market_source_config` as a JSON textarea (must parse to an object). Paper
@@ -420,7 +422,9 @@ final, limit hit) comes back as a flash too, never an error page. The page is:
     `ingame_max_state_age_s`, or "no game state yet"; while the game is in progress the
     in-game model's home probability next to the home market mid ("model LV 0.62 · mid
     0.58", `data-p-home`), from `latest_state` and the devigged closing moneyline (else
-    the frozen closing price of the home market) as `pregame_p_home`. A paper assignment
+    the frozen closing price of the home market) as `pregame_p_home`; with a stale
+    state that line is muted and ends "(from the stale state, not traded)", since the
+    host rejects in-game orders on it (`ingame_stale`). A paper assignment
     that can still trade carries a toggle form (`POST /assignments/{id}/ingame`: in-game
     model select, "trade in-game" box, Save) that calls `assignments_ingame.set_ingame`
     (audited; turning it off cancels the open in-game orders, named in the flash); a

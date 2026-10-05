@@ -42,15 +42,28 @@ def test_retiring_the_ingame_lineage_stops_ingame_trading(conn):
     assert ask(conn, s, size=1, order_side="sell")["reason"] == "ingame_disabled"
     assert trade_state(conn, s.worker.id)["assignments"][0]["ingame"]["enabled"] is False
     assert assignment_ingame(conn, dict(_assignment(conn, s)), [], 30.0, {})["enabled"] is False
-    # The executor switches it off (audited) and cancels the open in-game order.
-    assert Executor().tick(conn)["ingame_retired"] == 1
+    # Retiring switches it off at once (audited) and cancels the open in-game order.
     a = _assignment(conn, s)
     assert (a["status"], a["trade_ingame"], a["ingame_model_id"]) == ("active", False, mid)
     assert order_row(conn, open_order["order_id"])["status"] == "cancelled"
     audit = conn.execute("SELECT after FROM audit_log WHERE action = 'assignment_ingame' ORDER BY id DESC LIMIT 1").fetchone()
     assert audit["after"]["trade_ingame"] is False and audit["after"]["orders_cancelled"] == 1
-    assert Executor().tick(conn)["ingame_retired"] == 0, "once"
+    retired = conn.execute("SELECT after FROM audit_log WHERE action = 'model_retired' ORDER BY id DESC LIMIT 1").fetchone()
+    assert retired["after"]["ingame_disabled"] == [str(a["id"])]
+    assert Executor().tick(conn)["ingame_retired"] == 0, "already off"
     assert ledger.replay_problems(conn) == []
+
+
+def test_the_executor_turns_off_a_lineage_retired_elsewhere(conn):
+    # A lineage retired without model_owner.retire (an older host, a manual update)
+    # is still caught on the executor's next tick.
+    s = ingame_setup(conn)
+    put_state(conn, s.game["game_id"])
+    mid = _assignment(conn, s)["ingame_model_id"]
+    conn.execute("UPDATE models SET status = 'retired' WHERE lineage_id = (SELECT lineage_id FROM models WHERE id = %s)", (mid,))
+    assert Executor().tick(conn)["ingame_retired"] == 1
+    assert _assignment(conn, s)["trade_ingame"] is False
+    assert Executor().tick(conn)["ingame_retired"] == 0, "once"
 
 
 def test_turn_off_retired_for_one_lineage(conn):

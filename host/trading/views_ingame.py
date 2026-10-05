@@ -178,7 +178,9 @@ def feed_block(conn: psycopg.Connection) -> dict[str, Any]:
     min_events = int(_number(conn, "ingame_lag_min_events", DEFAULT_LAG_MIN_EVENTS))
     max_lag = _number(conn, "ingame_max_lag_s", 20.0)
     sources = []
-    for source, summary in sorted((lag.get("by_source") or {}).items()):
+    order = list(SOURCE_NAMES)  # ESPN, then its scoreboard fallback, then Yahoo; unknown names last
+    by_source = lag.get("by_source") or {}
+    for source, summary in sorted(by_source.items(), key=lambda kv: (order.index(kv[0]) if kv[0] in order else len(order), kv[0])):
         name = SOURCE_NAMES.get(source, source)
         sources.append({"source": source, "name": name, "text": lag_text(name, summary, min_events),
                         "suspended": bool(summary.get("suspended"))})

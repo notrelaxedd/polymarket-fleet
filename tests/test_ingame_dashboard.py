@@ -107,6 +107,8 @@ def test_stale_state_reads_state_stale_and_missing_state_says_so(client, conn):
     cell = _row(_live(client), "data-assignment", setup.assignment["id"])
     assert '<span class="stale-age state-stale">state stale</span>' in cell
     assert "Half · 17-14 · 2 min ago" in cell, "the stale line keeps the last state and its age, muted"
+    assert '<span class="ingame-p muted small"' in cell and "(from the stale state, not traded)" in cell, \
+        "a probability from a stale state is muted and marked, not shown as current"
     _game_state(conn, age_s=90, status="final", period=4, clock_seconds=0, home_score=20)
     cell = _row(_live(client), "data-assignment", setup.assignment["id"])
     assert "state stale" not in cell and "Final · 17-20 · 1 min ago" in cell, "a final state never goes stale"
@@ -208,6 +210,16 @@ def test_feed_block_per_source_lag_and_enough_events(client, conn):
     assert '<li data-source="yahoo">Yahoo: not enough data (3 of 5 events measured)</li>' in feed
     assert '<span class="chip chip-ok">not suspended</span>' in feed
     assert "within 20 s" in feed
+
+
+def test_feed_lines_follow_the_source_order(client, conn):
+    insert_game(conn)
+    _lag(conn, 6, 5.0, source="yahoo")
+    _lag(conn, 6, 5.0, source="espn_scoreboard")
+    _lag(conn, 6, 5.0)
+    feed = _section(_live(client), "ingame-feed")
+    found = re.findall(r'<li data-source="([a-z_]+)">', feed)
+    assert found == ["espn_summary", "espn_scoreboard", "yahoo"], "ESPN before its scoreboard fallback, then Yahoo"
 
 
 def test_feed_block_shows_the_suspension(client, conn):

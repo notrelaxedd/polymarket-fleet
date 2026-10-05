@@ -27,7 +27,7 @@ def retire(conn: psycopg.Connection, model_id: Any, status: Any, actor: str | No
     """Owner status change: only `retired`, applied to the whole lineage, audited."""
     if status != "retired":
         raise BadRequest("the owner can only set status retired")
-    from host.trading import assignments
+    from host.trading import assignments, assignments_ingame
 
     model = get_model(conn, model_id, for_update=True)
     conn.execute(
@@ -40,6 +40,9 @@ def retire(conn: psycopg.Connection, model_id: Any, status: Any, actor: str | No
         "SELECT id FROM assignments WHERE lineage_id = %s AND status = 'active' ORDER BY created_at", (model["lineage_id"],)
     ).fetchall()
     halted = [str(assignments.halt_assignment(conn, r["id"], actor, "lineage retired")["id"]) for r in active]
+    # An assignment that uses this lineage as its in-game model stops in-game trading
+    # now rather than on the executor's next tick.
+    ingame_off = assignments_ingame.turn_off_retired(conn, actor, model["lineage_id"])
     add_audit(conn, "model_retired", str(model["id"]), actor, {"status": model["status"]},
-              {"status": "retired", "assignments_halted": halted})
+              {"status": "retired", "assignments_halted": halted, "ingame_disabled": ingame_off})
     return get_model(conn, model_id)

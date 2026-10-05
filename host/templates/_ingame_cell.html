@@ -1,6 +1,7 @@
 {# One assignment's in-game cell (step 6C, included by _trading.html inside the row loop):
    the switch chip, the live score and clock with the state age or "state stale", the
-   in-game model probability of the home team next to the home market mid, and the
+   in-game model probability of the home team next to the home market mid (muted and
+   marked when the state is stale, since no in-game order is approved on it), and the
    toggle form (in-game model + trade in-game) while a paper assignment can still trade. #}
 {% set ig = a.ingame %}
 <td class="wide c-ingame"><span class="k">in-game</span>
@@ -11,7 +12,7 @@
     {% else %}<span class="game-line">{{ ig.line }}</span>{% endif %}
   {% elif ig.enabled %}<span class="muted small">no game state yet</span>{% endif %}
   {% if ig.p_home is not none %}
-  <span class="ingame-p" data-p-home="{{ ig.p_home | fixed(3) }}">model {{ a.game.home_team }} {{ ig.p_home | fixed(2) }} &middot; mid {% if ig.mid_home is not none %}{{ ig.mid_home | fixed(2) }}{% else %}-{% endif %}</span>
+  <span class="ingame-p{{ ' muted small' if ig.stale }}" data-p-home="{{ ig.p_home | fixed(3) }}">model {{ a.game.home_team }} {{ ig.p_home | fixed(2) }} &middot; mid {% if ig.mid_home is not none %}{{ ig.mid_home | fixed(2) }}{% else %}-{% endif %}{% if ig.stale %} (from the stale state, not traded){% endif %}</span>
   {% endif %}
   {% else %}<span class="muted small">off</span>
   {% endif %}

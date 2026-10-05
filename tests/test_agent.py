@@ -1445,9 +1445,11 @@ def test_kickoff_in_the_past_means_no_proposals(host: FakeHost, enrolled: str, t
     assert host.trade_calls("/orders/request") == []
     assert host.orders(aid) == []
     assert trader.agent.trade.last_tick["assignments"] == 1 and trader.agent.trade.last_tick["proposed"] == 0
-    # Not a pregame rule when the setting is off.
+    # Not a pregame rule when the setting is off: the worker proposes, and the host runs
+    # the in-game rules on it, which refuse an assignment without in-game trading.
     host.set_trade_settings(trade_pregame_only=False)
-    host.wait_for(lambda: host.orders(aid, status="open"), timeout=8.0)
+    host.wait_for(lambda: host.orders(aid, status="rejected"), timeout=8.0)
+    assert {o["reject_reason"] for o in host.orders(aid)} == {"ingame_disabled"}
 
 
 def test_preempted_trade_job_is_released_through_the_heartbeat(host: FakeHost, enrolled: str, trader: AgentThread) -> None:

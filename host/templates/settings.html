@@ -42,7 +42,7 @@
     {{ field('max_paper_models_per_game', 'Max paper models per game', '1..20', 'numeric') }}
     {{ field('max_exposure_paper', 'Max exposure, paper', '$, 0 = off', 'decimal') }}
     {{ field('max_exposure_live', 'Max exposure, live', '$, 0 = off', 'decimal') }}
-    <label class="check"><input type="checkbox" name="trade_pregame_only" value="true"{% if values.trade_pregame_only %} checked{% endif %}> <span>Pregame only <span class="muted small">no orders after kickoff</span></span></label>
+    <label class="check"><input type="checkbox" name="trade_pregame_only" value="true"{% if values.trade_pregame_only %} checked{% endif %}> <span>Pregame only <span class="muted small">no orders after kickoff; unticked, orders after kickoff go only through the in-game rules (paper only)</span></span></label>
   </div>
   <h3>Market source and snapshots</h3>
   <div class="fields">

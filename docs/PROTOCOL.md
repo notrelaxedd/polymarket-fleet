@@ -1188,6 +1188,11 @@ is `validation_seasons`.
   `settings.ingame_gtd_seconds`; the worker's `gtd_seconds` is only recorded in the
   approval event (`gtd_seconds_requested`). The worker's in-game `client_request_id` is
   `"ingame-" + sha256(assignment|market|snapshot_id|price|size|order_side|ingame)[:32]`.
+- A request without `"ingame": true` on a game that has kicked off (not final) is
+  rejected `kickoff` while `trade_pregame_only` is on; with it off it runs the same
+  in-game checks and reasons (so nothing is approved after kickoff outside the in-game
+  rules, and never a live order), keeps `orders.ingame` false and carries `"in_play":
+  true` in its approval event (docs/TRADING.md, "In-game trading").
 
 ### Owner API
 - `POST /api/assignments` also takes `"ingame_model_id"` (an ingame_wp model of a lineage
