@@ -9,6 +9,8 @@ from host import leaderboard, models, nflverse, web
 from host.api.dashboard import page
 from host.api.dashboard_forms import FORM
 from host.api.deps import DB, require_owner
+from host.api.model_view import detail_stats, gate_verdict, lineage_assignments
+from host.api.models_view import board_view, status_state, status_word
 from host.api.robustness import calibration_rows, robustness_context
 from host.data_refresh import refresh_now
 from host.errors import BadRequest, Upstream
@@ -24,7 +26,7 @@ NFLVERSE_ATTRIBUTION = (
 @router.get("/models", response_class=HTMLResponse)
 def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
     """The leaderboard: ranked lineages, then the unranked ones."""
-    board = leaderboard.leaderboard(conn)
+    board = board_view(leaderboard.leaderboard(conn))
     return page(request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, **board)
 
 
@@ -32,7 +34,7 @@ def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse
 def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -> HTMLResponse:
     """One model: params, the robustness section (validation era, stress tests), the
     snapshot replay (step 6 B1), search-era metrics (overall and per season),
-    calibration, lineage, jobs."""
+    calibration, lineage, jobs; on top the three stats and the gate verdict in words."""
     model = leaderboard.model_detail(conn, model_id)
     metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else {}
     validation = model.get("validation_metrics") if isinstance(model.get("validation_metrics"), dict) else None
@@ -45,6 +47,8 @@ def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -
         validation_per_season=[s for s in ((validation or {}).get("per_season") or []) if isinstance(s, dict)],
         snapshot_metrics=snapshot,
         snapshot_per_season=[s for s in ((snapshot or {}).get("per_season") or []) if isinstance(s, dict)],
+        stats=detail_stats(model), verdict=gate_verdict(conn, model), assignments=lineage_assignments(conn, model["lineage_id"]),
+        status_state=status_state(model.get("status")), status_word=status_word(model.get("status")),
     )
 
 

@@ -148,7 +148,7 @@ def check_step6b(server_url: str, ids: dict[str, str]) -> None:
         models = page(client.get("/models").text)
         epa = models.row("model", ids["epa_model"])
         assert epa.chip("rank-snapshot").text == "snapshot" and "window 8" in epa.text
-        assert models.has(".c-snapshot") or "CLV 90% range" in models.text, "the snapshot column group"
+        assert epa.one(".row-value").text.startswith("CLV "), "ranked on snapshot CLV: the CLV is the headline"
         model = page(client.get(f"/models/{ids['epa_model']}").text)
         assert "ranked on snapshot CLV" in model.text and "snapshot per season" in model.card("snapshot").text
         jobs = page(client.get("/jobs").text)

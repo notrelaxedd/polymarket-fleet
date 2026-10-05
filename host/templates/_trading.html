@@ -1,12 +1,44 @@
-{# Inner HTML of #trading-live: assignments, positions, orders, fills, markets, exchange
-   state and the ledger check. Every table stacks on a phone; the lead cell goes first and
-   the action cell sits at its right. A sell order or fill carries a `sell` chip; a sell's
-   realized P&L (proceeds - fee - basis) follows its fill. Positions is a card section
-   whose tables lead with data-assignment, and an order's side sits on its order cell,
-   so the step 4 table markup the older tests match stays as it was. #}
-{% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{% if cents > 0 %}+{% endif %}{{ cents | money }}</span>{% endmacro %}
-<section class="card group" id="assignments" data-card="assignments">
-<h2>Assignments <span class="muted small">{{ assignments | length }}</span></h2>
+{# Inner HTML of #trading-live (docs/UI.md "Trading"), refreshed every 5 s: the stats,
+   the assignment rows, then closed disclosures with their counts. Every list is .rows
+   of one-line .row items (two lines at most): the facts in .row-title and .row-meta,
+   the status chip, the money in .row-value, the actions in the row's "..." menu.
+
+   Slots for the step 6C port (in-game trading):
+   - an assignment row shows `a.ingame_line` (live score, clock, state age) as a second
+     .row-meta line when live_context sets it;
+   - the "In-game feed" disclosure is the template _trading_ingame.html, included after
+     the assignments when it exists (a <section data-card="ingame"> around ui.disclosure
+     "trading-ingame", like the groups below). #}
+{% import "_ui.html" as ui %}
+{% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{{ cents | pnl }}</span>{% endmacro %}
+{# A list row as ui.row draws it, plus what the trading lists need: rows without a page
+   of their own (a div.row-main), extra classes (is-live) and extra data attributes
+   (data-side, data-kind, data-order) the older tests and scripts read. #}
+{% macro item(kind, id, title, meta=None, meta2=None, href=None, cls='', attrs={}) -%}
+<li class="row{% if cls %} {{ cls }}{% endif %}" data-row="{{ kind }}" data-id="{{ id }}"{% for k, v in attrs.items() %} {{ k }}="{{ v }}"{% endfor %}>
+<{{ 'a' if href else 'div' }} class="row-main"{% if href %} href="{{ href }}"{% endif %}><span class="row-title">{{ title }}</span>{% if meta %}<span class="row-meta">{{ meta }}</span>{% endif %}{% if meta2 %}<span class="row-meta">{{ meta2 }}</span>{% endif %}</{{ 'a' if href else 'div' }}>
+{{ caller() }}
+</li>
+{%- endmacro %}
+{% macro live_chip(mode) %}{% if mode == 'live' %} {{ ui.chip("bad", "live", key="live", extra="chip-live") }}{% endif %}{% endmacro %}
+{% macro order_chips(o) %}{{ live_chip(o.mode) }}{% if o.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% if o.kind == 'smoke' %} {{ ui.chip("warn", "smoke", key="smoke", extra="chip-smoke") }}{% endif %}{% endmacro %}
+{% macro order_line(o, avg=False) %}<span class="c-order" data-side="{{ o.order_side or 'buy' }}">{% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if avg and o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; realized {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</span>{% endmacro %}
+{% macro worker(o) %}{{ o.worker_name or o.worker_id or 'no worker' }}{% endmacro %}
+
+{# ---- first screen: the answer in large type #}
+<div class="stats">
+{{ ui.stat("paper-today", stats.paper_today_cents | pnl, "Paper today", note="all time " ~ (stats.paper_all_cents | pnl)) }}
+{% if stats.show_live %}
+{{ ui.stat("live-today", stats.live_today_cents | pnl, "Live today", note="all time " ~ (stats.live_all_cents | pnl)) }}
+{% endif %}
+{{ ui.stat("open-orders", stats.open_orders, "Open orders", href="#open-orders", note=(stats.open_live ~ " live") if stats.open_live else "resting on the book") }}
+{{ ui.stat("exposure", stats.exposure_cents | money, "Exposure", note=("paper " ~ (stats.exposure_paper_cents | money) ~ " · live " ~ (stats.exposure_live_cents | money)) if stats.show_live else "orders + positions") }}
+{{ ui.stat("exchange", stats.exchange.value, "Exchange", href="#exchange", note=stats.exchange.note) }}
+</div>
+
+{# ---- assignments: one row each, always open #}
+<section class="card" id="assignments" data-card="assignments">
+<header class="card-head"><h2>Assignments</h2><span class="count">{{ assignments | length }}</span></header>
 {% if killed %}
 <p class="error">Trading is killed: every assignment stays halted until the switch is reset in <a href="/settings#kill">Settings</a>.</p>
 {% elif halted_paper %}
@@ -14,211 +46,191 @@
   <button type="submit" class="btn primary">Activate all paper ({{ halted_paper }})</button>
 </form>
 {% endif %}
-<div class="table-wrap">
-<table class="assignments stack" data-list="assignments">
-  <thead><tr><th>game</th><th>kickoff</th><th>model</th><th>mode</th><th>status</th><th>bankroll</th><th>open</th><th></th></tr></thead>
-  <tbody>
-  {% for a in assignments %}
-  <tr class="assignment-row{% if a.mode == 'live' %} is-live{% endif %}" data-assignment="{{ a.id }}" data-row="assignment" data-id="{{ a.id }}">
-    <td class="lead"><strong>{{ a.game.away_team }} @ {{ a.game.home_team }}</strong> <span class="muted small">{{ a.game_id }}{% if a.game.status == 'final' %} &middot; final {{ a.game.away_score }}-{{ a.game.home_score }}{% endif %}</span></td>
-    <td class="nowrap c-kickoff"><span class="k">kickoff</span> {{ a.game.kickoff_at | ts }}</td>
-    <td class="c-model"><span class="k">model</span> <a href="/models/{{ a.model_id }}">{{ a.model.family }} {{ a.short_params }}</a></td>
-    <td class="c-mode"><span class="chip mode-{{ a.mode }}" data-chip="{{ a.mode }}">{{ a.mode }}</span></td>
-    <td class="c-status"><span class="badge st-{{ a.status }}" data-chip="{{ a.status }}">{{ a.status }}</span></td>
-    <td class="c-bankroll"><span class="k">bankroll</span> avail {{ a.bankroll.available_cents | money }} &middot; reserved {{ a.bankroll.reserved_cents | money }} &middot; open {{ a.bankroll.open_cost_cents | money }} &middot; realized {{ a.bankroll.realized_pnl_cents | money }}</td>
-    <td class="nowrap c-open"><span class="k">open orders</span> {{ a.open_orders }}</td>
-    <td class="action c-actions">
-      {% if a.settle_ready %}
-      <form method="post" action="/assignments/{{ a.id }}/settle" class="inline" data-action="settle"><button type="submit" class="btn small primary">Settle now</button></form>
-      {% elif a.status == 'active' %}
-      <form method="post" action="/assignments/{{ a.id }}/halt" class="inline" data-action="halt"><button type="submit" class="btn small">Halt</button></form>
-      {% elif a.status == 'halted' and not killed %}
-      <form method="post" action="/assignments/{{ a.id }}/activate" class="inline" data-action="activate"><button type="submit" class="btn small">Activate</button></form>
-      {% endif %}
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="8" class="muted">No assignments yet. Create one above or press Assign on a model.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
-</section>
-
-<section class="card group positions" id="positions" data-card="positions">
-<h2>Positions <span class="muted small">{{ positions | length }} assignment{{ '' if positions | length == 1 else 's' }} holding</span></h2>
-{% for p in positions %}
-<h3 class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong> <span class="chip mode-{{ p.mode }}" data-chip="{{ p.mode }}">{{ p.mode }}</span> <span class="muted small">{{ p.family or 'model' }} {{ p.model_id | short }} &middot; {{ p.game_id }}</span> <span class="positions-total">unrealized {{ pnl(p.unrealized_cents) }}</span></h3>
-<div class="table-wrap">
-<table data-assignment="{{ p.assignment_id }}" class="positions stack" data-list="positions">
-  <thead><tr><th>market</th><th>size</th><th>avg cost</th><th>bid</th><th>unrealized at bid, net of sale fee</th></tr></thead>
-  <tbody>
-  {% for r in p.rows %}
-  <tr class="position-row{% if p.mode == 'live' %} is-live{% endif %}" data-market="{{ r.market_id }}" data-row="position" data-id="{{ r.market_id }}">
-    <td class="lead">{{ r.market_title }} <span class="muted small">{{ r.side }} wins</span></td>
-    <td class="nowrap c-size"><span class="k">size</span> {{ r.size }}</td>
-    <td class="nowrap c-avg"><span class="k">avg cost</span> {{ r.avg_cost | price }} <span class="muted small">{{ r.basis_cents | money }}</span></td>
-    <td class="nowrap c-bid"><span class="k">bid</span> {% if r.bid is not none %}{{ r.bid | price }}{% else %}<span class="muted">no bid</span>{% endif %}</td>
-    <td class="nowrap c-unrealized"><span class="k">unrealized</span> {% if r.unrealized_cents is not none %}{{ pnl(r.unrealized_cents) }}{% else %}<span class="muted">no bid to value it</span>{% endif %}</td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
-{% else %}
-<p class="muted">No open positions. Contracts held after a buy fills show here until they are sold or the market resolves.</p>
+{% if assignments %}
+<ul class="rows" data-list="assignments">
+{% for a in assignments %}
+{# the LIVE chip leads so the ellipsis never cuts it; the paper chip may be cut #}
+{% set title %}{% if a.mode == 'live' %}{{ ui.chip("bad", "live", key="live", extra="chip-live") }} {% endif %}{{ a.game.away_team }} @ {{ a.game.home_team }}{% if a.mode != 'live' %} {{ ui.chip("muted", "paper", key="paper", extra="mode-paper") }}{% endif %}{% endset %}
+{% set meta %}{{ a.model.family }} {{ a.short_params }} &middot; {{ a.game.kickoff_at | ts }} &middot; {{ a.game_id }}{% if a.game.status == 'final' %} &middot; final {{ a.game.away_score }}-{{ a.game.home_score }}{% endif %}{% endset %}
+{% call item("assignment", a.id, title, meta, a.ingame_line, href="/models/" ~ a.model_id, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id}) %}
+  <span class="row-value" title="bankroll available">{{ a.bankroll.available_cents | money }}</span>
+  {% if a.settle_ready %}
+  <form method="post" action="/assignments/{{ a.id }}/settle" data-action="settle"><button type="submit" class="btn small primary">Settle now</button></form>
+  {% endif %}
+  {{ ui.chip(tone("assignment", a.status), a.status, key=a.status) }}
+  {% call ui.menu() %}
+    {% if a.settle_ready %}
+    {% elif a.status == 'active' %}
+    <form method="post" action="/assignments/{{ a.id }}/halt" data-action="halt"><button type="submit" class="menu-item">Halt</button></form>
+    {% elif a.status == 'halted' and not killed %}
+    <form method="post" action="/assignments/{{ a.id }}/activate" data-action="activate"><button type="submit" class="menu-item">Activate</button></form>
+    {% endif %}
+    <a class="menu-item" href="/api/assignments/{{ a.id }}">Detail</a>
+    <p class="muted bankroll-lines">bankroll of {{ a.bankroll.initial_cents | money }}<br>
+      avail {{ a.bankroll.available_cents | money }}<br>
+      reserved {{ a.bankroll.reserved_cents | money }} in orders<br>
+      open {{ a.bankroll.open_cost_cents | money }} in positions<br>
+      realized {{ a.bankroll.realized_pnl_cents | pnl }}<br>
+      open orders {{ a.open_orders }}</p>
+  {% endcall %}
+{% endcall %}
 {% endfor %}
+</ul>
+{% else %}
+<p class="empty">No assignments yet. Open New assignment above or press Assign on a model.</p>
+{% endif %}
 </section>
 
-<section class="card group" id="open-orders" data-card="open-orders">
-<h2>Open orders <span class="muted small">{{ open_orders | length }}</span></h2>
+{% include "_trading_ingame.html" ignore missing %}
+
+{# ---- the rest, folded: open orders, positions, recent orders, fills, markets, exchange, ledger #}
+<section class="trading-group" id="open-orders" data-card="open-orders">
+{% set open_live = open_orders | selectattr("mode", "equalto", "live") | list | length %}
+{% call ui.disclosure("trading-open-orders", "Open orders", count=open_orders | length, summary=((open_live ~ " live, ") if open_live else "") ~ ("cancel from a row's menu" if open_orders else "nothing resting")) %}
 {% if open_orders %}
 <form method="post" action="/cancel-all" class="inline cancel-all" data-action="cancel-all" data-confirm="Cancel every open order? The kill switch stays off.">
   <input type="hidden" name="mode" value="">
   <button type="submit" class="btn danger small">Cancel all</button>
 </form>
+<ul class="rows" data-list="open-orders">
+{% for o in open_orders %}
+{% set title %}{{ order_line(o) }}{{ order_chips(o) }}{% endset %}
+{% set meta %}{{ o.market_title }}{% if o.exchange_order_id %} #{{ o.exchange_order_id }}{% endif %} &middot; {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}no assignment{% endif %} &middot; {{ worker(o) }} &middot; {{ o.created_at | ts }}{% endset %}
+{% call item("order", o.id, title, meta, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
+  {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
+  {% if o.status != 'cancel_requested' %}
+  {% call ui.menu() %}
+    <form method="post" action="/orders/{{ o.id }}/cancel" data-action="cancel"><button type="submit" class="menu-item danger">Cancel</button></form>
+  {% endcall %}
+  {% endif %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No open orders.</p>
 {% endif %}
-<div class="table-wrap">
-<table class="orders open stack" data-list="open-orders">
-  <thead><tr><th>created</th><th>market</th><th>model</th><th>order</th><th>status</th><th>worker</th><th></th></tr></thead>
-  <tbody>
-  {% for o in open_orders %}
-  <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}" data-row="order" data-id="{{ o.id }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
-    <td class="nowrap lead">{{ o.created_at | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}" data-chip="{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell" data-chip="sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke" data-chip="smoke">smoke</span>{% endif %}{% if o.exchange_order_id %} <span class="muted small">#{{ o.exchange_order_id }}</span>{% endif %}</td>
-    <td class="c-model"><span class="k">model</span> {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}-{% endif %}</td>
-    <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="k">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
-    <td class="c-status"><span class="badge st-{{ o.status }}" data-chip="{{ o.status }}">{{ o.status.replace('_', ' ') }}</span></td>
-    <td class="c-worker"><span class="k">worker</span> {{ o.worker_name or o.worker_id or '-' }}</td>
-    <td class="action">
-      {% if o.status != 'cancel_requested' %}
-      <form method="post" action="/orders/{{ o.id }}/cancel" class="inline" data-action="cancel"><button type="submit" class="btn small">Cancel</button></form>
-      {% endif %}
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="7" class="muted">No open orders.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+{% endcall %}
 </section>
 
-<section class="card group" id="orders" data-card="orders">
-<h2>Recent orders <span class="muted small">last {{ orders | length }}</span></h2>
-<div class="table-wrap">
-<table class="orders recent stack" data-list="orders">
-  <thead><tr><th>created</th><th>market</th><th>order</th><th>status</th><th>edge</th><th>rationale</th><th>worker</th></tr></thead>
-  <tbody>
-  {% for o in orders %}
-  <tr data-order="{{ o.id }}" data-kind="{{ o.kind }}" data-row="order" data-id="{{ o.id }}"{% if o.mode == 'live' %} class="is-live"{% endif %}>
-    <td class="nowrap lead">{{ o.created_at | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ o.market_title }} <span class="chip mode-{{ o.mode }}" data-chip="{{ o.mode }}">{{ o.mode }}</span>{% if o.order_side == 'sell' %} <span class="chip chip-sell" data-chip="sell">sell</span>{% endif %}{% if o.kind == 'smoke' %} <span class="chip chip-smoke" data-chip="smoke">smoke</span>{% endif %}</td>
-    <td class="nowrap c-order" data-side="{{ o.order_side or 'buy' }}"><span class="k">order</span> {% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; <span class="k">realized</span> {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</td>
-    <td class="c-status"><span class="badge st-{{ o.status }}" data-chip="{{ o.status }}">{{ o.status.replace('_', ' ') }}</span>{% if o.reject_reason %} <span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% elif o.last_reason %} <span class="muted small cause">{{ o.last_reason }}</span>{% endif %}</td>
-    <td class="nowrap c-edge"><span class="k">edge</span> {{ o.edge | signed_pct }} <span class="muted small">my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}</span></td>
-    <td class="wide c-rationale"><span class="rationale muted small">{{ o.rationale or '' }}</span></td>
-    <td class="c-worker"><span class="k">worker</span> {{ o.worker_name or o.worker_id or '-' }}{% if o.family %} <span class="muted small">{{ o.family }} {{ o.model_id | short }}</span>{% endif %}</td>
-  </tr>
-  {% else %}
-  <tr><td colspan="7" class="muted">No orders yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+<section class="trading-group" id="positions" data-card="positions">
+{% set held = positions | sum(attribute="unrealized_cents") %}
+{% set npos = positions | map(attribute="rows") | map("length") | sum %}
+{% call ui.disclosure("trading-positions", "Positions", count=npos, summary=(positions | length) ~ " assignment" ~ ("" if positions | length == 1 else "s") ~ " holding" ~ ((" · unrealized " ~ (held | pnl)) if positions else "")) %}
+{% for p in positions %}
+<p class="positions-head" data-assignment="{{ p.assignment_id }}"><strong>{{ p.label }}</strong>{{ live_chip(p.mode) }} <span class="muted">{{ p.family or 'model' }} {{ p.model_id | short }}</span> <span class="positions-total">unrealized {{ pnl(p.unrealized_cents) }}</span></p>
+<ul class="rows positions" data-list="positions" data-assignment="{{ p.assignment_id }}">
+{% for r in p.rows %}
+{% set meta %}{{ r.side }} wins &middot; size {{ r.size }} &middot; avg cost {{ r.avg_cost | price }} <span title="cost basis">{{ r.basis_cents | money }}</span> &middot; bid {% if r.bid is not none %}{{ r.bid | price }}{% else %}none{% endif %}{% endset %}
+{% call item("position", r.market_id, r.market_title, meta, cls="position-row" ~ (" is-live" if p.mode == 'live' else ""), attrs={"data-market": r.market_id}) %}
+  <span class="row-value" title="unrealized at the bid, net of the sale fee">{% if r.unrealized_cents is not none %}{{ pnl(r.unrealized_cents) }}{% else %}<span class="muted">no bid</span>{% endif %}</span>
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No open positions. Contracts held after a buy fills show here until they are sold or the market resolves.</p>
+{% endfor %}
+{% endcall %}
 </section>
 
-<section class="card group" id="fills" data-card="fills">
-<h2>Fills <span class="muted small">last {{ fills | length }}</span></h2>
-<div class="table-wrap">
-<table class="fills stack" data-list="fills">
-  <thead><tr><th>time</th><th>market</th><th>fill</th><th>fee</th><th>realized</th><th>worker</th></tr></thead>
-  <tbody>
-  {% for f in fills %}
-  <tr data-fill="{{ f.id }}" data-side="{{ f.order_side or 'buy' }}" data-row="fill" data-id="{{ f.id }}">
-    <td class="nowrap lead">{{ f.ts | ts }}</td>
-    <td class="c-market"><span class="k">market</span> {{ f.market_title }} <span class="chip mode-{{ f.mode }}" data-chip="{{ f.mode }}">{{ f.mode }}</span>{% if f.order_side == 'sell' %} <span class="chip chip-sell" data-chip="sell">sell</span>{% endif %}</td>
-    <td class="nowrap c-fill"><span class="k">fill</span> {% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }} <span class="muted small">of {{ f.order_size }} @ {{ f.order_price | price }}</span></td>
-    <td class="nowrap c-fee"><span class="k">fee</span> {{ f.fee_cents | money }}</td>
-    <td class="nowrap c-realized">{% if f.order_side == 'sell' and f.realized_cents is not none %}<span class="k">realized</span> {{ pnl(f.realized_cents) }} <span class="muted small">basis {{ f.basis_cents | money }}</span>{% endif %}</td>
-    <td class="c-worker"><span class="k">worker</span> {{ names.get(f.worker_id, f.worker_id) or '-' }}</td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6" class="muted">No fills yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+<section class="trading-group" id="orders" data-card="orders">
+{% set rejected = orders | selectattr("status", "equalto", "rejected") | list | length %}
+{% call ui.disclosure("trading-orders", "Recent orders", count=orders | length, summary="the last " ~ (orders | length) ~ (", " ~ rejected ~ " rejected" if rejected else "")) %}
+{% if orders %}
+<ul class="rows" data-list="orders">
+{% for o in orders %}
+{% set title %}{{ order_line(o, avg=True) }}{{ order_chips(o) }}{% endset %}
+{% set meta %}{{ o.market_title }} &middot; edge {{ o.edge | signed_pct }} (my {{ o.my_p | fixed(2) }} vs {{ o.market_p | fixed(2) }}) &middot; {{ worker(o) }}{% if o.family %} {{ o.family }} {{ o.model_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
+{% set why %}{% if o.reject_reason %}<span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% elif o.last_reason %}<span class="cause">{{ o.last_reason }}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
+{% call item("order", o.id, title, meta, why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
+  {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No orders yet.</p>
+{% endif %}
+{% endcall %}
 </section>
 
-<section class="card group" id="unmatched" data-card="unmatched">
-<h2>Unmatched markets <span class="muted small">{{ unmatched | length }}</span></h2>
-<p class="muted small">Markets the mapper could not confirm to a game. Linking one by hand sets its game and the team its YES contract pays; unconfirmed markets are never traded.</p>
-<div class="table-wrap">
-<table class="markets unmatched stack" data-list="unmatched">
-  <thead><tr><th>market</th><th>guess</th><th>book</th><th>link to game</th></tr></thead>
-  <tbody>
-  {% for m in unmatched %}
-  <tr data-market="{{ m.id }}" data-row="market" data-id="{{ m.id }}">
-    <td class="lead">{{ m.title }} <span class="muted small">{{ m.platform }} {{ m.market_ref }}</span></td>
-    <td class="c-guess"><span class="k">guess</span> {% if m.game_id %}{{ m.game_id }} {{ m.side }} ({{ (m.mapping_confidence or 0) | pct }}){% else %}-{% endif %}</td>
-    <td class="nowrap c-book"><span class="k">book</span> {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; {{ m.snapshot_age_s | ago }}</td>
-    <td class="wide c-link">
-      <form method="post" action="/markets/{{ m.id }}/link" class="link-form" data-form="link" data-action="link">
-        <label><span class="visually-hidden">Game</span>
-          <select name="game_id">
-            {% for g in link_games %}<option value="{{ g.game_id }}"{% if g.game_id == m.game_id %} selected{% endif %}>{{ g.label }}</option>{% endfor %}
-          </select>
-        </label>
-        <label><span class="visually-hidden">Side</span>
-          <select name="side">
-            <option value="home"{% if m.side == 'home' %} selected{% endif %}>home wins</option>
-            <option value="away"{% if m.side == 'away' %} selected{% endif %}>away wins</option>
-          </select>
-        </label>
-        <button type="submit" class="btn small"{% if not link_games %} disabled{% endif %}>Link</button>
-      </form>
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="4" class="muted">Every market is mapped.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+<section class="trading-group" id="fills" data-card="fills">
+{% call ui.disclosure("trading-fills", "Fills", count=fills | length, summary="the last " ~ (fills | length) ~ ", sells with realized P&L") %}
+{% if fills %}
+<ul class="rows" data-list="fills">
+{% for f in fills %}
+{% set title %}{% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }}{{ live_chip(f.mode) }}{% if f.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% endset %}
+{% set meta %}of {{ f.order_size }} @ {{ f.order_price | price }} &middot; fee {{ f.fee_cents | money }}{% if f.order_side == 'sell' and f.basis_cents is not none %} &middot; basis {{ f.basis_cents | money }}{% endif %} &middot; {{ f.market_title }} &middot; {{ names.get(f.worker_id, f.worker_id) or 'no worker' }} &middot; {{ f.ts | ts }}{% endset %}
+{% call item("fill", f.id, title, meta, cls="is-live" if f.mode == 'live' else "", attrs={"data-fill": f.id, "data-side": f.order_side or 'buy'}) %}
+  {% if f.order_side == 'sell' and f.realized_cents is not none %}<span class="row-value">realized {{ pnl(f.realized_cents) }}</span>{% endif %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No fills yet.</p>
+{% endif %}
+{% endcall %}
 </section>
 
-<section class="card group" id="markets" data-card="markets">
-<h2>Markets <span class="muted small">{{ markets | length }}, snapshot age per market</span></h2>
-<div class="table-wrap">
-<table class="markets mapped stack" data-list="markets">
-  <thead><tr><th>market</th><th>game</th><th>book</th><th>liquidity</th><th>snapshot</th><th>status</th></tr></thead>
-  <tbody>
-  {% for m in markets %}
-  <tr data-market="{{ m.id }}" data-row="market" data-id="{{ m.id }}">
-    <td class="lead">{{ m.title }} <span class="muted small">{{ m.platform }}</span></td>
-    <td class="c-game"><span class="k">game</span> {{ m.game_id }} &middot; {{ m.side }} wins</td>
-    <td class="nowrap c-book"><span class="k">bid / ask</span> {{ m.best_bid | price }} / {{ m.best_ask | price }}</td>
-    <td class="nowrap c-liq"><span class="k">liquidity</span> {{ m.liquidity_usd_cents | money }}</td>
-    <td class="nowrap c-age"><span class="k">snapshot</span> <span class="{% if m.snapshot_age_s is none or m.snapshot_age_s > 60 %}stale-age{% endif %}">{{ m.snapshot_age_s | ago }}</span></td>
-    <td class="c-status"><span class="badge st-{{ m.status }}" data-chip="{{ m.status }}">{{ m.status }}{% if m.status == 'resolved' %} {{ 'YES' if m.resolved_yes else 'NO' }}{% endif %}</span>{% if m.closing_price is not none %} <span class="muted small">close {{ m.closing_price | price }}</span>{% endif %}</td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6" class="muted">No mapped markets yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+<section class="trading-group" id="markets" data-card="markets">
+{% call ui.disclosure("trading-markets", "Markets", count=markets | length, summary=((stale_markets ~ " stale, no book in the last minute") if stale_markets else "every book fresh") if markets else "none mapped yet") %}
+{% if markets %}
+<ul class="rows" data-list="markets">
+{% for m in markets %}
+{% set meta %}{{ m.game_id }} &middot; {{ m.side }} wins &middot; bid / ask {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; liquidity {{ m.liquidity_usd_cents | money }}{% if m.closing_price is not none %} &middot; close {{ m.closing_price | price }}{% endif %} &middot; {{ m.platform }}{% endset %}
+{% call item("market", m.id, m.title, meta, attrs={"data-market": m.id}) %}
+  <span class="row-value" title="snapshot age"><span class="{% if m.snapshot_age_s is none or m.snapshot_age_s > 60 %}stale-age{% endif %}">{{ m.snapshot_age_s | ago }}</span></span>
+  {{ ui.chip(tone("market", m.status), m.status ~ ((" YES" if m.resolved_yes else " NO") if m.status == 'resolved' else ""), key=m.status) }}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No mapped markets yet.</p>
+{% endif %}
+{% endcall %}
 </section>
 
-<section class="card group exchange{% if exchange.down %} is-down{% endif %}" id="exchange" data-card="exchange">
-<h2>Exchange <span class="chip {{ 'chip-bad' if exchange.down else 'chip-ok' }}" data-chip="{{ 'exchange-down' if exchange.down else 'exchange-up' }}">{{ 'DOWN' if exchange.down else 'up' }}</span></h2>
+<section class="trading-group" id="unmatched" data-card="unmatched">
+{% call ui.disclosure("trading-unmatched", "Unmatched markets", count=unmatched | length, summary="never traded until linked to a game" if unmatched else "every market is mapped") %}
+<p class="caption">Markets the mapper could not confirm to a game. Linking one by hand sets its game and the team its YES contract pays.</p>
+{% if unmatched %}
+<ul class="rows" data-list="unmatched">
+{% for m in unmatched %}
+{% set meta %}guess {% if m.game_id %}{{ m.game_id }} {{ m.side }} ({{ (m.mapping_confidence or 0) | pct }}){% else %}none{% endif %} &middot; book {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; {{ m.snapshot_age_s | ago }} &middot; {{ m.platform }} {{ m.market_ref }}{% endset %}
+{% call item("market", m.id, m.title, meta, attrs={"data-market": m.id}) %}
+  {% call ui.menu("Link to a game") %}
+    <form method="post" action="/markets/{{ m.id }}/link" class="menu-form link-form" data-form="link" data-action="link">
+      <label>Game
+        <select name="game_id">
+          {% for g in link_games %}<option value="{{ g.game_id }}"{% if g.game_id == m.game_id %} selected{% endif %}>{{ g.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Side
+        <select name="side">
+          <option value="home"{% if m.side == 'home' %} selected{% endif %}>home wins</option>
+          <option value="away"{% if m.side == 'away' %} selected{% endif %}>away wins</option>
+        </select>
+      </label>
+      <button type="submit" class="btn small"{% if not link_games %} disabled{% endif %}>Link</button>
+    </form>
+  {% endcall %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">Every market is mapped.</p>
+{% endif %}
+{% endcall %}
+</section>
+
+<section class="trading-group exchange{% if exchange.down %} is-down{% endif %}" id="exchange" data-card="exchange">
+{% set auth_word = "auth ok" if exchange.auth_ok else ("auth failed" if exchange.auth_checked_at else "auth not checked") %}
+{% set summary %}{{ ui.chip("bad" if exchange.down else "ok", "DOWN" if exchange.down else "up", key="exchange-down" if exchange.down else "exchange-up") }} {{ exchange.market_source or 'no source' }} &middot; heartbeat {{ exchange.heartbeat_age_s | ago }} &middot; {{ auth_word }}{% endset %}
+{% call ui.disclosure("trading-exchange", "Exchange", summary=summary, open=exchange.down and live_orders) %}
 <dl class="props">
-  <dt>heartbeat</dt><dd>{{ exchange.heartbeat_age_s | ago }}{% if exchange.heartbeat_at %} <span class="muted small">{{ exchange.heartbeat_at | ts }}</span>{% endif %}</dd>
+  <dt>heartbeat</dt><dd>{{ exchange.heartbeat_age_s | ago }}{% if exchange.heartbeat_at %} <span class="muted">{{ exchange.heartbeat_at | ts }}</span>{% endif %}</dd>
   <dt>source</dt><dd>{{ exchange.market_source or '-' }}</dd>
-  <dt>auth</dt><dd class="c-auth">{% if exchange.auth_ok %}<span class="chip chip-ok" data-chip="auth-ok">ok</span>{% elif exchange.auth_checked_at %}<span class="chip chip-bad" data-chip="auth-failed">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if exchange.auth_checked_at %} <span class="muted small">checked {{ exchange.auth_age_s | ago }}</span>{% endif %} &middot; credentials {{ 'yes' if exchange.credentials_present else 'no' }}{% if exchange.clock_skew_ms is not none %} &middot; skew {{ exchange.clock_skew_ms }} ms{% endif %}</dd>
-  <dt>balance</dt><dd class="c-balance">{% if exchange.balance_cents is not none %}{{ exchange.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %} &middot; buying power {% if exchange.buying_power_cents is not none %}{{ exchange.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}{% if exchange.balance_checked_at %} <span class="muted small">{{ exchange.balance_age_s | ago }}</span>{% endif %}</dd>
-  <dt>live orders</dt><dd class="c-live-orders">{{ live_open }} open{% if live_cancel_pending %}, {{ live_cancel_pending }} cancel pending{% endif %}{% if smoke_orders %} <span class="chip chip-smoke" data-chip="smoke">{{ smoke_orders }} smoke</span>{% endif %}</dd>
+  <dt>auth</dt><dd class="c-auth">{% if exchange.auth_ok %}{{ ui.chip("ok", "ok", key="auth-ok") }}{% elif exchange.auth_checked_at %}{{ ui.chip("bad", "failed", key="auth-failed") }}{% else %}<span class="muted">not checked</span>{% endif %}{% if exchange.auth_checked_at %} <span class="muted">checked {{ exchange.auth_age_s | ago }}</span>{% endif %} &middot; credentials {{ 'yes' if exchange.credentials_present else 'no' }}{% if exchange.clock_skew_ms is not none %} &middot; skew {{ exchange.clock_skew_ms }} ms{% endif %}</dd>
+  <dt>balance</dt><dd class="c-balance">{% if exchange.balance_cents is not none %}{{ exchange.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %} &middot; buying power {% if exchange.buying_power_cents is not none %}{{ exchange.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}{% if exchange.balance_checked_at %} <span class="muted">{{ exchange.balance_age_s | ago }}</span>{% endif %}</dd>
+  <dt>live orders</dt><dd class="c-live-orders">{{ live_open }} open{% if live_cancel_pending %}, {{ live_cancel_pending }} cancel pending{% endif %}{% if smoke_orders %} {{ ui.chip("warn", smoke_orders ~ " smoke", key="smoke", extra="chip-smoke") }}{% endif %}</dd>
   {% if exchange.down and live_orders %}
   <dt>recovery</dt><dd class="c-direct-cancel"><span class="error">{{ live_orders }} live order{{ '' if live_orders == 1 else 's' }} may rest on the exchange with its process down.</span> Press KILL first, then on the host: <code>docker compose stop exchange &amp;&amp; docker compose run --rm exchange python -m host.exchange.cli cancel-all --direct</code></dd>
   {% endif %}
@@ -228,15 +240,19 @@
   {% endif %}
 </dl>
 <form method="post" action="/exchange/probe" class="inline" data-action="probe"><button type="submit" class="btn small">Probe markets</button></form>
+<p class="caption">Shows the raw markets payload of the configured source, to paste back when the parser needs fixing.</p>
+{% endcall %}
 </section>
 
-<section class="card group" id="ledger" data-card="ledger">
-<h2>Ledger <span class="chip {{ 'chip-bad' if ledger_problems else 'chip-ok' }}" data-chip="{{ 'ledger-problems' if ledger_problems else 'ledger-ok' }}">{{ 'problems' if ledger_problems else 'OK' }}</span></h2>
+<section class="trading-group" id="ledger" data-card="ledger">
+{% set summary %}{{ ui.chip("bad" if ledger_problems else "ok", "problems" if ledger_problems else "OK", key="ledger-problems" if ledger_problems else "ledger-ok") }} {{ bankrolls }} bankroll{{ '' if bankrolls == 1 else 's' }} replayed{% endset %}
+{% call ui.disclosure("trading-ledger", "Ledger check", summary=summary, open=ledger_problems | length > 0) %}
 {% if ledger_problems %}
 <ul class="problems">
 {% for line in ledger_problems %}<li class="error">{{ line }}</li>{% endfor %}
 </ul>
 {% else %}
-<p class="muted small">Replay of {{ bankrolls }} bankroll{{ '' if bankrolls == 1 else 's' }} matches the cached columns (initial + realized = available + reserved + open).</p>
+<p class="muted">Replay of {{ bankrolls }} bankroll{{ '' if bankrolls == 1 else 's' }} matches the cached columns (initial + realized = available + reserved + open).</p>
 {% endif %}
+{% endcall %}
 </section>

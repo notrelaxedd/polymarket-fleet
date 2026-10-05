@@ -177,8 +177,9 @@ def phase_replay(host: Any, state_dir: str, worker_id: str, models: dict[str, An
     snap = entry["snapshot"]
     assert snap["n_games"] == N_SCORED and snap["n_bets"] == N_SCORED and snap["clv_estimated"] is False
     assert abs(snap["avg_clv"] - EXPECTED_CLV) < 1e-6 and entry["rank_mode"] != "snapshot", "below 30 bets: no snapshot rank"
-    row = page(host.client.get("/models").text).row("model", root)
-    assert f"snapshot {N_SCORED} games · {N_SCORED} bets" in row.text and re.search(r"-?\d\.\d{3} to -?\d\.\d{3}", row.text)
+    assert page(host.client.get("/models").text).row("model", root)
+    replay = page(host.client.get(f"/models/{root}").text).prop("snapshot replay")
+    assert replay.startswith(f"{N_SCORED} games · {N_SCORED} bets") and re.search(r"-?\d\.\d{3} to -?\d\.\d{3}", replay)
     detail = page(host.client.get(f"/models/{child}").text)
     assert "Replayed on recorded sim prices" in detail.card("snapshot").text
     wait_for(settled(host, worker_id, "idle"), "worker idle after the replay")

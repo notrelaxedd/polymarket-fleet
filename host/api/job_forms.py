@@ -150,7 +150,8 @@ def jobs_context(
     submitted: dict[str, str] | None = None, validate_model: str | None = None,
 ) -> dict[str, Any]:
     """Everything jobs.html needs besides the job list; `train_model` or
-    `validate_model` preselects that model and opens that form."""
+    `validate_model` preselects that model and that kind. `new_open` opens the "New
+    job" disclosure (a prefill link, or a rejected post re-rendered with its error)."""
     seasons = get_setting(conn, "backtest_seasons", [2010, None])
     seasons = (list(seasons) + [None, None])[:2] if isinstance(seasons, list) else [2010, None]
     validation = get_setting(conn, "validation_seasons", [2022, None])
@@ -167,6 +168,7 @@ def jobs_context(
     values.update({k: v for k, v in (submitted or {}).items() if k in values})
     active = (submitted or {}).get("kind") or ("train" if train_model else "validate" if validate_model else "backtest")
     return {
+        "new_open": bool(submitted or error or train_model or validate_model),
         "names": views.worker_names(conn),
         "models": model_options(conn),
         "families": FAMILY_NAMES,

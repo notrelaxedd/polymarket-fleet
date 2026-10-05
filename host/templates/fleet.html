@@ -1,9 +1,12 @@
 {% extends "base.html" %}
 {% block title %}Fleet{% endblock %}
 {% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
 {% block content %}
-<h1 class="visually-hidden">Fleet</h1>
-<div id="fleet-grid" class="grid" data-list="workers">
+<h1>Fleet</h1>
+{{ ui.intro("fleet", "Every worker box: whether it is up, the role it plays and the job it is running. Pick a role to move a box.") }}
+{# The stats and the cards are both inside #fleet-grid, so the 5 s refresh keeps the counts in step with the cards. #}
+<div id="fleet-grid">
 {% include "_fleet.html" %}
 </div>
 {% endblock %}

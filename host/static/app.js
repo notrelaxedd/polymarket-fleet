@@ -27,12 +27,36 @@
     var list = keyed(root);
     for (var i = 0; i < list.length; i++) { opened[list[i].getAttribute("data-key")] = list[i].open; }
   }
+  // the element the URL fragment names (a banner links to /trading#exchange), or null
+  function hashTarget() {
+    var h = window.location.hash;
+    if (!h || h.length < 2) { return null; }
+    try { return document.getElementById(decodeURIComponent(h.slice(1))); } catch (err) { return null; }
+  }
+  // a stored "closed" never hides an inline error or the element the URL points at
+  function pinned(d) {
+    if (d.querySelector(".inline-error, [aria-invalid=\"true\"]")) { return true; }
+    var t = hashTarget();
+    return !!(t && (d === t || d.contains(t)));
+  }
   function restore(root) {
     var list = keyed(root);
     for (var i = 0; i < list.length; i++) {
-      var key = list[i].getAttribute("data-key");
-      var want = Object.prototype.hasOwnProperty.call(opened, key) ? opened[key] : stored(key);
+      var key = list[i].getAttribute("data-key"), want;
+      if (Object.prototype.hasOwnProperty.call(opened, key)) {
+        want = opened[key];
+      } else {
+        want = stored(key);
+        if (want === false && list[i].open && pinned(list[i])) { want = null; }
+      }
       if (want !== null && want !== undefined && list[i].open !== want) { list[i].open = want; }
+    }
+  }
+  // open every <details> around the URL fragment's target so a link to a section shows it
+  function revealTarget() {
+    var el = hashTarget();
+    for (; el; el = el.parentElement) {
+      if (el.tagName === "DETAILS" && !el.open && !el.classList.contains("menu")) { el.open = true; }
     }
   }
   // toggle does not bubble: listen in the capture phase
@@ -179,7 +203,9 @@
   });
 
   restore(document);
+  revealTarget();
   applySwitches(document);
+  window.addEventListener("hashchange", revealTarget);
 
   var flash = document.querySelector(".flash");
   if (flash) { setTimeout(function () { flash.remove(); }, FLASH_MS); }

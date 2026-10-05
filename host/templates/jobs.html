@@ -1,10 +1,13 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Jobs{% endblock %}
 {% block page %}jobs{% endblock %}
-{# Five send forms, one per kind, each folded into a details card so the job list is
-   never two screens down on a phone. `values` holds the defaults (or the submitted
-   values after a rejected post), `active` names the one card that is open: the form
-   that was posted, the train form behind ?train_model, else the backtest form. #}
+{# One send form per kind, all inside the "New job" disclosure. With JavaScript the kind
+   select shows only the chosen form (app.js data-switch); without it every form shows
+   under its heading. `values` holds the defaults (or the submitted values after a
+   rejected post), `active` names the kind that is preselected: the form that was
+   posted, the train or validate form behind ?train_model / ?validate_model, else
+   backtest. `new_open` opens the disclosure for a prefill link or a rejected post. #}
 {% macro target_select() -%}
 <label>Target
   <select name="target">
@@ -32,23 +35,41 @@
 {%- endmacro %}
 {% macro seasons_fields() -%}
 <label>First season <input type="text" name="seasons_first" value="{{ values.seasons_first }}" inputmode="numeric" autocomplete="off"></label>
-<label>Last season <span class="muted small">blank = last complete</span><input type="text" name="seasons_last" value="{{ values.seasons_last }}" inputmode="numeric" autocomplete="off"></label>
+<label>Last season <span class="help">blank = last complete</span><input type="text" name="seasons_last" value="{{ values.seasons_last }}" inputmode="numeric" autocomplete="off"></label>
 {%- endmacro %}
 {% macro form_error(kind) -%}
 {% if error and active == kind %}<p class="error inline-error">{{ error }}</p>{% endif %}
 {%- endmacro %}
+{% macro send(kind, title) -%}
+<section class="send" id="{{ kind }}" data-card="send-{{ kind }}" data-switch-for="job-kind" data-when="{{ kind }}">
+  <h2>{{ title }}</h2>
+  {{ caller() }}
+</section>
+{%- endmacro %}
 {% block content %}
+{% set kinds = [("backtest", "Backtest"), ("model_search", "Model search"), ("train", "Train"), ("validate", "Validate"), ("sleep", "Sleep (test)")] %}
 <h1>Jobs</h1>
-<div class="send-grid">
-<details class="card send" id="backtest" data-card="send-backtest"{% if active == 'backtest' %} open{% endif %}>
-  <summary><h2>Backtest</h2></summary>
+{{ ui.intro("jobs", "Work sent to the workers: searches, backtests, training and validation. Start one under New job.") }}
+<div class="stats">
+  {{ ui.stat("running", counts.running, "Running", href="/jobs") }}
+  {{ ui.stat("queued", counts.queued, "Queued", href="/jobs") }}
+  {{ ui.stat("held", counts.held, "Trading", href="/trading", note="trade jobs holding a worker") }}
+  {{ ui.stat("done", counts.done_24h, "Done in 24 h", href="/jobs?tab=done", note=(counts.failed_24h ~ " failed") if counts.failed_24h else none) }}
+</div>
+{% call ui.disclosure("jobs-new", "New job", summary="backtest, model search, train or validate", open=new_open) %}
+<label class="js-only">Kind
+  <select data-switch="job-kind" aria-label="Job kind">
+    {% for kind, title in kinds %}<option value="{{ kind }}"{% if kind == active %} selected{% endif %}>{{ title }}</option>{% endfor %}
+  </select>
+</label>
+{% call send("backtest", "Backtest") %}
   <form method="post" action="/jobs" data-form="backtest">
   {{ form_error('backtest') }}
   <input type="hidden" name="kind" value="backtest">
   <div class="fields">
-    <label>Model <span class="muted small">or family + params</span>{{ model_select(true) }}</label>
+    <label>Model <span class="help">or family + params</span>{{ model_select(true) }}</label>
     <label>Family {{ family_select() }}</label>
-    <label>Params <span class="muted small">JSON</span><textarea name="params" rows="2">{{ values.params }}</textarea></label>
+    <label>Params <span class="help">JSON</span><textarea name="params" rows="2">{{ values.params }}</textarea></label>
     {{ seasons_fields() }}
     <label>Price source
       <select name="price_source">
@@ -57,60 +78,55 @@
     </label>
     {{ target_select() }}
   </div>
-  <p class="muted small replay-hint">Snapshots replay the prices the host recorded on <strong>{{ replay.price_platform }}</strong>, {{ replay.decision_minutes_before_kickoff }} minutes before kickoff, taking at most {{ replay.participation }} of the book; games without recorded prices are skipped. The result is stored apart from the closing-line numbers and never changes a model's status. Change these in <a href="/settings#replay">Settings</a>.</p>
+  <p class="help replay-hint">Snapshots replay the prices the host recorded on <strong>{{ replay.price_platform }}</strong>, {{ replay.decision_minutes_before_kickoff }} minutes before kickoff, taking at most {{ replay.participation }} of the book; games without recorded prices are skipped. The result is stored apart from the closing-line numbers and never changes a model's status. Change these in <a href="/settings#replay">Settings</a>.</p>
   {% if replay.sim_refused %}<p class="error small replay-sim">The market source is sim and sim prices are not allowed, so a snapshot backtest will fail on the worker. Allow sim prices in <a href="/settings#replay">Settings</a> (testing only) or switch the market source.</p>{% endif %}
-  <button type="submit" class="btn primary">Send backtest</button>
+  <div class="form-actions"><button type="submit" class="btn primary">Send backtest</button></div>
   </form>
-</details>
-<details class="card send" id="model_search" data-card="send-model_search"{% if active == 'model_search' %} open{% endif %}>
-  <summary><h2>Model search</h2></summary>
+{% endcall %}
+{% call send("model_search", "Model search") %}
   <form method="post" action="/jobs" data-form="model_search">
   {{ form_error('model_search') }}
   <input type="hidden" name="kind" value="model_search">
   <div class="fields">
     <label>Family {{ family_select() }}</label>
-    <label>Candidates <span class="muted small">1..5000</span><input type="text" name="n" value="{{ values.n }}" inputmode="numeric" autocomplete="off"></label>
+    <label>Candidates <span class="help">1..5000</span><input type="text" name="n" value="{{ values.n }}" inputmode="numeric" autocomplete="off"></label>
     <label>Seed <input type="text" name="seed" value="{{ values.seed }}" inputmode="numeric" autocomplete="off"></label>
     {{ seasons_fields() }}
-    <label>Keep top <span class="muted small">1..20</span><input type="text" name="top_k" value="{{ values.top_k }}" inputmode="numeric" autocomplete="off"></label>
+    <label>Keep top <span class="help">1..20</span><input type="text" name="top_k" value="{{ values.top_k }}" inputmode="numeric" autocomplete="off"></label>
     {{ target_select() }}
   </div>
-  <button type="submit" class="btn primary">Send search</button>
+  <div class="form-actions"><button type="submit" class="btn primary">Send search</button></div>
   </form>
-</details>
-<details class="card send" id="train" data-card="send-train"{% if active == 'train' %} open{% endif %}>
-  <summary><h2>Train</h2></summary>
+{% endcall %}
+{% call send("train", "Train") %}
   <form method="post" action="/jobs" data-form="train">
   {{ form_error('train') }}
   <input type="hidden" name="kind" value="train">
   <div class="fields">
     <label>Model {{ model_select(false) }}</label>
     <label>Through season <input type="text" name="through_season" value="{{ values.through_season }}" inputmode="numeric" autocomplete="off"></label>
-    <label>Through week <span class="muted small">1..22</span><input type="text" name="through_week" value="{{ values.through_week }}" inputmode="numeric" autocomplete="off"></label>
+    <label>Through week <span class="help">1..22</span><input type="text" name="through_week" value="{{ values.through_week }}" inputmode="numeric" autocomplete="off"></label>
     {{ target_select() }}
   </div>
-  {% if not models %}<p class="muted small">No models yet: run a model search first.</p>{% endif %}
-  <button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send train</button>
+  {% if not models %}<p class="help">No models yet: run a model search first.</p>{% endif %}
+  <div class="form-actions"><button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send train</button></div>
   </form>
-</details>
-<details class="card send" id="validate" data-card="send-validate"{% if active == 'validate' %} open{% endif %}>
-  <summary><h2>Validate</h2></summary>
+{% endcall %}
+{% call send("validate", "Validate") %}
   <form method="post" action="/jobs" data-form="validate">
   {{ form_error('validate') }}
   <input type="hidden" name="kind" value="validate">
-  <p class="muted small">Runs the model on the held-out validation era ({{ validation_span }}) with the bootstrap, the market test and the stress tests, then stores the numbers on its lineage.</p>
+  <p class="help">Runs the model on the held-out validation era ({{ validation_span }}) with the bootstrap, the market test and the stress tests, then stores the numbers on its lineage.</p>
   <div class="fields">
     <label>Model {{ model_select(false) }}</label>
-    <label>Seed <span class="muted small">bootstrap and perturbations</span><input type="text" name="validate_seed" value="{{ values.validate_seed }}" inputmode="numeric" autocomplete="off"></label>
+    <label>Seed <span class="help">bootstrap and perturbations</span><input type="text" name="validate_seed" value="{{ values.validate_seed }}" inputmode="numeric" autocomplete="off"></label>
     {{ target_select() }}
   </div>
-  {% if not models %}<p class="muted small">No models yet: run a model search first.</p>{% endif %}
-  <button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send validate</button>
+  {% if not models %}<p class="help">No models yet: run a model search first.</p>{% endif %}
+  <div class="form-actions"><button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send validate</button></div>
   </form>
-</details>
-</div>
-<details class="card send sleep" id="sleep" data-card="send-sleep"{% if active == 'sleep' %} open{% endif %}>
-  <summary>Sleep test job</summary>
+{% endcall %}
+{% call send("sleep", "Sleep (test)") %}
   <form method="post" action="/jobs" data-form="sleep">
     {{ form_error('sleep') }}
     <input type="hidden" name="kind" value="sleep">
@@ -118,34 +134,35 @@
       <label>Seconds <input type="number" name="seconds" value="{{ values.seconds }}" min="1" max="86400" inputmode="numeric"></label>
       {{ target_select() }}
     </div>
-    <button type="submit" class="btn">Send sleep</button>
+    <div class="form-actions"><button type="submit" class="btn">Send sleep</button></div>
   </form>
-</details>
-<div class="table-wrap">
-<table class="jobs stack" data-list="jobs">
-  <thead><tr><th>created</th><th>kind</th><th>status</th><th>worker</th><th>progress</th><th></th></tr></thead>
-  <tbody>
+{% endcall %}
+{% endcall %}
+<nav class="tabs" aria-label="Job lists">
+  <a href="/jobs" data-tab="running"{% if tab == 'running' %} aria-current="page"{% endif %}>Running <span class="count">{{ counts.tab_running }}</span></a>
+  <a href="/jobs?tab=done" data-tab="done"{% if tab == 'done' %} aria-current="page"{% endif %}>Done <span class="count">{{ counts.tab_done }}</span></a>
+</nav>
+{% if jobs %}
+<ul class="rows" data-list="jobs">
   {% for j in jobs %}
   {% set worker = j.lease_worker_id or j.target_worker_id %}
-  <tr data-row="job" data-id="{{ j.id }}">
-    <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
-    <td class="c-kind">{{ j.kind }}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} <span class="chip chip-snapshot" data-chip="snapshots">snapshots</span>{% endif %}{% if j.kind == 'backtest' and j.params.family %} <span class="muted small">{{ j.params.family }}</span>{% elif j.kind == 'model_search' %} <span class="muted small">{{ j.params.family }} n {{ j.params.n }}</span>{% elif j.kind == 'validate' and j.params.model_id %} <span class="muted small">{{ j.params.model_id | short }}</span>{% endif %}</td>
-    <td class="c-status">
-      <span class="badge st-{{ j.status }}" data-chip="{{ j.status }}">{{ j.status.replace('_', ' ') }}</span>
-      {% if j.status == 'queued' and not j.target_worker_id %}<span class="badge st-waiting" data-chip="waiting">waiting for an idle worker</span>{% endif %}
-    </td>
-    <td class="c-worker">{% if worker %}{{ names.get(worker, worker) }}{% else %}<span class="muted">-</span>{% endif %}</td>
-    <td class="nowrap c-progress">{{ j.progress | pct }}</td>
-    <td class="action">
-      {% if j.status in ('queued', 'leased') %}
-      <form method="post" action="/jobs/{{ j.id }}/cancel" data-action="cancel"><button type="submit" class="btn small">Cancel</button></form>
-      {% endif %}
-    </td>
-  </tr>
-  {% else %}
-  <tr><td colspan="6" class="muted">No jobs yet.</td></tr>
+  {% set waiting = j.status == 'queued' and not j.target_worker_id %}
+  <li class="row" data-row="job" data-id="{{ j.id }}">
+    <a class="row-main" href="/jobs/{{ j.id }}">
+      <span class="row-title">{{ j.kind }}{% if j.target %} <span class="muted">{{ j.target }}</span>{% endif %}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} {{ ui.chip("muted", "snapshots", key="snapshots", extra="chip-snapshot") }}{% endif %}</span>
+      <span class="row-meta">{% if waiting %}waiting for an idle worker{% elif worker %}{{ names.get(worker, worker) }}{% else %}no worker{% endif %} &middot; {% if tab == 'done' %}finished {{ j.finished_at | ts or '-' }}{% else %}created {{ j.created_at | ts }}{% endif %}</span>
+    </a>
+    {% if tab == 'running' and j.status != 'queued' and j.kind != 'trade' %}{{ ui.bar(j.progress | bar_pct) }}<span class="row-value">{{ j.progress | pct }}</span>{% endif %}
+    {% if waiting %}{{ ui.chip("warn", "waiting", key="waiting") }}{% else %}{{ ui.chip(j.state, "held" if j.kind == 'trade' and j.status == 'leased' else j.status.replace('_', ' '), key=j.status, extra="st-" ~ j.status) }}{% endif %}
+    {% if j.status in ('queued', 'leased') %}
+    {% call ui.menu() %}
+    <form method="post" action="/jobs/{{ j.id }}/cancel" data-action="cancel"><button type="submit" class="menu-item danger">Cancel</button></form>
+    {% endcall %}
+    {% endif %}
+  </li>
   {% endfor %}
-  </tbody>
-</table>
-</div>
+</ul>
+{% else %}
+<p class="empty">{{ 'No finished jobs yet.' if tab == 'done' else 'Nothing running or queued.' }}</p>
+{% endif %}
 {% endblock %}

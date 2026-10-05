@@ -1,18 +1,29 @@
 {# Backtest metrics as labelled pairs (phone friendly) and the per-season table.
-   `pairs(m, detail)` renders the whole-backtest metrics; detail adds brier and the
-   drawdown in cents. ROI, hit rate and average edge read "-" when nothing was bet. #}
-{% macro pairs(m, detail=false) -%}
+   `pairs(m, detail, captions)` renders the whole-backtest metrics; detail adds brier and the
+   drawdown in cents, captions adds a one-sentence muted reading under the key numbers
+   (the model page). ROI, hit rate and average edge read "-" when nothing was bet. #}
+{% macro caption(name, on) -%}
+{% set captions_by_name = {
+  'ROI': 'Profit per dollar staked.',
+  'hit rate': 'Share of bets that won.',
+  'avg edge': 'Model probability minus the price paid, on average.',
+  'log-loss': 'How well the probabilities scored; lower is better, below the market is an edge.',
+  'drawdown': 'The deepest fall from a high point of the bankroll.',
+} %}
+{% if on %} <span class="caption">{{ captions_by_name[name] }}</span>{% endif %}
+{%- endmacro %}
+{% macro pairs(m, detail=false, captions=false) -%}
 {% set bets = m.n_bets or 0 %}
 <dl class="kv metrics" data-list="metrics">
   <div><dt>games</dt><dd>{{ m.n_games }}</dd></div>
   <div><dt>bets</dt><dd>{{ m.n_bets }}</dd></div>
-  <div><dt>ROI</dt><dd>{{ m.roi | signed_pct if bets else '-' }}</dd></div>
-  <div><dt>hit rate</dt><dd>{{ m.hit_rate | pct1 if bets else '-' }}</dd></div>
-  <div><dt>avg edge</dt><dd>{{ m.avg_edge | signed_pct if bets else '-' }}</dd></div>
+  <div><dt>ROI</dt><dd>{{ m.roi | signed_pct if bets else '-' }}{{ caption('ROI', captions) }}</dd></div>
+  <div><dt>hit rate</dt><dd>{{ m.hit_rate | pct1 if bets else '-' }}{{ caption('hit rate', captions) }}</dd></div>
+  <div><dt>avg edge</dt><dd>{{ m.avg_edge | signed_pct if bets else '-' }}{{ caption('avg edge', captions) }}</dd></div>
   <div><dt>P&amp;L</dt><dd>{{ m.pnl_cents | money }}</dd></div>
-  <div><dt>log-loss vs market</dt><dd>{{ m.log_loss | fixed }} <span class="muted">vs {{ m.market_log_loss | fixed }}</span></dd></div>
+  <div><dt>log-loss vs market</dt><dd>{{ m.log_loss | fixed }} <span class="muted">vs {{ m.market_log_loss | fixed }}</span>{{ caption('log-loss', captions) }}</dd></div>
   {% if detail %}<div><dt>brier</dt><dd>{{ m.brier | fixed }}</dd></div>{% endif %}
-  <div><dt>max drawdown</dt><dd>{{ m.max_drawdown | pct1 }}{% if detail %} <span class="muted small">({{ m.max_drawdown_cents | money }})</span>{% endif %}</dd></div>
+  <div><dt>max drawdown</dt><dd>{{ m.max_drawdown | pct1 }}{% if detail %} <span class="muted">({{ m.max_drawdown_cents | money }})</span>{% endif %}{{ caption('drawdown', captions) }}</dd></div>
   <div><dt>seasons</dt><dd>{{ m.seasons | season_span }}</dd></div>
 </dl>
 {%- endmacro %}

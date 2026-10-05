@@ -1,0 +1,59 @@
+{# The Settings "Live trading" group body (included by settings.html): the typed live
+   switch (step 5) and the kill switch with its RESUME reset. Context: live, killed,
+   auto_kill, errors, values. #}
+{% import "_ui.html" as ui %}
+{# Step 5: the typed live switch. live_enabled has no generic settings field; the only
+   way on is today's exact phrase, the only way off is the button (or a kill). #}
+<section class="group live{% if live.live_enabled %} is-live{% endif %}" id="live" data-card="live">
+  <h3>Live switch <span class="pill {{ 'live' if live.live_enabled else 'paper' }}" data-live-state="{{ 'on' if live.live_enabled else 'off' }}">{{ 'ON' if live.live_enabled else 'OFF' }}</span></h3>
+  {% if live.live_enabled %}
+  <p class="live-since">Live trading is <strong>on</strong> since {{ live.live_enabled_at | ts if live.live_enabled_at else 'an unknown time' }} by {{ live.live_enabled_by or 'an unknown actor' }}. Real orders go to the exchange for live assignments of live-eligible lineages.</p>
+  {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
+  <form method="post" action="/settings/live/off" class="live-off" data-action="live-off" data-confirm="Disable live trading now? Live assignments are halted and their orders are cancel-requested; the exchange process cancels them on the exchange (while paused by clock skew they rest until the skew clears or their GTD).">
+    <button type="submit" class="btn danger">Disable live</button>
+  </form>
+  {% else %}
+  <p>Live trading is <strong>off</strong>: every assignment is paper and nothing reaches the exchange. Turning it on needs today's exact phrase, the kill switch off, credentials in the exchange process, a fresh successful auth probe and a clock within limits.</p>
+  {% if live.problems %}
+  <ul class="problems live-problems muted">
+    {% for problem in live.problems %}<li>{{ problem }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
+  <form method="post" action="/settings/live" class="live-form" data-form="live-on">
+    <label data-field="live_confirm"><span>Type exactly <code class="phrase">{{ live.expected_phrase }}</code></span>
+      <input type="text" name="confirm" value="{{ values.live_confirm }}" placeholder="{{ live.expected_phrase }}" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <span class="help">today's date in your time zone</span>
+    </label>
+    <button type="submit" class="btn danger">Enable live trading</button>
+  </form>
+  {% endif %}
+  <dl class="props live-props">
+    <dt>credentials</dt><dd>{{ 'yes' if live.credentials_present else 'no' }} <span class="muted small">{{ 'loaded by the exchange process' if live.credentials_present else 'exchange.env missing or malformed (see the last auth error), or the exchange process has not started' }}</span></dd>
+    <dt>auth</dt><dd>{% if live.auth_ok %}{{ ui.chip('ok', 'ok', key='auth-ok') }}{% elif live.auth_checked_at %}{{ ui.chip('bad', 'failed', key='auth-failed') }}{% else %}<span class="muted">not checked</span>{% endif %}{% if live.auth_checked_at %} <span class="muted small auth-age">checked {{ live.auth_age_s | ago }}</span>{% endif %}{% if live.auth_failures %} <span class="error small">{{ live.auth_failures }} failure{{ '' if live.auth_failures == 1 else 's' }} in a row</span>{% endif %}</dd>
+    <dt>balance</dt><dd>{% if live.balance_cents is not none %}{{ live.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
+    <dt>buying power</dt><dd>{% if live.buying_power_cents is not none %}{{ live.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
+    <dt>clock skew</dt><dd>{% if live.clock_skew_ms is not none %}{{ live.clock_skew_ms }} ms{% else %}<span class="muted">-</span>{% endif %}</dd>
+    <dt>last auth error</dt><dd>{% if live.last_auth_error %}<span class="error">{{ live.last_auth_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
+    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}{{ ui.chip('bad', reason, key='auto-kill', extra='auto-kill-reason') }} {% endfor %}<span class="muted small">since the last reset</span>{% for reason in live.auto_kill_reasons %}{% if live.remedies and live.remedies[reason] %}<br><span class="small remedy" data-remedy="{{ reason }}"><strong>{{ reason }}</strong>: {{ live.remedies[reason] }}</span>{% endif %}{% endfor %}{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
+  </dl>
+</section>
+
+<section class="group{% if killed %} killed{% endif %}" id="kill" data-card="kill">
+  <h3>Kill switch</h3>
+  {% if killed %}
+  <p class="error">Trading is killed. Trade workers do not claim, no order is approved and every assignment stays halted until you activate it again on the <a href="/trading">Trading</a> page.</p>
+  {% if auto_kill %}
+  <p class="error auto-kill">Killed automatically by the exchange process: <strong>{{ auto_kill.reason }}</strong> at {{ auto_kill.ts | ts }}{% if auto_kill.detail %} <span class="muted small">{{ auto_kill.detail | compact_json }}</span>{% endif %}. Live trading stays off after the reset until you enable it again.{% if auto_kill.remedy %} <span class="remedy" data-remedy="{{ auto_kill.reason }}">Recovery: {{ auto_kill.remedy }}.</span>{% endif %}</p>
+  {% endif %}
+  {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
+  <form method="post" action="/kill/reset" class="reset" data-form="kill-reset">
+    <label data-field="kill_confirm"><span>Type RESUME to clear it</span>
+      <input type="text" name="confirm" autocomplete="off" autocapitalize="characters" placeholder="RESUME">
+    </label>
+    <button type="submit" class="btn primary">Reset kill switch</button>
+  </form>
+  {% else %}
+  <p>Trading is <strong>not</strong> killed. The red KILL button in the top bar (or <a href="/kill/confirm">this page</a>) stops trading immediately.</p>
+  {% endif %}
+</section>

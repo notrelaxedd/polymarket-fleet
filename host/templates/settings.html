@@ -1,67 +1,102 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Settings{% endblock %}
 {% block page %}settings{% endblock %}
 {# Every field stays type=text so a blank value and the server-side validation still
-   work; `mode` sets inputmode so a phone opens the right keyboard. #}
+   work; `mode` sets inputmode so a phone opens the right keyboard. The help text is a
+   muted line under the input (.help). Each group is a disclosure whose header carries a
+   one-line summary of the stored values (host/settings_summary.py, values.summary_*);
+   a group opens by itself when one of its forms was rejected. #}
 {% macro field(name, label, hint='', mode='') -%}
-<label data-field="{{ name }}"><span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span>
+<label data-field="{{ name }}"><span>{{ label }}</span>
   <input type="text" name="{{ name }}" value="{{ values[name] }}"{% if mode %} inputmode="{{ mode }}"{% endif %} autocomplete="off">
+  {% if hint %}<span class="help">{{ hint }}</span>{% endif %}
 </label>
 {%- endmacro %}
 {% macro check(name, label, hint='') -%}
-<label class="check" data-field="{{ name }}"><input type="checkbox" name="{{ name }}" value="true"{% if values[name] %} checked{% endif %}> <span>{{ label }}{% if hint %} <span class="muted small">{{ hint }}</span>{% endif %}</span></label>
+<label class="check" data-field="{{ name }}"><input type="checkbox" name="{{ name }}" value="true"{% if values[name] %} checked{% endif %}> <span>{{ label }}{% if hint %}<span class="help">{{ hint }}</span>{% endif %}</span></label>
+{%- endmacro %}
+{% macro form_error(group) -%}
+{% if errors[group] %}<p class="error inline-error">{{ errors[group] }}</p>{% endif %}
 {%- endmacro %}
 {% block content %}
+{% set sep = ' · ' %}
+{# error key -> (anchor, group title) for the "not saved" notice at the top #}
+{% set error_groups = {
+  'trading': ('trading', 'Limits'), 'trade': ('trade', 'Trading'), 'thresholds': ('thresholds', 'Robustness gates'),
+  'seasons': ('seasons', 'Robustness gates'), 'fees': ('fees', 'Robustness gates'), 'replay': ('replay', 'Snapshot replay and signals'),
+  'signals': ('signals', 'Snapshot replay and signals'), 'fleet': ('fleet', 'Fleet'), 'tz': ('tz', 'Fleet'),
+  'live': ('live', 'Live trading'), 'kill': ('kill', 'Live trading'), 'nflverse': ('nflverse', 'Data'),
+} %}
 <h1>Settings</h1>
+{{ ui.intro('settings', 'The rules the fleet trades by. Each group header says what is in force; open a group to change it.') }}
 
-<form class="card group" method="post" action="/settings/trading" id="trading" data-card="trading" data-form="trading">
-  <h2>Trading limits <span class="muted small">dollars</span></h2>
-  {% if errors.trading %}<p class="error inline-error">{{ errors.trading }}</p>{% endif %}
+<div class="stats">
+  {{ ui.stat('live', 'On' if live.live_enabled else 'Off', 'Live trading', href='#live', note='real orders' if live.live_enabled else 'paper only') }}
+  {{ ui.stat('kill', 'Killed' if killed else 'Off', 'Kill switch', href='#kill', note='reset below' if killed else 'trading may run') }}
+  {{ ui.stat('max-bet', settings.max_bet_cents | money, 'Max bet', href='#trading', note='per market') }}
+  {{ ui.stat('market-source', values.market_source, 'Market source', href='#trade') }}
+</div>
+
+{% if errors %}
+<p class="error" role="alert" data-errors>Not saved. {% for key in errors %}{% set where = error_groups.get(key, (key, key)) %}<a href="#{{ where[0] }}">{{ where[1] }}</a>{{ ', ' if not loop.last else '' }}{% endfor %}: see the message in the group.</p>
+{% endif %}
+
+{# ---------------------------------------------------------------- Limits: the money rules #}
+{% call ui.disclosure('settings-limits', 'Limits', summary=values.summary_limits, open=errors.trading) %}
+<form class="group" method="post" action="/settings/trading" id="trading" data-card="trading" data-form="trading">
+  <p class="help">The money rules every order is checked against, in dollars.</p>
+  {{ form_error('trading') }}
   <div class="fields">
-    {{ field('max_bet', 'Max bet', '$', 'decimal') }}
-    {{ field('max_daily_loss_paper', 'Max daily loss, paper', '$', 'decimal') }}
-    {{ field('max_daily_loss_live', 'Max daily loss, live', '$', 'decimal') }}
-    {{ field('default_bankroll', 'Default bankroll per game', '$', 'decimal') }}
-    {{ field('liquidity_floor', 'Liquidity floor', '$', 'decimal') }}
-    {{ field('min_edge', 'Min edge', '0..1', 'decimal') }}
-    {{ field('kelly_fraction', 'Kelly fraction', '0..1', 'decimal') }}
-    {{ field('trade_max_games', 'Max games per trade worker', '0..100', 'numeric') }}
+    {{ field('max_bet', 'Max bet', 'dollars; caps the cost of the open orders on one market', 'decimal') }}
+    {{ field('max_daily_loss_paper', 'Max daily loss, paper', 'dollars; paper orders are refused for the rest of the day once losses reach it', 'decimal') }}
+    {{ field('max_daily_loss_live', 'Max daily loss, live', 'dollars; reaching it turns live trading off', 'decimal') }}
+    {{ field('default_bankroll', 'Default bankroll per game', "dollars; a new assignment's bankroll, and the bankroll per game in backtests", 'decimal') }}
+    {{ field('liquidity_floor', 'Liquidity floor', 'dollars; markets with less on the book are skipped', 'decimal') }}
+    {{ field('min_edge', 'Min edge', "0..1; the model's probability must beat the cost by at least this much", 'decimal') }}
+    {{ field('kelly_fraction', 'Kelly fraction', '0..1; the share of the full Kelly stake to bet', 'decimal') }}
+    {{ field('trade_max_games', 'Max games per trade worker', '0..100; 0 pauses new trade claims', 'numeric') }}
   </div>
-  <button type="submit" class="btn primary">Save</button>
+  <button type="submit" class="btn primary">Save limits</button>
 </form>
+{% endcall %}
 
-<form class="card group" method="post" action="/settings/trade" id="trade" data-card="trade" data-form="trade">
-  <h2>Trading <span class="muted small">approval, snapshots, market source, paper thresholds, rate limits</span></h2>
-  {% if errors.trade %}<p class="error inline-error">{{ errors.trade }}</p>{% endif %}
+{# ---------------------------------------------------------------- Trading: approval, market source, paper gate, rate limits #}
+{% call ui.disclosure('settings-trading', 'Trading', summary=values.summary_trading, open=errors.trade) %}
+<form class="group" method="post" action="/settings/trade" id="trade" data-card="trade" data-form="trade">
+  {{ form_error('trade') }}
   <h3>Order approval</h3>
   <div class="fields">
     {{ field('participation', 'Participation', 'share of book depth, 0..1', 'decimal') }}
-    {{ field('book_max_age_s', 'Book max age (s)', '1..3600', 'numeric') }}
-    {{ field('gtd_seconds', 'Order lifetime (s)', '10..86400', 'numeric') }}
-    {{ field('orphan_cancel_after_s', 'Orphan cancel after (s)', '5..3600', 'numeric') }}
-    {{ field('trade_tick_s', 'Trade tick (s)', '1..60', 'numeric') }}
-    {{ field('max_paper_models_per_game', 'Max paper models per game', '1..20', 'numeric') }}
-    {{ field('max_exposure_paper', 'Max exposure, paper', '$, 0 = off', 'decimal') }}
-    {{ field('max_exposure_live', 'Max exposure, live', '$, 0 = off', 'decimal') }}
-    <label class="check" data-field="trade_pregame_only"><input type="checkbox" name="trade_pregame_only" value="true"{% if values.trade_pregame_only %} checked{% endif %}> <span>Pregame only <span class="muted small">no orders after kickoff</span></span></label>
+    {{ field('book_max_age_s', 'Book max age (s)', '1..3600; an older book is not trusted', 'numeric') }}
+    {{ field('gtd_seconds', 'Order lifetime (s)', '10..86400; orders expire on the exchange after this', 'numeric') }}
+    {{ field('orphan_cancel_after_s', 'Orphan cancel after (s)', '5..3600; a silent worker loses its open orders', 'numeric') }}
+    {{ field('trade_tick_s', 'Trade tick (s)', '1..60; how often a trade worker looks again', 'numeric') }}
+    {{ field('max_paper_models_per_game', 'Max paper models per game', '1..20; live is always one', 'numeric') }}
+    {{ field('max_exposure_paper', 'Max exposure, paper', '$, 0 = off; open orders plus positions', 'decimal') }}
+    {{ field('max_exposure_live', 'Max exposure, live', '$, 0 = off; open orders plus positions', 'decimal') }}
+    {{ check('trade_pregame_only', 'Pregame only', 'no orders after kickoff') }}
   </div>
+  <p class="help">Price band (a fixed rule): 1 to 99 cents, on the market tick, at most 5 cents above the ask.</p>
   <h3>Market source and snapshots</h3>
   <div class="fields">
     <label data-field="market_source"><span>Market source</span>
       <select name="market_source">
         {% for source in market_sources %}<option value="{{ source }}"{% if values.market_source == source %} selected{% endif %}>{{ source }}</option>{% endfor %}
       </select>
+      <span class="help">where prices come from; sim makes them up</span>
     </label>
     {{ field('market_lookahead_days', 'Market lookahead (days)', '1..60', 'numeric') }}
-    {{ field('snapshot_active_s', 'Snapshot cadence, active (s)', '1..300', 'numeric') }}
-    {{ field('snapshot_idle_s', 'Snapshot cadence, idle (s)', '1..3600', 'numeric') }}
-    {{ field('snapshot_retention_days', 'Snapshot retention (days)', '1..365', 'numeric') }}
+    {{ field('snapshot_active_s', 'Snapshot cadence, active (s)', '1..300; markets with an active assignment', 'numeric') }}
+    {{ field('snapshot_idle_s', 'Snapshot cadence, idle (s)', '1..3600; other current-week markets', 'numeric') }}
+    {{ field('snapshot_retention_days', 'Snapshot retention (days)', '1..365; minute bars are kept for good', 'numeric') }}
     {{ field('scores_url', 'Scores URL', 'ESPN scoreboard') }}
-    <label class="span-all" data-field="market_source_config"><span>Market source config <span class="muted small">JSON: endpoints and field names per source</span></span>
+    <label class="span-all" data-field="market_source_config"><span>Market source config</span>
       <textarea name="market_source_config" rows="6" spellcheck="false">{{ values.market_source_config }}</textarea>
+      <span class="help">JSON: endpoints and field names per source</span>
     </label>
   </div>
-  <h3>Paper thresholds <span class="muted small">paper_ok to live_eligible</span></h3>
+  <h3>Paper thresholds: paper_ok to live_eligible</h3>
   <div class="fields">
     {{ field('paper_min_games', 'Min games', '', 'numeric') }}
     {{ field('paper_min_bets', 'Min bets', '', 'numeric') }}
@@ -70,50 +105,27 @@
     {{ field('paper_min_pnl', 'Min P&L', '$', 'decimal') }}
     {{ check('paper_clv_ci', 'CLV interval above zero', 'the 5th percentile of the bootstrapped paper CLV must be above 0 over at least min bets') }}
   </div>
-  <h3>Rate limits <span class="muted small">per second, fleet-wide</span></h3>
+  <h3>Rate limits: per second, fleet-wide</h3>
   <div class="fields">
     {{ field('orders_per_s', 'Orders', '', 'decimal') }}
     {{ field('cancels_per_s', 'Cancels', '', 'decimal') }}
     {{ field('market_data_per_s', 'Market data', '', 'decimal') }}
     {{ field('account_per_s', 'Account calls', '', 'decimal') }}
   </div>
-  <button type="submit" class="btn primary">Save</button>
+  <button type="submit" class="btn primary">Save trading</button>
 </form>
+{% endcall %}
 
-<form class="card group" method="post" action="/settings/fleet" id="fleet" data-card="fleet" data-form="fleet">
-  <h2>Fleet</h2>
-  {% if errors.fleet %}<p class="error inline-error">{{ errors.fleet }}</p>{% endif %}
-  <div class="fields">
-    {{ field('lease_seconds', 'Lease seconds', '10..3600', 'numeric') }}
-    {{ field('heartbeat_seconds', 'Heartbeat seconds', '1..60', 'numeric') }}
-    {{ field('online_after_seconds', 'Online-after seconds', '5..3600', 'numeric') }}
-    {{ field('max_expiries', 'Max lease expiries', 'blank = retry forever', 'numeric') }}
-  </div>
-  <button type="submit" class="btn primary">Save</button>
-</form>
+{# Step 6C: the "In-game" group (its own form, data-form/data-card "ingame", one
+   data-field per key) is ported in as _settings_ingame.html and lands here. #}
+{% include "_settings_ingame.html" ignore missing %}
 
-<form class="card group" method="post" action="/settings/tz" id="tz" data-card="tz" data-form="tz">
-  <h2>Time zone</h2>
-  {% if errors.tz %}<p class="error inline-error">{{ errors.tz }}</p>{% endif %}
-  <div class="fields">
-    {{ field('tz', 'IANA name', 'such as America/New_York') }}
-  </div>
-  <button type="submit" class="btn primary">Save</button>
-</form>
-
-<form class="card group" method="post" action="/settings/fees" id="fees" data-card="fees" data-form="fees">
-  <h2>Fee model <span class="muted small">closing-line fill in backtests</span></h2>
-  {% if errors.fees %}<p class="error inline-error">{{ errors.fees }}</p>{% endif %}
-  <div class="fields">
-    {{ field('taker_rate', 'Taker fee rate', '0..1', 'decimal') }}
-    {{ field('half_spread', 'Half spread', '0..1', 'decimal') }}
-  </div>
-  <button type="submit" class="btn primary">Save</button>
-</form>
-
-<form class="card group" method="post" action="/settings/thresholds" id="thresholds" data-card="thresholds" data-form="thresholds">
-  <h2>Backtest thresholds <span class="muted small">candidate to paper_ok, judged on the validation era</span></h2>
-  {% if errors.thresholds %}<p class="error inline-error">{{ errors.thresholds }}</p>{% endif %}
+{# ---------------------------------------------------------------- Robustness gates: the backtest gate, the eras, the fee model #}
+{% call ui.disclosure('settings-robustness', 'Robustness gates', summary=values.summary_robustness, open=(errors.thresholds or errors.seasons or errors.fees)) %}
+<form class="group" method="post" action="/settings/thresholds" id="thresholds" data-card="thresholds" data-form="thresholds">
+  <h3>Backtest thresholds: candidate to paper_ok</h3>
+  <p class="help">Candidate to paper_ok, judged on the validation era.</p>
+  {{ form_error('thresholds') }}
   <div class="fields">
     {{ field('min_bets', 'Min bets', 'in the validation era (about 4 seasons)', 'numeric') }}
     {{ field('min_roi', 'Min ROI', '-1..1', 'decimal') }}
@@ -125,12 +137,13 @@
     {{ check('forbid_fragile', 'Forbid fragile', 'edge gone with worse prices or a parameter nudge') }}
     {{ check('forbid_regime_dependent', 'Forbid regime-dependent', 'one regime holds the profit') }}
   </div>
-  <button type="submit" class="btn primary">Save</button>
+  <button type="submit" class="btn primary">Save thresholds</button>
 </form>
 
-<form class="card group" method="post" action="/settings/seasons" id="seasons" data-card="seasons" data-form="seasons">
-  <h2>Seasons and search <span class="muted small">the search era, the held-out validation era, the search pool</span></h2>
-  {% if errors.seasons %}<p class="error inline-error">{{ errors.seasons }}</p>{% endif %}
+<form class="group" method="post" action="/settings/seasons" id="seasons" data-card="seasons" data-form="seasons">
+  <h3>Seasons and search</h3>
+  <p class="help">The search era, the held-out validation era and the search pool.</p>
+  {{ form_error('seasons') }}
   <div class="fields">
     {{ field('seasons_first', 'Search first season', '1999..', 'numeric') }}
     {{ field('seasons_last', 'Search last season', 'blank = the season before the validation era', 'numeric') }}
@@ -138,30 +151,98 @@
     {{ field('validation_last', 'Validation last season', 'blank = last complete season', 'numeric') }}
     {{ field('search_workers', 'Search workers', 'auto = cores minus one, or 1..64 processes per search') }}
   </div>
-  <button type="submit" class="btn primary">Save</button>
+  <button type="submit" class="btn primary">Save seasons</button>
 </form>
 
-<form class="card group" method="post" action="/settings/replay" id="replay" data-card="replay" data-form="replay">
-  <h2>Snapshot replay <span class="muted small">backtests on the prices the host recorded</span></h2>
-  {% if errors.replay %}<p class="error inline-error">{{ errors.replay }}</p>{% endif %}
-  <p class="muted small">A backtest with price source "snapshots" buys at the recorded ask at the decision time, walks the recorded book (participation from the Trading group) and measures CLV against the frozen closing price. It replays the market source chosen in the Trading group.</p>
+<form class="group" method="post" action="/settings/fees" id="fees" data-card="fees" data-form="fees">
+  <h3>Fee model</h3>
+  <p class="help">The closing-line fill in backtests.</p>
+  {{ form_error('fees') }}
+  <div class="fields">
+    {{ field('taker_rate', 'Taker fee rate', '0..1', 'decimal') }}
+    {{ field('half_spread', 'Half spread', '0..1', 'decimal') }}
+  </div>
+  <button type="submit" class="btn primary">Save fees</button>
+</form>
+{% endcall %}
+
+{# ---------------------------------------------------------------- Snapshot replay and signals (step 6 Part B) #}
+{% call ui.disclosure('settings-replay', 'Snapshot replay and signals', summary=values.summary_replay, open=(errors.replay or errors.signals)) %}
+<form class="group" method="post" action="/settings/replay" id="replay" data-card="replay" data-form="replay">
+  <h3>Snapshot replay</h3>
+  <p class="help">A backtest with price source "snapshots" buys at the recorded ask at the decision time, walks the recorded book (participation from the Trading group) and measures CLV against the frozen closing price. It replays the market source chosen in the Trading group.</p>
+  {{ form_error('replay') }}
   <div class="fields">
     {{ field('decision_minutes_before_kickoff', 'Decision minutes before kickoff', '0..300; the replay bets this long before kickoff, on prices recorded within 30 minutes before that', 'numeric') }}
     {{ check('allow_sim_prices', 'Allow sim prices', 'testing only: sim prices are made up, so a replay on them proves nothing') }}
   </div>
-  <button type="submit" class="btn primary">Save</button>
+  <button type="submit" class="btn primary">Save replay</button>
 </form>
 
-<form class="card group" method="post" action="/settings/nflverse" id="nflverse" data-card="nflverse" data-form="nflverse">
-  <h2>nflverse games <span class="muted small">{{ games_count }} rows{% if last_complete_season %}, last complete season {{ last_complete_season }}{% endif %}</span></h2>
-  {% if errors.nflverse %}<p class="error inline-error">{{ errors.nflverse }}</p>{% endif %}
+<form class="group" method="post" action="/settings/signals" id="signals" data-card="signals" data-form="signals">
+  <h3>nflverse signals</h3>
+  <p class="help">Injury reports and play-by-play, free.</p>
+  {{ form_error('signals') }}
+  <div class="fields">
+    {{ field('signals_refresh_hours', 'Refresh every (hours)', '1..168', 'numeric') }}
+    {{ field('nflverse_injuries_url', 'Injuries URL', 'one file per season; must contain {season}') }}
+    {{ field('nflverse_pbp_url', 'Play-by-play URL', 'one CSV.gz per season; must contain {season}') }}
+  </div>
+  <button type="submit" class="btn primary">Save signals</button>
+</form>
+{% endcall %}
+
+{# ---------------------------------------------------------------- Fleet: timing, time zone, enroll #}
+{% call ui.disclosure('settings-fleet', 'Fleet', summary=values.summary_fleet, open=(errors.fleet or errors.tz)) %}
+<form class="group" method="post" action="/settings/fleet" id="fleet" data-card="fleet" data-form="fleet">
+  <h3>Worker timing</h3>
+  {{ form_error('fleet') }}
+  <div class="fields">
+    {{ field('lease_seconds', 'Lease seconds', '10..3600; at least twice the heartbeat plus 5', 'numeric') }}
+    {{ field('heartbeat_seconds', 'Heartbeat seconds', '1..60', 'numeric') }}
+    {{ field('online_after_seconds', 'Online-after seconds', '5..3600; more than the heartbeat', 'numeric') }}
+    {{ field('max_expiries', 'Max lease expiries', 'blank = retry forever', 'numeric') }}
+  </div>
+  <button type="submit" class="btn primary">Save timing</button>
+</form>
+
+<form class="group" method="post" action="/settings/tz" id="tz" data-card="tz" data-form="tz">
+  <h3>Time zone</h3>
+  {{ form_error('tz') }}
+  <div class="fields">
+    {{ field('tz', 'IANA name', 'such as America/New_York; every time on the dashboard and the live phrase follow it') }}
+  </div>
+  <button type="submit" class="btn primary">Save time zone</button>
+</form>
+
+<form class="group" method="post" action="/enroll-token" id="enroll" data-card="enroll" data-action="enroll">
+  <h3>Enroll a worker</h3>
+  <p class="help">A token is single use and valid for one hour. The next page shows it once. Roles are set per worker on the Fleet page.</p>
+  <button type="submit" class="btn primary">New enroll token</button>
+</form>
+{% endcall %}
+
+{# ---------------------------------------------------------------- Live trading: the typed switch and the kill reset #}
+{% set auth_word = 'ok' if live.auth_ok else ('failed' if live.auth_checked_at else 'not checked') %}
+{% set live_summary = ('on' if live.live_enabled else 'off') ~ sep ~ ('trading killed' if killed else 'kill switch off') ~ sep ~ 'auth ' ~ auth_word %}
+{% call ui.disclosure('settings-live', 'Live trading', summary=live_summary, open=(killed or errors.live or errors.kill)) %}
+{% include "_settings_live.html" %}
+{% endcall %}
+
+{# ---------------------------------------------------------------- Data: the nflverse games file #}
+{% set data_summary = (games_count ~ ' games') ~ ((sep ~ 'last complete season ' ~ last_complete_season) if last_complete_season else '') ~ sep ~ values.summary_data ~ (sep ~ 'last refresh failed' if refresh.last_error else '') %}
+{% call ui.disclosure('settings-data', 'Data', summary=data_summary, open=errors.nflverse) %}
+<form class="group" method="post" action="/settings/nflverse" id="nflverse" data-card="nflverse" data-form="nflverse">
+  <h3>nflverse games</h3>
+  <p class="help">{{ games_count }} rows{% if last_complete_season %}, last complete season {{ last_complete_season }}{% endif %}.</p>
+  {{ form_error('nflverse') }}
   {% if refresh.last_error %}
   <p class="error refresh-status">Last refresh failed {{ refresh.last_error_at | ts }}: {{ refresh.last_error }}</p>
   {% endif %}
   {% if refresh.last_success_at %}
-  <p class="muted small refresh-status">Last refresh {{ refresh.last_success_at | ts }}: {{ refresh.last_result.rows }} rows, {{ refresh.last_result.inserted }} inserted, {{ refresh.last_result.changed }} changed{% if refresh.last_result.skipped %}, {{ refresh.last_result.skipped }} skipped{% endif %}.</p>
+  <p class="help refresh-status">Last refresh {{ refresh.last_success_at | ts }}: {{ refresh.last_result.rows }} rows, {{ refresh.last_result.inserted }} inserted, {{ refresh.last_result.changed }} changed{% if refresh.last_result.skipped %}, {{ refresh.last_result.skipped }} skipped{% endif %}.</p>
   {% elif not refresh.last_error %}
-  <p class="muted small refresh-status">No refresh since the host started.</p>
+  <p class="help refresh-status">No refresh since the host started.</p>
   {% endif %}
   <div class="fields">
     {{ field('nflverse_refresh_hours', 'Refresh every (hours)', '1..168', 'numeric') }}
@@ -170,98 +251,20 @@
   <button type="submit" class="btn primary">Save</button>
   <button type="submit" class="btn" formaction="/data/refresh" data-action="refresh-nflverse">Refresh now</button>
 </form>
+{% endcall %}
 
-<form class="card group" method="post" action="/settings/signals" id="signals" data-card="signals" data-form="signals">
-  <h2>nflverse signals <span class="muted small">injury reports and play-by-play, free</span></h2>
-  {% if errors.signals %}<p class="error inline-error">{{ errors.signals }}</p>{% endif %}
-  <div class="fields">
-    {{ field('signals_refresh_hours', 'Refresh every (hours)', '1..168', 'numeric') }}
-    {{ field('nflverse_injuries_url', 'Injuries URL', 'one file per season; must contain {season}') }}
-    {{ field('nflverse_pbp_url', 'Play-by-play URL', 'one CSV.gz per season; must contain {season}') }}
-  </div>
-  <button type="submit" class="btn primary">Save</button>
-</form>
-
-<form class="card group" method="post" action="/enroll-token" id="enroll" data-card="enroll" data-action="enroll">
-  <h2>Enroll</h2>
-  <p class="muted">A token is single use and valid for one hour. The next page shows it once.</p>
-  <button type="submit" class="btn primary">New enroll token</button>
-</form>
-
-{# Step 5: the typed live switch. live_enabled has no generic settings field; the only
-   way on is today's exact phrase, the only way off is the button (or a kill). #}
-<section class="card group live{% if live.live_enabled %} is-live{% endif %}" id="live" data-card="live">
-  <h2>Live trading <span class="pill {{ 'live' if live.live_enabled else 'paper' }}" data-live-state="{{ 'on' if live.live_enabled else 'off' }}">{{ 'ON' if live.live_enabled else 'OFF' }}</span></h2>
-  {% if live.live_enabled %}
-  <p class="live-since">Live trading is <strong>on</strong> since {{ live.live_enabled_at | ts if live.live_enabled_at else 'an unknown time' }} by {{ live.live_enabled_by or 'an unknown actor' }}. Real orders go to the exchange for live assignments of live-eligible lineages.</p>
-  {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
-  <form method="post" action="/settings/live/off" class="live-off" data-action="live-off" data-confirm="Disable live trading now? Live assignments are halted and their orders are cancel-requested; the exchange process cancels them on the exchange (while paused by clock skew they rest until the skew clears or their GTD).">
-    <button type="submit" class="btn danger">Disable live</button>
-  </form>
-  {% else %}
-  <p>Live trading is <strong>off</strong>: every assignment is paper and nothing reaches the exchange. Turning it on needs today's exact phrase, the kill switch off, credentials in the exchange process, a fresh successful auth probe and a clock within limits.</p>
-  {% if live.problems %}
-  <ul class="problems live-problems muted small">
-    {% for problem in live.problems %}<li>{{ problem }}</li>{% endfor %}
-  </ul>
-  {% endif %}
-  {% if errors.live %}<p class="error inline-error">{{ errors.live }}</p>{% endif %}
-  <form method="post" action="/settings/live" class="live-form" data-form="live-on">
-    <label data-field="live_confirm"><span>Type exactly <code class="phrase">{{ live.expected_phrase }}</code> <span class="muted small">today's date in your time zone</span></span>
-      <input type="text" name="confirm" value="{{ values.live_confirm }}" placeholder="{{ live.expected_phrase }}" autocomplete="off" autocapitalize="characters" spellcheck="false">
-    </label>
-    <button type="submit" class="btn danger">Enable live trading</button>
-  </form>
-  {% endif %}
-  <dl class="props live-props">
-    <dt>credentials</dt><dd>{{ 'yes' if live.credentials_present else 'no' }} <span class="muted small">{{ 'loaded by the exchange process' if live.credentials_present else 'exchange.env missing or malformed (see the last auth error), or the exchange process has not started' }}</span></dd>
-    <dt>auth</dt><dd>{% if live.auth_ok %}<span class="chip chip-ok" data-chip="auth-ok">ok</span>{% elif live.auth_checked_at %}<span class="chip chip-bad" data-chip="auth-failed">failed</span>{% else %}<span class="muted">not checked</span>{% endif %}{% if live.auth_checked_at %} <span class="muted small auth-age">checked {{ live.auth_age_s | ago }}</span>{% endif %}{% if live.auth_failures %} <span class="error small">{{ live.auth_failures }} failure{{ '' if live.auth_failures == 1 else 's' }} in a row</span>{% endif %}</dd>
-    <dt>balance</dt><dd>{% if live.balance_cents is not none %}{{ live.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
-    <dt>buying power</dt><dd>{% if live.buying_power_cents is not none %}{{ live.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
-    <dt>clock skew</dt><dd>{% if live.clock_skew_ms is not none %}{{ live.clock_skew_ms }} ms{% else %}<span class="muted">-</span>{% endif %}</dd>
-    <dt>last auth error</dt><dd>{% if live.last_auth_error %}<span class="error">{{ live.last_auth_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
-    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}<span class="chip chip-bad auto-kill-reason" data-chip="auto-kill">{{ reason }}</span> {% endfor %}<span class="muted small">since the last reset</span>{% for reason in live.auto_kill_reasons %}{% if live.remedies and live.remedies[reason] %}<br><span class="small remedy" data-remedy="{{ reason }}"><strong>{{ reason }}</strong>: {{ live.remedies[reason] }}</span>{% endif %}{% endfor %}{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
-  </dl>
-</section>
-
-<section class="card group{% if killed %} killed{% endif %}" id="kill" data-card="kill">
-  <h2>Kill switch</h2>
-  {% if killed %}
-  <p class="error">Trading is killed. Trade workers do not claim, no order is approved and every assignment stays halted until you activate it again on the <a href="/trading">Trading</a> page.</p>
-  {% if auto_kill %}
-  <p class="error auto-kill">Killed automatically by the exchange process: <strong>{{ auto_kill.reason }}</strong> at {{ auto_kill.ts | ts }}{% if auto_kill.detail %} <span class="muted small">{{ auto_kill.detail | compact_json }}</span>{% endif %}. Live trading stays off after the reset until you enable it again.{% if auto_kill.remedy %} <span class="remedy" data-remedy="{{ auto_kill.reason }}">Recovery: {{ auto_kill.remedy }}.</span>{% endif %}</p>
-  {% endif %}
-  {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
-  <form method="post" action="/kill/reset" class="reset" data-form="kill-reset">
-    <label data-field="kill_confirm">Type RESUME to clear it
-      <input type="text" name="confirm" autocomplete="off" autocapitalize="characters" placeholder="RESUME">
-    </label>
-    <button type="submit" class="btn primary">Reset kill switch</button>
-  </form>
-  {% else %}
-  <p>Trading is <strong>not</strong> killed. The red KILL button in the top bar (or <a href="/kill/confirm">this page</a>) stops trading immediately.</p>
-  {% endif %}
-</section>
-
-<section class="card group" id="audit" data-card="audit">
-  <h2>Audit log <span class="muted small">last 20</span></h2>
-  <div class="table-wrap">
-  <table class="audit stack" data-list="audit">
-    <thead><tr><th>time</th><th>actor</th><th>action</th><th>entity</th><th>confirmation</th></tr></thead>
-    <tbody>
+{# ---------------------------------------------------------------- Audit log: one line per change #}
+{% call ui.disclosure('settings-audit', 'Audit log', count=audit | length, summary='The last 20 owner actions, newest first.') %}
+<section id="audit" data-card="audit">
+  <ul class="rows" data-list="audit">
     {% for a in audit %}
-    <tr data-row="audit" data-id="{{ loop.index }}">
-      <td class="nowrap lead">{{ a.ts | ts }}</td>
-      <td>{{ a.actor or '-' }}</td>
-      <td>{{ a.action }}</td>
-      <td>{{ a.entity or '-' }}</td>
-      <td>{{ a.confirmation_text or '' }}</td>
-    </tr>
+    <li class="row" data-row="audit" data-id="{{ loop.index }}">
+      <span class="row-main"><span class="row-title">{{ a.action }}{% if a.entity %}{{ sep }}{{ a.entity }}{% endif %}</span><span class="row-meta">{{ a.ts | ts }}{{ sep }}{{ a.actor or '-' }}{% if a.confirmation_text %}{{ sep }}{{ a.confirmation_text }}{% endif %}</span></span>
+    </li>
     {% else %}
-    <tr><td colspan="5" class="muted">Nothing yet.</td></tr>
+    <li class="empty muted">Nothing yet.</li>
     {% endfor %}
-    </tbody>
-  </table>
-  </div>
+  </ul>
 </section>
+{% endcall %}
 {% endblock %}

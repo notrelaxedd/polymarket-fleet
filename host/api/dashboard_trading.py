@@ -25,6 +25,7 @@ from host.settings import get_int_setting, get_setting, get_settings
 from host.trading import assignments, ledger, orders
 from host.trading import views as trading_views
 from host.trading.views_positions import assignment_positions
+from host.trading.views_summary import stale_markets, tone, trading_stats
 
 router = APIRouter(tags=["dashboard-trading"], dependencies=[Depends(require_owner)])
 
@@ -91,7 +92,8 @@ def exchange_context(conn: psycopg.Connection) -> dict[str, Any]:
 
 
 def live_context(conn: psycopg.Connection) -> dict[str, Any]:
-    """Everything inside #trading-live (refreshed every 5 s)."""
+    """Everything inside #trading-live (refreshed every 5 s): the stats, the assignment
+    rows and the disclosures below them."""
     rows = assignments.list_assignments(conn)
     for a in rows:
         a["short_params"] = short_params(a["model"]["family"], a["model"]["params"])
@@ -100,7 +102,13 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
     killed = kill.is_killed(conn)
     settings = get_settings(conn)
     live_orders = views.live_order_counts(conn)
+    open_orders = trading_views.list_orders(conn, "active", 200)
+    mapped = [m for m in markets if m["mapping_confirmed"] and m["game_id"] is not None]
+    exchange = exchange_context(conn)
     return {
+        "stats": trading_stats(conn, exchange, open_orders),
+        "tone": tone,
+        "stale_markets": stale_markets(mapped),
         "live_orders": live_orders["live"],
         "live_open": live_orders["open"],
         "live_cancel_pending": live_orders["cancel_pending"],
@@ -109,13 +117,13 @@ def live_context(conn: psycopg.Connection) -> dict[str, Any]:
         "positions": assignment_positions(conn, rows),
         "killed": killed,
         "halted_paper": 0 if killed else views.halted_paper_count(conn),
-        "open_orders": trading_views.list_orders(conn, "active", 200),
+        "open_orders": open_orders,
         "orders": _annotate_orders(trading_views.list_orders(conn, None, RECENT_ORDERS), settings),
         "fills": trading_views.list_fills(conn, RECENT_FILLS),
         "unmatched": [m for m in markets if not m["mapping_confirmed"] or m["game_id"] is None],
-        "markets": [m for m in markets if m["mapping_confirmed"] and m["game_id"] is not None],
+        "markets": mapped,
         "link_games": [{**g, "label": _game_label(g, get_setting(conn, "tz"))} for g in views.upcoming_games(conn, with_markets=False)],
-        "exchange": exchange_context(conn),
+        "exchange": exchange,
         "ledger_problems": ledger.replay_problems(conn),
         "bankrolls": conn.execute("SELECT count(*) AS n FROM bankrolls").fetchone()["n"],
         "names": views.worker_names(conn),

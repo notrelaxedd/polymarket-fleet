@@ -7,6 +7,7 @@ package inside the Docker image.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any
@@ -181,7 +182,13 @@ def signed_money(cents: Any) -> str:
 
 def prob(value: Any) -> str:
     """A probability as a whole percentage: 0.62 -> "62%"; "-" when missing."""
-    return "-" if value is None or isinstance(value, bool) else pct(value)
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        p = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return f"{int(round(p * 100))}%" if math.isfinite(p) else "-"
 
 
 def num(value: Any, digits: int = 0) -> str:
@@ -189,9 +196,10 @@ def num(value: Any, digits: int = 0) -> str:
     if value is None or isinstance(value, bool):
         return "-"
     try:
-        return f"{float(value):,.{digits}f}"
+        n = float(value)
     except (TypeError, ValueError):
         return "-"
+    return f"{n:,.{digits}f}" if math.isfinite(n) else "-"
 
 
 def bar_pct(value: Any) -> int:

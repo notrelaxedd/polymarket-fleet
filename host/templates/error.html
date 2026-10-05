@@ -2,18 +2,21 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>{{ status_code }} {{ title }}</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+{# The dashboard's HTML error page (host/web.py error_response): no top bar, so it never
+   needs the database; one plain sentence on what happened and a way back. #}
 <main class="page" data-page="error">
-  <div class="card confirm">
-    <h1>{{ status_code }} {{ title }}</h1>
+  <h1>{{ status_code }} {{ title }}</h1>
+  <section class="card confirm" data-card="error">
     <p>{{ detail }}</p>
-    {% if help %}<p class="muted">{{ help }}</p>{% endif %}
-    <p><a class="btn" href="/">Fleet</a></p>
-  </div>
+    {% if help %}<p class="help">{{ help }}</p>{% endif %}
+    <p class="actions"><a class="btn primary" href="/">Back to the dashboard</a></p>
+  </section>
 </main>
 </body>
 </html>

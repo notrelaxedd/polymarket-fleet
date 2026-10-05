@@ -17,6 +17,8 @@ from host import data_refresh, kill, nflverse, pnl, views, web
 from host.api.deps import DB, get_config, require_owner
 from host.api.job_forms import jobs_context
 from host.api.robustness import robustness_context
+from host.home import home_context
+from host.jobs_view import duration_text, job_target, jobs_list_context, run_seconds
 from host.leaderboard import short_params
 from host.config import Config
 from host.scheduling import online_after
@@ -59,7 +61,8 @@ def _dot(age: int | None, online_after_s: int) -> str:
 
 
 def fleet_context(conn: psycopg.Connection) -> dict[str, Any]:
-    """Worker cards: /api/fleet data plus age, dot class and per-worker P&L."""
+    """Worker cards: /api/fleet data plus age, dot class and per-worker P&L, and the
+    counts the Fleet stats show (online, working, offline, switching)."""
     now = _now(conn)
     threshold = online_after(conn)
     by_worker = pnl.pnl(conn)["by_worker"]
@@ -67,7 +70,13 @@ def fleet_context(conn: psycopg.Connection) -> dict[str, Any]:
     for w in views.fleet_workers(conn):
         age = _age_seconds(now, w["last_heartbeat_at"])
         cards.append({**w, "age": age, "dot": _dot(age, threshold), "pnl_cents": by_worker.get(w["id"], 0)})
-    return {"workers": cards, "roles": ROLES}
+    counts = {
+        "online": sum(1 for c in cards if c["dot"] == "online"),
+        "working": sum(1 for c in cards if c["current_jobs"]),
+        "offline": sum(1 for c in cards if c["dot"] == "offline"),
+        "switching": sum(1 for c in cards if c["switching"]),
+    }
+    return {"workers": cards, "roles": ROLES, "counts": counts}
 
 
 def live_context(conn: psycopg.Connection) -> dict[str, Any]:
@@ -117,8 +126,14 @@ def page(request: Request, conn: psycopg.Connection, template: str, status: int 
 
 
 @router.get("/", response_class=HTMLResponse)
+def home_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
+    """Home: the headline stats, what needs attention and the last settled bets."""
+    return page(request, conn, "home.html", **home_context(conn))
+
+
+@router.get("/fleet", response_class=HTMLResponse)
 def fleet_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """The fleet grid."""
+    """The fleet: one card per worker."""
     return page(request, conn, "fleet.html", **fleet_context(conn))
 
 
@@ -135,20 +150,22 @@ def topbar_fragment(request: Request, conn: psycopg.Connection = DB) -> HTMLResp
 
 
 def jobs_page_response(
-    request: Request, conn: psycopg.Connection, status: int = 200, **ctx: Any
+    request: Request, conn: psycopg.Connection, status: int = 200, tab: str | None = None, **ctx: Any
 ) -> HTMLResponse:
-    """The jobs page: the send forms (context from job_forms) plus the newest 50 jobs."""
-    return page(request, conn, "jobs.html", status=status, jobs=views.list_jobs(conn, None, 50), **jobs_context(conn, **ctx))
+    """The jobs page: the send forms (context from job_forms) plus one tab of the job
+    list (host.jobs_view: Running, or the last 50 Done)."""
+    return page(request, conn, "jobs.html", status=status, **jobs_list_context(conn, tab), **jobs_context(conn, **ctx))
 
 
 @router.get("/jobs", response_class=HTMLResponse)
 def jobs_page(
     request: Request, train_model: str | None = Query(default=None, max_length=64),
-    validate_model: str | None = Query(default=None, max_length=64), conn: psycopg.Connection = DB,
+    validate_model: str | None = Query(default=None, max_length=64),
+    tab: str | None = Query(default=None, max_length=16), conn: psycopg.Connection = DB,
 ) -> HTMLResponse:
-    """Send forms plus the newest 50 jobs; ?train_model=<id> prefills the train form,
-    ?validate_model=<id> the validate form."""
-    return jobs_page_response(request, conn, train_model=train_model, validate_model=validate_model)
+    """Send forms plus a tab of jobs (?tab=done for the finished ones); ?train_model=<id>
+    prefills the train form, ?validate_model=<id> the validate form."""
+    return jobs_page_response(request, conn, tab=tab, train_model=train_model, validate_model=validate_model)
 
 
 def checkpoint_digest(kind: Any, checkpoint: Any) -> str:
@@ -180,6 +197,7 @@ def job_page(request: Request, job_id: str, conn: psycopg.Connection = DB) -> HT
     validation = result.get("validation_metrics") if isinstance(result.get("validation_metrics"), dict) else None
     return page(
         request, conn, "job.html", job=job, names=views.worker_names(conn), result=result,
+        target=job_target(job), duration=duration_text(run_seconds(job, _now(conn))),
         created_models=created, top=top, per_season=per_season, checkpoint_digest=checkpoint_digest(job["kind"], job.get("checkpoint")),
         robustness=robustness_context(validation, result.get("stress_metrics")),
         model_links={m.get("id") for m in created}, family=job["params"].get("family") if isinstance(job.get("params"), dict) else None,

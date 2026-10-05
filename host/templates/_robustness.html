@@ -1,22 +1,23 @@
 {# The "Robustness" section (docs/ROBUSTNESS.md A2, A3): `r` is host.api.robustness.robustness_context.
-   Everything is labelled pairs and stacked tables so it reads on a phone. #}
+   body(r) is the content; section(r, key, open) wraps it in a disclosure (the model page
+   passes key "model-robustness" closed, the validate job page the default, open). Each
+   table has a one-line reading above it (r.readings). #}
+{% import "_ui.html" as ui %}
 {% macro range(pair, filter='signed_pct') -%}
 {% if pair and pair[0] is not none and pair[1] is not none %}{% if filter == 'pct1' %}{{ pair[0] | pct1 }} to {{ pair[1] | pct1 }}{% elif filter == 'fixed' %}{{ pair[0] | fixed }} to {{ pair[1] | fixed }}{% else %}{{ pair[0] | signed_pct }} to {{ pair[1] | signed_pct }}{% endif %}{% else %}-{% endif %}
 {%- endmacro %}
 {% macro flag_chips(flags) -%}
-{% for f in flags %}<span class="chip chip-flag chip-{{ f.name }}" data-chip="{{ f.name }}" title="{{ f.meaning }}">{{ f.name.replace('_', '-') }}</span> {% endfor %}
+{% for f in flags %}<span class="tip" title="{{ f.meaning }}">{{ ui.chip('bad' if f.name == 'overfit' else 'warn', f.name.replace('_', '-'), key=f.name, extra='chip-flag chip-' ~ f.name) }}</span> {% endfor %}
 {%- endmacro %}
-{% macro section(r) -%}
+{% macro body(r) -%}
 {% set m = r.metrics %}
 {% set bets = m.n_bets or 0 %}
-<section class="robustness" id="robustness" data-card="robustness">
-<h2>Robustness <span class="muted small">validation era {{ m.seasons | season_span }}, held out of the search</span></h2>
 <p class="flags-line">
-  {% if r.flags %}{{ flag_chips(r.flags) }}{% else %}<span class="chip chip-ok" data-chip="no-flags">no flags</span>{% endif %}
-  {% if r.beats_market %}<span class="chip chip-beats" data-chip="beats">beats market</span>{% endif %}
+  {% if r.flags %}{{ flag_chips(r.flags) }}{% else %}{{ ui.chip('ok', 'no flags', key='no-flags') }}{% endif %}
+  {% if r.beats_market %}{{ ui.chip('ok', 'beats market', key='beats', extra='chip-beats') }}{% endif %}
 </p>
 {% if r.flags %}
-<ul class="flag-meanings small">
+<ul class="flag-meanings">
   {% for f in r.flags %}<li><strong>{{ f.name.replace('_', '-') }}</strong>: {{ f.meaning }}.</li>{% endfor %}
 </ul>
 {% endif %}
@@ -24,22 +25,27 @@
   Hit rate {{ m.hit_rate | pct1 if bets else '-' }}{% if bets %} <span class="range">({{ range(r.ci.hit_rate, 'pct1') }})</span>{% endif %},
   average edge {{ m.avg_edge | signed_pct if bets else '-' }}{% if bets %} <span class="range">({{ range(r.ci.avg_edge) }})</span>{% endif %},
   max drawdown {{ m.max_drawdown | pct1 }}{% if bets %} <span class="range">({{ range(r.ci.max_drawdown, 'pct1') }})</span>{% endif %},
-  CLV range <span class="range">{{ range(r.ci.avg_clv, 'fixed') }}</span> <span class="muted small">(0 on closing lines by construction)</span>.</p>
+  CLV range <span class="range">{{ range(r.ci.avg_clv, 'fixed') }}</span> <span class="muted">(0 on closing lines by construction)</span>.</p>
+<span class="caption">The 90% range is a bootstrap over the bets: a range that stays above zero is an edge that is not luck.</span>
 <p class="market-line{% if r.beats_market %} beats{% endif %}">{{ r.market }}</p>
+<h3>Calibration</h3>
+<p class="reading">{{ r.readings.calibration if r.readings else '' }}</p>
 <dl class="kv metrics calib" data-list="calibration-metrics">
   <div><dt>log-loss vs market</dt><dd>{{ m.log_loss | fixed }} <span class="muted">vs {{ m.market_log_loss | fixed }}</span></dd></div>
-  <div><dt>calibration slope</dt><dd>{{ r.calib_slope | fixed }} <span class="muted small">1 = calibrated</span></dd></div>
-  <div><dt>calibration intercept</dt><dd>{{ r.calib_intercept | fixed }} <span class="muted small">0 = no bias</span></dd></div>
+  <div><dt>calibration slope</dt><dd>{{ r.calib_slope | fixed }} <span class="muted">1 = calibrated</span></dd></div>
+  <div><dt>calibration intercept</dt><dd>{{ r.calib_intercept | fixed }} <span class="muted">0 = no bias</span></dd></div>
   <div><dt>brier</dt><dd>{{ m.brier | fixed }}</dd></div>
   <div><dt>reliability</dt><dd>{{ r.brier_decomposition.reliability | fixed(4) }}</dd></div>
   <div><dt>resolution</dt><dd>{{ r.brier_decomposition.resolution | fixed(4) }}</dd></div>
   <div><dt>uncertainty</dt><dd>{{ r.brier_decomposition.uncertainty | fixed(4) }}</dd></div>
-  {% if r.brier_within is not none %}<div><dt>within buckets</dt><dd>{{ r.brier_within | fixed(4) }} <span class="muted small">brier = rel - res + unc + this</span></dd></div>{% endif %}
+  {% if r.brier_within is not none %}<div><dt>within buckets</dt><dd>{{ r.brier_within | fixed(4) }} <span class="muted">brier = rel - res + unc + this</span></dd></div>{% endif %}
   <div><dt>games</dt><dd>{{ m.n_games }}</dd></div>
   <div><dt>P&amp;L</dt><dd>{{ m.pnl_cents | money }}</dd></div>
 </dl>
-<h3>price stress <span class="muted small">the same validation run with worse prices</span></h3>
+<span class="caption">Log-loss scores the probabilities (lower is better); beating the market's log-loss means the model knows something the prices do not.</span>
+<h3>Price stress <span class="muted">the same validation run with worse prices</span></h3>
 {% if r.prices %}
+<p class="reading">{{ r.readings.stress if r.readings else '' }}</p>
 <div class="table-wrap">
 <table class="metrics stress stack" data-list="stress">
   <thead><tr><th>prices</th><th>bets</th><th>ROI</th><th>log-loss</th><th>log-loss gain</th></tr></thead>
@@ -52,12 +58,13 @@
 </table>
 </div>
 {% else %}<p class="muted">No price stress table yet.</p>{% endif %}
-<h3>parameter neighbourhood</h3>
+<h3>Parameter neighbourhood</h3>
 {% if r.neighbourhood %}
 <p class="neighbourhood">{{ r.neighbourhood.n }} perturbations (every numeric parameter scaled by 0.9 to 1.1): shrunk ROI median {{ r.neighbourhood.shrunk_roi_median | signed_pct(2) }}, 10th percentile {{ r.neighbourhood.shrunk_roi_p10 | signed_pct(2) }}; log-loss gain median {{ r.neighbourhood.ll_gain_median | fixed(4) }}, 10th percentile {{ r.neighbourhood.ll_gain_p10 | fixed(4) }}.</p>
 {% else %}<p class="muted">No neighbourhood summary yet.</p>{% endif %}
-<h3>regimes</h3>
+<h3>Regimes</h3>
 {% if r.regimes %}
+<p class="reading">{{ r.readings.regimes if r.readings else '' }}</p>
 <div class="table-wrap">
 <table class="metrics regimes stack" data-list="regimes">
   <thead><tr><th>regime</th><th>games</th><th>bets</th><th>ROI</th><th>P&amp;L</th><th>log-loss gain</th></tr></thead>
@@ -69,6 +76,11 @@
 </table>
 </div>
 {% else %}<p class="muted">No regime table yet.</p>{% endif %}
-{% if r.seed is not none %}<p class="muted small">Stress seed {{ r.seed }}; bootstrap B = 1000, 10 000 sign flips.</p>{% endif %}
-</section>
+{% if r.seed is not none %}<p class="muted">Stress seed {{ r.seed }}; bootstrap B = 1000, 10 000 sign flips.</p>{% endif %}
+{%- endmacro %}
+{% macro section(r, key='job-robustness', open=true) -%}
+{% set summary %}validation era {{ r.metrics.seasons | season_span }}, held out of the search{% if r.flags %} · {{ r.flags | length }} flag{{ '' if r.flags | length == 1 else 's' }}{% endif %}{% endset %}
+{% call ui.disclosure(key, 'Robustness', summary=summary, open=open) %}
+{{ body(r) }}
+{% endcall %}
 {%- endmacro %}

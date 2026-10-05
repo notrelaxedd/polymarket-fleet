@@ -1,54 +1,54 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% import "_metrics.html" as metrics %}
 {% import "_robustness.html" as rob %}
 {% block title %}Job {{ job.id | short }}{% endblock %}
 {% block page %}job{% endblock %}
 {% block content %}
-<p><a href="/jobs">&larr; Jobs</a></p>
-<h1>{{ job.kind }} <span class="muted small">{{ job.id }}</span></h1>
 {% set worker = job.lease_worker_id or job.target_worker_id %}
-<div class="card" data-card="job">
-  <dl class="props">
-    <dt>status</dt><dd><span class="badge st-{{ job.status }}" data-chip="{{ job.status }}">{{ job.status.replace('_', ' ') }}</span>
-      {% if job.status in ('queued', 'leased') %}
-      <form class="inline" method="post" action="/jobs/{{ job.id }}/cancel" data-action="cancel">
-        <input type="hidden" name="next" value="/jobs/{{ job.id }}">
-        <button type="submit" class="btn small">Cancel</button>
-      </form>
-      {% endif %}
-    </dd>
-    <dt>role</dt><dd>{{ job.role }}</dd>
-    <dt>worker</dt><dd>{% if worker %}{{ names.get(worker, worker) }} <span class="muted small">{{ worker }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
-    <dt>progress</dt><dd><div class="bar" role="progressbar" aria-label="progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ ((job.progress or 0) * 100) | round | int }}"><span style="width: {{ job.progress | pct }}"></span></div> {{ job.progress | pct }}</dd>
-    <dt>expiries</dt><dd>{{ job.expiries }}{% if job.max_expiries is not none %} / {{ job.max_expiries }}{% endif %}</dd>
-    <dt>created</dt><dd>{{ job.created_at | ts }}</dd>
-    <dt>started</dt><dd>{{ job.started_at | ts or '-' }}</dd>
-    <dt>finished</dt><dd>{{ job.finished_at | ts or '-' }}</dd>
-  </dl>
-  <h2>params</h2>
-  {% if job.params.model_id %}<p>model <a href="/models/{{ job.params.model_id }}">{{ job.params.model_id | short }}</a></p>{% endif %}
-  {% if job.kind == 'backtest' and job.params.price_source == 'snapshots' %}<p class="price-source">price source <strong>snapshots</strong>: recorded {{ job.params.price_platform }} prices {{ job.params.decision_minutes_before_kickoff }} minutes before kickoff, participation {{ job.params.participation }}{% if job.params.allow_sim_prices %}, sim prices allowed (testing){% endif %}</p>{% endif %}
-  <pre>{{ job.params | pretty_json }}</pre>
-  <h2>checkpoint</h2>
-  <p class="checkpoint">{{ checkpoint_digest }}</p>
-  {% if job.checkpoint %}<details class="raw"><summary>raw checkpoint</summary><pre>{{ job.checkpoint | pretty_json }}</pre></details>{% endif %}
-  {% if job.error %}
-  <h2>error</h2>
+{% set chip_state = {'leased': 'ok', 'succeeded': 'ok', 'failed': 'bad', 'cancel_requested': 'warn'}.get(job.status, 'muted') %}
+<h1>{{ job.kind }}{% if target %} {{ target }}{% endif %} <span class="muted small">{{ job.id | short }}</span></h1>
+{{ ui.intro("job", "One job: where it stands, what it found, and below that what it was asked to do and its log.") }}
+<p class="small"><a href="/jobs">&larr; All jobs</a></p>
+<div class="stats" data-card="job">
+  <div class="stat" data-stat="progress"><span class="stat-value">{{ job.progress | pct }}</span><span class="stat-label">Progress</span>{{ ui.chip(chip_state, job.status.replace('_', ' '), key=job.status, extra="st-" ~ job.status) }}</div>
+  {{ ui.stat("worker", names.get(worker, worker) if worker else "none", "Worker", note=worker if worker else none) }}
+  {{ ui.stat("duration", duration, "Ran for" if job.finished_at else "Running for" if job.started_at else "Not started") }}
+  {{ ui.stat("expiries", job.expiries ~ (" / " ~ job.max_expiries if job.max_expiries is not none else ""), "Lease expiries") }}
+</div>
+<dl class="kv" data-list="timing">
+  <div><dt>role</dt><dd>{{ job.role }}</dd></div>
+  <div><dt>created</dt><dd>{{ job.created_at | ts }}</dd></div>
+  <div><dt>started</dt><dd>{{ job.started_at | ts or '-' }}</dd></div>
+  <div><dt>finished</dt><dd>{{ job.finished_at | ts or '-' }}</dd></div>
+</dl>
+{% if job.status in ('queued', 'leased') %}
+<form class="form-actions" method="post" action="/jobs/{{ job.id }}/cancel" data-action="cancel">
+  <input type="hidden" name="next" value="/jobs/{{ job.id }}">
+  <button type="submit" class="btn danger">Cancel job</button>
+</form>
+{% endif %}
+{% if job.error %}
+<section class="card" data-card="error">
+  <header class="card-head"><h2>Error</h2></header>
   <pre class="error">{{ job.error }}</pre>
-  {% else %}
-  <h2>result</h2>
+</section>
+{% else %}
+{% set backtest = job.kind == 'backtest' and result.n_games is defined %}
+{% set search = job.kind == 'model_search' and top %}
+{% if created_models or backtest or search %}
+<section class="card" data-card="result">
+  <header class="card-head"><h2>{{ 'Top candidates' if search else 'Result' }}</h2>{% if search %}<span class="count">{{ top | length }}</span>{% endif %}</header>
   {% if created_models %}
   <p class="created" data-list="created-models">Created models:
     {% for m in created_models %}<a class="btn small" href="/models/{{ m.id }}">{{ m.id | short }}{% if m.created is sameas false %} (existing){% endif %}</a> {% endfor %}
   </p>
   {% endif %}
-  {% if job.kind == 'backtest' and result.n_games is defined %}
+  {% if backtest %}
   {% if result.price_source == 'snapshots' %}{{ metrics.snapshot_line(result) }}{% endif %}
   {{ metrics.pairs(result) }}
   {% if per_season %}{{ metrics.per_season(per_season) }}{% endif %}
-  {% elif job.kind == 'validate' and robustness %}
-  {{ rob.section(robustness) }}
-  {% elif job.kind == 'model_search' and top %}
+  {% elif search %}
   <div class="table-wrap">
   <table class="metrics top stack" data-list="candidates">
     <thead><tr><th>candidate</th><th>shrunk ROI</th><th>ROI</th><th>bets</th><th>log-loss</th><th>market</th><th>drawdown</th><th>model</th></tr></thead>
@@ -69,25 +69,41 @@
     </tbody>
   </table>
   </div>
-  <p class="muted small">{{ result.evaluated }} candidates evaluated over {{ result.seasons | season_span }}. Shrunk ROI is ROI x bets / (bets + 100), the search objective.</p>
+  <p class="caption">{{ result.evaluated }} candidates evaluated over {{ result.seasons | season_span }}. Shrunk ROI is ROI x bets / (bets + 100), the search objective.</p>
   {% endif %}
-  <details class="raw"><summary>raw result</summary><pre>{{ job.result | pretty_json or 'none' }}</pre></details>
-  {% endif %}
-</div>
-<h2>events</h2>
-<div class="table-wrap">
-<table class="events stack" data-list="events">
-  <thead><tr><th>ts</th><th>event</th><th>worker</th><th>detail</th></tr></thead>
-  <tbody>
-  {% for e in job.events %}
-  <tr data-row="event" data-id="{{ loop.index }}">
-    <td class="nowrap lead">{{ e.ts | ts }}</td>
-    <td>{{ e.event }}</td>
-    <td>{% if e.worker_id %}{{ names.get(e.worker_id, e.worker_id) }}{% else %}<span class="muted">-</span>{% endif %}</td>
-    <td class="wide"><code>{{ e.detail | compact_json }}</code></td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
+</section>
+{% endif %}
+{% if job.kind == 'validate' and robustness %}
+{{ rob.section(robustness) }}
+{% endif %}
+{% endif %}
+{% call ui.disclosure("job-params", "Parameters", summary=target or (job.params | length ~ " keys")) %}
+  {% if job.params.model_id %}<p>model <a href="/models/{{ job.params.model_id }}">{{ job.params.model_id | short }}</a></p>{% endif %}
+  {% if job.kind == 'backtest' and job.params.price_source == 'snapshots' %}<p class="price-source">price source <strong>snapshots</strong>: recorded {{ job.params.price_platform }} prices {{ job.params.decision_minutes_before_kickoff }} minutes before kickoff, participation {{ job.params.participation }}{% if job.params.allow_sim_prices %}, sim prices allowed (testing){% endif %}</p>{% endif %}
+  <pre>{{ job.params | pretty_json }}</pre>
+{% endcall %}
+{% call ui.disclosure("job-checkpoints", "Checkpoints", summary=checkpoint_digest) %}
+  <p class="checkpoint">{{ checkpoint_digest }}</p>
+  {% if job.checkpoint %}<pre>{{ job.checkpoint | pretty_json }}</pre>{% else %}<p class="muted">No checkpoint saved.</p>{% endif %}
+{% endcall %}
+{% call ui.disclosure("job-log", "Log", count=job.events | length, summary="claims, releases, expiries and the finish") %}
+  <div class="table-wrap">
+  <table class="events stack" data-list="events">
+    <thead><tr><th>ts</th><th>event</th><th>worker</th><th>detail</th></tr></thead>
+    <tbody>
+    {% for e in job.events %}
+    <tr data-row="event" data-id="{{ loop.index }}">
+      <td class="nowrap lead">{{ e.ts | ts }}</td>
+      <td>{{ e.event }}</td>
+      <td>{% if e.worker_id %}{{ names.get(e.worker_id, e.worker_id) }}{% else %}<span class="muted">-</span>{% endif %}</td>
+      <td class="wide"><code>{{ e.detail | compact_json }}</code></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endcall %}
+{% call ui.disclosure("job-raw", "Raw", summary="the result as stored, JSON") %}
+  <pre>{{ job.result | pretty_json or 'none' }}</pre>
+{% endcall %}
 {% endblock %}

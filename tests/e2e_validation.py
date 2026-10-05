@@ -127,13 +127,13 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
         assert entry["validation"]["ci"]["roi"] == stored["ci"]["roi"] and entry["validation"]["market_p"] == stored["market_p"]
         assert entry["score"] == entry["validation"]["shrunk_roi"] and entry["search_score"] is not None
     board_page = page(host.client.get("/models").text)
-    assert "validation ROI" in board_page.text and "beats market" in board_page.text
+    assert "validation ROI" in board_page.one("[data-sort-line]").text
     for mid in ids:
         row = board_page.row("model", mid)
         assert row.action("validate").target.startswith("/jobs")
         assert ("beats" in row.chips()) == bool(ranked[mid]["validation"]["beats_market"]), "the chip shows a beaten market"
         if host.get(f"/api/models/{mid}")["validation_metrics"]["n_bets"]:
-            assert row.has(".range"), "the ROI interval is printed next to the validation ROI"
+            assert "range " in row.one(".row-meta").text, "the ROI interval is printed next to the validation ROI"
     return ids
 
 

@@ -69,7 +69,7 @@ body {
   font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 a { color: var(--accent); }
-h1 { font-size: var(--fs-body); font-weight: 700; line-height: 1.3; margin: var(--s2) 0 var(--s2); }
+h1 { font-size: var(--fs-display); font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; margin: var(--s2) 0 var(--s1); }
 h2 { font-size: var(--fs-body); margin: var(--s4) 0 var(--s2); }
 code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-meta); }
 pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem; overflow-x: auto; margin: 0.25rem 0 0.75rem; white-space: pre-wrap; word-break: break-all; }
@@ -89,16 +89,22 @@ html:not(.js) .js-only { display: none; }
 .topbar { position: sticky; top: 0; z-index: 10; background: var(--card); border-bottom: 1px solid var(--line); }
 .topbar-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); padding: var(--s1) var(--s4); max-width: 1200px; margin: 0 auto; }
 .wordmark { font-weight: 700; text-decoration: none; color: var(--text); font-size: var(--fs-body); min-height: var(--tap); display: inline-flex; align-items: center; }
-.status { display: flex; align-items: center; gap: var(--s2) var(--s3); margin-left: auto; min-height: var(--tap); }
+.wordmark-icon { width: 20px; height: 20px; margin-right: 6px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+/* the status (refreshed from /fragments/topbar) lays out in the bar's own row, so a banner can take a full line under it */
+.status { display: contents; }
+.status > .pill { margin-left: auto; }
 .pill { font-size: var(--fs-meta); font-weight: 700; letter-spacing: 0.04em; padding: 0.15rem 0.5rem; border-radius: 999px; background: var(--badge); color: var(--text); }
 .pill.live { background: var(--green-fill); color: #fff; }
 .pnl { font-weight: 600; white-space: nowrap; }
+/* the current mode's P&L today, a link to Trading */
+.status .pnl { display: inline-flex; align-items: center; gap: 0.3em; min-height: var(--tap); color: var(--text); text-decoration: none; }
+.status a.pnl:hover { text-decoration: underline; }
 .pnl.pnl-neg { color: var(--red-fg); }
 .topbar.killed { background: var(--red); color: var(--red-text); border-color: var(--red); }
 .topbar.killed a, .topbar.killed .wordmark, .topbar.killed .nav .disabled, .topbar.killed .pnl, .topbar.killed #updated { color: var(--red-text); }
 .topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(0, 0, 0, 0.2); }
 .killed-text { font-weight: 700; text-decoration: none; }
-.chip-killed { background: rgba(0, 0, 0, 0.3); color: var(--red-text); font-weight: 700; }
+.topbar .chip-killed { background: rgba(0, 0, 0, 0.3); color: var(--red-text); font-weight: 700; }
 /* the freshness line: always visible under the sticky bar, so a lost connection is never below the fold */
 .topbar-note { display: none; max-width: 1200px; margin: 0 auto; padding: 0 var(--s4) 0.2rem; font-size: var(--fs-meta); text-align: right; }
 .js .topbar-note { display: block; }
@@ -242,15 +248,16 @@ form.inline { display: inline; }
 @media (min-width: 700px) {
   .stats:not(p) { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s3); }
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .wordmark { padding-right: var(--s4); border-right: 1px solid var(--line); }
+  .topbar.killed .wordmark { border-color: rgba(255, 255, 255, 0.4); }
 }
 
 /* ---------------------------------------------------------------- phone: bottom nav, 44 px targets, nothing hides behind the bar */
 @media (max-width: 699.98px) {
   .topbar-row { padding: var(--s1) var(--s4); gap: var(--s1) var(--s2); }
   .topbar-note { padding: 0 var(--s4) 0.15rem; }
-  .status { gap: var(--s1) var(--s2); flex-wrap: wrap; justify-content: flex-end; }
   .killed-text { flex-basis: 100%; text-align: right; font-size: var(--fs-meta); }
-  .pnl { font-size: var(--fs-meta); }
+  .status .pnl { font-size: var(--fs-meta); }
   .banner { font-size: var(--fs-meta); }
   .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; gap: 0; background: var(--card); border-top: 1px solid var(--line); padding: 0 env(safe-area-inset-right, 0px) var(--safe-bottom) env(safe-area-inset-left, 0px); }
   .nav a { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; min-height: var(--nav-h); padding: var(--s1) 0; border-radius: 0; font-size: var(--fs-meta); line-height: 1.1; color: var(--muted); }
@@ -289,7 +296,6 @@ form.inline { display: inline; }
 .dot.online { background: var(--green); }
 .dot.stale { background: var(--amber); }
 .dot.offline { background: var(--grey); }
-.chip.st-stale { color: var(--amber-text); }
 .role-row { display: flex; align-items: center; gap: 0.5rem; }
 .role-row .role { display: flex; gap: 0.4rem; align-items: center; flex: 1; }
 .role-row select { flex: 1; min-height: var(--tap); }
@@ -300,7 +306,8 @@ form.inline { display: inline; }
 .job .joblink { display: inline-flex; align-items: center; min-height: var(--tap); }
 p.stats, .pnl-line { margin: 0.25rem 0 0; }
 /* data the page could not refresh is shown dimmed with neutral dots */
-.conn-lost #fleet-grid, .conn-lost #trading-live { opacity: 0.55; }
+/* stale data is dimmed: each block of a refresh region (so a test or a reader can see it on the list itself) */
+.conn-lost #fleet-grid > *, .conn-lost #trading-live > * { opacity: 0.55; }
 .conn-lost .dot { background: var(--grey); }
 
 /* tables */

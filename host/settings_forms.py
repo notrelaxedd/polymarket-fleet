@@ -14,6 +14,7 @@ from host.errors import BadRequest
 from host.money import cents_to_dollars, dollars_to_cents
 from host.settings import FLAG_NAMES
 from host.settings_forms_replay import PARSERS as REPLAY_PARSERS, form_values as replay_values
+from host.settings_summary import summaries
 
 GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse", "trade", "replay", "signals")
 # Keys no settings group may write: the kill switch moves through /kill and RESUME, the
@@ -247,7 +248,8 @@ def parse_group(group: str, form: dict[str, str]) -> dict[str, Any]:
 
 
 def form_values(settings: dict[str, Any]) -> dict[str, str]:
-    """The strings each settings input shows for the stored values."""
+    """The strings each settings input shows for the stored values, plus the one-line
+    group summaries (``summary_<group>``, host/settings_summary.py) the page headers show."""
     loss = settings.get("max_daily_loss_cents") or {}
     if not isinstance(loss, dict):
         loss = {}
@@ -283,6 +285,7 @@ def form_values(settings: dict[str, Any]) -> dict[str, str]:
         }
     )
     return {
+        **summaries(settings),
         **trade,
         **replay_values(settings),
         "max_bet": cents_to_dollars(settings.get("max_bet_cents")),

@@ -2,21 +2,38 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <title>{% block title %}Fleet{% endblock %}</title>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
 </head>
+{#- The shell (docs/UI.md "Shell"): the wordmark is Home, five sections in the nav (a
+    bottom bar with icons under 700 px), the status (mode pill, current-mode P&L, KILL,
+    banners) refreshed from /fragments/topbar. A section is current on its own pages
+    (by data-page) or under its path. #}
+{% set page_name = self.page() | trim %}
+{% set sections = [
+  ("fleet", "/fleet", "Fleet", ["fleet"],
+   '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>'),
+  ("jobs", "/jobs", "Jobs", ["jobs", "job"],
+   '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>'),
+  ("models", "/models", "Models", ["models", "model"],
+   '<path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/>'),
+  ("trading", "/trading", "Trading", ["trading", "probe"],
+   '<path d="M17 3l4 4-4 4"/><path d="M21 7H9"/><path d="M7 21l-4-4 4-4"/><path d="M3 17h12"/>'),
+  ("settings", "/settings", "Settings", ["settings", "enroll"],
+   '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'),
+] %}
 <body>
 <header id="topbar" class="topbar{% if topbar.killed %} killed{% endif %}">
   <div class="topbar-row">
-    <a class="wordmark" href="/">Fleet</a>
+    <a class="wordmark" href="/" data-nav="home"{% if page_name == 'home' %} aria-current="page"{% endif %} title="Home"><svg class="wordmark-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>Fleet</a>
     <nav class="nav" aria-label="Sections">
-      <a href="/" data-nav="fleet"{% if path == '/' %} class="active" aria-current="page"{% endif %}>Fleet</a>
-      <a href="/jobs" data-nav="jobs"{% if path.startswith('/jobs') %} class="active" aria-current="page"{% endif %}>Jobs</a>
-      <a href="/models" data-nav="models"{% if path.startswith('/models') %} class="active" aria-current="page"{% endif %}>Models</a>
-      <a href="/trading" data-nav="trading"{% if path.startswith('/trading') %} class="active" aria-current="page"{% endif %}>Trading</a>
-      <a href="/settings" data-nav="settings"{% if path.startswith('/settings') %} class="active" aria-current="page"{% endif %}>Settings</a>
+{% for name, href, label, pages, icon in sections %}
+{% set current = page_name in pages or path == href or path.startswith(href ~ '/') %}
+      <a href="{{ href }}" data-nav="{{ name }}"{% if current %} class="active" aria-current="page"{% endif %}><svg class="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24">{{ icon | safe }}</svg><span class="nav-label">{{ label }}</span></a>
+{% endfor %}
     </nav>
     <div id="topbar-status" class="status">
 {% include "_topbar.html" %}

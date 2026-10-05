@@ -7,7 +7,7 @@ from typing import Any
 
 from host.eligibility import model_flags
 from host.leaderboard import FLAG_MEANINGS, MARKET_BEATEN_P, validation_summary
-from host.web import pvalue
+from host.web import pvalue, signed_pct
 
 REGIME_PAIRS = (
     ("favourite", "underdog"), ("home", "away"), ("divisional", "non_divisional"), ("primetime", "day"),
@@ -73,6 +73,43 @@ def regime_rows(stress: dict[str, Any] | None) -> list[dict[str, Any]]:
     return out
 
 
+def stress_reading(metrics: dict[str, Any], prices: list[dict[str, Any]]) -> str:
+    """One line above the price stress table: the worst stressed ROI against the base."""
+    rated = [p for p in prices if _num(p.get("roi")) is not None and p.get("n_bets")]
+    if not rated:
+        return "No stressed run placed a bet." if prices else ""
+    worst = min(rated, key=lambda p: float(p["roi"]))
+    base = signed_pct(metrics.get("roi")) if metrics.get("n_bets") else "-"
+    verdict = "the edge survives worse prices" if float(worst["roi"]) > 0 else "worse prices remove the edge"
+    return (f"Worst case {worst.get('name')}: ROI {signed_pct(worst['roi'])} on {worst.get('n_bets')} bets, "
+            f"against {base} on {metrics.get('n_bets') or 0} at base prices; {verdict}.")
+
+
+def regime_reading(rows: list[dict[str, Any]]) -> str:
+    """One line above the regime table: the best and the worst regime by ROI."""
+    rated = [r for r in rows if _num(r.get("roi")) is not None and r.get("n_bets")]
+    if len(rated) < 2:
+        return ""
+    best = max(rated, key=lambda r: float(r["roi"]))
+    worst = min(rated, key=lambda r: float(r["roi"]))
+    return (f"Best in {best['label']} games (ROI {signed_pct(best['roi'])}), weakest in {worst['label']} games "
+            f"(ROI {signed_pct(worst['roi'])}).")
+
+
+def calibration_reading(slope: float | None, intercept: float | None) -> str:
+    """One line above the calibration pairs: are the probabilities about right?"""
+    if slope is None:
+        return "No calibration fit yet."
+    if 0.9 <= slope <= 1.1:
+        shape = "its probabilities are about right"
+    elif slope < 0.9:
+        shape = "its probabilities are too confident"
+    else:
+        shape = "its probabilities are too timid"
+    bias = "" if intercept is None or abs(intercept) < 0.05 else ", with a lean toward one side"
+    return f"Calibration slope {slope:.2f}: {shape}{bias}."
+
+
 def robustness_context(validation: dict[str, Any] | None, stress: Any) -> dict[str, Any] | None:
     """Everything `_robustness.html` renders; None when the model is not validated."""
     if not isinstance(validation, dict):
@@ -98,4 +135,9 @@ def robustness_context(validation: dict[str, Any] | None, stress: Any) -> dict[s
         "regimes": regime_rows(stress),
         "flags": [{"name": flag, "meaning": FLAG_MEANINGS.get(flag, "")} for flag in flags],
         "seed": stress.get("seed"),
+        "readings": {
+            "stress": stress_reading(validation, [p for p in (stress.get("prices") or []) if isinstance(p, dict)]),
+            "regimes": regime_reading(regime_rows(stress)),
+            "calibration": calibration_reading(_num(validation.get("calib_slope")), _num(validation.get("calib_intercept"))),
+        },
     }

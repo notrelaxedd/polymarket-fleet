@@ -1,17 +1,24 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% block title %}Market probe{% endblock %}
 {% block page %}probe{% endblock %}
+{# The raw markets payload of the configured source (the Probe markets button in the
+   Trading page's Exchange group), to paste back when the parser needs fixing. #}
 {% block content %}
-<p><a href="/trading#exchange">&larr; Trading</a></p>
-<h1>Market probe <span class="params">{{ probe.source }}</span></h1>
-<div class="card">
+<h1>Market probe <span class="muted">{{ probe.source }}</span></h1>
+<p><a href="/trading#exchange">Back to Trading</a></p>
+<div class="stats">
+{{ ui.stat("probe-source", probe.source or '-', "Source") }}
+{{ ui.stat("probe-status", probe.status if probe.status is not none else '-', "HTTP status", note="failed" if probe.error else None) }}
+</div>
+<section class="card" data-card="probe">
   <dl class="props">
     <dt>url</dt><dd><code>{{ probe.url or '-' }}</code></dd>
     <dt>status</dt><dd>{{ probe.status if probe.status is not none else '-' }}</dd>
     {% if probe.error %}<dt>error</dt><dd class="error">{{ probe.error }}</dd>{% endif %}
   </dl>
-  <p class="muted small">The raw markets payload of the configured source, truncated to 64 KiB. Paste it back when the parser needs fixing.</p>
+  <p class="caption">The raw markets payload, truncated to 64 KiB.</p>
   <button type="button" class="btn small js-only" data-copy="payload">Copy</button>
   <pre id="payload">{{ probe.payload if probe.payload is string else probe.payload | pretty_json }}</pre>
-</div>
+</section>
 {% endblock %}

@@ -166,14 +166,14 @@ def test_models_page_shows_the_snapshot_group(client, conn):
     ranked = with_snapshot(conn, insert_validated_model(conn, params={"k": 1.0}), snapshot_metrics(n_bets=30, clv=0.02, roi=0.031))
     plain = insert_validated_model(conn, params={"k": 2.0})
     p = page(client.get("/models").text)
-    assert "CLV 90% range" in p.card("ranked").text, "the snapshot column group names its range"
-    assert "30 bets replayed on recorded prices" in p.text
+    assert "30 bets replayed on recorded prices" in p.one("[data-sort-line]").text, "the sort line names the snapshot basis"
     row = p.row("model", ranked["id"])
     chip = row.chip("rank-snapshot")
-    assert row.text.startswith("#1") and chip.text == "snapshot" and chip.attr("title") == "ranked on snapshot replay CLV"
-    assert "60 games · 30 bets · ROI +3.1%" in row.text and "CLV 0.020" in row.text and "0.004 to 0.031" in row.text
+    assert row.text.startswith("#1") and chip.text == "snapshot" and chip.closest("[title]").attr("title") == "ranked on snapshot replay CLV"
+    assert row.one(".row-value").text == "CLV +2.0%", "ranked on snapshot CLV: the CLV is the headline"
+    assert "60 games · 30 bets replayed · range +0.4% to +3.1%" in row.one(".row-meta").text
     other = p.row("model", plain["id"])
-    assert "snapshot -" in other.text and "rank-snapshot" not in other.chips()
+    assert other.one(".row-value").text.startswith("ROI ") and "rank-snapshot" not in other.chips()
 
 
 def test_model_page_shows_the_snapshot_section(client, conn):

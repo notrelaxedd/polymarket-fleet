@@ -1,5 +1,10 @@
-<span class="pill {{ 'live' if topbar.live else 'paper' }}">{{ 'LIVE' if topbar.live else 'PAPER' }}</span>
-<span class="pnl muted">paper today {{ topbar.pnl.paper.today_cents | money }} &middot; all {{ topbar.pnl.paper.all_time_cents | money }}{% if topbar.live_activity %} <span class="nowrap">&middot; live today {{ topbar.pnl.live.today_cents | money }} &middot; all {{ topbar.pnl.live.all_time_cents | money }}</span>{% endif %}</span>
+{#- The status part of the top bar, also served alone as /fragments/topbar: mode pill,
+    the current mode's P&L for today (the other mode's moves to Trading), KILL or the
+    killed state, then the banners on their own line. #}
+{% set mode = 'live' if topbar.live else 'paper' %}
+{% set today = topbar.pnl[mode].today_cents %}
+<span class="pill {{ mode }}">{{ mode | upper }}</span>
+<a class="pnl{% if today < 0 %} pnl-neg{% endif %}" href="/trading" data-pnl="{{ mode }}">{{ mode }} <span class="num">{{ today | pnl }}</span> today</a>
 {% if topbar.killed %}
 <span class="chip chip-killed" data-chip="killed" data-killed="1" aria-disabled="true">KILLED</span>
 {% if topbar.auto_kill %}

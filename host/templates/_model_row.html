@@ -1,39 +1,26 @@
-{# One leaderboard row: `m` is a lineage entry from host.leaderboard (`rank` set for ranked ones,
-   `unranked_reason` for the others). The validation era leads; the search era follows muted. #}
-{% set v = m.validation %}
-{% set snap = m.snapshot %}
-<tr class="model-row" data-model="{{ m.id }}" data-row="model" data-id="{{ m.id }}">
-  <td class="lead c-name">
-    {% if m.rank %}<span class="rank">#{{ m.rank }}</span>{% if m.rank_mode == 'paper' %}<span class="chip chip-paper" data-chip="rank-paper" title="ranked on paper CLV">paper</span>{% elif m.rank_mode == 'snapshot' %}<span class="chip chip-snapshot" data-chip="rank-snapshot" title="ranked on snapshot replay CLV">snapshot</span>{% endif %}{% endif %}
-    <a href="/models/{{ m.id }}"><strong>{{ m.family }}</strong> <span class="params">{{ m.short_params }}</span></a>
-    <span class="badge st-{{ m.status }}" data-chip="{{ m.status }}">{{ m.status.replace('_', ' ') }}</span>
-    {% if not m.validated %}<span class="chip chip-unvalidated" data-chip="unvalidated" title="no validation-era metrics yet: send a validate job">not validated</span>{% endif %}
-    {% for f in m.flags %}<span class="chip chip-flag chip-{{ f }}" data-chip="{{ f }}" title="{{ 'overfit: the search era looked better than the held-out era' if f == 'overfit' else 'fragile: worse prices or a parameter nudge remove the edge' if f == 'fragile' else 'regime-dependent: one regime holds the profit' }}">{{ f.replace('_', '-') }}</span>{% endfor %}
-    {% if m.unranked_reason == 'retired' %}{% elif m.unranked_reason and m.unranked_reason != 'not validated' %}<span class="chip" data-chip="unranked">{{ m.unranked_reason }}</span>{% endif %}
-    {% if m.members > 1 %}<span class="chip" data-chip="members">{{ m.members }} rows</span>{% endif %}
-  </td>
-  <td class="nowrap c-vroi"><span class="k">validation ROI</span> {% if v %}{{ v.roi | signed_pct if v.n_bets else '-' }}{% if v.n_bets and v.ci and v.ci.roi %} <span class="range">{{ v.ci.roi[0] | signed_pct }} to {{ v.ci.roi[1] | signed_pct }}</span>{% endif %}{% else %}-{% endif %}</td>
-  <td class="nowrap c-market"><span class="k">beats market</span> {% if v and v.market_p is not none %}{% if v.beats_market %}<span class="chip chip-beats" data-chip="beats">yes</span>{% else %}no{% endif %} <span class="muted small">{{ v.market_p | pvalue }}</span>{% else %}-{% endif %}</td>
-  <td class="nowrap c-bets"><span class="k">bets</span> {% if v %}{{ v.n_bets }}{% else %}-{% endif %} <span class="muted small">search {{ m.metrics.n_bets if m.metrics.n_bets is not none else '-' }}</span></td>
-  <td class="nowrap c-roi"><span class="k">search ROI</span> {{ m.metrics.roi | signed_pct if m.metrics.n_bets else '-' }}</td>
-  <td class="nowrap c-ll"><span class="k">log-loss</span> {% if v %}{{ v.log_loss | fixed }} <span class="muted">vs {{ v.market_log_loss | fixed }}</span>{% else %}{{ m.metrics.log_loss | fixed }} <span class="muted">vs {{ m.metrics.market_log_loss | fixed }}</span>{% endif %}</td>
-  <td class="nowrap c-dd"><span class="k">drawdown</span> {{ (v.max_drawdown if v else m.metrics.max_drawdown) | pct1 }}</td>
-  <td class="c-paper"><span class="k">paper</span> {% if m.paper.games %}{{ m.paper.games }} g &middot; {{ m.paper.bets }} bets &middot; {{ m.paper.pnl_cents | money }} &middot; ROI {{ m.paper.roi | signed_pct }} &middot; CLV {{ m.paper.avg_clv | fixed }}{% if m.paper_ci and m.paper_ci.ci %} <span class="range paper-ci">{{ m.paper_ci.ci[0] | fixed }} to {{ m.paper_ci.ci[1] | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
-  <td class="c-snapshot"><span class="k">snapshot</span> {% if snap %}{{ snap.n_games }} games &middot; {{ snap.n_bets }} bets &middot; ROI {{ snap.roi | signed_pct if snap.n_bets else '-' }} &middot; <span title="closing price minus the price paid, per contract">CLV {{ snap.avg_clv | fixed }}</span>{% if snap.clv_ci %} <span class="range snapshot-ci">{{ snap.clv_ci[0] | fixed }} to {{ snap.clv_ci[1] | fixed }}</span>{% endif %}{% else %}-{% endif %}</td>
-  <td class="wide c-summary">
-    <p class="summary">{{ m.summary or 'No summary yet.' }}</p>
-    <details class="edit">
-      <summary>Edit summary</summary>
-      <form method="post" action="/models/{{ m.id }}/summary" class="summary-form" data-form="summary">
-        <input type="hidden" name="next" value="/models">
-        <label><span class="visually-hidden">Summary</span><textarea name="summary" rows="3" maxlength="600">{{ m.summary or '' }}</textarea></label>
-        <button type="submit" class="btn small">Save</button>
-      </form>
-    </details>
-  </td>
-  <td class="action c-actions">
-    <a class="btn small" href="/jobs?train_model={{ m.id }}#train" data-action="train">Train</a>
-    {% if m.status != 'retired' %}<a class="btn small" href="/jobs?validate_model={{ m.id }}#validate" data-action="validate">Validate</a>{% endif %}
-    {% if m.status != 'retired' %}<a class="btn small" href="/trading?model={{ m.id }}#assign" data-action="assign">Assign</a>{% endif %}
-  </td>
-</tr>
+{# One leaderboard row: `m` is a lineage entry from host.leaderboard shaped by
+   host.api.models_view (m.view: headline, meta, chip states). Rank, name and key params,
+   flag chips after the name; the status chip leads the meta line (so the name keeps its
+   width on a phone); then the headline number by rank basis and the "..." menu. The summary lives on the detail page. #}
+{% import "_ui.html" as ui %}
+{% set title %}{% if m.rank %}<span class="rank">#{{ m.rank }}</span> {% endif %}{{ m.family }} <span class="params">{{ m.short_params }}</span>
+{%- for f in m.view.flags %} <span class="tip" title="{{ f.title }}">{{ ui.chip(f.state, f.word, key=f.name, extra='chip-flag chip-' ~ f.name) }}</span>{% endfor %}
+{%- if m.validation and m.validation.beats_market %} {{ ui.chip('ok', 'beats market', key='beats', extra='chip-beats') }}{% endif %}
+{%- if not m.validated %} <span class="tip" title="no validation-era metrics yet: send a validate job">{{ ui.chip('muted', 'not validated', key='unvalidated', extra='chip-unvalidated') }}</span>{% endif %}
+{%- if m.unranked_reason and m.unranked_reason not in ('retired', 'not validated') %} {{ ui.chip('warn', m.unranked_reason, key='unranked') }}{% endif %}{% endset %}
+{% set meta %}{{ ui.chip(m.view.status_state, m.view.status_word, key=m.status) }} {% if m.rank and m.view.basis_title %}<span class="tip" title="{{ m.view.basis_title }}">{{ ui.chip('muted', m.rank_mode, key='rank-' ~ m.rank_mode) }}</span> {% endif %}{{ m.view.meta }}{% if m.members > 1 %} {{ ui.chip('muted', m.members ~ ' rows', key='members') }}{% endif %}{% endset %}
+{% call ui.row('model', m.id, '/models/' ~ m.id, title, meta=meta) %}
+  <span class="row-value" title="{{ m.view.headline.title }}">{{ m.view.headline.text }}</span>
+  {% call ui.menu() %}
+    <a class="menu-item" href="/models/{{ m.id }}" data-action="open">Details</a>
+    <a class="menu-item" href="/jobs?train_model={{ m.id }}#train" data-action="train">Train</a>
+    {% if m.status != 'retired' %}
+    <a class="menu-item" href="/jobs?validate_model={{ m.id }}#validate" data-action="validate">Validate</a>
+    <a class="menu-item" href="/trading?model={{ m.id }}#assign" data-action="assign">Assign</a>
+    <form method="post" action="/models/{{ m.id }}/retire" data-action="retire" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
+      <input type="hidden" name="next" value="/models">
+      <button type="submit" class="menu-item danger">Retire</button>
+    </form>
+    {% endif %}
+  {% endcall %}
+{% endcall %}

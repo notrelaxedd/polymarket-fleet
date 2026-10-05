@@ -1,19 +1,27 @@
+{% import "_ui.html" as ui %}
+<div class="stats">
+  {{ ui.stat("online", counts.online ~ " / " ~ workers | length, "Online") }}
+  {{ ui.stat("working", counts.working, "Running a job", href="/jobs") }}
+  {{ ui.stat("offline", counts.offline, "Offline") }}
+  {{ ui.stat("switching", counts.switching, "Switching role") }}
+</div>
 {% if not workers %}
 <p class="empty">No workers yet. Mint an enroll token in <a href="/settings#enroll">Settings</a> and run the install line on a Debian box.</p>
 {% endif %}
+<div class="cards" data-list="workers">
 {% for w in workers %}
 {# The select is held only while an online worker is acking a change (a few seconds);
    a stale or offline box keeps it enabled so a wrong pick can be undone before it returns. #}
 {% set locked = w.switching and w.dot == 'online' %}
+{% set first = (w.current_jobs | rejectattr("kind", "equalto", "trade") | list | first) if w.current_jobs else none %}
 <article class="card worker{% if not w.enabled %} is-disabled{% endif %}{% if w.dot == 'offline' %} is-offline{% endif %}" data-worker="{{ w.id }}" data-row="worker" data-id="{{ w.id }}">
-  <header class="card-head">
+  <div class="row">
     <span class="dot {{ w.dot }}" role="img" aria-label="{{ w.dot }}"></span>
-    <span class="name">{{ w.name }}</span>
-    {% if w.dot != 'online' %}<span class="chip st-{{ w.dot }}" data-chip="{{ w.dot }}">{{ w.dot }}</span>{% endif %}
-    {% if not w.enabled %}<span class="chip" data-chip="disabled">disabled</span>{% endif %}
-    <span class="muted small">{{ w.id }}{% if w.hostname and w.hostname != w.name %} &middot; {{ w.hostname }}{% endif %}</span>
-  </header>
-  <div class="role-row">
+    {% set lead = w.current_jobs | first if w.current_jobs else none %}
+    <{{ 'a' if lead else 'div' }} class="row-main"{% if lead %} href="/jobs/{{ lead.id }}"{% endif %}>
+      <span class="row-title">{{ w.name }}{% if w.dot != 'online' %} {{ ui.chip("warn" if w.dot == "stale" else "muted", w.dot, key=w.dot, extra="st-" ~ w.dot) }}{% endif %}{% if not w.enabled %} {{ ui.chip("muted", "disabled", key="disabled") }}{% endif %}</span>
+      <span class="row-meta">{% if w.dot != 'online' %}{{ w.dot }}{% if w.dot == 'offline' %} {{ w.age | ago }}{% endif %} &middot; {% endif %}{% if not w.enabled %}disabled &middot; {% endif %}{% if w.switching %}<span class="switching">switching to {{ w.desired_role }} (epoch {{ w.role_epoch }})&hellip;</span>{% elif w.current_jobs %}job: {% for j in w.current_jobs %}<span data-job="{{ j.id }}">{% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind }}{% endif %}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}{% if j.kind == 'trade' %} held{% else %} {{ j.progress | pct }}{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}no job{% endif %}</span>
+    </{{ 'a' if lead else 'div' }}>
     <form class="role" data-form="role" method="post" action="/workers/{{ w.id }}/role">
       <label class="visually-hidden" for="role-{{ w.id }}">Role</label>
       <select id="role-{{ w.id }}" name="role" data-autosubmit="1"{% if locked %} disabled{% endif %}>
@@ -23,32 +31,19 @@
       </select>
       <button type="submit" class="btn js-hide"{% if locked %} disabled{% endif %}>Set</button>
     </form>
-    <form class="inline" method="post" action="/workers/{{ w.id }}/enabled" data-action="{{ 'disable' if w.enabled else 'enable' }}">
+    {% call ui.menu() %}
+    <form method="post" action="/workers/{{ w.id }}/enabled" data-action="{{ 'disable' if w.enabled else 'enable' }}">
       <input type="hidden" name="enabled" value="{{ 'false' if w.enabled else 'true' }}">
-      <button type="submit" class="link">{{ 'Disable' if w.enabled else 'Enable' }}</button>
+      <button type="submit" class="menu-item{% if w.enabled %} danger{% endif %}">{{ 'Disable' if w.enabled else 'Enable' }}</button>
     </form>
+    <details class="worker-details" data-key="fleet-worker-{{ w.id }}" data-action="details"><summary class="menu-item">Details</summary>
+      <p class="stats muted small">CPU {{ (w.cpu_pct or 0) | round | int }}% &middot; RAM {{ w.ram_used_mb | gb }} / {{ w.ram_total_mb | gb }} GB &middot; {{ w.age | ago }} &middot; <span class="nowrap">v {{ w.code_version or '?' }}</span></p>
+      <p class="muted small">{{ w.id }}{% if w.hostname and w.hostname != w.name %} &middot; {{ w.hostname }}{% endif %}{% if w.python_version %} &middot; Python {{ w.python_version }}{% endif %}</p>
+      <p class="pnl-line muted small">P&amp;L today {{ w.pnl_cents | pnl }}</p>
+    </details>
+    {% endcall %}
   </div>
-  {% if w.switching %}
-  <p class="switching">switching to {{ w.desired_role }} (epoch {{ w.role_epoch }})&hellip;</p>
-  {% endif %}
-  <div class="job">
-    {% if w.current_jobs %}
-    {% for j in w.current_jobs %}
-    <div class="jobrow" data-job="{{ j.id }}">
-    <a class="joblink" href="/jobs/{{ j.id }}">{% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind }}{% endif %}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}</a>
-    {% if j.kind == 'trade' %}
-    <span class="small muted">held</span>
-    {% else %}
-    <div class="bar" role="progressbar" aria-label="{{ j.kind }} progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ ((j.progress or 0) * 100) | round | int }}"><span style="width: {{ j.progress | pct }}"></span></div>
-    <span class="small">{{ j.progress | pct }}</span>
-    {% endif %}
-    </div>
-    {% endfor %}
-    {% else %}
-    <span class="muted">no job</span>
-    {% endif %}
-  </div>
-  <p class="stats muted small">CPU {{ (w.cpu_pct or 0) | round | int }}% &middot; RAM {{ w.ram_used_mb | gb }} / {{ w.ram_total_mb | gb }} GB &middot; {{ w.age | ago }} &middot; <span class="nowrap">v {{ w.code_version or '?' }}</span></p>
-  <p class="pnl-line muted small">today {{ w.pnl_cents | money }}</p>
+  {% if first %}<div class="jobrow">{{ ui.bar(first.progress | bar_pct) }}</div>{% endif %}
 </article>
 {% endfor %}
+</div>

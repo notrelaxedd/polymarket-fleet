@@ -314,3 +314,23 @@ def test_contract_light_and_dark() -> None:
     assert "prefers-color-scheme: dark" in CSS
     light, dark = _schemes()
     assert light["bg"] != dark["bg"] and light["text"] != dark["text"]
+
+
+def test_shell_markup_feeds_the_bottom_nav() -> None:
+    """The safe-area padding needs viewport-fit=cover; each of the five nav links carries
+    an icon (hidden from screen readers) above its label; the wordmark is Home; the status
+    shows the current mode's P&L only."""
+    from host.web import ENV
+
+    child = ENV.from_string('{% extends "base.html" %}{% block page %}models{% endblock %}')
+    cents = {"today_cents": -120, "all_time_cents": 5}
+    bar = {"live": False, "killed": False, "pnl": {"paper": cents, "live": {"today_cents": 999, "all_time_cents": 0}}}
+    html = child.render(topbar=bar, path="/models/abc", flash=None)
+    assert "viewport-fit=cover" in html and 'href="/" data-nav="home"' in html
+    links = re.findall(r'<a href="(/\w+)" data-nav="(\w+)"( class="active" aria-current="page")?><svg class="nav-icon" '
+                       r'aria-hidden="true"[^>]*>.*?</svg><span class="nav-label">(\w+)</span></a>', html)
+    assert [(h, n, lab) for h, n, _, lab in links] == [
+        ("/fleet", "fleet", "Fleet"), ("/jobs", "jobs", "Jobs"), ("/models", "models", "Models"),
+        ("/trading", "trading", "Trading"), ("/settings", "settings", "Settings")]
+    assert [n for _, n, cur, _ in links if cur] == ["models"]
+    assert re.search(r'data-pnl="paper">paper <span class="num">-\$1\.20</span> today', html) and "$9.99" not in html

@@ -10,12 +10,12 @@ sim markets, a trade worker, assignments, orders in every state, a fill, a settl
 bet), the paper CLV interval, and seed_step6b.py (an epa_blend lineage ranked on
 snapshot replay CLV, snapshot columns on two more, a snapshot backtest job, a partly
 sold position with a filled and an open sell, a second position). It serves the app
-with FLEET_DEV=1 on a free port and captures fleet, jobs (backtest form with its price
-source), job detail, settings (Trading, Snapshot replay, nflverse signals), models
-(validation, paper and snapshot columns), model detail, the flagged model, the
+with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet), jobs (backtest
+form with its price source) and its Done tab, job detail, settings (Trading, Snapshot
+replay, nflverse signals), models (validation, paper and snapshot columns), model detail, the flagged model, the
 snapshot-ranked model, the search, backtest, validate and snapshot backtest results,
 the validate form, trading (positions, sell chips) and its create form, at 390x844
-and 1280x800 in light and dark; then (seed_step5.py) settings, trading and fleet with
+and 1280x800 in light and dark; then (seed_step5.py) settings, trading, fleet and home with
 live on, after an auto-kill, after a hand POST /kill, and trading after the reset. At
 phone width it fails on horizontal scroll, on a visible button, select or link in a
 worker card or a form control (a checkbox through its label) under 40 px tall, and
@@ -177,7 +177,7 @@ def touch(url: str, box1: str) -> None:
 
 def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
     return [
-        ("fleet", "/"), ("jobs", "/jobs"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
+        ("home", "/"), ("fleet", "/fleet"), ("jobs", "/jobs"), ("jobs-done", "/jobs?tab=done"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
         ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("model-overfit", f"/models/{ids['overfit_model']}"),
         ("job-search", f"/jobs/{ids['search_job']}"), ("job-backtest", f"/jobs/{ids['backtest_job']}"),
         ("job-validate", f"/jobs/{ids['validate_job']}"), ("model-snapshot", f"/models/{ids['epa_model']}"),
@@ -204,26 +204,25 @@ def check_phone_layout(page: Any, name: str, problems: list[str]) -> None:
 
 
 def check_models_desktop(page: Any, problems: list[str]) -> None:
-    """At 1280 px the Models table keeps every summary at least 200 px wide and every
-    action button inside its table's visible box (the table scrolls inside .table-wrap,
-    so the page-level scroll check would not see a squeezed column)."""
+    """At 1280 px every Models row keeps its title, headline number and "..." menu inside
+    the row box, and the title is not squeezed below 200 px."""
     found = page.evaluate(
         """() => {
-             const narrow = Array.from(document.querySelectorAll('table.models td.c-summary'))
-               .map(td => td.getBoundingClientRect().width).filter(w => w < 200);
-             const hidden = Array.from(document.querySelectorAll('table.models td.c-actions .btn')).filter(btn => {
-               const wrap = btn.closest('.table-wrap');
-               return wrap && btn.getBoundingClientRect().right > wrap.getBoundingClientRect().right + 1;
+             const rows = Array.from(document.querySelectorAll('[data-list="ranked"] .row'));
+             const narrow = rows.map(r => r.querySelector('.row-title').getBoundingClientRect().width).filter(w => w < 200);
+             const outside = rows.filter(r => {
+               const box = r.getBoundingClientRect();
+               return Array.from(r.querySelectorAll('.row-value, details.menu > summary'))
+                 .some(el => el.getBoundingClientRect().right > box.right + 1);
              }).length;
-             const buttons = document.querySelectorAll('table.models td.c-actions .btn').length;
-             return [narrow, hidden, buttons];
+             return [narrow, outside, rows.length];
            }"""
     )
-    narrow, hidden, buttons = found
+    narrow, outside, rows = found
     if narrow:
-        problems.append(f"models at 1280: {len(narrow)} summary cells narrower than 200 px ({[round(w) for w in narrow]})")
-    if hidden or not buttons:
-        problems.append(f"models at 1280: {hidden} of {buttons} action buttons outside the visible table")
+        problems.append(f"models at 1280: {len(narrow)} row titles narrower than 200 px ({[round(w) for w in narrow]})")
+    if outside or not rows:
+        problems.append(f"models at 1280: {outside} of {rows} rows push their number or menu outside the row")
 
 
 def check_refresh_counter(page: Any, problems: list[str]) -> None:
@@ -279,12 +278,12 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             settings = parse(client.get("/settings").text)
             assert settings.one("[data-live-state]").attr("data-live-state") == "on" and mode_pill(settings) == "LIVE", "live is on"
             assert parse(client.get("/trading").text).has('[data-chip="smoke"]'), "the smoke order is flagged"
-        shoot_all([("settings-live", "/settings"), ("trading-live", "/trading"), ("fleet-live", "/")])
+        shoot_all([("settings-live", "/settings"), ("trading-live", "/trading"), ("fleet-live", "/fleet"), ("home-live", "/")])
         auto_kill(database_url)
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             reason = topbar(parse(client.get("/").text)).one("[data-auto-kill]")
             assert reason.attr("data-auto-kill") == "clock_skew", "the bar names the auto-kill reason"
-        shoot_all([("fleet-autokill", "/"), ("settings-autokill", "/settings"), ("trading-autokill", "/trading")])
+        shoot_all([("fleet-autokill", "/fleet"), ("home-autokill", "/"), ("settings-autokill", "/settings"), ("trading-autokill", "/trading")])
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
             assert resp.status_code == 303, resp.text
@@ -296,7 +295,8 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             assert resp.status_code == 303, resp.text
             assert "TRADING KILLED" in topbar(parse(client.get("/").text)).text
         for scheme in SCHEMES:
-            shoot("/", "fleet-killed", "390", scheme, check=(scheme == "light"))
+            shoot("/fleet", "fleet-killed", "390", scheme, check=(scheme == "light"))
+            shoot("/", "home-killed", "390", scheme, check=(scheme == "light"))
             shoot("/trading", "trading-killed", "390", scheme, check=(scheme == "light"))
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)

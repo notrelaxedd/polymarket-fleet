@@ -32,7 +32,8 @@ def test_every_page_renders(client, make_worker):
     w = make_worker("box1")
     job = client.post("/api/jobs", json={"kind": "sleep", "params": {"seconds": 3}}).json()
     for path, needle in [
-        ("/", "[data-page]"),
+        ("/", '[data-page="home"] [data-card="attention"]'),
+        ("/fleet", f'[data-page="fleet"] [data-row="worker"][data-id="{w.id}"]'),
         ("/jobs", '[data-form="backtest"]'),
         (f"/jobs/{job['id']}", '[data-list="events"]'),
         ("/settings", '[data-form="trading"]'),
@@ -91,12 +92,25 @@ def test_fleet_cards(client, conn, make_worker):
     bar = rows[online.id].one('[role="progressbar"]')
     assert (bar.attr("aria-valuemin"), bar.attr("aria-valuemax"), bar.attr("aria-valuenow")) == ("0", "100", "40")
     assert "width: 40%" in (bar.first("[style]").attr("style") or "") and "40%" in rows[online.id].text
-    assert f"/jobs/{job['id']}" in rows[online.id].hrefs and rows[online.id].first(f'a[href="/jobs/{job["id"]}"]').text == "sleep"
+    assert rows[online.id].one("a.row-main").target == f"/jobs/{job['id']}" and rows[online.id].one(f'[data-job="{job["id"]}"]').text == "sleep 40%"
+    assert not rows[stale.id].has("a.row-main"), "no job: nothing to open"
     assert "no job" in rows[stale.id].text
     assert "CPU 2% · RAM 0.5 / 4.0 GB · 0 s ago · v test" in rows[online.id].text
     assert rows[online.id].action("disable").text == "Disable" and rows[online.id].action("disable").one('input[name="enabled"]').attr("value") == "false"
     assert rows[offline.id].action("enable").text == "Enable" and rows[offline.id].action("enable").one('input[name="enabled"]').attr("value") == "true"
     assert "today $0.00" in rows[online.id].text
+    # Step 7: one row per worker; Disable and the Details disclosure (the stats line) sit in the "..." menu.
+    menu = rows[online.id].one("details.menu")
+    details = menu.one('details[data-action="details"]')
+    assert not menu.is_open and not details.is_open and details.attr("data-key") == f"fleet-worker-{online.id}"
+    assert details.one("summary").text == "Details" and "CPU 2% · RAM 0.5 / 4.0 GB" in details.text
+    assert menu.has('[data-action="disable"]') and rows[online.id].card(f"worker-{online.id}") is details
+    assert rows[online.id].one(".jobrow").one('[role="progressbar"]') and not rows[stale.id].has(".jobrow")
+    assert rows[online.id].one(".row-meta").text == "job: sleep 40%" and rows[stale.id].one(".row-meta").text == "stale · no job"
+    assert rows[offline.id].one(".row-meta").text == "offline 1 h ago · disabled · no job", "the state in words, not only the dot"
+    assert p.one("#fleet-grid").has(".stats") and p.stat("online").one(".stat-value").text == "2 / 4"
+    assert p.stat("working").one(".stat-value").text == "1" and p.stat("switching").one(".stat-value").text == "1"
+    assert p.nav("fleet").target == "/fleet" and p.nav("fleet").is_current and p.page_name == "fleet"
     conn.execute("DELETE FROM jobs")
     conn.execute("DELETE FROM workers")
     assert "No workers yet. Mint an enroll token" in page(fleet_html(client)).text
@@ -106,7 +120,7 @@ def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker
     w = make_worker("box1")
     r = client.post(f"/workers/{w.id}/role", data={"role": "backtest"}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] in ("/", "/fleet") and flash_cookie(r) == "box1: switching to backtest (epoch 2)"
+    assert r.headers["location"] == "/fleet" and flash_cookie(r) == "box1: switching to backtest (epoch 2)"
     assert "httponly" in r.headers["set-cookie"].lower() and "samesite=lax" in r.headers["set-cookie"].lower()
     row = worker_row(conn, w.id)
     assert row["desired_role"] == "backtest" and row["role_epoch"] == 2 and row["auto_role"] is False
@@ -123,10 +137,10 @@ def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker
 def test_enabled_form(client, conn, make_worker):
     w = make_worker("box1")
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "false"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] in ("/", "/fleet") and flash_cookie(r) == "box1 disabled"
+    assert r.status_code == 303 and r.headers["location"] == "/fleet" and flash_cookie(r) == "box1 disabled"
     assert worker_row(conn, w.id)["enabled"] is False
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "true"}, follow_redirects=False)
-    assert r.headers["location"] in ("/", "/fleet") and flash_cookie(r) == "box1 enabled"
+    assert r.headers["location"] == "/fleet" and flash_cookie(r) == "box1 enabled"
     assert worker_row(conn, w.id)["enabled"] is True
 
 
@@ -414,16 +428,21 @@ def test_chunked_body_over_the_limit_is_refused(client):
 # ------------------------------------------------------------------ step 3: models and job forms
 
 
+def _has_card(p, name: str) -> bool:
+    """A section (data-card) or a disclosure (data-key ending in -name) is on the page."""
+    return p.has(f'[data-card="{name}"]') or p.has(f'details[data-key$="-{name}"]')
+
+
 def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     p = page(client.get("/models").text)
     assert "No models yet. Send a model search" in p.text and "CC BY 4.0" in p.text and "nflverse" in p.text
-    assert not p.has('[data-card="unranked"]') and not p.has('[data-card="ranked"]') and not p.rows("model")
+    assert not _has_card(p, "unranked") and not _has_card(p, "ranked") and not p.rows("model")
     only_unranked = insert_model(conn, params={"k": 19.0}, metrics=backtest_metrics(n_bets=20, roi=0.5))
     p = page(client.get("/models").text)
     assert "No lineage is validated yet, so none is ranked." in p.text and "No models yet" not in p.text
-    assert not p.has('[data-card="ranked"]') and p.has('[data-card="unranked"]'), "no empty ranked header above the unranked table"
+    assert not _has_card(p, "ranked") and _has_card(p, "unranked"), "no empty ranked header above the unranked list"
     chip = p.row("model", only_unranked["id"]).chip("unvalidated")
-    assert chip.text == "not validated" and chip.attr("title") == "no validation-era metrics yet: send a validate job"
+    assert chip.text == "not validated" and chip.closest("[title]").attr("title") == "no validation-era metrics yet: send a validate job"
     conn.execute("DELETE FROM models WHERE id = %s", (only_unranked["id"],))
     best = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, metrics=backtest_metrics(n_bets=400, roi=0.05, log_loss=0.65, market_log_loss=0.659, max_drawdown=0.14, seasons=[2016, 2017, 2018, 2019]),
                         validation=validation_metrics(n_bets=130, roi=0.041, ci_roi=(-0.012, 0.094), market_p=0.012, log_loss=0.651, market_log_loss=0.658, max_drawdown=0.09),
@@ -442,26 +461,29 @@ def test_models_page_renders_ranked_rows_and_attribution(client, conn):
     assert ranked.row("model", best["id"]).chip("paper_ok").text == "paper ok" and p.row("model", few["id"]).chip("candidate").text == "candidate"
     assert "K 20 · HFA 50 · MOV on" in ranked.text and "K 30 · HFA 60 · MOV off" in ranked.text
     first = ranked.row("model", best["id"])
-    assert "validation ROI +4.1% -1.2% to +9.4%" in first.text, "the validation ROI with its 90% range"
-    assert first.chip("beats").text == "yes" and "beats market yes p = 0.012" in first.text
-    assert "bets 130 search 400" in first.text and "search ROI +5.0%" in first.text
-    assert "0.651" in first.text and "vs 0.658" in first.text and "drawdown 9.0%" in first.text
+    assert first.one(".row-value").text == "ROI +4.1%", "ranked on the validation era: its ROI is the headline"
+    assert first.one(".row-meta").text.startswith("paper ok 130 held-out bets · range -1.2% to +9.4% · p = 0.012")
+    assert first.chip("beats").text == "beats market"
     assert not {"overfit", "fragile", "regime_dependent"} & set(first.chips())
-    assert "Best lineage." in first.text and first.chip("members").text == "2 rows" and "unvalidated" not in first.chips()
+    assert "Best lineage." not in first.text and first.chip("members").text == "2 rows" and "unvalidated" not in first.chips()
     row2 = ranked.row("model", second["id"])
     assert {"overfit", "fragile", "regime_dependent"} <= set(row2.chips())
     assert row2.chip("overfit").text == "overfit" and row2.chip("fragile").text == "fragile" and row2.chip("regime_dependent").text == "regime-dependent"
-    assert "beats market no p = 0.310" in row2.text and "beats" not in row2.chips()
-    assert unranked.count('[data-chip="unvalidated"]') == 2 and "validation ROI" in p.text and "beats market" in p.text
-    assert "validation ROI -" in unranked.row("model", few["id"]).text and "beats market -" in unranked.row("model", few["id"]).text
-    assert "bets - search 20" in unranked.row("model", few["id"]).text
-    assert "not validated, or retired" in unranked.text
+    assert "p = 0.310" in row2.text and "beats" not in row2.chips()
+    assert unranked.count('[data-chip="unvalidated"]') == 2
+    few_row = unranked.row("model", few["id"])
+    assert few_row.one(".row-value").text == "ROI +50.0%" and few_row.one(".row-meta").text == "candidate not validated · search era 20 bets"
+    assert "not validated, or retired" in unranked.text and not unranked.is_open, "the unranked list starts folded"
     assert first.action("train").target == f"/jobs?train_model={best['id']}#train" and first.action("train").text == "Train"
     assert first.action("validate").target == f"/jobs?validate_model={best['id']}#validate" and first.action("validate").text == "Validate"
     assert first.action("assign").target == f"/trading?model={best['id']}#assign" and first.action("assign").text == "Assign"
-    assert first.form("summary").target == f"/models/{best['id']}/summary" and first.form("summary").one("textarea").attr("maxlength") == "600"
-    assert "&lt;b&gt;bold&lt;/b&gt;" in html and "<b>bold</b>" not in html and "<b>bold</b>" in p.row("model", none["id"]).text
-    assert "No summary yet." in p.text
+    retire = first.action("retire")
+    assert retire.target == f"/models/{best['id']}/retire" and retire.one('input[name="next"]').attr("value") == "/models"
+    assert retire.attr("data-confirm").startswith("Retire this whole lineage?")
+    assert not p.has('[data-form="summary"]') and "Best lineage." not in p.text, "the summary lives on the detail page"
+    detail_html = client.get(f"/models/{none['id']}").text
+    assert "&lt;b&gt;bold&lt;/b&gt;" in detail_html and "<b>bold</b>" not in detail_html and "<b>bold</b>" in page(detail_html).text
+    assert "No summary yet." in page(client.get(f"/models/{few['id']}").text).text
     assert p.has(".attribution") and "https://creativecommons.org/licenses/by/4.0/" in p.hrefs
     assert p.nav("models").is_current and not p.nav("trading").is_current and "step 3" not in html
 
@@ -480,11 +502,11 @@ def test_model_detail_page(client, conn, make_worker):
     bt = r.json()
     p = page(client.get(f"/models/{root['id']}").text)
     assert p.page_name == "model" and p.one("h1").text.startswith("elo_blend") and "K 20 · HFA 50 · MOV on" in p.one("h1").text
-    assert p.one("h1").has('[data-chip="paper_ok"]')
+    assert p.card("model").one(".verdict").chip("paper_ok").text == "paper ok"
     assert str(root["lineage_id"]) in p.text and p.card("model").has('[data-chip="root"]') and "Root summary." in p.text
     assert '"hfa": 50.0' in p.text, "params are shown as JSON"
     backtest = p.card("backtest")
-    assert backtest.prop("bets") == "400" and backtest.prop("ROI") == "+5.0%" and backtest.prop("seasons") == "2016-2018"
+    assert backtest.prop("bets") == "400" and backtest.prop("ROI").startswith("+5.0%") and backtest.prop("seasons") == "2016-2018"
     assert backtest.row("season", 2016) and "-1.0%" in backtest.row("season", 2017).text and "-$7.00" in backtest.row("season", 2017).text
     assert "0.0-0.1" in backtest.listing("calibration").text and "0.9-1.0" in backtest.listing("calibration").text
     lineage = p.card("lineage")
@@ -498,12 +520,12 @@ def test_model_detail_page(client, conn, make_worker):
     validate = p.action("validate")
     assert validate.target == "/jobs" and validate.attr("method") == "post" and validate.text == "Validate"
     assert validate.one('input[name="model_id"]').attr("value") == str(root["id"]) and validate.one('input[name="kind"]').attr("value") == "validate"
-    assert "Robustness validation era 2022-2025, held out of the search" in p.card("robustness").text
+    assert "validation era 2022-2025, held out of the search" in p.card("robustness").one(".disclosure-summary").text
     assert p.prop("validation shrunk ROI").startswith("+2.18%") and p.prop("search shrunk ROI").startswith("+4.00%")
-    assert "backtest search era" in backtest.text
+    assert backtest.one(".disclosure-summary").text.startswith("search era 2016-2018")
     child_p = page(client.get(f"/models/{child['id']}").text)
     parent = child_p.card("lineage").row("lineage", root["id"])
-    assert parent.first(f'a[href="/models/{root["id"]}"]').text == str(root["id"])[:8] and "(this)" in child_p.card("lineage").text
+    assert parent.first(f'a[href="/models/{root["id"]}"]').one(".row-title").text.startswith(str(root["id"])[:8]) and "(this)" in child_p.card("lineage").text
     assert "No backtest metrics yet" not in child_p.text, "a child shows the lineage metrics"
     assert "created this model" in child_p.card("jobs").text and f"/jobs/{job['id']}" in child_p.card("jobs").hrefs
     empty = insert_model(conn, params={"k": 40.0})
@@ -514,7 +536,7 @@ def test_model_detail_page(client, conn, make_worker):
     assert r.status_code == 303 and r.headers["location"] == f"/models/{child['id']}" and "retired" in flash_cookie(r)
     assert model_row(conn, root["id"])["status"] == "retired"
     retired = page(client.get(f"/models/{root['id']}").text)
-    assert not retired.has('[data-action="retire"]') and retired.one("h1").has('[data-chip="retired"]')
+    assert not retired.has('[data-action="retire"]') and retired.card("model").one(".verdict").has('[data-chip="retired"]')
 
 
 def test_summary_edit_form(client, conn):
@@ -522,7 +544,7 @@ def test_summary_edit_form(client, conn):
     r = client.post(f"/models/{root['id']}/summary", data={"summary": "A new summary.", "next": "/models"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/models" and flash_cookie(r) == f"summary of {str(root['id'])[:8]} saved"
     assert model_row(conn, root["id"])["summary"] == "A new summary."
-    assert "A new summary." in client.get("/models").text
+    assert "A new summary." in client.get(f"/models/{root['id']}").text, "the summary shows on the detail page"
     r = client.post(f"/models/{root['id']}/summary", data={"summary": "x" * 601, "next": f"/models/{root['id']}"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == f"/models/{root['id']}" and "not saved" in flash_cookie(r) and "600" in flash_cookie(r)
     assert model_row(conn, root["id"])["summary"] == "A new summary."
@@ -632,7 +654,10 @@ def test_job_detail_renders_result_tables_and_model_links(client, conn, make_wor
     conn.execute("UPDATE jobs SET status = 'succeeded', result = %s, progress = 1 WHERE id = %s", (__import__("psycopg").types.json.Jsonb(metrics), bt["id"]))
     p = page(client.get(f"/jobs/{bt['id']}").text)
     assert f"/models/{model['id']}" in p.hrefs and p.prop("bets") == "300" and p.prop("ROI") == "+4.0%"
-    assert "+10.0%" in p.row("season", 2016).text and "raw result" in p.text
+    assert "+10.0%" in p.row("season", 2016).text and '"n_bets": 300' in p.card("raw").text and not p.card("raw").is_open
+    assert [p.card(name).one(".disclosure-title").text for name in ("params", "checkpoints", "log", "raw")] == [
+        "Parameters", "Checkpoints", "Log", "Raw"], "the job page groups its detail into four disclosures"
+    assert p.stat("progress").chip("succeeded").text == "succeeded" and p.prop("Progress") == "100%"
     top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": 0.03, "metrics": backtest_metrics(n_bets=200, roi=0.045)},
            {"index": 1, "params": {"k": 25.0, "hfa": 40.0, "mov_scale": 0}, "score": 0.01, "metrics": backtest_metrics(n_bets=100, roi=0.02)}]
     created = [{"id": str(model["id"]), "lineage_id": str(model["id"]), "created": False}, {"id": "00000000-0000-0000-0000-0000000000aa", "lineage_id": "x", "created": True}]
@@ -671,9 +696,9 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
     html = client.get(f"/models/{model['id']}").text
     p = page(html)
     backtest = p.card("backtest")
-    assert backtest.has('[data-list="metrics"]') and backtest.prop("log-loss vs market") == "0.660 vs 0.659"
+    assert backtest.has('[data-list="metrics"]') and backtest.prop("log-loss vs market").startswith("0.660 vs 0.659")
     assert backtest.has('[data-list="per-season"]') and "drawdown -" in backtest.row("season", 2016).text
-    assert (backtest.prop("ROI"), backtest.prop("hit rate"), backtest.prop("avg edge")) == ("-", "-", "-"), "no bets: no ROI, hit rate or edge"
+    assert [backtest.prop(k).split(" ")[0] for k in ("ROI", "hit rate", "avg edge")] == ["-", "-", "-"], "no bets: no ROI, hit rate or edge"
     assert backtest.prop("max drawdown").startswith("0.4%"), "a 0.4% drawdown is not rounded to 0%"
     assert all("+0.0%" not in p.card(name).text for name in ("model", "robustness", "snapshot", "backtest"))
     assert p.action("assign").target == f"/trading?model={model['id']}#assign" and p.action("assign").text == "Assign"
@@ -684,8 +709,8 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
     assert all(t.has_class("stack") for t in p.select("table") if t.attr("data-list") != "calibration")
     # The leaderboard row: "-" for ROI without bets, one-decimal drawdown.
     row = page(client.get("/models").text).row("model", model["id"])
-    assert "search ROI -" in row.text and "drawdown 0.4%" in row.text
-    assert "paper -" in row.text and row.action("assign").target.startswith("/trading?model=")
+    assert row.one(".row-value").text == "ROI -" and "search era 0 bets" in row.one(".row-meta").text
+    assert row.action("assign").target.startswith("/trading?model=")
     # The search result page: a stacked top list with a shrunk ROI percentage.
     top = [{"index": 0, "params": {"k": 20.0, "hfa": 50.0, "mov_scale": 1}, "score": -0.0103, "metrics": backtest_metrics(n_bets=5, roi=-0.355, max_drawdown=0.5)}]
     ms = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 1}, "target": w.id}).json()
@@ -702,22 +727,67 @@ def test_metrics_render_as_pairs_and_stacked_tables(client, conn, make_worker):
 
 
 def test_send_cards_fold_so_the_job_list_is_near_the_top(client, conn):
-    """MEDIUM: each send form is a details card; only the relevant one is open."""
+    """Step 7: every send form sits in one "New job" disclosure, closed by default, with
+    a kind select (JavaScript shows only the chosen form; without it every form shows
+    under its heading). A prefill link or a rejected post opens it on that kind."""
     model = insert_model(conn, params={"k": 20.0, "hfa": 50.0, "mov_scale": 1}, trained_through=[2024, 18])
-    def open_forms(html):
-        return [k for k in ("backtest", "model_search", "train", "validate", "sleep") if page(html).form(k).closest("details").is_open]
+    kinds = ("backtest", "model_search", "train", "validate", "sleep")
+
+    def new_job(html):
+        p = page(html)
+        box = p.card("new")
+        picked = box.one('select[data-switch="job-kind"] option[selected]').attr("value")
+        return p, box, picked
 
     html = client.get("/jobs").text
-    p = page(html)
-    assert open_forms(html) == ["backtest"]
-    assert [d.one("summary").text for d in p.select("details") if d.has("[data-form]")] == ["Backtest", "Model search", "Train", "Validate", "Sleep test job"]
-    assert p.listing("jobs").start > p.form("train").start, "the job list follows the folded forms"
+    p, box, picked = new_job(html)
+    assert not box.is_open and picked == "backtest" and box.one(".disclosure-title").text == "New job"
+    assert all(p.form(k).closest("details") is box for k in kinds), "every form is inside the one disclosure"
+    assert [box.one(f'[data-card="send-{k}"]').one("h2").text for k in kinds] == ["Backtest", "Model search", "Train", "Validate", "Sleep (test)"]
+    assert [box.one(f'[data-card="send-{k}"]').attr("data-when") for k in kinds] == list(kinds)
+    assert all(box.one(f'[data-card="send-{k}"]').attr("data-switch-for") == "job-kind" for k in kinds)
+    assert not box.select("[hidden]"), "with JavaScript off every form shows"
+    assert box.one('select[data-switch="job-kind"]').closest("label").has_class("js-only"), "the kind select needs JavaScript"
+    assert p.one(".tabs").start > box.start and p.text.count("Nothing running or queued.") == 1, "the job list follows the folded forms"
     assert p.form("train").one(f'option[value="{model["id"]}"]').text.endswith(f"K 20 · HFA 50 · MOV on · thru 2024 w18 · {str(model['id'])[:8]}"), "the select label fits a phone"
-    assert open_forms(client.get(f"/jobs?train_model={model['id']}").text) == ["train"]
+    _, box, picked = new_job(client.get(f"/jobs?train_model={model['id']}").text)
+    assert box.is_open and picked == "train"
+    _, box, picked = new_job(client.get(f"/jobs?validate_model={model['id']}").text)
+    assert box.is_open and picked == "validate"
     r = client.post("/jobs", data={"kind": "model_search", "family": "elo_blend", "n": "0", "target": "any_idle"}, follow_redirects=False)
-    assert r.status_code == 400 and open_forms(r.text) == ["model_search"]
+    _, box, picked = new_job(r.text)
+    assert r.status_code == 400 and box.is_open and picked == "model_search"
     insert_model(conn, family="elo_blend", params={"k": 21.0})
     assert "elo_blend · K 21" not in client.get("/jobs").text, "one family: no family prefix"
+
+
+def test_jobs_tabs_split_running_from_done(client, conn, make_worker):
+    """Running (queued, running, held) and Done (finished, failed, cancelled) are two
+    link tabs with aria-current; each job is one row with its target and state chip."""
+    w = make_worker("box1", role="backtest")
+    model = insert_model(conn)
+    running = lease_job(conn, w, "validate", {"model_id": str(model["id"])})
+    conn.execute("UPDATE jobs SET progress = 0.42 WHERE id = %s", (running["id"],))
+    queued = client.post("/api/jobs", json={"kind": "model_search", "params": {"family": "elo_blend", "n": 50}}).json()
+    failed = client.post("/api/jobs", json={"kind": "sleep", "params": {"seconds": 5}}).json()
+    conn.execute("UPDATE jobs SET status = 'failed', error = 'boom', finished_at = now() WHERE id = %s", (failed["id"],))
+    p = page(client.get("/jobs").text)
+    tabs = {a.attr("data-tab"): a for a in p.select(".tabs a")}
+    assert tabs["running"].is_current and not tabs["done"].is_current and tabs["done"].target == "/jobs?tab=done"
+    assert tabs["running"].one(".count").text == "2" and tabs["done"].one(".count").text == "1"
+    assert set(p.row_ids("job")) == {str(running["id"]), str(queued["id"])}
+    row = p.row("job", running["id"])
+    assert row.one("a.row-main").target == f"/jobs/{running['id']}" and row.one(".row-title").text == f"validate {str(model['id'])[:8]}"
+    assert row.chip("leased").text == "leased" and row.one('[role="progressbar"]').attr("aria-valuenow") == "42"
+    assert "box1" in row.one(".row-meta").text and row.action("cancel").target == f"/jobs/{running['id']}/cancel"
+    assert "model_search elo_blend n 50" in p.row("job", queued["id"]).text
+    assert p.stat("running").one(".stat-value").text == "1" and p.stat("queued").one(".stat-value").text == "1"
+    done = page(client.get("/jobs?tab=done").text)
+    assert done.one('.tabs a[data-tab="done"]').is_current and done.row_ids("job") == [str(failed["id"])]
+    assert done.row("job", failed["id"]).chip("failed").text == "failed" and not done.row("job", failed["id"]).has('[data-action="cancel"]')
+    assert "finished" in done.row("job", failed["id"]).one(".row-meta").text
+    assert done.stat("done").one(".stat-note").text == "1 failed"
+    assert page(client.get("/jobs?tab=bogus").text).one('.tabs a[data-tab="running"]').is_current
 
 
 # ------------------------------------------------------------------ step 4: trading
@@ -1096,7 +1166,7 @@ def test_pnl_maths(client, conn, make_worker):
     assert re.search(r"\+?\$3\.00", fleet.row("worker", helper.id).text) and "-$0.10" in fleet.row("worker", setup.worker.id).text
     card = fleet.row("worker", setup.worker.id)
     held = card.one(f'[data-job="{setup.job["id"]}"]')
-    assert held.one(f'a[href="/jobs/{setup.job["id"]}"]').text == "KC @ LV" and "held" in held.text
+    assert held.text == "KC @ LV held" and card.one("a.row-main").target == f"/jobs/{setup.job['id']}"
     assert not card.has('[role="progressbar"]'), "a held trade job has no progress to show"
     # a resolved market drops out of the open positions
     conn.execute("UPDATE markets SET status = 'resolved', resolved_yes = true WHERE id = %s", (setup.market["id"],))
@@ -1144,11 +1214,11 @@ def test_leaderboard_paper_columns_and_ranking(client, conn):
     assert client.get("/api/models").json()["ranked"][0]["id"] == str(almost["id"]), "validated, it ranks first on paper CLV"
     p = page(client.get("/models").text)
     first = p.row("model", almost["id"])
-    assert first.text.startswith("#1") and first.chip("rank-paper").text == "paper" and first.chip("rank-paper").attr("title") == "ranked on paper CLV"
-    assert "paper 5 g · 50 bets · $14.00 · ROI +28.0% · CLV 0.052" in first.text
+    assert first.text.startswith("#1") and first.chip("rank-paper").text == "paper" and first.chip("rank-paper").closest("[title]").attr("title") == "ranked on paper CLV"
+    assert first.one(".row-value").text == "CLV +5.2%" and "5 games · 50 bets · +$14.00" in first.one(".row-meta").text
     last = p.row("model", backtested["id"])
-    assert "paper -" in last.text and "rank-paper" not in last.chips() and last.text.startswith("#4")
-    assert "paper" in p.card("ranked").first("thead").text and "5 paper games and 30 paper bets" in p.text
+    assert last.one(".row-value").text == "ROI +5.0%" and "rank-paper" not in last.chips() and last.text.startswith("#4")
+    assert "5 paper games and 30 paper bets" in p.one("[data-sort-line]").text
     detail = page(client.get(f"/models/{better['id']}").text)
     assert detail.prop("paper record").startswith("5 games · 30 bets · -$3.00 · ROI -1.0% · CLV 0.030")
     assert "ranked on paper" in detail.prop("paper record")
@@ -1542,7 +1612,7 @@ def test_model_page_robustness_section_renders_every_element(client, conn, make_
     p = page(html)
     rob = p.card("robustness")
     overfit = rob.chip("overfit")
-    assert overfit.text == "overfit" and overfit.has_class("chip-overfit") and overfit.attr("title").startswith("the search era looked better")
+    assert overfit.text == "overfit" and overfit.has_class("chip-overfit") and overfit.closest("[title]").attr("title").startswith("the search era looked better")
     assert rob.chip("regime_dependent").has_class("chip-regime_dependent") and rob.chip("regime_dependent").text == "regime-dependent"
     assert "overfit: the search era looked better than the held-out era" in rob.text
     assert "regime-dependent: in one regime pair" in rob.text
@@ -1595,7 +1665,7 @@ def test_leaderboard_shows_the_paper_clv_interval(client, conn):
     row = client.get("/api/models").json()["ranked"][0]
     assert row["paper_ci"]["n_bets"] == 4 and row["paper_ci"]["ci"][0] > 0 and row["paper_ci"]["avg_clv"] == pytest.approx(0.03)
     board = page(client.get("/models").text)
-    assert re.search(r"0\.0\d\d to 0\.0\d\d", board.row("model", row["id"]).text), "the 90% CLV range next to the paper record"
+    assert re.search(r"range \+\d\.\d% to \+\d\.\d%", board.row("model", row["id"]).one(".row-meta").text), "the 90% CLV range next to the paper record"
     detail = page(client.get(f"/models/{model['id']}").text)
     assert re.search(r"CLV 90% range 0\.0\d\d to 0\.0\d\d over 4 bets", detail.text)
 

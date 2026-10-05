@@ -1,23 +1,22 @@
 {% extends "base.html" %}
+{% import "_ui.html" as ui %}
 {% import "_metrics.html" as metrics_view %}
 {% import "_robustness.html" as rob %}
 {% block title %}Model {{ model.id | short }}{% endblock %}
 {% block page %}model{% endblock %}
 {% block content %}
-<p><a href="/models">&larr; Models</a></p>
-<h1>{{ model.family }} <span class="params">{{ model.short_params }}</span> <span class="badge st-{{ model.status }}" data-chip="{{ model.status }}">{{ model.status.replace('_', ' ') }}</span>{% if not model.validated %} <span class="chip chip-unvalidated" data-chip="unvalidated">not validated</span>{% endif %}{% for f in model.flags %} <span class="chip chip-flag chip-{{ f }}" data-chip="{{ f }}">{{ f.replace('_', '-') }}</span>{% endfor %}</h1>
-<div class="card" data-card="model">
-  <dl class="props">
-    <dt>id</dt><dd><code>{{ model.id }}</code></dd>
-    <dt>lineage</dt><dd><code>{{ model.lineage_id }}</code>{% if model.id == model.lineage_id %} <span class="chip" data-chip="root">root</span>{% endif %}</dd>
-    {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
-    <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
-    <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
-    <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %} <span class="muted small">ROI x bets / (bets + 100), the rank key</span></dd>
-    <dt>search shrunk ROI</dt><dd>{{ model.search_score | signed_pct(2) }} <span class="muted small">search era, the selection score</span></dd>
-    <dt>paper record</dt><dd>{% if model.paper.games %}{{ model.paper.games }} games &middot; {{ model.paper.bets }} bets &middot; {{ model.paper.pnl_cents | money }} &middot; ROI {{ model.paper.roi | signed_pct }} &middot; CLV {{ model.paper.avg_clv | fixed }} <span class="muted small">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bet{{ "" if model.paper_ci.n_bets == 1 else "s" }}</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
-    <dt>snapshot replay</dt><dd>{% if model.snapshot %}{{ model.snapshot.n_games }} games &middot; {{ model.snapshot.n_bets }} bets &middot; ROI {{ model.snapshot.roi | signed_pct if model.snapshot.n_bets else '-' }} &middot; CLV {{ model.snapshot.avg_clv | fixed }}{% if model.snapshot.clv_ci %} <span class="range snapshot-ci">90% range {{ model.snapshot.clv_ci[0] | fixed }} to {{ model.snapshot.clv_ci[1] | fixed }}</span>{% endif %} <span class="muted small">shrunk {{ model.snapshot.score | fixed }}{% if model.rank_mode == 'snapshot' %}, ranked on snapshot CLV{% else %}, ranks on it from 30 bets{% endif %}</span>{% else %}<span class="muted">no snapshot replay yet</span>{% endif %}</dd>
-  </dl>
+<h1>{{ model.family }} <span class="params">{{ model.short_params }}</span></h1>
+{{ ui.intro('model', 'One lineage: its edge over the market, its record on held-out seasons and on paper, and what it still needs before it can trade live.') }}
+<section class="model-head" data-card="model">
+  <div class="stats">
+    {% for s in stats %}{{ ui.stat(s.name, s.value, s.label, note=s.note) }}{% endfor %}
+  </div>
+  <p class="verdict" data-verdict="{{ verdict.state }}">
+    {{ ui.chip(status_state, status_word, key=model.status) }}
+    {% if not model.validated %}{{ ui.chip('muted', 'not validated', key='unvalidated', extra='chip-unvalidated') }}{% endif %}
+    <span class="verdict-text">{{ verdict.text }}</span>
+  </p>
+  <span class="caption">CLV is the closing price minus the price paid: above zero means the market moved the model's way after it bought.</span>
   <div class="actions">
     <a class="btn" href="/jobs?train_model={{ model.id }}#train" data-action="train">Train</a>
     {% if model.status != 'retired' %}
@@ -28,46 +27,89 @@
       <input type="hidden" name="target" value="any_idle">
       <button type="submit" class="btn">Validate</button>
     </form>
-    {% endif %}
-    {% if model.status != 'retired' %}<a class="btn" href="/trading?model={{ model.id }}#assign" data-action="assign">Assign</a>{% endif %}
-    {% if model.status != 'retired' %}
-    <form method="post" action="/models/{{ model.id }}/retire" class="inline" data-action="retire" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
-      <input type="hidden" name="next" value="/models/{{ model.id }}">
-      <button type="submit" class="btn danger">Retire lineage</button>
-    </form>
+    <a class="btn" href="/trading?model={{ model.id }}#assign" data-action="assign">Assign</a>
+    {% call ui.menu() %}
+      <form method="post" action="/models/{{ model.id }}/retire" data-action="retire" data-confirm="Retire this whole lineage? It leaves the ranking and cannot be un-retired.">
+        <input type="hidden" name="next" value="/models/{{ model.id }}">
+        <button type="submit" class="menu-item danger">Retire lineage</button>
+      </form>
+    {% endcall %}
     {% endif %}
   </div>
-  <h2>summary</h2>
+
+  {% call ui.disclosure('model-summary', 'Summary', summary=(model.summary | truncate(120, true, '...')) if model.summary else 'none yet: add one paragraph about this lineage') %}
   <p class="summary">{{ model.summary or 'No summary yet.' }}</p>
   <details class="edit">
     <summary>Edit summary</summary>
     <form method="post" action="/models/{{ model.id }}/summary" class="summary-form" data-form="summary">
       <input type="hidden" name="next" value="/models/{{ model.id }}">
-      <label><span class="visually-hidden">Summary</span><span class="muted small">at most 600 characters</span>
+      <label><span class="visually-hidden">Summary</span><span class="muted">at most 600 characters</span>
         <textarea name="summary" rows="4" maxlength="600">{{ model.summary or '' }}</textarea>
       </label>
       <button type="submit" class="btn small">Save</button>
     </form>
   </details>
-  <h2>params</h2>
-  <pre>{{ model.params | pretty_json }}</pre>
-</div>
+  <dl class="props">
+    <dt>id</dt><dd><code>{{ model.id }}</code></dd>
+    <dt>lineage</dt><dd><code>{{ model.lineage_id }}</code>{% if model.id == model.lineage_id %} {{ ui.chip('muted', 'root', key='root') }}{% endif %}</dd>
+    {% if model.parent_model_id %}<dt>parent</dt><dd><a href="/models/{{ model.parent_model_id }}">{{ model.parent_model_id | short }}</a></dd>{% endif %}
+    <dt>trained through</dt><dd>{% if model.trained_through %}{{ model.trained_through[0] }} week {{ model.trained_through[1] }}{% else %}<span class="muted">not trained (search candidate)</span>{% endif %}</dd>
+    <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
+    <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %}<span class="caption">ROI x bets / (bets + 100): few bets pull it toward zero. The rank key.</span></dd>
+    <dt>search shrunk ROI</dt><dd>{{ model.search_score | signed_pct(2) }}<span class="caption">The same on the search era, the score the search picked it by.</span></dd>
+  </dl>
+  <details class="raw"><summary>Parameters</summary><pre>{{ model.params | pretty_json }}</pre></details>
+  {% endcall %}
+</section>
 
 {% if robustness %}
-{{ rob.section(robustness) }}
+{% set rob_summary %}validation era {{ robustness.metrics.seasons | season_span }}, held out of the search{% if robustness.flags %} · {{ robustness.flags | length }} flag{{ '' if robustness.flags | length == 1 else 's' }}{% endif %}{% endset %}
+{% call ui.disclosure('model-robustness', 'Robustness', summary=rob_summary) %}
+{{ rob.body(robustness) }}
 {% if validation_per_season %}
 <h3>validation per season</h3>
 {{ metrics_view.per_season(validation_per_season) }}
 {% endif %}
+{% endcall %}
 {% else %}
-<section class="robustness" id="robustness" data-card="robustness">
-<h2>Robustness</h2>
+{% call ui.disclosure('model-robustness', 'Robustness', summary='not validated yet') %}
 <p class="muted">Not validated yet: no held-out numbers, no confidence interval, no market test. Press Validate to run the validation era with the stress tests on an idle worker.</p>
-</section>
+{% endcall %}
 {% endif %}
 
-<section class="snapshot" id="snapshot" data-card="snapshot">
-<h2>Snapshot replay <span class="muted small">the backtest on prices the host recorded, with real CLV</span></h2>
+{% set bt_summary %}search era{% if metrics %} {{ metrics.seasons | season_span }} · {{ metrics.n_bets or 0 }} bets · ROI {{ metrics.roi | signed_pct if metrics.n_bets else '-' }}{% else %}: none yet{% endif %}{% endset %}
+{% call ui.disclosure('model-backtest', 'Backtest metrics', summary=bt_summary) %}
+{% if metrics %}
+{{ metrics_view.pairs(metrics, detail=true, captions=true) }}
+{% if per_season %}
+<h3>per season</h3>
+{{ metrics_view.per_season(per_season) }}
+{% endif %}
+{% if calibration %}
+<h3>calibration</h3>
+<p class="reading">Each row is a band of predicted probabilities: a calibrated model wins about as often as it says.</p>
+<div class="table-wrap">
+<table class="metrics calibration" data-list="calibration">
+  <thead><tr><th>p bucket</th><th>games</th><th>mean p</th><th>mean outcome</th></tr></thead>
+  <tbody>
+  {% for b in calibration %}
+  <tr><td>{{ b.bucket }}</td><td>{{ b.count }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endif %}
+{% else %}
+<p class="muted">No backtest metrics yet. Send a backtest of this model from the <a href="/jobs">Jobs</a> page.</p>
+{% endif %}
+{% endcall %}
+
+{% set snap = model.snapshot %}
+{% set snap_summary %}{% if snap %}{{ snap.n_games }} games · {{ snap.n_bets }} bets · CLV {{ snap.avg_clv | signed_pct }}{% if model.rank_mode == 'snapshot' %} · ranked on it{% endif %}{% else %}none yet: replay it on recorded prices{% endif %}{% endset %}
+{% call ui.disclosure('model-snapshot', 'Snapshot replay', summary=snap_summary) %}
+<dl class="props">
+  <dt>snapshot replay</dt><dd>{% if snap %}{{ snap.n_games }} games &middot; {{ snap.n_bets }} bets &middot; ROI {{ snap.roi | signed_pct if snap.n_bets else '-' }} &middot; CLV {{ snap.avg_clv | fixed }}{% if snap.clv_ci %} <span class="range snapshot-ci">90% range {{ snap.clv_ci[0] | fixed }} to {{ snap.clv_ci[1] | fixed }}</span>{% endif %} <span class="muted">shrunk {{ snap.score | fixed }}{% if model.rank_mode == 'snapshot' %}, ranked on snapshot CLV{% else %}, ranks on it from 30 bets{% endif %}</span>{% else %}<span class="muted">no snapshot replay yet</span>{% endif %}</dd>
+</dl>
 {% if snapshot_metrics %}
 {{ metrics_view.snapshot_line(snapshot_metrics) }}
 {{ metrics_view.pairs(snapshot_metrics) }}
@@ -87,73 +129,66 @@
   <button type="submit" class="btn">Replay on snapshots</button>
 </form>
 {% endif %}
-</section>
+{% endcall %}
 
-<section data-card="backtest">
-<h2>backtest <span class="muted small">search era</span></h2>
-{% if metrics %}
-{{ metrics_view.pairs(metrics, detail=true) }}
-{% if per_season %}
-<h3>per season</h3>
-{{ metrics_view.per_season(per_season) }}
-{% endif %}
-{% if calibration %}
-<h3>calibration</h3>
-<div class="table-wrap">
-<table class="metrics calibration" data-list="calibration">
-  <thead><tr><th>p bucket</th><th>games</th><th>mean p</th><th>mean outcome</th></tr></thead>
-  <tbody>
-  {% for b in calibration %}
-  <tr><td>{{ b.bucket }}</td><td>{{ b.count }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td></tr>
+{% set paper = model.paper %}
+{% set paper_summary %}{% if paper.games %}{{ paper.games }} games · {{ paper.bets }} bets · {{ paper.pnl_cents | pnl }}{% if model.rank_mode == 'paper' %} · ranked on it{% endif %}{% else %}no paper games yet{% endif %}{% endset %}
+{% call ui.disclosure('model-paper', 'Paper results', summary=paper_summary) %}
+<dl class="props">
+  <dt>paper record</dt><dd>{% if paper.games %}{{ paper.games }} games &middot; {{ paper.bets }} bets &middot; {{ paper.pnl_cents | money }} &middot; ROI {{ paper.roi | signed_pct }} &middot; CLV {{ paper.avg_clv | fixed }} <span class="muted">shrunk {{ model.paper_score | fixed }}{% if model.rank_mode == 'paper' %}, ranked on paper{% endif %}</span>{% if model.paper_ci and model.paper_ci.ci %} <span class="paper-ci">CLV 90% range {{ model.paper_ci.ci[0] | fixed }} to {{ model.paper_ci.ci[1] | fixed }} over {{ model.paper_ci.n_bets }} bet{{ "" if model.paper_ci.n_bets == 1 else "s" }}</span>{% endif %}{% else %}<span class="muted">no paper games yet</span>{% endif %}</dd>
+  {% if model.live and model.live.games %}<dt>live record</dt><dd>{{ model.live.games }} games &middot; {{ model.live.bets }} bets &middot; {{ model.live.pnl_cents | money }} &middot; ROI {{ model.live.roi | signed_pct }} &middot; CLV {{ model.live.avg_clv | fixed }}</dd>{% endif %}
+</dl>
+<span class="caption">Paper trading places simulated orders on real prices; the lineage ranks on its paper CLV once it has 5 paper games and 30 paper bets.</span>
+{% endcall %}
+
+{% call ui.disclosure('model-assignments', 'Assignments', count=assignments.total, summary='games this lineage was assigned to, newest first') %}
+{% if assignments.rows %}
+<ul class="rows" data-list="assignments">
+  {% for a in assignments.rows %}
+  {% call ui.row('assignment', a.id, '/trading', a.game, meta=a.when ~ ' · ' ~ a.mode ~ ' · model ' ~ (a.model_id | short)) %}
+    {% if a.mode == 'live' %}{{ ui.chip('bad', 'LIVE', key='live', extra='chip-live') }}{% endif %}
+    {{ ui.chip(a.state, a.status, key=a.status) }}
+    <span class="row-value {{ a.realized_pnl_cents | tone }}">{{ a.realized_pnl_cents | pnl }}</span>
+  {% endcall %}
   {% endfor %}
-  </tbody>
-</table>
-</div>
-{% endif %}
+</ul>
+{% if assignments.total > assignments.rows | length %}<p class="muted">Showing the latest {{ assignments.rows | length }} of {{ assignments.total }}.</p>{% endif %}
 {% else %}
-<p class="muted">No backtest metrics yet. Send a backtest of this model from the <a href="/jobs">Jobs</a> page.</p>
+<p class="muted empty">Not assigned to any game yet. Assign it from the <a href="/trading?model={{ model.id }}#assign">Trading</a> page.</p>
+{% endif %}
+{% endcall %}
+
+{% call ui.disclosure('model-history', 'History', count=model.jobs | length, summary='the lineage and the jobs that trained, validated or replayed it') %}
+<section data-card="lineage">
+<h3>Lineage</h3>
+<ul class="rows" data-list="lineage">
+  {% for r in model.lineage %}
+  {% set lt %}{{ r.id | short }}{% if r.id == model.id %} (this){% endif %}{% if r.is_root %} {{ ui.chip('muted', 'root', key='root') }}{% endif %}{% endset %}
+  {% set lm %}{% if r.trained_through %}trained through {{ r.trained_through[0] }} week {{ r.trained_through[1] }}{% else %}untrained{% endif %} · {{ r.created_at | ts }}{% endset %}
+  {% call ui.row('lineage', r.id, '/models/' ~ r.id, lt, meta=lm) %}
+    {% set st = 'ok' if r.status in ('paper_ok', 'live_eligible') else 'muted' %}
+    {{ ui.chip(st, r.status.replace('_', ' '), key=r.status) }}
+    {% if r.created_by_job_id %}<a class="row-value" href="/jobs/{{ r.created_by_job_id }}">job {{ r.created_by_job_id | short }}</a>{% endif %}
+  {% endcall %}
+  {% endfor %}
+</ul>
+</section>
+<section data-card="jobs">
+<h3>Jobs</h3>
+{% if model.jobs %}
+<ul class="rows" data-list="jobs">
+  {% for j in model.jobs %}
+  {% call ui.row('job', j.id, '/jobs/' ~ j.id, j.kind, meta=(j.created_at | ts) ~ ' · ' ~ ('created this model' if j.created_model else 'ran against it')) %}
+    {% set js = 'ok' if j.status == 'succeeded' else 'bad' if j.status == 'failed' else 'warn' if j.status in ('queued', 'leased', 'running', 'waiting') else 'muted' %}
+    {{ ui.chip(js, j.status.replace('_', ' '), key=j.status) }}
+  {% endcall %}
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted empty">No jobs yet.</p>
 {% endif %}
 </section>
-
-<section data-card="lineage">
-<h2>lineage</h2>
-<div class="table-wrap">
-<table class="lineage stack" data-list="lineage">
-  <thead><tr><th>model</th><th>trained through</th><th>status</th><th>created</th><th>job</th></tr></thead>
-  <tbody>
-  {% for r in model.lineage %}
-  <tr data-row="lineage" data-id="{{ r.id }}">
-    <td class="lead">{% if r.id == model.id %}<strong>{{ r.id | short }}</strong> (this){% else %}<a href="/models/{{ r.id }}">{{ r.id | short }}</a>{% endif %}{% if r.is_root %} <span class="chip" data-chip="root">root</span>{% endif %}</td>
-    <td>{% if r.trained_through %}{{ r.trained_through[0] }} week {{ r.trained_through[1] }}{% else %}-{% endif %}</td>
-    <td><span class="badge st-{{ r.status }}" data-chip="{{ r.status }}">{{ r.status.replace('_', ' ') }}</span></td>
-    <td class="nowrap">{{ r.created_at | ts }}</td>
-    <td>{% if r.created_by_job_id %}<a href="/jobs/{{ r.created_by_job_id }}">{{ r.created_by_job_id | short }}</a>{% else %}-{% endif %}</td>
-  </tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
-</section>
-
-<section data-card="jobs">
-<h2>jobs</h2>
-<div class="table-wrap">
-<table class="jobs stack" data-list="jobs">
-  <thead><tr><th>created</th><th>kind</th><th>status</th><th>role</th></tr></thead>
-  <tbody>
-  {% for j in model.jobs %}
-  <tr data-row="job" data-id="{{ j.id }}">
-    <td class="nowrap lead"><a href="/jobs/{{ j.id }}">{{ j.created_at | ts }}</a></td>
-    <td>{{ j.kind }}</td>
-    <td><span class="badge st-{{ j.status }}" data-chip="{{ j.status }}">{{ j.status.replace('_', ' ') }}</span></td>
-    <td class="muted">{{ 'created this model' if j.created_model else 'ran against it' }}</td>
-  </tr>
-  {% else %}
-  <tr><td colspan="4" class="muted">No jobs yet.</td></tr>
-  {% endfor %}
-  </tbody>
-</table>
-</div>
-</section>
-<p class="attribution muted small">{{ attribution }}</p>
+{% endcall %}
+{# Step 6C: the in-game record (live score, clock, state age per assigned game) joins here as an "In-game" disclosure. #}
+<p class="attribution muted">{{ attribution }}</p>
 {% endblock %}
