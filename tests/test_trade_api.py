@@ -35,7 +35,9 @@ def test_state_payload_shape(client, conn):
     state = r.json()
     assert set(state) == {"kill", "server_time", "settings", "assignments"} and state["kill"] is False
     assert set(state["settings"]) == {"min_edge", "kelly_fraction", "participation", "trade_pregame_only", "fee_model", "trade_tick_s",
-                                      "max_bet_cents", "trade_max_games"}
+                                      "max_bet_cents", "trade_max_games", "ingame_tick_s", "ingame_max_state_age_s",
+                                      "ingame_quiet_seconds", "ingame_cutoff_seconds", "ingame_dead_zone", "ingame_min_edge",
+                                      "ingame_max_bet_cents", "ingame_gtd_seconds"}
     assert state["settings"]["max_bet_cents"] == 2500 and state["settings"]["trade_max_games"] == 6
     assert state["settings"]["fee_model"] == {"taker_rate": 0.05, "half_spread": 0.01} and state["server_time"].endswith("Z")
     assert len(state["assignments"]) == 1

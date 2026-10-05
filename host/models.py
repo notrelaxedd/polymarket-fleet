@@ -36,6 +36,7 @@ WORKER_FIELDS = (
     "backtest_metrics", "validation_metrics", "stress_metrics",
 )
 METRIC_FIELDS = ("backtest_metrics", "validation_metrics", "stress_metrics")
+INGAME_FAMILY = "ingame_wp"  # its root artifact is the traded model (see _existing_root)
 
 
 def known_family(family: Any) -> bool:
@@ -199,14 +200,36 @@ def store_validation(
     )
 
 
+def _replace_fit(conn: psycopg.Connection, lineage_id: Any, fields: dict[str, Any]) -> None:
+    """A refit ingame_wp root: the artifact, its metrics (a null clears) and the summary
+    (a null keeps the old one) in one UPDATE."""
+    conn.execute(
+        """
+        UPDATE models SET artifact = %s, backtest_metrics = %s, validation_metrics = %s, stress_metrics = %s,
+               summary = COALESCE(%s, summary), updated_at = now() WHERE lineage_id = %s
+        """,
+        (Jsonb(fields["artifact"]), *(Jsonb(fields[k]) if fields[k] is not None else None for k in METRIC_FIELDS),
+         fields["summary"], lineage_id),
+    )
+
+
 def _existing_root(
     conn: psycopg.Connection, existing: dict[str, Any], fields: dict[str, Any], limits: dict[str, Any]
 ) -> dict[str, Any]:
     """An identity hit on a root that carries metrics: the latest evaluation wins
     (like POST /models/{id}/backtest and /validation), so the first, possibly empty,
-    search no longer fixes the lineage's metrics for good."""
-    changed = {key: fields[key] for key in METRIC_FIELDS if fields[key] is not None and fields[key] != existing[key]}
-    if existing["id"] != existing["lineage_id"] or not changed:
+    search no longer fixes the lineage's metrics for good. An ingame_wp root has no
+    train job, so its artifact is the traded model: a posted artifact replaces it
+    together with all three metrics and the summary (_replace_fit), never the metrics
+    alone, so the gate judges the coefficients those metrics measured."""
+    if existing["id"] != existing["lineage_id"]:
+        return existing
+    if existing["family"] == INGAME_FAMILY and fields["artifact"] is not None and fields["artifact"] != existing["artifact"]:
+        _replace_fit(conn, existing["lineage_id"], fields)
+        changed: dict[str, Any] = {"artifact": fields["artifact"]}
+    else:
+        changed = {key: fields[key] for key in METRIC_FIELDS if fields[key] is not None and fields[key] != existing[key]}
+    if not changed:
         return existing
     if "backtest_metrics" in changed:
         _store_metrics(conn, existing["lineage_id"], changed["backtest_metrics"])

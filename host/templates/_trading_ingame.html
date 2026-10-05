@@ -1,0 +1,29 @@
+{# The "In-game feed" group of /trading (step 6C, docs/INGAME.md; shaped by
+   host/trading/views_ingame.py feed_block): how far each game-state source lags the
+   market over its last 20 measured events, and whether in-game buys are suspended
+   (median lag over ingame_max_lag_s with enough measured events; sells stay allowed).
+   Included by _trading.html after the assignments, closed unless buys are suspended. #}
+{% import "_ui.html" as ui %}
+{% set feed = ingame_feed %}
+{% if feed %}
+<section class="trading-group ingame-feed{% if feed.suspended %} is-suspended{% endif %}" id="ingame-feed" data-card="ingame">
+{% set state_chip = ui.chip('bad', 'buys suspended', key='feed-suspended') if feed.suspended else ui.chip('ok', 'not suspended', key='feed-ok') %}
+{% set summary %}{{ state_chip }} {% if feed.sources %}{{ feed.sources | map(attribute='short') | join(' · ') }}{% else %}no event measured yet{% endif %}{% endset %}
+{% call ui.disclosure('trading-ingame', 'In-game feed', summary=summary, open=feed.suspended) %}
+<ul class="feed-lines" data-list="feed">
+{% for s in feed.sources %}
+  <li data-source="{{ s.source }}">{{ s.text }}</li>
+{% else %}
+  <li class="muted">No feed event measured against the market yet: not enough data.</li>
+{% endfor %}
+</ul>
+<p class="feed-state">
+{% if feed.suspended %}<span class="error">In-game buys are suspended: the median lag {{ feed.median_lag_s | fixed(0) }} s is over {{ feed.max_lag_s | fixed(0) }} s.</span> Sells stay allowed.
+{% elif not feed.enough %}<span class="muted">Not suspended: {{ feed.n }} of {{ feed.min_events }} measured events, not enough data to judge the lag.</span>
+{% else %}<span class="muted">Not suspended: the median lag {{ feed.median_lag_s | fixed(0) }} s is within {{ feed.max_lag_s | fixed(0) }} s.</span>
+{% endif %}
+</p>
+<span class="caption">For every score or possession change the host records when the feed first showed it and when the market mid moved; a feed behind the market means in-game buys come late. Sources polled: {{ feed.configured | join(', ') or 'none' }}. In-game orders are paper only.</span>
+{% endcall %}
+</section>
+{% endif %}

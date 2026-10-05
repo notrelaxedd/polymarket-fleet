@@ -3,16 +3,19 @@
    of one-line .row items (two lines at most): the facts in .row-title and .row-meta,
    the status chip, the money in .row-value, the actions in the row's "..." menu.
 
-   Slots for the step 6C port (in-game trading):
-   - an assignment row shows `a.ingame_line` (live score, clock, state age) as its
-     .row-meta.row-ingame line (ui.row's `ingame`) when live_context sets it;
-   - the "In-game feed" disclosure is the template _trading_ingame.html, included after
-     the assignments when it exists (a <section data-card="ingame"> around ui.disclosure
-     "trading-ingame", like the groups below). #}
+   Step 6C (in-game trading, paper only; _ingame_row.html):
+   - an assignment row's in-game line (.row-meta.row-ingame, ui.row's `ingame`): the
+     on/off chip, the live score and clock with the state age or "state stale", the
+     in-game model's home probability next to the home market mid; the in-game switch
+     form sits in the row's menu;
+   - an `in-game` chip on in-game orders and their fills;
+   - the "In-game feed" disclosure (_trading_ingame.html) after the assignments, and
+     the "Probe game state" form in the Exchange group. #}
 {% import "_ui.html" as ui %}
+{% import "_ingame_row.html" as ig with context %}
 {% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{{ cents | pnl }}</span>{% endmacro %}
 {% macro live_chip(mode) %}{% if mode == 'live' %} {{ ui.chip("bad", "live", key="live", extra="chip-live") }}{% endif %}{% endmacro %}
-{% macro order_chips(o) %}{{ live_chip(o.mode) }}{% if o.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% if o.kind == 'smoke' %} {{ ui.chip("warn", "smoke", key="smoke", extra="chip-smoke") }}{% endif %}{% endmacro %}
+{% macro order_chips(o) %}{{ live_chip(o.mode) }}{% if o.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% if o.kind == 'smoke' %} {{ ui.chip("warn", "smoke", key="smoke", extra="chip-smoke") }}{% endif %}{{ ig.chip(o.ingame) }}{% endmacro %}
 {% macro order_line(o, avg=False) %}<span class="c-order" data-side="{{ o.order_side or 'buy' }}">{% if o.order_side == 'sell' %}sell {% endif %}{{ o.size }} @ {{ o.price | price }}{% if o.filled_size %} ({{ o.filled_size }} filled{% if avg and o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}{% if o.order_side == 'sell' %}{% if o.realized_cents is not none %} &middot; realized {{ pnl(o.realized_cents) }}{% endif %}{% else %} &middot; {{ o.cost_cents | money }}{% endif %}</span>{% endmacro %}
 {% macro worker(o) %}{{ o.worker_name or o.worker_id or 'no worker' }}{% endmacro %}
 
@@ -43,7 +46,8 @@
 {# the LIVE chip leads so the ellipsis never cuts it; the paper chip may be cut #}
 {% set title %}{% if a.mode == 'live' %}{{ ui.chip("bad", "live", key="live", extra="chip-live") }} {% endif %}{{ a.game.away_team }} @ {{ a.game.home_team }}{% if a.mode != 'live' %} {{ ui.chip("muted", "paper", key="paper", extra="mode-paper") }}{% endif %}{% endset %}
 {% set meta %}{{ a.model.family }} {{ a.short_params }} &middot; {{ a.game.kickoff_at | ts }} &middot; {{ a.game_id }}{% if a.game.status == 'final' %} &middot; final {{ a.game.away_score }}-{{ a.game.home_score }}{% endif %}{% endset %}
-{% call ui.row("assignment", a.id, "/models/" ~ a.model_id, title, meta=meta, ingame=a.ingame_line, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id}) %}
+{% set igline = ig.line(a) | trim %}
+{% call ui.row("assignment", a.id, "/models/" ~ a.model_id, title, meta=meta, ingame=igline or None, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id}) %}
   <span class="row-value" title="bankroll available">{{ a.bankroll.available_cents | money }}</span>
   {% if a.settle_ready %}
   <form method="post" action="/assignments/{{ a.id }}/settle" data-action="settle"><button type="submit" class="btn small primary">Settle now</button></form>
@@ -57,6 +61,7 @@
     <form method="post" action="/assignments/{{ a.id }}/activate" data-action="activate"><button type="submit" class="menu-item">Activate</button></form>
     {% endif %}
     <a class="menu-item" href="/api/assignments/{{ a.id }}">Detail</a>
+    {{ ig.toggle(a) }}
     <p class="muted bankroll-lines">bankroll of {{ a.bankroll.initial_cents | money }}<br>
       avail {{ a.bankroll.available_cents | money }}<br>
       reserved {{ a.bankroll.reserved_cents | money }} in orders<br>
@@ -148,7 +153,7 @@
 {% if fills %}
 <ul class="rows" data-list="fills">
 {% for f in fills %}
-{% set title %}{% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }}{{ live_chip(f.mode) }}{% if f.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{% endset %}
+{% set title %}{% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }}{{ live_chip(f.mode) }}{% if f.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{{ ig.chip(f.ingame) }}{% endset %}
 {% set meta %}of {{ f.order_size }} @ {{ f.order_price | price }} &middot; fee {{ f.fee_cents | money }}{% if f.order_side == 'sell' and f.basis_cents is not none %} &middot; basis {{ f.basis_cents | money }}{% endif %} &middot; {{ f.market_title }} &middot; {{ names.get(f.worker_id, f.worker_id) or 'no worker' }} &middot; {{ f.ts | ts }}{% endset %}
 {% call ui.row("fill", f.id, None, title, meta=meta, cls="is-live" if f.mode == 'live' else "", attrs={"data-fill": f.id, "data-side": f.order_side or 'buy'}) %}
   {% if f.order_side == 'sell' and f.realized_cents is not none %}<span class="row-value">realized {{ pnl(f.realized_cents) }}</span>{% endif %}
@@ -230,8 +235,15 @@
   <dt>last auth error</dt><dd><span class="error">{{ exchange.last_auth_error }}</span></dd>
   {% endif %}
 </dl>
+<div class="probe-row">
 <form method="post" action="/exchange/probe" class="inline" data-action="probe"><button type="submit" class="btn small">Probe markets</button></form>
-<p class="caption">Shows the raw markets payload of the configured source, to paste back when the parser needs fixing.</p>
+<form method="post" action="/exchange/probe-gamestate" class="probe-gamestate" data-form="probe-gamestate" data-action="probe-gamestate">
+  <label>ESPN event id <input type="text" name="event" inputmode="numeric" pattern="[0-9]*" maxlength="20" autocomplete="off" list="probe-events" placeholder="event id"></label>
+  <datalist id="probe-events">{% for e in ingame_feed.probe_events %}<option value="{{ e.event_id }}">{{ e.label }}</option>{% endfor %}</datalist>
+  <button type="submit" class="btn small">Probe game state</button>
+</form>
+</div>
+<p class="caption">Probe markets shows the raw markets payload of the configured source; Probe game state shows one ESPN game-state answer and what the parser read from it (the suggestions are your assigned unfinished games). Paste either back when a parser needs fixing.</p>
 {% endcall %}
 </section>
 

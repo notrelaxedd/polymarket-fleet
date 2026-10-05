@@ -15,6 +15,7 @@ from tests.pagecheck import Node, page
 GROUPS = {
     "settings-limits": ("Limits", ["trading"]),
     "settings-trading": ("Trading", ["trade"]),
+    "settings-ingame": ("In-game", ["ingame"]),
     "settings-robustness": ("Robustness gates", ["thresholds", "seasons", "fees"]),
     "settings-replay": ("Snapshot replay and signals", ["replay", "signals"]),
     "settings-fleet": ("Fleet", ["fleet", "tz", "enroll"]),
@@ -58,6 +59,7 @@ def test_the_summaries_read_the_stored_values(client, conn):
     assert "daily loss $1,000.00 paper" in _summary(p, "settings-limits")
     assert _summary(p, "settings-trading").startswith("sim · participation 50.0%")
     assert "pregame only" in _summary(p, "settings-trading")
+    assert _summary(p, "settings-ingame") == "off by default · max bet $5.00 · min edge 5.0% · lag limit 20 s · feed espn · paper only"
     robust = _summary(p, "settings-robustness")
     assert "50 bets" in robust and "validation on" in robust and "forbids overfit, fragile" in robust
     assert "search 2010-2021" in robust and "held out from 2022" in robust
@@ -173,3 +175,7 @@ def test_summary_formats():
     assert "validation off" in out["summary_robustness"] and "forbids regime-dependent" in out["summary_robustness"]
     assert "search from 2010" in out["summary_robustness"] and "held out 2022-2024" in out["summary_robustness"]
     assert "3 expiries" in out["summary_fleet"]
+    assert out["summary_ingame"] == "off by default · max bet - · min edge - · lag limit - · feed off · paper only"
+    ingame = {"trade_ingame": True, "ingame_max_bet_cents": 500, "ingame_min_edge": 0.05, "ingame_max_lag_s": 20,
+              "gamestate_sources": ["espn", "yahoo"]}
+    assert settings_summary.ingame(ingame) == "on for new assignments · max bet $5.00 · min edge 5.0% · lag limit 20 s · feed espn, yahoo · paper only"

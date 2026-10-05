@@ -1,0 +1,37 @@
+{# The "In-game models" group of /models (step 6C, docs/INGAME.md): the ingame_wp
+   lineages, judged on held-out play-by-play against nflverse's vegas_wp and never
+   ranked with the pre-game models; the ones beating vegas_wp first. One row each:
+   family and params with the "beats vegas_wp" chip, the status chip and the validation
+   line, then the reason (or the in-game paper record once the lineage has in-game
+   bets), the log-loss gain as the number, and "Assign in-game" in the menu. Shaped by
+   host/api/models_ingame_view.py. #}
+{% import "_ui.html" as ui %}
+{% if ingame_models %}
+<div id="ingame">
+{% set beating = ingame_models | selectattr("view.beats") | list | length %}
+{% call ui.disclosure('models-ingame', 'In-game models', count=ingame_models | length, summary=beating ~ ' beat' ~ ('s' if beating == 1 else '') ~ ' vegas_wp; paper only') %}
+  <p class="caption">An in-game model turns the live game state into a home win probability. There are no historical in-game prices, so it is judged on held-out seasons of play-by-play against nflverse's vegas_wp (lower log-loss is better) and then on its in-game paper record. Paper ok needs a log-loss at or below vegas_wp over at least 10,000 plays.</p>
+  <ul class="rows" data-list="ingame">
+  {% for m in ingame_models %}
+  {% set title %}{{ m.family }} <span class="params">{{ m.short_params }}</span>
+  {%- if m.view.beats %} {{ ui.chip('ok', 'beats vegas_wp', key='beats-vegas', extra='chip-beats') }}{% endif %}
+  {%- if not m.ingame_validation %} {{ ui.chip('muted', 'not validated', key='unvalidated', extra='chip-unvalidated', title='no held-out validation stored: run an ingame_wp model search') }}{% endif %}{% endset %}
+  {% set meta %}{{ ui.chip(m.view.status_state, m.view.status_word, key=m.status, title=m.ingame_reason) }} {{ m.view.meta }}{% if m.members > 1 %} {{ ui.chip('muted', m.members ~ ' rows', key='members') }}{% endif %}{% endset %}
+  {% call ui.row('ingame-model', m.id, '/models/' ~ m.id, title, meta=meta, meta2=m.view.reason, ingame=m.view.record, cls='ingame-row') %}
+    <span class="row-value" title="{{ m.view.gain_title }}">{{ m.view.gain }}</span>
+    {% call ui.menu() %}
+      <a class="menu-item" href="/models/{{ m.id }}" data-action="open">Details</a>
+      {% if m.status != 'retired' %}
+      <a class="menu-item" href="/trading?ingame_model={{ m.id }}#assign" data-action="assign-ingame">Assign in-game</a>
+      <form method="post" action="/models/{{ m.id }}/retire" data-action="retire" data-confirm="Retire this whole lineage? It stops trading in-game and cannot be un-retired.">
+        <input type="hidden" name="next" value="/models">
+        <button type="submit" class="menu-item danger">Retire</button>
+      </form>
+      {% endif %}
+    {% endcall %}
+  {% endcall %}
+  {% endfor %}
+  </ul>
+{% endcall %}
+</div>
+{% endif %}

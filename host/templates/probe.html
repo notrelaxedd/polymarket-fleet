@@ -1,24 +1,45 @@
 {% extends "base.html" %}
 {% import "_ui.html" as ui %}
-{% block title %}Market probe{% endblock %}
+{% block title %}{{ 'Game-state probe' if gamestate else 'Market probe' }}{% endblock %}
 {% block page %}probe{% endblock %}
 {# The raw markets payload of the configured source (the Probe markets button in the
-   Trading page's Exchange group), to paste back when the parser needs fixing. #}
+   Trading page's Exchange group), to paste back when the parser needs fixing. With
+   `gamestate` (Probe game state, step 6C) it is one ESPN game-state answer: the event
+   id, the game it maps to, the HTTP status, what the summary parser extracted (one
+   state per play, the current situation last) and the raw payload. #}
 {% block content %}
-<h1>Market probe <span class="muted">{{ probe.source }}</span></h1>
+<h1>{{ 'Game-state probe' if gamestate else 'Market probe' }} <span class="muted">{{ probe.source }}</span></h1>
+{% if gamestate %}
+{{ ui.intro("probe", "One answer of the game-state feed for an ESPN event and what the parser read from it, to paste back when the parser needs fixing.") }}
+{% else %}
 {{ ui.intro("probe", "The raw markets payload of the configured source, to paste back when the parser needs fixing.") }}
+{% endif %}
 <p class="small"><a href="/trading#exchange">&larr; Back to Trading</a></p>
 <div class="stats">
+{% if gamestate %}
+{{ ui.stat("probe-event", probe.event_id or '-', "ESPN event", note=probe.game_id or 'no game has this ESPN event id') }}
+{% endif %}
 {{ ui.stat("probe-source", probe.source or '-', "Source") }}
 {{ ui.stat("probe-status", probe.status if probe.status is not none else '-', "HTTP status", note="failed" if probe.error else None) }}
 </div>
 <section class="card" data-card="probe">
   <dl class="props">
-    <dt>url</dt><dd><code>{{ probe.url or '-' }}</code></dd>
+    {% if gamestate %}
+    <dt>event_id</dt><dd class="c-event"><code>{{ probe.event_id or '-' }}</code></dd>
+    <dt>game_id</dt><dd class="c-game">{% if probe.game_id %}{{ probe.game_id }}{% else %}<span class="muted">no game has this ESPN event id</span>{% endif %}</dd>
+    {% endif %}
+    <dt>url</dt><dd><code class="token">{{ probe.url or '-' }}</code></dd>
     <dt>status</dt><dd>{{ probe.status if probe.status is not none else '-' }}</dd>
     {% if probe.error %}<dt>error</dt><dd class="error">{{ probe.error }}</dd>{% endif %}
   </dl>
-  <p class="caption">The raw markets payload, truncated to 64 KiB.</p>
+  {% if gamestate %}
+  <h2>Parsed</h2>
+  <p class="caption">What the summary parser extracted: one state per play, the current situation last.</p>
+  <button type="button" class="btn small js-only" data-copy="parsed">Copy</button>
+  <pre id="parsed">{% if probe.parsed is none %}-{% elif probe.parsed is string %}{{ probe.parsed }}{% else %}{{ probe.parsed | pretty_json }}{% endif %}</pre>
+  <h2>Payload</h2>
+  {% endif %}
+  <p class="caption">The raw {{ 'game-state' if gamestate else 'markets' }} payload, truncated to 64 KiB.</p>
   <button type="button" class="btn small js-only" data-copy="payload">Copy</button>
   <pre id="payload">{{ probe.payload if probe.payload is string else probe.payload | pretty_json }}</pre>
 </section>

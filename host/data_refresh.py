@@ -4,7 +4,9 @@ current and the previous season every `signals_refresh_hours`, first STARTUP_DEL
 seconds after start when either table is empty. Runs in its own thread so a slow
 download never delays the reaper and dispatcher loop; a failure is logged and retried
 after RETRY_SECONDS. A full backfill of every season is the CLI's job
-(`ingest-injuries --season all`, `ingest-pbp --season all`).
+(`ingest-injuries --season all`, `ingest-pbp --season all`). Step 6 Part C: the same
+thread refreshes the in-game training rows (pbp_rows) of the current season weekly in
+season (host/pbp_refresh.py).
 
 STATUS remembers the last outcome (success time and counts, or the error) of any
 games refresh in this process, periodic or owner-triggered, for the Settings page;
@@ -24,6 +26,7 @@ import psycopg
 from psycopg_pool import ConnectionPool
 
 from host import ingest_injuries, ingest_pbp, nflverse
+from host.pbp_refresh import PbpRowsRefresher
 from host.errors import BadRequest, Upstream
 from host.settings import get_int_setting, get_setting
 
@@ -245,12 +248,13 @@ class DataRefreshThread(threading.Thread):
         super().__init__(name="fleet-data", daemon=True)
         self.refresher = DataRefresher(pool)
         self.signals = SignalsRefresher(pool)
+        self.pbp_rows = PbpRowsRefresher(pool.connection)
         self.interval = interval
         self._stop_event = threading.Event()
 
     def run(self) -> None:
         while not self._stop_event.is_set():
-            for refresher in (self.refresher, self.signals):
+            for refresher in (self.refresher, self.signals, self.pbp_rows):
                 try:
                     refresher.tick()
                 except Exception:  # noqa: BLE001 - keep the thread alive

@@ -319,12 +319,16 @@ def test_settings_inputs_open_the_number_keyboard(client):
     decimal = ("max_bet", "max_daily_loss_paper", "max_daily_loss_live", "default_bankroll", "liquidity_floor", "min_edge", "kelly_fraction",
                "taker_rate", "half_spread", "min_roi", "max_drawdown", "min_roi_ci_low", "max_market_p", "participation",
                "max_exposure_paper", "max_exposure_live", "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s",
-               "market_data_per_s", "account_per_s")
+               "market_data_per_s", "account_per_s",
+               "ingame_dead_zone", "ingame_min_edge", "ingame_max_bet", "ingame_max_lag_s", "gamestate_poll_s",
+               "gamestate_max_rps")
     numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries",
                "min_bets", "seasons_first", "seasons_last", "validation_first", "validation_last", "nflverse_refresh_hours",
                "book_max_age_s", "gtd_seconds", "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game",
                "market_lookahead_days", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days", "paper_min_games",
-               "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours")
+               "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours",
+               "ingame_tick_s", "ingame_max_state_age_s", "ingame_quiet_seconds", "ingame_cutoff_seconds",
+               "ingame_gtd_seconds", "ingame_lag_min_events", "yahoo_poll_s")
     def field_input(name):
         box = p.field(name).one(f'input[name="{name}"]')
         assert box.attr("type") == "text", name
@@ -883,7 +887,7 @@ def test_trading_page_shows_assignments_orders_fills_markets_and_exchange(client
     assert f"avail ${bank['available_cents'] // 100}.{bank['available_cents'] % 100:02d}" in row.text
     assert "reserved $" in row.text and "open $2.08" in row.text and "realized -$0.12" in row.text
     assert "open orders 1" in row.text and row.action("halt").target == f"/assignments/{setup.assignment['id']}/halt"
-    assert row.actions() == ["halt"], "no Settle now, no Activate"
+    assert row.actions() == ["halt", "ingame"], "no Settle now, no Activate; the in-game switch (step 6C) sits in the menu"
     # open orders with a cancel button and the cancel-all form
     open_orders = live.card("open-orders")
     assert open_orders.row("order", opened["id"]).action("cancel").target == f"/orders/{opened['id']}/cancel"

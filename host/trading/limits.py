@@ -6,7 +6,8 @@ the ledger reservation) or `rejected` (with the stable reason code and an
 order_events row). The cost is computed here from settings.fee_model; whatever limit
 or cost fields the worker sent are ignored. A request with `order_side` "sell" is
 decided by host.trading.sells.approve_sell (docs/TRADING.md "Selling"); every buy
-check below is unchanged.
+check below is unchanged. A request with `ingame` true runs host.trading.ingame's
+checks instead (the in-game checks replace `kickoff`; docs/INGAME.md).
 """
 from __future__ import annotations
 
@@ -28,7 +29,8 @@ __all__ = ["approve_order", "approve_smoke", "losses_today", "positions", "order
 REASONS = (
     "duplicate", "killed", "lease", "assignment", "market", "kickoff", "mode", "stale_book", "liquidity",
     "participation", "price_band", "max_bet", "bankroll", "daily_loss", "exposure", "buying_power",
-    "no_position", "sell_exceeds_position", "open_sell_exists",
+    "no_position", "sell_exceeds_position", "open_sell_exists", "ingame_disabled", "ingame_paper_only", "ingame_stale",
+    "ingame_quiet", "ingame_cutoff", "ingame_lag_suspended",
 )
 ORDER_SIDES = ("buy", "sell")
 ACTIVE_LIST = "', '".join(orders.ACTIVE_STATUSES)
@@ -89,6 +91,8 @@ def _parse(body: dict[str, Any]) -> dict[str, Any]:
         "edge": _number(body.get("edge")),
         "rationale": str(rationale)[:512] if rationale is not None else None,
         "order_side": order_side,
+        "ingame": body.get("ingame") is True,
+        "gtd_seconds": body.get("gtd_seconds") if type(body.get("gtd_seconds")) is int else None,
     }
 
 
@@ -249,9 +253,9 @@ def _check_price_band(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
 
 def _check_max_bet(conn: psycopg.Connection, ctx: dict[str, Any]) -> bool:
     limit = int(ctx["settings"].get("max_bet_cents", 0) or 0)
-    own = ctx["assignment"]["max_bet_cents"]
-    if own is not None:
-        limit = min(limit, int(own))
+    for own in (ctx["assignment"]["max_bet_cents"], ctx.get("extra_max_bet_cents")):
+        if own is not None:
+            limit = min(limit, int(own))
     open_cost = conn.execute(
         f"""
         SELECT COALESCE(SUM(cost_cents), 0) AS s FROM orders
@@ -351,19 +355,24 @@ def _insert(conn: psycopg.Connection, ctx: dict[str, Any], status: str, reason: 
         """
         INSERT INTO orders (client_request_id, assignment_id, worker_id, job_id, market_id, mode, price, size,
                             cost_cents, fee_cents_est, snapshot_id, status, reject_reason, my_p, market_p, edge, rationale,
-                            side)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                            side, ingame)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
         """,
         (
             req["client_request_id"], a["id"] if a else None, ctx["worker"]["id"], job["id"] if job else None,
             ctx["market"]["id"], ctx["mode"], req["price"], req["size"], ctx["cost"], ctx["fee"],
             cited["id"] if cited else None, status, reason, req["my_p"], req["market_p"], req["edge"], req["rationale"],
-            req.get("order_side", "buy"),
+            req.get("order_side", "buy"), bool(req.get("ingame")),
         ),
     ).fetchone()
     detail = {"reason": reason} if reason else {"cost_cents": ctx["cost"], "fee_cents_est": ctx["fee"]}
     if req.get("order_side") == "sell":
         detail["order_side"] = "sell"
+    if req.get("ingame"):
+        from host.trading.ingame import entry_state, gtd_seconds
+
+        detail.update(ingame=True, state_at_entry=entry_state(ctx.get("game_state")),
+                      gtd_seconds=gtd_seconds(ctx["settings"]), gtd_seconds_requested=req.get("gtd_seconds"))
     orders.add_order_event(conn, row["id"], None, status, ctx["worker"]["id"], detail)
     return dict(row)
 
@@ -431,7 +440,13 @@ def approve_order(conn: psycopg.Connection, worker: dict[str, Any], body: dict[s
     if stored is not None:
         return stored
     ctx = _load(conn, worker, req)
-    reason = next((name for name, check in CHECKS if check(conn, ctx)), None)
+    checks = CHECKS
+    if req["ingame"]:
+        from host.trading import ingame  # ingame builds on this module
+
+        ingame.prepare(conn, ctx)
+        checks = ingame.BUY_CHECKS
+    reason = next((name for name, check in checks if check(conn, ctx)), None)
     if ctx["market"] is None:
         # orders.market_id is NOT NULL: a request for an unknown market cannot be stored.
         return {"status": "rejected", "order_id": None, "reason": reason or "market"}

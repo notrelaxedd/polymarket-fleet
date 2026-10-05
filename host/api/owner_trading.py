@@ -13,7 +13,7 @@ from host.api.serialize import jsonable
 from host.errors import Conflict
 from host.money import MAX_CENTS
 from host.settings import get_int_setting
-from host.trading import assignments, views
+from host.trading import assignments, assignments_ingame, views
 from host.trading.positions import positions
 
 router = APIRouter(prefix="/api", tags=["trading"], dependencies=[Depends(require_owner)])
@@ -28,6 +28,15 @@ class AssignmentBody(BaseModel):
     mode: str = "paper"
     bankroll_cents: int | None = Field(default=None, ge=0, le=MAX_CENTS)
     max_bet_cents: int | None = Field(default=None, ge=0, le=MAX_CENTS)
+    ingame_model_id: str | None = Field(default=None, max_length=64)
+    trade_ingame: bool | None = None
+
+
+class IngameBody(BaseModel):
+    """Only the fields sent are changed (an explicit null ingame_model_id clears it)."""
+    model_config = ConfigDict(extra="ignore")
+    ingame_model_id: str | None = Field(default=None, max_length=64)
+    trade_ingame: bool | None = None
 
 
 class HaltBody(BaseModel):
@@ -58,7 +67,10 @@ def post_assignment(body: AssignmentBody, actor: str = Depends(require_owner), c
     bankroll = body.bankroll_cents
     if bankroll is None:
         bankroll = get_int_setting(conn, "default_bankroll_cents", 10_000)
-    row = assignments.create_assignment(conn, body.game_id, body.model_id, body.mode, bankroll, actor, body.max_bet_cents)
+    row = assignments.create_assignment(
+        conn, body.game_id, body.model_id, body.mode, bankroll, actor, body.max_bet_cents,
+        ingame_model_id=body.ingame_model_id, trade_ingame=body.trade_ingame,
+    )
     return jsonable(row)
 
 
@@ -92,6 +104,18 @@ def post_halt(
 def post_activate(assignment_id: str, actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> dict[str, Any]:
     """halted -> active (refused under kill)."""
     return jsonable(assignments.activate_assignment(conn, assignment_id, actor))
+
+
+@router.post("/assignments/{assignment_id}/ingame")
+def post_ingame(
+    assignment_id: str, body: IngameBody, actor: str = Depends(require_owner), conn: psycopg.Connection = DB
+) -> dict[str, Any]:
+    """Set the in-game model and/or the trade_ingame switch (audited); turning in-game
+    trading off cancels the assignment's open in-game orders."""
+    changes = {key: getattr(body, key) for key in assignments_ingame.FIELDS if key in body.model_fields_set}
+    if changes.get("trade_ingame", False) is None:
+        changes.pop("trade_ingame")
+    return jsonable(assignments_ingame.set_ingame(conn, assignment_id, actor, changes))
 
 
 @router.post("/assignments/{assignment_id}/settle")

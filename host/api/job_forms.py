@@ -12,9 +12,10 @@ from typing import Any
 
 import psycopg
 
-from fleet.models.registry import FAMILIES
+from fleet.models.registry import FAMILIES, PREGAME_FAMILIES
 from host import views
 from host.errors import BadRequest
+from host.ingame_jobparams import INGAME_DEFAULTS, INGAME_FAMILY
 from host.jobparams import SEARCH_DEFAULTS, VALIDATE_DEFAULTS
 from host.leaderboard import short_params
 from host.nflverse import last_complete_season
@@ -78,7 +79,31 @@ def _backtest(form: dict[str, str]) -> dict[str, Any]:
     return params
 
 
+def _ingame_eras(form: dict[str, str]) -> dict[str, Any]:
+    """train_seasons and validation_seasons of an ingame_wp search from the form's
+    in-game era fields (blank = the host defaults; a blank last = open end)."""
+    out: dict[str, Any] = {}
+    for key, prefix, label in (("train_seasons", "ingame_train", "In-game train"),
+                               ("validation_seasons", "ingame_validation", "In-game validation")):
+        first = _int(form, f"{prefix}_first", f"{label} first season")
+        last = _int(form, f"{prefix}_last", f"{label} last season")
+        if first is None and last is None:
+            continue
+        if first is None:
+            raise BadRequest(f"{label} first season is required when a last season is given")
+        out[key] = [first, last]
+    return out
+
+
 def _model_search(form: dict[str, str]) -> dict[str, Any]:
+    if _text(form, "family") == INGAME_FAMILY:  # its own eras, not the pre-game seasons
+        return {
+            "family": INGAME_FAMILY,
+            "n": _int(form, "n", "Candidates", INGAME_DEFAULTS["n"]),
+            "seed": _int(form, "seed", "Seed", INGAME_DEFAULTS["seed"]),
+            "top_k": _int(form, "top_k", "Top k", INGAME_DEFAULTS["top_k"]),
+            **_ingame_eras(form),
+        }
     params: dict[str, Any] = {
         "family": _text(form, "family"),
         "n": _int(form, "n", "Candidates", SEARCH_DEFAULTS["n"]),
@@ -129,9 +154,12 @@ def parse_job_form(form: dict[str, str]) -> tuple[str, dict[str, Any]]:
 def model_options(conn: psycopg.Connection) -> list[dict[str, Any]]:
     """Models for the selects, newest first, labelled "K 24 · HFA 55 · MOV on · thru 2024
     w18 · 8f173b7b" (untrained for a search candidate); the family is prefixed only
-    when more than one family exists, so the label fits a phone-width select."""
+    when more than one family exists, so the label fits a phone-width select. ingame_wp
+    models are left out: backtest, train and validate refuse them."""
     rows = conn.execute(
-        "SELECT id, family, params, status, trained_through FROM models ORDER BY created_at DESC, id LIMIT 200"
+        "SELECT id, family, params, status, trained_through FROM models WHERE family <> %s"
+        " ORDER BY created_at DESC, id LIMIT 200",
+        (INGAME_FAMILY,),
     ).fetchall()
     families = {row["family"] for row in rows}
     out = []
@@ -164,6 +192,7 @@ def jobs_context(
         "through_season": "" if last is None else str(last), "through_week": "22", "seconds": "60",
         "params": "{}", "model_id": train_model or validate_model or "", "family": FAMILY_NAMES[0] if FAMILY_NAMES else "",
         "target": "any_idle", "validate_seed": str(VALIDATE_DEFAULTS["seed"]), "price_source": PRICE_SOURCES[0],
+        "ingame_train_first": "", "ingame_train_last": "", "ingame_validation_first": "", "ingame_validation_last": "",
     }
     values.update({k: v for k, v in (submitted or {}).items() if k in values})
     active = (submitted or {}).get("kind") or ("train" if train_model else "validate" if validate_model else "backtest")
@@ -172,6 +201,8 @@ def jobs_context(
         "names": views.worker_names(conn),
         "models": model_options(conn),
         "families": FAMILY_NAMES,
+        "pregame_families": tuple(f for f in FAMILY_NAMES if f in PREGAME_FAMILIES),
+        "ingame_defaults": INGAME_DEFAULTS,
         "values": values,
         "active": active if active in KINDS else "backtest",
         "error": error,

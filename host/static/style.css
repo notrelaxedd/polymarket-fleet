@@ -268,6 +268,26 @@ form.inline { display: inline; }
 dl.kv[data-list="timing"] dd { overflow-wrap: anywhere; }
 .page > form.form-actions { margin-bottom: var(--s3); }
 
+/* ---------------------------------------------------------------- step 6C: in-game (paper only)
+   The in-game line of an assignment row is a .row-meta (one line, ellipsis); the
+   `in-game` chip keeps its state colours and only adds an accent ring, so it never
+   reads as the filled sell chip. A stale state is the amber chip plus the muted line. */
+.chip.chip-ingame { border: 1px solid var(--accent); }
+.row-ingame .chip { min-height: 1.25rem; vertical-align: 1px; }
+.game-line, .ingame-p { font-variant-numeric: tabular-nums; }
+.ingame-form select { width: 100%; }
+.ingame-form label:first-child { flex-basis: 100%; }
+.ingame-form .btn { min-height: var(--tap); }
+.ingame-note { white-space: normal; }
+.probe-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); margin-top: var(--s3); }
+.probe-gamestate { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); }
+.probe-gamestate input { width: 10rem; }
+.feed-lines { margin: 0 0 var(--s2); padding-left: var(--s5); }
+.feed-state { margin: 0 0 var(--s2); }
+.ingame-feed.is-suspended > details.disclosure { border-color: var(--red); }
+fieldset.ingame-eras { min-width: 0; margin: 0 0 var(--s3); padding: var(--s2) 0 0; border: 0; border-top: 1px solid var(--line); }
+fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-weight: 600; font-size: var(--fs-meta); }
+
 /* ---------------------------------------------------------------- wide screens */
 @media (min-width: 700px) {
   .stats:not(p) { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s3); }
@@ -291,10 +311,15 @@ dl.kv[data-list="timing"] dd { overflow-wrap: anywhere; }
   .topbar.killed .nav a { color: var(--red-text); }
   .topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(0, 0, 0, 0.2); box-shadow: none; }
   .page { padding: var(--s3) var(--s4); padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--s5)); }
+  /* a control scrolled into view (a link to #anchor, a focused field) never lands behind the bottom nav */
+  html { scroll-padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--s2)); }
   .btn, .btn.small, select, input[type="text"], input[type="number"], input[type="password"], input[type="search"] { min-height: var(--tap); }
   .stat { padding: var(--s3); }
   .row-value { max-width: 34%; }
   .menu-list { min-width: 11rem; }
+  /* step 6C: the probe forms stack as full-width tap targets */
+  .probe-row > form, .probe-gamestate label { flex: 1 1 100%; }
+  .probe-row .btn, .probe-gamestate input { width: 100%; }
 }
 @media (prefers-reduced-motion: no-preference) {
   details.intro > summary::after, details.disclosure > summary::after { transition: transform 0.15s ease; }

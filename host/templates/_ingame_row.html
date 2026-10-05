@@ -1,0 +1,47 @@
+{# The in-game parts of a Trading row (step 6C, docs/INGAME.md; shaped by
+   host/trading/views_ingame.py). Import with {% import "_ingame_row.html" as ig with context %}.
+
+   line(a)         an assignment's in-game line (ui.row's `ingame`, .row-meta.row-ingame):
+                   the live score and clock with the state age ("Q3 4:12 · 17-14 · 3 s
+                   ago", first so a phone's ellipsis never cuts it) or an amber "state
+                   stale" before the last line, "no game state yet", the in-game model's
+                   home probability next to the home market mid, then the on/off chip;
+                   empty when the assignment has no in-game model, switch or state
+   toggle(a)       the menu form that sets the in-game model and switch of a paper
+                   assignment that can still trade; a live one says in-game is paper only
+   chip(flag)      the `in-game` chip of an in-game order or fill #}
+{% import "_ui.html" as ui %}
+
+{% macro line(a) -%}
+{% set g = a.ingame %}
+{% if g and g.visible -%}
+{% if g.line %}{% if g.stale %}{{ ui.chip('warn', 'state stale', key='state-stale', extra='state-stale') }} <span class="game-line is-stale">{{ g.line }}</span>{% else %}<span class="game-line">{{ g.line }}</span>{% endif %}
+{% elif g.enabled %}<span class="game-line">no game state yet</span>{% endif %}
+{% if g.p_home is not none %} &middot; <span class="ingame-p" data-p-home="{{ g.p_home | fixed(3) }}" title="the in-game model's home win probability next to the home market mid">model {{ a.game.home_team }} {{ g.p_home | prob }} &middot; mid {{ g.mid_home | prob }}</span>{% endif %}
+ {% if g.enabled %}{{ ui.chip('ok', 'in-game on', key='ingame-on', extra='chip-ingame') }}{% else %}{{ ui.chip('muted', 'in-game off', key='ingame-off') }}{% endif %}
+{%- endif %}
+{%- endmacro %}
+
+{% macro toggle(a) -%}
+{% set g = a.ingame %}
+{% if a.mode == 'live' %}
+<p class="muted ingame-note">In-game orders are paper only: a live assignment has no in-game switch.</p>
+{% elif a.status in ('active', 'halted') and a.game.status != 'final' %}
+<form method="post" action="/assignments/{{ a.id }}/ingame" class="menu-form ingame-form" data-form="ingame-toggle" data-action="ingame">
+  {% set listed = ingame_models | map(attribute='id') | list %}
+  <label>In-game model
+    <select name="ingame_model_id">
+      <option value="">no in-game model</option>
+      {% if g and g.model_id and g.model_id not in listed %}<option value="{{ g.model_id }}" selected>{{ g.model_label or 'in-game model' }} {{ g.model_id | short }} (retired)</option>{% endif %}
+      {% for m in ingame_models %}<option value="{{ m.id }}"{% if g and g.model_id == m.id %} selected{% endif %}>{{ m.label }}</option>{% endfor %}
+    </select>
+  </label>
+  <label class="check"><input type="checkbox" name="trade_ingame"{% if g and g.trade_ingame %} checked{% endif %}> Trade in-game</label>
+  <button type="submit" class="btn small">Save in-game</button>
+</form>
+{% endif %}
+{%- endmacro %}
+
+{% macro chip(flag) -%}
+{% if flag %} {{ ui.chip('muted', 'in-game', key='ingame', extra='chip-ingame') }}{% endif %}
+{%- endmacro %}

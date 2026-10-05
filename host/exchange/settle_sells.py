@@ -16,6 +16,13 @@ Per market the assignment traded:
   (bought basis / (contracts * 100), as before).
 
 Without sells every buy row is the whole order, exactly as before step 6 Part B.
+
+Step 6 Part C: the row of an in-game order (orders.ingame) carries ingame true, a null
+CLV and `state_at_entry` (period, clock, score and possession at approval: the one the
+approval event recorded, else the newest game_state at or before the order's
+created_at, null without one), and is attributed to the
+assignment's in-game model (its model_id and lineage_id) instead of the pre-game one.
+The money (basis, payout, pnl) is split exactly as for any other order.
 """
 from __future__ import annotations
 
@@ -27,6 +34,7 @@ import psycopg
 from host.trading import orders
 
 FILLS_SQL = "SELECT price, size, fee_cents, basis_cents FROM fills WHERE order_id = %s ORDER BY id"
+STATE_KEYS = ("period", "clock_seconds", "home_score", "away_score", "possession")
 
 
 def split(total: int, weights: list[int]) -> list[int]:
@@ -168,7 +176,46 @@ def assignment_bets(
         market = markets.get(market_id) or dict(conn.execute("SELECT * FROM markets WHERE id = %s", (market_id,)).fetchone())
         for bet in market_bets(conn, market_orders, market, assignment, game, winner):
             rows[str(bet["order_id"])] = bet
+    owner = None
+    for order in filled:
+        bet = rows[str(order["id"])]
+        bet["ingame"], bet["state_at_entry"] = bool(order.get("ingame")), None
+        if bet["ingame"]:
+            owner = owner or ingame_owner(conn, assignment)
+            bet.update(model_id=owner["id"], lineage_id=owner["lineage_id"], clv=None,
+                       state_at_entry=state_at(conn, game["game_id"], order["created_at"], order["id"]))
     return [rows[str(o["id"])] for o in filled]
+
+
+def ingame_owner(conn: psycopg.Connection, assignment: dict[str, Any]) -> dict[str, Any]:
+    """{id, lineage_id} the in-game rows are attributed to: the assignment's in-game
+    model (the pre-game model only if none is set, which set_ingame prevents once
+    in-game orders exist)."""
+    model_id = assignment.get("ingame_model_id")
+    if model_id is not None:
+        row = conn.execute("SELECT id, lineage_id FROM models WHERE id = %s", (model_id,)).fetchone()
+        if row is not None:
+            return {"id": row["id"], "lineage_id": row["lineage_id"]}
+    return {"id": assignment["model_id"], "lineage_id": assignment["lineage_id"]}
+
+
+def state_at(conn: psycopg.Connection, game_id: str, ts: Any, order_id: Any = None) -> dict[str, Any] | None:
+    """The game situation at approval: the `state_at_entry` the order's approval event
+    recorded (host.trading.limits), else the newest game_state row at or before `ts`
+    (None without one)."""
+    if order_id is not None:
+        event = conn.execute(
+            "SELECT detail->'state_at_entry' AS s FROM order_events WHERE order_id = %s AND detail ? 'state_at_entry'"
+            " ORDER BY id LIMIT 1",
+            (order_id,),
+        ).fetchone()
+        if event is not None and isinstance(event["s"], dict):
+            return {key: event["s"].get(key) for key in STATE_KEYS}
+    row = conn.execute(
+        f"SELECT {', '.join(STATE_KEYS)} FROM game_state WHERE game_id = %s AND ts <= %s ORDER BY ts DESC, id DESC LIMIT 1",
+        (game_id, ts),
+    ).fetchone()
+    return None if row is None else {key: row[key] for key in STATE_KEYS}
 
 
 def settle_totals(bets: list[dict[str, Any]]) -> tuple[int, int]:

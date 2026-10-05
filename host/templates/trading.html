@@ -5,7 +5,10 @@
 {# docs/UI.md "Trading". The create form is a closed disclosure at the top, above and
    outside the live region, so the 5 s refresh of #trading-live never wipes a half-typed
    bankroll. It opens when it was just rejected or reached from a model's Assign button
-   (?model=). Everything else (stats, assignment rows, the disclosures) is #trading-live. #}
+   (?model=, or ?ingame_model= from an in-game model's "Assign in-game"). Step 6C adds
+   the in-game model select and the "Trade in-game" box; the hidden ingame_form marker
+   tells an unticked box from a post without the in-game fields. Everything else
+   (stats, assignment rows, the disclosures) is #trading-live. #}
 {% block content %}
 <h1>Trading</h1>
 {{ ui.intro("trading", "Which model trades which game, and what it has made today; actions sit in each row's menu.") }}
@@ -43,7 +46,18 @@
     <label>Max bet ($)<input type="text" name="max_bet" value="{{ values.max_bet }}" inputmode="decimal" autocomplete="off">
       <span class="help">Blank uses the fleet max bet.</span>
     </label>
+    <label>In-game model
+      <select name="ingame_model_id">
+        <option value="">no in-game model</option>
+        {% for m in ingame_models %}
+        <option value="{{ m.id }}"{% if ingame_values.ingame_model_id == m.id %} selected{% endif %}>{{ m.label }}</option>
+        {% endfor %}
+      </select>
+      <span class="help">An ingame_wp model trades once the game kicks off; optional.</span>
+    </label>
+    <label class="check"><input type="checkbox" name="trade_ingame"{% if ingame_values.trade_ingame %} checked{% endif %}> <span>Trade in-game (paper only)<span class="help">Needs an in-game model; a live assignment never trades in-game.</span></span></label>
   </div>
+  <input type="hidden" name="ingame_form" value="1">
   {% if not games %}<p class="muted">No upcoming game has a confirmed market yet; the exchange process discovers them within the market lookahead.</p>{% endif %}
   {% if not models %}<p class="muted">No model of a non-retired lineage exists yet: run a model search first.</p>{% endif %}
   <button type="submit" class="btn primary"{% if not games or not models %} disabled{% endif %}>Create assignment</button>

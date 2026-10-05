@@ -10,6 +10,7 @@ from host.api.dashboard import page
 from host.api.dashboard_forms import FORM
 from host.api.deps import DB, require_owner
 from host.api.model_view import detail_stats, gate_verdict, lineage_assignments
+from host.api.models_ingame_view import add_pregame_lines, ingame_row, ingame_stats, ingame_verdict
 from host.api.models_view import board_view, status_state, status_word
 from host.api.robustness import calibration_rows, robustness_context
 from host.data_refresh import refresh_now
@@ -25,30 +26,41 @@ NFLVERSE_ATTRIBUTION = (
 
 @router.get("/models", response_class=HTMLResponse)
 def models_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """The leaderboard: ranked lineages, then the unranked ones."""
-    board = board_view(leaderboard.leaderboard(conn))
-    return page(request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, **board)
+    """The leaderboard: ranked lineages, then the unranked ones, then the in-game
+    (ingame_wp) lineages in their own group; a pre-game row gets its in-game line when
+    its lineage has in-game bets."""
+    raw = leaderboard.leaderboard(conn)
+    ingame = [ingame_row(m) for m in raw["unranked"] if m.get("is_ingame")]
+    board = board_view({**raw, "unranked": [m for m in raw["unranked"] if not m.get("is_ingame")]})
+    add_pregame_lines(board["ranked"] + board["unranked"])
+    return page(request, conn, "models.html", attribution=NFLVERSE_ATTRIBUTION, ingame_models=ingame, **board)
 
 
 @router.get("/models/{model_id}", response_class=HTMLResponse)
 def model_page(request: Request, model_id: str, conn: psycopg.Connection = DB) -> HTMLResponse:
     """One model: params, the robustness section (validation era, stress tests), the
     snapshot replay (step 6 B1), search-era metrics (overall and per season),
-    calibration, lineage, jobs; on top the three stats and the gate verdict in words."""
+    calibration, lineage, jobs; on top the three stats and the gate verdict in words.
+    (step 6C) An ingame_wp model shows its held-out validation against vegas_wp instead
+    (_model_ingame.html), with its own stats and status rule."""
     model = leaderboard.model_detail(conn, model_id)
+    common = {"attribution": NFLVERSE_ATTRIBUTION, "assignments": lineage_assignments(conn, model["lineage_id"]),
+              "status_state": status_state(model.get("status")), "status_word": status_word(model.get("status"))}
+    if model.get("is_ingame"):  # judged on held-out plays against vegas_wp, no moneyline backtest
+        return page(request, conn, "model.html", model=model, iv=model.get("ingame_validation"),
+                    stats=ingame_stats(model), verdict=ingame_verdict(model), **common)
     metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else {}
     validation = model.get("validation_metrics") if isinstance(model.get("validation_metrics"), dict) else None
     snapshot = model.get("snapshot_metrics") if isinstance(model.get("snapshot_metrics"), dict) else None
     return page(
         request, conn, "model.html", model=model, metrics=metrics,
         per_season=[s for s in (metrics.get("per_season") or []) if isinstance(s, dict)],
-        calibration=calibration_rows(metrics), attribution=NFLVERSE_ATTRIBUTION,
+        calibration=calibration_rows(metrics),
         robustness=robustness_context(validation, model.get("stress_metrics")),
         validation_per_season=[s for s in ((validation or {}).get("per_season") or []) if isinstance(s, dict)],
         snapshot_metrics=snapshot,
         snapshot_per_season=[s for s in ((snapshot or {}).get("per_season") or []) if isinstance(s, dict)],
-        stats=detail_stats(model), verdict=gate_verdict(conn, model), assignments=lineage_assignments(conn, model["lineage_id"]),
-        status_state=status_state(model.get("status")), status_word=status_word(model.get("status")),
+        stats=detail_stats(model), verdict=gate_verdict(conn, model), **common,
     )
 
 

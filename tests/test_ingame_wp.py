@@ -11,7 +11,8 @@ import pytest
 
 from fleet.models import ingame_wp
 from fleet.models.base import params_hash
-from fleet.models.ingame_wp import FEATURE_NAMES, IngameWP, feature_vector, game_clock, scale_features, state_from_row
+from fleet.models.ingame_wp import (FEATURE_NAMES, IngameWP, effective_l2, feature_vector, finish_features, game_clock,
+                                    raw_features, state_from_row)
 from fleet.sim.ingame_eval import validate_model
 from fleet.sim.odds import expit
 
@@ -95,7 +96,7 @@ def test_feature_vector_terms() -> None:
     named = dict(zip(FEATURE_NAMES, x))
     t = 100 / 3600
     assert named["const"] == 1.0
-    assert named["score_time"] == pytest.approx(7 / math.sqrt(t + 0.01) * 2.0)
+    assert named["score_time"] == pytest.approx(7 / (t + 0.01) ** (0.5 * 2.0))  # time_scale is an exponent
     assert named["pregame_logit"] == pytest.approx(math.log(0.6 / 0.4))
     assert named["pregame_logit_time"] == pytest.approx(math.log(0.6 / 0.4) * t)
     assert named["field_position"] == pytest.approx(-0.7 * 0.5)
@@ -104,9 +105,46 @@ def test_feature_vector_terms() -> None:
     assert named["end_half1"] == 0.0 and named["end_game"] == -1.0
     assert dict(zip(FEATURE_NAMES, feature_vector(_state(period=2, clock_seconds=60, possession="home"), None)))[
         "end_half1"] == 1.0
-    base = feature_vector(_state(home_score=3, possession="home", down=1, distance=10, yardline_100=60), 0.4)
-    assert scale_features(base, 1.7, 0.6) == feature_vector(
-        _state(home_score=3, possession="home", down=1, distance=10, yardline_100=60), 0.4, 1.7, 0.6)
+    state = _state(home_score=3, possession="home", down=1, distance=10, yardline_100=60)
+    raw = raw_features(state, 0.4)
+    assert len(raw) == len(FEATURE_NAMES) + 1
+    assert finish_features(raw, 1.7, 0.6) == feature_vector(state, 0.4, 1.7, 0.6)
+    one = dict(zip(FEATURE_NAMES, feature_vector(state, 0.4)))
+    assert one["score_time"] == pytest.approx(3 / math.sqrt(600 / 3600 + 0.01))
+    assert one["field_position"] == pytest.approx(0.4)
+    assert dict(zip(FEATURE_NAMES, feature_vector(state, 0.4, 1.0, 0.6)))["field_position"] == pytest.approx(0.24)
+
+
+def test_time_scale_exponent_sharpens_late_and_flattens_early() -> None:
+    """score_time = diff / (t + 0.01) ** (0.5 * time_scale): a larger exponent weighs a
+    late lead more against an early one, and the 1.0 exponent is the 1/sqrt(t) curve."""
+    early, late = _state(period=1, clock_seconds=900, home_score=7), _state(period=4, clock_seconds=60, home_score=7)
+
+    def ratio(scale: float) -> float:
+        i = FEATURE_NAMES.index("score_time")
+        return feature_vector(late, 0.5, scale)[i] / feature_vector(early, 0.5, scale)[i]
+
+    assert ratio(0.5) < ratio(1.0) < ratio(2.0)
+    assert ratio(1.0) == pytest.approx(math.sqrt((1.0 + 0.01) / (60 / 3600 + 0.01)))
+    assert ratio(2.0) == pytest.approx((1.0 + 0.01) / (60 / 3600 + 0.01))
+
+
+def test_l2_is_per_1000_plays() -> None:
+    """The fit penalises with l2 * n / 1000: the same plays twice over give the same
+    coefficients (the data term and the penalty both double), and a larger l2 shrinks."""
+    assert effective_l2(0.5, 4000) == pytest.approx(2.0) and effective_l2(3.0, 0) == 0.0
+    rows = synthetic_rows(2000, "l2")
+    once, twice = IngameWP({"l2": 2.0}), IngameWP({"l2": 2.0})
+    once.fit(rows)
+    twice.fit(rows + rows)
+    assert twice.n_train == 4000
+    for a, b in zip(once.coef, twice.coef):
+        assert a == pytest.approx(b, abs=1e-6)
+    loose, tight = IngameWP({"l2": 0.01}), IngameWP({"l2": 10.0})
+    loose.fit(rows)
+    tight.fit(rows)
+    norm = lambda coef: sum(w * w for w in coef[1:])  # noqa: E731  (the intercept is unpenalised)
+    assert norm(tight.coef) < 0.5 * norm(loose.coef)
 
 
 def test_fit_recovers_known_coefficients() -> None:

@@ -117,9 +117,8 @@
 </form>
 {% endcall %}
 
-{# Step 6C: the "In-game" group (its own form, data-form/data-card "ingame", one
-   data-field per key) is ported in as _settings_ingame.html and lands here. #}
-{% include "_settings_ingame.html" ignore missing %}
+{# ---------------------------------------------------------------- In-game: trade rules, feed lag, the game-state feed (step 6 Part C) #}
+{% include "_settings_ingame.html" %}
 
 {# ---------------------------------------------------------------- Robustness gates: the backtest gate, the eras, the fee model #}
 {% call ui.disclosure('settings-robustness', 'Robustness gates', summary=values.summary_robustness, open=(errors.thresholds or errors.seasons or errors.fees)) %}

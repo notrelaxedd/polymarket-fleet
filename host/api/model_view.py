@@ -145,21 +145,24 @@ def detail_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def lineage_assignments(conn: psycopg.Connection, lineage_id: Any, limit: int = 20) -> dict[str, Any]:
-    """The lineage's most recent assignments (newest kickoff first) and their total count."""
+    """The lineage's most recent assignments (newest kickoff first) and their total count;
+    (step 6C) an ingame_wp lineage's are the ones naming one of its models as their
+    in-game model (`ingame` true on those rows)."""
+    where = "(a.lineage_id = %s OR a.ingame_model_id IN (SELECT id FROM models WHERE lineage_id = %s))"
     rows = conn.execute(
-        """
-        SELECT a.id, a.model_id, a.mode, a.status, a.created_at, g.season, g.week, g.home_team, g.away_team,
-               g.kickoff_at, b.realized_pnl_cents, b.available_cents
+        f"""
+        SELECT a.id, a.model_id, a.mode, a.status, a.created_at, a.lineage_id <> %s AS ingame, g.season, g.week,
+               g.home_team, g.away_team, g.kickoff_at, b.realized_pnl_cents, b.available_cents
           FROM assignments a JOIN games g ON g.game_id = a.game_id
           LEFT JOIN bankrolls b ON b.assignment_id = a.id
-         WHERE a.lineage_id = %s ORDER BY g.kickoff_at DESC NULLS LAST, a.created_at DESC LIMIT %s
+         WHERE {where} ORDER BY g.kickoff_at DESC NULLS LAST, a.created_at DESC LIMIT %s
         """,
-        (lineage_id, limit),
+        (lineage_id, lineage_id, lineage_id, limit),
     ).fetchall()
-    total = conn.execute("SELECT count(*) AS n FROM assignments WHERE lineage_id = %s", (lineage_id,)).fetchone()["n"]
+    total = conn.execute(f"SELECT count(*) AS n FROM assignments a WHERE {where}", (lineage_id, lineage_id)).fetchone()["n"]
     rows_out = [
-        {**dict(r), "game": f"{r['away_team']} @ {r['home_team']}", "when": f"{r['season']} week {r['week']}",
-         "state": ASSIGNMENT_STATE.get(r["status"], "muted")}
+        {**dict(r), "game": f"{r['away_team']} @ {r['home_team']}", "when": f"{r['season']} week {r['week']}"
+         + (" · in-game" if r["ingame"] else ""), "state": ASSIGNMENT_STATE.get(r["status"], "muted")}
         for r in rows
     ]
     return {"rows": rows_out, "total": int(total)}

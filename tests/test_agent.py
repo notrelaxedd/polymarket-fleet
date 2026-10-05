@@ -943,6 +943,8 @@ def _run_batch_job(host: FakeHost, enrolled: str, kind: str, params: dict[str, A
     """Send a job to the worker (flipping its role) and wait for it to finish."""
     job_id = host.enqueue_job(kind, params, target=enrolled)
     host.wait_for(lambda: host.job(job_id)["status"] in ("succeeded", "failed"), timeout=timeout)
+    ends = (f"/jobs/{job_id}/complete", f"/jobs/{job_id}/fail")  # the status flips inside the handler
+    host.wait_for(lambda: any(p.endswith(ends) for _, p, _ in list(host.requests)), timeout=timeout)
     return host.job(job_id)
 
 

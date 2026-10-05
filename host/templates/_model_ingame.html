@@ -1,0 +1,54 @@
+{# The held-out validation of an ingame_wp model (step 6C, docs/INGAME.md), in place of
+   the pre-game Robustness, backtest, snapshot and paper sections of model.html: the
+   overall log-loss and Brier against nflverse's vegas_wp, then by period (Q1 to Q4,
+   OT), by score (home minus away before the play) and the calibration buckets, each a
+   closed disclosure with a one-line reading. `iv` is host.leaderboard_ingame's
+   ingame_validation (None when the search stored none). #}
+{% import "_ui.html" as ui %}
+{% macro groups(rows, name, label) -%}
+<div class="table-wrap">
+<table class="metrics ingame-by-{{ name }}" data-list="ingame-by-{{ name }}">
+  <thead><tr><th>{{ label }}</th><th>plays</th><th>log-loss</th><th>vegas_wp</th><th>gain</th></tr></thead>
+  <tbody>
+  {% for g in rows %}<tr><td>{{ g.label }}</td><td>{{ g.n_plays | num }}</td><td>{{ g.log_loss | fixed }}</td><td>{{ g.vegas_log_loss | fixed }}</td><td>{{ g.ll_gain | fixed }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+{%- endmacro %}
+<section class="ingame-validation" id="ingame-validation" data-card="ingame-validation">
+{% if iv %}
+{% set overall %}log-loss {{ iv.log_loss | fixed }} vs vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays | num }} plays{% endset %}
+{% call ui.disclosure('model-ingame-validation', 'In-game validation', summary=overall) %}
+<p class="reading">Held-out play-by-play seasons {{ iv.seasons | season_span }} against vegas_wp: log-loss {{ iv.log_loss | fixed }} against {{ iv.vegas_log_loss | fixed }}{% if iv.ll_gain is not none %} (gain {{ iv.ll_gain | fixed }} per play){% endif %}; Brier {{ iv.brier | fixed }} against {{ iv.vegas_brier | fixed }}.</p>
+{% if iv.n_skipped_no_vegas %}<span class="caption">{{ iv.n_skipped_no_vegas | num }} plays without a vegas_wp were left out.</span>{% endif %}
+<span class="caption">A gain above zero means the model's probabilities were closer to what happened than vegas_wp's.</span>
+{% endcall %}
+{% call ui.disclosure('model-ingame-period', 'By period', summary='log-loss against vegas_wp per quarter and overtime') %}
+<p class="reading">Each row is the plays of one period; a positive gain beats vegas_wp there.</p>
+{{ groups(iv.by_period, 'period', 'period') }}
+{% endcall %}
+{% call ui.disclosure('model-ingame-score', 'By score', summary='log-loss against vegas_wp by the score margin') %}
+<p class="reading">The home score minus the away score before the play, in five buckets.</p>
+{{ groups(iv.by_score_bucket, 'score', 'score') }}
+{% endcall %}
+{% call ui.disclosure('model-ingame-calibration', 'Calibration', summary=(iv.calibration | length) ~ ' probability bands, with the vegas_wp mean') %}
+{% if iv.calibration %}
+<p class="reading">Each row is a band of predicted probabilities: a calibrated model's home team wins about as often as it says.</p>
+<div class="table-wrap">
+<table class="metrics calibration ingame-calibration" data-list="ingame-calibration">
+  <thead><tr><th>p bucket</th><th>plays</th><th>mean p</th><th>mean outcome</th><th>vegas_wp mean</th></tr></thead>
+  <tbody>
+  {% for b in iv.calibration %}<tr><td>{{ b.bucket }}</td><td>{{ b.count | num }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td><td>{{ b.vegas_mean_p | fixed }}</td></tr>{% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="muted">No calibration buckets stored.</p>
+{% endif %}
+{% endcall %}
+{% else %}
+{% call ui.disclosure('model-ingame-validation', 'In-game validation', summary='not validated yet') %}
+<p class="muted">No held-out validation stored. An ingame_wp model search validates its kept models on the seasons after its train seasons.</p>
+{% endcall %}
+{% endif %}
+</section>

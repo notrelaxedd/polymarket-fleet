@@ -6,6 +6,7 @@ and exchange auth; at most max_paper_models_per_game paper assignments per game 
 exactly one live (the partial unique indexes are the database guarantee). Creating
 one funds a bankroll and inserts a `trade` job; halting cancels its open orders and
 leaves the job leased; settlement (host/exchange/settle.py) completes the job.
+Step 6 Part C: an optional in-game model and `trade_ingame` (host/trading/assignments_ingame.py).
 """
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from host.events import add_audit, add_job_event
 from host.kill import approval_lock, cancel_active_orders
 from host.money import MAX_CENTS
 from host.settings import get_int_setting
-from host.trading import ledger
+from host.trading import assignments_ingame, ledger
 from host.trading.orders import ACTIVE_STATUSES
 from host.trading.state import trade_state  # noqa: F401 - re-exported for the API
 
@@ -97,11 +98,14 @@ def create_assignment(
     bankroll_cents: int,
     actor: str | None,
     max_bet_cents: int | None = None,
+    ingame_model_id: Any = None,
+    trade_ingame: bool | None = None,
 ) -> dict[str, Any]:
     """Create an assignment, fund its bankroll and queue its trade job (one transaction).
 
     Returns the row plus "bankroll" and "job_id". 400 on bad input or a retired
-    lineage, 409 when a limit or a live precondition refuses it.
+    lineage, 409 when a limit or a live precondition refuses it. `ingame_model_id`
+    must be an ingame_wp model; `trade_ingame` None takes settings.trade_ingame.
     """
     if mode not in MODES:
         raise BadRequest(f"mode must be paper or live, not {mode!r}")
@@ -121,6 +125,8 @@ def create_assignment(
     model = _model(conn, model_id)
     if model["status"] == "retired" or lineage_retired(conn, model["lineage_id"]):
         raise BadRequest("the model's lineage is retired")
+    assignments_ingame.check_pregame_model(model)
+    ingame_id, trade_ingame = assignments_ingame.resolve_new(conn, mode, ingame_model_id, trade_ingame)
     if mode == "live":
         live_gate(conn, model, game["game_id"])
     else:
@@ -135,10 +141,11 @@ def create_assignment(
         with conn.transaction():
             row = conn.execute(
                 """
-                INSERT INTO assignments (game_id, model_id, lineage_id, mode, max_bet_cents, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING *
+                INSERT INTO assignments (game_id, model_id, lineage_id, mode, max_bet_cents, created_by,
+                                         ingame_model_id, trade_ingame)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
                 """,
-                (game["game_id"], model["id"], model["lineage_id"], mode, max_bet_cents, actor),
+                (game["game_id"], model["id"], model["lineage_id"], mode, max_bet_cents, actor, ingame_id, trade_ingame),
             ).fetchone()
     except UniqueViolation as exc:
         if "one_live" in str(exc):
@@ -149,7 +156,8 @@ def create_assignment(
     add_audit(
         conn, "assignment_created", str(row["id"]), actor, None,
         {"game_id": game["game_id"], "model_id": str(model["id"]), "mode": mode, "bankroll_cents": bankroll_cents,
-         "max_bet_cents": max_bet_cents, "job_id": str(job["id"])},
+         "max_bet_cents": max_bet_cents, "job_id": str(job["id"]),
+         "ingame_model_id": None if ingame_id is None else str(ingame_id), "trade_ingame": trade_ingame},
     )
     out = get_assignment(conn, row["id"])
     out["bankroll"] = bank
@@ -284,6 +292,7 @@ def list_assignments(
                 "id": r["id"], "game_id": r["game_id"], "model_id": r["model_id"], "lineage_id": r["lineage_id"],
                 "mode": r["mode"], "status": r["status"], "job_id": r["job_id"], "max_bet_cents": r["max_bet_cents"],
                 "created_by": r["created_by"], "created_at": r["created_at"], "settled_at": r["settled_at"],
+                "ingame_model_id": r["ingame_model_id"], "trade_ingame": r["trade_ingame"],
                 "bankroll": {
                     "id": r["bankroll_id"], "initial_cents": r["initial_cents"], "available_cents": r["available_cents"],
                     "reserved_cents": r["reserved_cents"], "open_cost_cents": r["open_cost_cents"],

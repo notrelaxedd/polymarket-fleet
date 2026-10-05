@@ -1,6 +1,6 @@
 # Design
 
-Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`, robustness (step 6 Parts A and B) in `docs/ROBUSTNESS.md`, in-game trading (step 6 Part C) in `docs/INGAME.md` and the UI overhaul (step 7) in `docs/UI.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
+Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`, robustness (step 6A and 6B) in `docs/ROBUSTNESS.md`, in-game trading (step 6C) in `docs/INGAME.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
 
 ## Summary
 
@@ -40,19 +40,19 @@ Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is spe
 pyproject.toml                       project "polymarket-fleet" (packages fleet, host); extras [host], [dev]
 Dockerfile, docker-compose.yml, .env.example
 fleet/common/{http,sysinfo}.py
-fleet/models/{base,registry,elo,blend_fit,elo_blend,epa_features,epa_blend,newton,search_space,summary_text}.py
-fleet/sim/{data,odds,signals,fills,book,prices,metrics,records,stats,robust,stress,backtest,validate,search,parallel,train,control}.py
-fleet/worker/{__main__,agent,runner,launch,jobs,context,config,posts,update,watchdog,trade,sell}.py
-host/{main,config,db,auth,errors,events,leases,queue,loop,scheduling,heartbeat,recovery,bundle,kill,settings,settings_schema,settings_forms,settings_forms_replay,web,views}.py
-host/{nflverse,data_refresh,ingest_injuries,ingest_pbp,signals,games_feed,prices_feed}.py          data and feeds
-host/{models,model_owner,model_validation,jobparams,snapshot_store,leaderboard,leaderboard_snapshot,eligibility,paper_gate,stats,pnl,money}.py
-host/trading/{assignments,ledger,limits,sells,orders,positions,state,live,views,views_positions}.py
-host/migrations/0001_init.sql .. 0008_sells.sql
-host/api/{app,deps,workers,jobs,data,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
-host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials}.py   fleet-exchange
+fleet/models/{base,registry,elo,blend_fit,elo_blend,epa_features,epa_blend,ingame_wp,newton,search_space,summary_text}.py
+fleet/sim/{data,odds,signals,fills,book,prices,metrics,records,stats,robust,stress,backtest,validate,search,parallel,train,ingame,ingame_eval,control}.py
+fleet/worker/{__main__,agent,runner,launch,jobs,context,config,posts,update,watchdog,trade,sell,trade_ingame,pbp_cache}.py
+host/{main,config,db,auth,errors,events,leases,queue,loop,scheduling,heartbeat,recovery,bundle,kill,settings,settings_schema,settings_schema_ingame,settings_forms,settings_forms_replay,settings_forms_ingame,web,views}.py
+host/{nflverse,data_refresh,ingest_injuries,ingest_pbp,pbp_rows,pbp_refresh,signals,games_feed,prices_feed}.py          data and feeds
+host/{models,model_owner,model_validation,jobparams,ingame_jobparams,snapshot_store,leaderboard,leaderboard_snapshot,leaderboard_ingame,eligibility,ingame_eligibility,paper_gate,stats,pnl,money}.py
+host/trading/{assignments,assignments_ingame,ledger,limits,sells,ingame,orders,positions,state,live,views,views_positions,views_ingame}.py
+host/migrations/0001_init.sql .. 0009_ingame.sql
+host/api/{app,deps,workers,jobs,data,data_pbp,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,dashboard_ingame,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
+host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,feedlag}.py   fleet-exchange
 host/exchange/adapters/{base,sim,polymarket_us,polymarket_us_live,polymarket_clob,live_http,live_parse,live_policy,signing,teams}.py
-host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
-host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all --direct | probe-account | auth-check
+host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | ingest-pbp-rows | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
+host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U]
 deploy/{install_worker.sh,fleet-worker.service}
 tests/test_*.py + hw/{roletest.sh,screenshots.py,seed_step*.py}
 tools/workflows/                     the build orchestration scripts
@@ -155,11 +155,13 @@ Free only for now. Paid sources are considered only after the system shows profi
 |---|---|---|
 | nflverse `games.csv` + schedules (CC-BY-4.0, attribution shown) | schedule, scores, closing spread/ML, temp/wind/roof, starting quarterbacks; host-cached | free |
 | nflverse `injuries_{season}.csv` (step 6B) | players listed Out per team and week, filtered by report time; host table `injuries`, refreshed every `signals_refresh_hours` | free |
-| nflverse `play_by_play_{season}.csv.gz` (step 6B) | per team-game EPA per play, pass rate, success rate; host table `team_game_stats`, streamed, never held in memory | free |
-| ESPN scoreboard JSON (unofficial) | live finals; 1 req/10 s; nflverse fallback next day | free |
+| nflverse `play_by_play_{season}.csv.gz` (CC BY 4.0) | step 6B: per team-game EPA per play, pass rate, success rate in `team_game_stats`, streamed, never held in memory; step 6C: one row per play in `pbp_rows`, the `ingame_wp` training data with nflverse's `vegas_wp` as the baseline | free |
+| ESPN scoreboard JSON (unofficial) | live finals, polled every 60 s while an assigned game is in play (from step 6C through the in-game feed's request window and backoff); nflverse fallback next day; also the fallback state of a game whose summary cannot be parsed | free |
+| ESPN summary JSON (unofficial, step 6C) | live game state (score, clock, possession, down and distance, plays) of assigned games in play, every `gamestate_poll_s` (4 s) per game, at most `gamestate_max_rps` (1.0) ESPN requests per second, jittered backoff on 429 or 403 (`docs/INGAME.md`) | free |
+| Yahoo play-by-play (step 6C) | opt-in cross-check, not fetched until its parser is written from the owner's probe | free |
 | Polymarket US gateway (public) | markets, books into own `price_snapshots` from day one; replayed by snapshot backtests (step 6B) | free (A1) |
 | NWS `api.weather.gov` (public domain, User-Agent required) | forecasts for outdoor games, host-cached hourly | free |
-| The Odds API, Kalshi historical, SportsDataIO/Sportradar, Open-Meteo, offshore CLOB history | not used | deferred until profit |
+| The Odds API, Kalshi historical, SportsDataIO/Sportradar, Open-Meteo, offshore CLOB history, NFL.com live feeds (rotating app tokens), broadcast capture | not used | deferred until profit (broadcasts never) |
 
 ## Dashboard
 
@@ -203,7 +205,7 @@ The step 2 dashboard (pages, fragments, forms, auth, empty states) is specified 
 | 5 (done) | Delivered, spec in `docs/LIVE.md`: `polymarket_us.py` (Ed25519, place/cancel/open/fills/balance), restart reconciliation, rate buckets + 429 backoff, live switch, live halt, buying-power check, GTD, auto-kill triggers, `exchange-smoke`, `cancel-all --direct` | Keys in `exchange.env` give "auth OK"; typed dated phrase gives LIVE; `exchange-smoke` order visible in the exchange UI; KILL cancels it and live flips off; restart mid-order gives no duplicate. Steps 1 to 5 are complete |
 | 6A (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part A: held-out validation era (`validation_seasons`; the search era keeps the `backtest_seasons` key), `validate` job, bootstrap intervals and market test, stress tests and flags, stricter gates, multi-core search (`search_workers`) | Settings shows validation seasons and search workers; a search fills validation columns on Models; Validate on an older model; Robustness section on the model page; a search on 4 cores runs about 3x faster |
 | 6B (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part B and `docs/TRADING.md` "Selling": migrations `0007_signals.sql` and `0008_sells.sql`; `GET /api/v1/data/prices` and snapshot replay backtests (`price_source`, `snapshot_metrics`, snapshot leaderboard column and rank mode); quarterback-change and injury signals and per team-game EPA in the games feed (`ingest-injuries`, `ingest-pbp`, periodic refresh); `elo_blend` penalties; the `epa_blend` family; selling a held position end to end (worker rule, `approve_sell`, paper sell fills, ledger `sell`, settlement after partial sales, kill, live `side_sell`, Trading page positions and sell chips) | Signals loaded by the CLI; an `epa_blend` search fills Models; a snapshot backtest (sim prices allowed for the test, then turned off) shows the replay line and the snapshot column; a paper assignment shows positions and, when the bid overshoots the model, a sell with its realized P&L (README "How to test step 6B") |
-| 6C (pending) | Spec in `docs/INGAME.md`: live game-state feed, the `ingame_wp` family, conservative in-game rules, scoring and dashboard | Not started |
+| 6C (done) | Delivered, spec in `docs/INGAME.md`: the ESPN game-state feed (`gamestate` exchange task, `game_state`, rate cap and backoff, `probe-gamestate`), feed-lag measurement and buy suspension (`feed_lag`), `pbp_rows` (`ingest-pbp-rows`, weekly refresh, `GET /api/v1/data/pbp`), the `ingame_wp` family and its search validated against `vegas_wp`, in-game assignments (`ingame_model_id`, `trade_ingame`), worker in-game rules, in-game approval checks (paper only), in-game settlement and scoring, the in-game dashboard parts | The in-game toggle on a paper assignment; during a game the Trading page shows score, clock, state age and the model probability, in-game orders and the In-game feed block; `probe-gamestate` output pasted back; `ingest-pbp-rows --season 2012-2025` and an `ingame_wp` search on Models. Step 7 (UI overhaul) is pending |
 | 7 (pending) | Spec in `docs/UI.md`: the same dashboard, shorter and easier to read; no API, data model or rule changes | Not started |
 
 ## Risks
@@ -213,6 +215,7 @@ The step 2 dashboard (pages, fragments, forms, auth, empty states) is specified 
 - Single host is a single point of failure, and a Windows desktop can sleep, update or reboot: with the host down, resting live orders depend on GTD expiry and the kill is unavailable. Disable sleep, keep Docker Desktop starting at login, back up the Postgres volume.
 - Docker Desktop port publishing and `tailscale serve` must both be healthy for workers to reach the host; the dashboard should show stale workers promptly.
 - ESPN is unofficial; settlement may lag a day. Pure-Python models cap complexity.
+- The in-game feed lags the field (15 to 60 s) and the market moves first, so in-game buys are adversely selected; in-game orders are paper-only in step 6C, buying pauses while the measured feed lag is too high, and the ESPN payloads are unverified until the owner's `probe-gamestate` output is checked.
 
 ## Decisions
 

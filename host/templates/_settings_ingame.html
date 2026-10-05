@@ -1,0 +1,39 @@
+{# The "In-game" group of /settings (step 6C, docs/INGAME.md; host/settings_forms_ingame.py
+   parses it, host/settings_schema_ingame.py validates it): the in-game trade rules, the
+   feed-lag suspension and the game-state feed, one form posting to /settings/ingame.
+   Included by settings.html, so the field, check and form_error macros and `values`
+   are the page's. #}
+{% call ui.disclosure('settings-ingame', 'In-game', summary=values.summary_ingame, open=errors.ingame) %}
+<form class="group" method="post" action="/settings/ingame" id="ingame" data-card="ingame" data-form="ingame">
+  <p class="help">In-game orders are paper only in this step. The feed (ESPN's unofficial summary endpoint) can lag the field by 15 to 60 s; in-game buying is suspended while the median measured lag behind the market exceeds the max feed lag, once enough events are measured.</p>
+  {{ form_error('ingame') }}
+  <h3>Trade rules</h3>
+  <div class="fields">
+    {{ check('trade_ingame', 'Trade in-game by default', 'new assignments start with in-game trading on') }}
+    {{ field('ingame_tick_s', 'In-game tick (s)', '1..60; how often a worker looks again during a game', 'numeric') }}
+    {{ field('ingame_max_state_age_s', 'Max game-state age (s)', '5..300; an older state pauses in-game trading', 'numeric') }}
+    {{ field('ingame_quiet_seconds', 'Quiet seconds', '0..300; no orders this long after a score or possession change', 'numeric') }}
+    {{ field('ingame_cutoff_seconds', 'Cutoff (s)', '0..900 game seconds left; no orders after it', 'numeric') }}
+    {{ field('ingame_dead_zone', 'Dead zone', '0..0.5; the model must differ from the mid by more than this', 'decimal') }}
+    {{ field('ingame_min_edge', 'In-game min edge', '0..0.5', 'decimal') }}
+    {{ field('ingame_max_bet', 'In-game max bet', 'dollars; also capped by the fleet max bet', 'decimal') }}
+    {{ field('ingame_gtd_seconds', 'In-game order lifetime (s)', '10..3600', 'numeric') }}
+  </div>
+  <h3>Feed lag</h3>
+  <div class="fields">
+    {{ field('ingame_max_lag_s', 'Max feed lag (s)', 'above 0, at most 600; the median lag behind the market', 'decimal') }}
+    {{ field('ingame_lag_min_events', 'Min measured events', '1..100 before the lag can suspend buying', 'numeric') }}
+  </div>
+  <h3>Game-state feed</h3>
+  <div class="fields">
+    {{ field('gamestate_poll_s', 'Poll each live game every (s)', '3..5', 'decimal') }}
+    {{ field('gamestate_max_rps', 'ESPN max requests per second', 'above 0, at most 10', 'decimal') }}
+    {{ check('gamestate_espn', 'ESPN', 'summary endpoint, scoreboard fallback') }}
+    {{ check('gamestate_yahoo', 'Yahoo', 'opt-in cross-check, used only with a URL below') }}
+    {{ field('espn_summary_url', 'ESPN summary URL', 'must contain {event_id}') }}
+    {{ field('yahoo_pbp_url', 'Yahoo play-by-play URL', 'empty = off; else must contain {event_id}') }}
+    {{ field('yahoo_poll_s', 'Yahoo poll (s)', '5..120', 'numeric') }}
+  </div>
+  <button type="submit" class="btn primary">Save in-game</button>
+</form>
+{% endcall %}

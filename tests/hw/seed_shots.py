@@ -1,7 +1,8 @@
 """The throwaway database behind tests/hw/screenshots.py: create and drop it, seed
 three workers (running, switching, offline) and a few jobs, then the step 3, 6, 4 and
-6B rows (seed_step3/6/4/6b), and keep the workers and leases fresh while the captures
-run."""
+6B rows (seed_step3/6/4/6b), after check_step6b the step 6C rows (seed_6c,
+seed_step6c), and keep the workers, leases and the live game state fresh while the
+captures run."""
 from __future__ import annotations
 
 import uuid
@@ -19,6 +20,7 @@ from tests.hw.seed_step4 import seed_trading, touch_trading
 from tests.hw.seed_step5 import touch_live
 from tests.hw.seed_step6 import seed_paper_ci, seed_validation
 from tests.hw.seed_step6b import seed_sells, seed_snapshot
+from tests.hw.seed_step6c import seed_ingame, stub_espn, touch_ingame
 
 
 def fresh_database() -> str:
@@ -66,6 +68,16 @@ def seed(url: str) -> dict[str, str]:
     ids.update(seed_snapshot(url, ids["box2"], ids["model"]))
     ids.update(seed_sells(url, ids["trader"], ids["assignment"]))
     return ids
+
+
+def seed_6c(url: str, ids: dict[str, str]) -> dict[str, str]:
+    """The step 6C rows (tests/hw/seed_step6c.py: two ingame_wp lineages, a third-quarter
+    game with a fresh game state, an in-game paper assignment, feed lag, yesterday's game
+    settled with in-game bets), seeded after check_step6b (they add a third position);
+    the ESPN fetch of this process (the server runs in it) is stubbed for the probe."""
+    out = seed_ingame(url, ids["trader"], ids["model"])
+    stub_espn()
+    return out
 
 
 def _seed_fleet(url: str) -> dict[str, str]:
@@ -127,3 +139,4 @@ def touch(url: str, box1: str) -> None:
         conn.execute("UPDATE jobs SET lease_expires_at = now() + interval '30 seconds' WHERE status = 'leased'")
         touch_trading(conn)
         touch_live(conn)
+        touch_ingame(conn)

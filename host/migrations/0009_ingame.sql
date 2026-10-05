@@ -90,6 +90,7 @@ INSERT INTO settings (key, value) VALUES
   ('ingame_max_bet_cents',    '500'),
   ('ingame_gtd_seconds',      '60'),
   ('ingame_max_lag_s',        '20'),
+  ('ingame_lag_min_events',   '5'),
   ('gamestate_poll_s',        '4'),
   ('gamestate_max_rps',       '1.0'),
   ('gamestate_sources',       '["espn"]'),

@@ -7,20 +7,27 @@ tests/hw/seed_step3.py (the nflverse fixture, a real search, its models, a train
 child, a backtest), seed_step6.py (validation and stress tables: two lineages ranked,
 one flagged overfit, one "not validated", a validate job), seed_step4.py (games with
 sim markets, a trade worker, assignments, orders in every state, a fill, a settled
-bet), the paper CLV interval, and seed_step6b.py (an epa_blend lineage ranked on
+bet), the paper CLV interval, seed_step6b.py (an epa_blend lineage ranked on
 snapshot replay CLV, snapshot columns on two more, a snapshot backtest job, a partly
-sold position with a filled and an open sell, a second position). It serves the app
-with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet), jobs and its
-Done tab, job detail (sleep, search, backtest, validate, snapshot replay), models,
-model detail (the flagged and the snapshot-ranked ones too), trading, settings and the
-market probe page (the Exchange group's Probe button), plus the validate form and the
-New assignment form opened from a model, at 390x844 and 1280x800 in light and dark;
+sold position with a filled and an open sell, a second position) and, once
+check_step6b has passed, seed_step6c.py (two ingame_wp lineages, a third-quarter game
+with a fresh game state, an in-game assignment holding a partly filled in-game buy,
+ESPN feed lag rows, yesterday's game settled with in-game bets; check_step6c). It
+serves the app with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet),
+jobs and its Done tab, job detail (sleep, search, backtest, validate, snapshot replay),
+models (with the In-game models group), model detail (the flagged, the
+snapshot-ranked and the ingame_wp ones too), trading (the in-game line, the in-game
+chips, the In-game feed group), settings (with the In-game group), the market probe
+page (the Exchange group's Probe button) and the game-state probe page (its "Probe
+game state" form, answered by a stubbed ESPN), plus the validate form and the New
+assignment form opened from a model and from an ingame_wp model, at 390x844 and
+1280x800 in light and dark;
 then (seed_step5.py) settings, trading, fleet and home with live on, after an auto-kill,
 after a hand POST /kill, and trading after the reset.
 
 Every capture runs the docs/UI.md assertions (tests/hw/ui_checks.py): no horizontal
 overflow, every .chip has text, every <details> has a <summary> with text; at 390 px
-also the h1 and a .stat inside the first 844 px (not on the two captures that open a
+also the h1 and a .stat inside the first 844 px (not on the three captures that open a
 form at the top on purpose), no .row taller than 88 px and 44 px tap targets for
 buttons, row links, selects, inputs and menu items, measured again with every
 disclosure opened. At 1280 the Models rows keep their title, number and menu inside the
@@ -42,9 +49,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", "/opt/pw-browsers")
 
-from tests.hw.seed_shots import drop_database, fresh_database, seed, touch  # noqa: E402
+from tests.hw.seed_shots import drop_database, fresh_database, seed, seed_6c, touch  # noqa: E402
 from tests.hw.seed_step5 import auto_kill, seed_live  # noqa: E402
 from tests.hw.seed_step6b import check_step6b  # noqa: E402
+from tests.hw.seed_step6c import check_step6c, probe  # noqa: E402
 from tests.hw.serve import Server  # noqa: E402
 from tests.hw.ui_checks import check_page, first_screen  # noqa: E402
 from tests.pagecheck import mode_pill, topbar  # noqa: E402
@@ -54,17 +62,24 @@ DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 SCHEMES = ("light", "dark")
 # captures that open a form at the top on purpose: the form, not a stat, is their first screen
-FORM_FIRST = {"jobs-validate-form", "trading-assign"}
+FORM_FIRST = {"jobs-validate-form", "trading-assign", "trading-assign-ingame"}
 
 
 # ---------------------------------------------------------------- captures and checks
 
 
 PROBE = "probe:/trading"  # a POST result: open Trading, then press Probe markets in the Exchange group
+PROBE_GAMESTATE = "probe-gamestate:/trading"  # the same with the "Probe game state" form (step 6C)
 
 
 def open_page(page: Any, server_url: str, path: str) -> None:
-    """Load `path`; a "probe:" path loads the page after it and presses Probe markets."""
+    """Load `path`; a "probe:" path loads the page after it and presses Probe markets,
+    a "probe-gamestate:" path submits the Probe game state form there."""
+    if path.startswith("probe-gamestate:"):
+        page.goto(server_url + path.removeprefix("probe-gamestate:"), wait_until="networkidle")
+        probe(page)
+        assert page.locator('main[data-page="probe"] dd.c-game').count() == 1, "the game-state probe page"
+        return
     if path.startswith("probe:"):
         page.goto(server_url + path.removeprefix("probe:"), wait_until="networkidle")
         page.click('details[data-key="trading-exchange"] > summary')
@@ -84,6 +99,8 @@ def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
         ("job-replay", f"/jobs/{ids['replay_job']}"),
         ("jobs-validate-form", f"/jobs?validate_model={ids['model']}"),
         ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"), ("probe", PROBE),
+        ("model-ingame", f"/models/{ids['ingame_model']}"),
+        ("trading-assign-ingame", f"/trading?ingame_model={ids['ingame_model']}"), ("probe-gamestate", PROBE_GAMESTATE),
     ]
 
 
@@ -156,7 +173,9 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
                     for scheme in SCHEMES:
                         shoot(path, name, width, scheme)
 
-        check_step6b(server_url, ids)
+        check_step6b(server_url, ids)  # before the 6C rows add a third position
+        ids.update(seed_6c(database_url, ids))
+        check_step6c(server_url, ids)
         shoot_all(pages(ids))
 
         # Step 5: live on (the settings group on, the live assignment, the smoke order, the

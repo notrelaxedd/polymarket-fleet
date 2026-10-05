@@ -1,24 +1,15 @@
 """The live game-state feed (docs/INGAME.md, "Live game state" and "Feed latency").
 
-The exchange task "gamestate" (every second, its own cadence inside) polls the ESPN
-summary endpoint (`settings.espn_summary_url` with `{event_id}` = games.raw->>'espn')
-for every game with an active or halted assignment whose kickoff has passed (within
-the last 8 hours), that is not final in `games` and whose newest game_state is not
-final. Each game is polled every max(gamestate_poll_s, n_live / gamestate_max_rps)
-seconds (poll_s clamped to 3..5), and a sliding window keeps every ESPN request,
-across games, at or under gamestate_max_rps. A 429 or 403 backs ESPN off for 15 s
-doubling to 300 s with jitter; any other failure is logged, waits for the game's next
-turn and leaves the state stale. A summary that cannot be parsed falls back to the
-scoreboard (`settings.scores_url`) for that game, through the same window.
-
-New plays are stored once (deduplicated by play id per source); the current situation
-is stored whenever it changed or new plays came in, so the newest row is always the
-current situation. Score and possession changes go to feed_lag (host/exchange/feedlag.py)
-and every pass fills the market moves of recent events.
-
-Yahoo is opt-in: when gamestate_sources lists "yahoo" and yahoo_pbp_url is set, the
-pass reports that its parser awaits the owner's probe (`probe-gamestate --yahoo`) and
-fetches nothing from Yahoo.
+The exchange task "gamestate" (every second) polls the ESPN summary
+(`settings.espn_summary_url`, `{event_id}` = games.raw->>'espn') of every live
+assigned game every max(gamestate_poll_s, n_live / gamestate_max_rps) seconds. One
+sliding window and one jittered 429/403 backoff (15 s doubling to 300 s) cover every
+ESPN request: summaries, the scoreboard fallback for a summary not understood, and
+the scores task's scoreboard (scores_fetch). Requests are stamped as they leave. New
+plays are stored once (by play id per source) and the current situation on every
+successful observation, so the newest row is the current situation and its age is
+the time since the last good poll. Score and possession changes go to feed_lag
+(host/exchange/feedlag.py). Yahoo is opt-in and not fetched until its parser exists.
 """
 from __future__ import annotations
 
@@ -33,7 +24,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from host.exchange import feedlag
-from host.exchange.adapters.base import http_get, utcnow
+from host.exchange.adapters.base import http_get, truncate, utcnow
 from host.exchange.gamestate_parse import (  # noqa: F401  (re-exported: the public API lives here)
     STATE_KEYS,
     parse_scoreboard_states,
@@ -41,14 +32,15 @@ from host.exchange.gamestate_parse import (  # noqa: F401  (re-exported: the pub
     parse_summary_rows,
     raw_fragment,
 )
-from host.exchange.scores import DEFAULT_URL as SCOREBOARD_URL
+from host.exchange.scores import DEFAULT_URL as SCOREBOARD_URL, Deferred
 from host.settings import get_setting
 
-__all__ = ["PollerState", "lag_status", "latest_state", "parse_scoreboard_states", "parse_summary", "poll"]
+__all__ = ["PollerState", "lag_status", "latest_state", "parse_scoreboard_states", "parse_summary", "poll", "scores_fetch"]
 
 log = logging.getLogger(__name__)
 
 Fetch = Callable[[str], tuple[int, str]]
+Answer = tuple[int | None, str, str | None, float]
 
 DEFAULT_SUMMARY_URL = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={event_id}"
 POLL_RANGE = (3.0, 5.0)
@@ -57,18 +49,29 @@ BACKOFF_START_S = 15.0
 BACKOFF_MAX_S = 300.0
 LIVE_WINDOW = timedelta(hours=8)
 FETCH_TIMEOUT_S = 3.0
+BOARD_FRESH_S = 5.0
 lag_status = feedlag.lag_status
 
 
 @dataclass
 class PollerState:
-    """What the poller remembers between passes (one per exchange process)."""
+    """What the poller remembers between passes (one per exchange process). Requests
+    are stamped by `clock` (epoch seconds) when they leave; without one, by the pass's
+    `now`. `board` is the newest scoreboard answer: (stamp, status, text or error)."""
 
     last_poll: dict[str, float] = field(default_factory=dict)
     requests: deque[float] = field(default_factory=deque)
     backoff_until: dict[str, float] = field(default_factory=dict)
     failures: dict[str, int] = field(default_factory=dict)
     yahoo_noted: bool = False
+    pending_fallback: dict[str, dict[str, Any]] = field(default_factory=dict)
+    last_board: float = float("-inf")
+    board_wanted: bool = False
+    board: tuple[float, int | None, str] | None = None
+    clock: Callable[[], float] | None = None
+
+    def stamp(self, now_ts: float) -> float:
+        return self.clock() if self.clock is not None else now_ts
 
     def allow(self, now_ts: float, rps: float) -> bool:
         """True when one more request keeps every window of max(1, 1/rps) seconds at
@@ -86,6 +89,30 @@ class PollerState:
         until = now_ts + min(BACKOFF_MAX_S, delay * (0.8 + 0.4 * rng.random()))
         self.backoff_until[source] = until
         return until
+
+    def send(self, fetch: Fetch, url: str, now_ts: float, rps: float, rng: random.Random) -> Answer | None:
+        """One ESPN request through the shared window and backoff, stamped as it leaves:
+        (status, text, error, stamp), or None (nothing sent) while backing off or with
+        the window full. A 200 resets the backoff; a 429 or 403 starts or extends it."""
+        ts = self.stamp(now_ts)
+        if self.backoff_until.get("espn", 0.0) > ts or not self.allow(ts, rps):
+            return None
+        self.requests.append(ts)
+        status, text, error = _get(fetch, url)
+        if status == 200:
+            self.failures["espn"] = 0
+        elif status in (429, 403):
+            self.back_off("espn", ts, rng)
+        return status, text, error, ts
+
+    def ask_board(self, fetch: Fetch, url: str, now_ts: float, rps: float, rng: random.Random) -> Answer | None:
+        """send() for the scoreboard, kept as `board` for the scores task and the fallback."""
+        answer = self.send(fetch, url, now_ts, rps, rng)
+        if answer is not None:
+            status, text, error, ts = answer
+            self.board_wanted = False
+            self.board = (ts, status, text if status == 200 else error or f"scoreboard answered {status}: {truncate(text, 256)}")
+        return answer
 
 
 DEFAULT_STATE = PollerState()
@@ -113,14 +140,15 @@ def cadence(conn: psycopg.Connection, n_live: int) -> tuple[float, float]:
 
 def live_games(conn: psycopg.Connection, now: datetime) -> list[dict[str, Any]]:
     """Games to poll: an active or halted assignment, kicked off within 8 hours, not
-    final in games nor in their newest game_state, with an ESPN event id."""
+    final in games nor in their newest game_state since kickoff (a game postponed and
+    rescheduled under the same event id is polled again), with an ESPN event id."""
     rows = conn.execute(
         """
         SELECT g.game_id, g.raw->>'espn' AS espn FROM games g
          WHERE g.status <> 'final' AND g.kickoff_at <= %s AND g.kickoff_at >= %s
            AND coalesce(g.raw->>'espn', '') <> ''
            AND EXISTS (SELECT 1 FROM assignments a WHERE a.game_id = g.game_id AND a.status IN ('active', 'halted'))
-           AND coalesce((SELECT s.status FROM game_state s WHERE s.game_id = g.game_id
+           AND coalesce((SELECT s.status FROM game_state s WHERE s.game_id = g.game_id AND s.ts >= g.kickoff_at
                           ORDER BY s.ts DESC, s.id DESC LIMIT 1), '') <> 'final'
          ORDER BY g.kickoff_at, g.game_id
         """,
@@ -131,14 +159,6 @@ def live_games(conn: psycopg.Connection, now: datetime) -> list[dict[str, Any]]:
 
 def _state(row: dict[str, Any]) -> dict[str, Any]:
     return {k: row.get(k) for k in STATE_KEYS}
-
-
-def last_situation(conn: psycopg.Connection, game_id: str, source: str) -> dict[str, Any] | None:
-    row = conn.execute(
-        "SELECT * FROM game_state WHERE game_id = %s AND source = %s AND play_id IS NULL ORDER BY ts DESC, id DESC LIMIT 1",
-        (game_id, source),
-    ).fetchone()
-    return None if row is None else _state(dict(row))
 
 
 def _insert(conn: psycopg.Connection, game_id: str, source: str, row: dict[str, Any], now: datetime) -> bool:
@@ -154,18 +174,27 @@ def _insert(conn: psycopg.Connection, game_id: str, source: str, row: dict[str, 
 
 
 def store(conn: psycopg.Connection, game_id: str, source: str, rows: list[dict[str, Any]], now: datetime) -> int:
-    """Insert the new plays and the changed situation, record the feed events; how
-    many rows were stored."""
+    """Insert the new plays and the current situation (one row per observation, so
+    latest_state's age is the time since the last successful poll), record the feed
+    events; how many rows were stored."""
     base = feedlag.baseline(conn, game_id, source)
-    previous = last_situation(conn, game_id, source)
-    stored: list[dict[str, Any]] = []
-    for row in rows:
-        if row.get("play_id") is None and not stored and _state(row) == previous:
-            continue
-        if _insert(conn, game_id, source, row, now):
-            stored.append(row)
+    stored = [row for row in rows if _insert(conn, game_id, source, row, now)]
     feedlag.record_events(conn, game_id, source, base, [r for r in stored if r.get("play_id") is None], now)
     return len(stored)
+
+
+def _store_safely(conn: psycopg.Connection, game_id: str, source: str, rows: list[dict[str, Any]], now: datetime,
+                  out: dict[str, Any]) -> int:
+    """store() inside a savepoint: a row the database refuses costs that game's
+    observation, never the rest of the pass."""
+    try:
+        with conn.transaction():
+            return store(conn, game_id, source, rows, now)
+    except psycopg.Error as exc:
+        message = f"{game_id}: {source} observation not stored: {truncate(str(exc), 300)}"
+        log.warning("game state %s", message)
+        out["errors"].append(message)
+        return 0
 
 
 def _get(fetch: Fetch, url: str) -> tuple[int | None, str, str | None]:
@@ -178,7 +207,9 @@ def _get(fetch: Fetch, url: str) -> tuple[int | None, str, str | None]:
 
 def poll(conn: psycopg.Connection, now: datetime | None = None, fetch: Fetch | None = None,
          rng: random.Random | None = None, state: PollerState | None = None) -> dict[str, Any]:
-    """One pass: {"polled", "rows", "backoff_until" (iso or None), "errors"}."""
+    """One pass: {"polled", "rows", "backoff_until" (iso or None), "errors"}. A pending
+    scoreboard request (a summary not understood, or the scores task waiting) goes
+    first, then the due summaries, the game polled longest ago first."""
     now = now or utcnow()
     fetch, rng, state = fetch or default_fetch, rng or DEFAULT_RNG, state or DEFAULT_STATE
     now_ts = now.timestamp()
@@ -186,71 +217,100 @@ def poll(conn: psycopg.Connection, now: datetime | None = None, fetch: Fetch | N
     _note_yahoo(conn, state, out)
     games = live_games(conn, now)
     interval, rps = cadence(conn, len(games))
+    live = {g["game_id"]: g for g in games}
+    state.pending_fallback = {k: v for k, v in state.pending_fallback.items() if k in live}
+    board_url = str(get_setting(conn, "scores_url", SCOREBOARD_URL) or SCOREBOARD_URL)
+    asked = _board_due(state, now_ts, interval) and _scoreboard(conn, board_url, now, fetch, rng, state, rps, out)
     template = str(get_setting(conn, "espn_summary_url", DEFAULT_SUMMARY_URL) or DEFAULT_SUMMARY_URL)
-    fallback: list[dict[str, Any]] = []
     due = [g for g in games if now_ts - state.last_poll.get(g["game_id"], float("-inf")) >= interval]
     if due and "{event_id}" not in template:
         out["errors"].append("espn_summary_url has no {event_id} placeholder: not polled")
         due = []
     due.sort(key=lambda g: state.last_poll.get(g["game_id"], float("-inf")))
     for game in due:
-        if state.backoff_until.get("espn", 0.0) > now_ts or not state.allow(now_ts, rps):
+        answer = state.send(fetch, template.replace("{event_id}", str(game["espn"])), now_ts, rps, rng)
+        if answer is None:
             break
-        state.requests.append(now_ts)
         state.last_poll[game["game_id"]] = now_ts
         out["polled"] += 1
-        status, text, error = _get(fetch, template.replace("{event_id}", str(game["espn"])))
-        if not _answer_ok(state, "espn", status, error, now_ts, rng, out, game["game_id"]):
+        if not _answer_ok(answer, out, game["game_id"]):
             continue
-        rows = parse_summary_rows(text)
+        rows = parse_summary_rows(answer[1])
         if not rows:
             out["errors"].append(f"{game['game_id']}: summary payload not understood")
-            fallback.append(game)
+            state.pending_fallback[game["game_id"]] = game
             continue
-        out["rows"] += store(conn, game["game_id"], "espn_summary", rows, now)
-    if fallback:
-        _scoreboard(conn, fallback, now, fetch, rng, state, rps, out)
+        state.pending_fallback.pop(game["game_id"], None)
+        out["rows"] += _store_safely(conn, game["game_id"], "espn_summary", rows, now, out)
+    if not asked and _board_due(state, now_ts, interval):
+        _scoreboard(conn, board_url, now, fetch, rng, state, rps, out)
     feedlag.fill_market_moves(conn, now)
     until = state.backoff_until.get("espn", 0.0)
-    if until > now_ts:
+    if until > state.stamp(now_ts):
         out["backoff_until"] = datetime.fromtimestamp(until, tz=now.tzinfo).isoformat()
     return out
 
 
-def _answer_ok(state: PollerState, source: str, status: int | None, error: str | None, now_ts: float,
-               rng: random.Random, out: dict[str, Any], what: str) -> bool:
-    """True for a 200; otherwise log, report and (429 or 403) back the source off."""
+def _answer_ok(answer: Answer, out: dict[str, Any], what: str) -> bool:
+    """True for a 200; otherwise log and report (send() already backed off a 429 or 403)."""
+    status, _text, error, _ts = answer
     if status == 200:
-        state.failures[source] = 0
         return True
     if status in (429, 403):
-        until = state.back_off(source, now_ts, rng)
-        message = f"{what}: {source} answered {status}, backing off {until - now_ts:.0f} s"
+        message = f"{what}: espn answered {status}, backing off"
     else:
-        message = f"{what}: {error}" if error else f"{what}: {source} answered {status}"
+        message = f"{what}: {error}" if error else f"{what}: espn answered {status}"
     log.warning("game state %s", message)
     out["errors"].append(message)
     return False
 
 
-def _scoreboard(conn: psycopg.Connection, games: list[dict[str, Any]], now: datetime, fetch: Fetch,
-                rng: random.Random, state: PollerState, rps: float, out: dict[str, Any]) -> None:
-    """One scoreboard request for the games whose summary could not be parsed."""
-    now_ts = now.timestamp()
-    if state.backoff_until.get("espn", 0.0) > now_ts or not state.allow(now_ts, rps):
-        return
-    state.requests.append(now_ts)
+def _board_due(state: PollerState, now_ts: float, interval: float) -> bool:
+    """The scores task waits for a scoreboard, or a summary was not understood and the
+    last scoreboard request is at least one per-game interval old (no tight retry)."""
+    return state.board_wanted or (bool(state.pending_fallback) and now_ts - state.last_board >= interval)
+
+
+def _scoreboard(conn: psycopg.Connection, url: str, now: datetime, fetch: Fetch, rng: random.Random,
+                state: PollerState, rps: float, out: dict[str, Any]) -> bool:
+    """One scoreboard request for the games whose summary was not understood (and for
+    the scores task, through state.board); whether it went out."""
+    answer = state.ask_board(fetch, url, now.timestamp(), rps, rng)
+    if answer is None:
+        return False
+    state.last_board = now.timestamp()
     out["polled"] += 1
-    url = str(get_setting(conn, "scores_url", SCOREBOARD_URL) or SCOREBOARD_URL)
-    status, text, error = _get(fetch, url)
-    if not _answer_ok(state, "espn", status, error, now_ts, rng, out, "scoreboard"):
-        return
-    states = parse_scoreboard_states(text)
-    for game in games:
+    if not _answer_ok(answer, out, "scoreboard"):
+        return True
+    states = parse_scoreboard_states(answer[1])
+    games, state.pending_fallback = state.pending_fallback, {}
+    for game in games.values():
         found = states.get(str(game["espn"]))
         if found is not None:
             row = {**found, "play_id": None, "play_text": None, "event_ts": None, "raw": {"scoreboard": game["espn"]}}
-            out["rows"] += store(conn, game["game_id"], "espn_scoreboard", [row], now)
+            out["rows"] += _store_safely(conn, game["game_id"], "espn_scoreboard", [row], now, out)
+    return True
+
+
+def scores_fetch(conn: psycopg.Connection, state: PollerState, now: datetime, fetch: Fetch | None = None,
+                 rng: random.Random | None = None) -> Callable[[str], str]:
+    """The scores task's fetch, sharing the feed's window and backoff: the scoreboard
+    answer of the last BOARD_FRESH_S seconds, else one request when the window and the
+    backoff allow. Raises scores.Deferred when nothing may go out now (the feed's next
+    pass then asks the scoreboard before any summary) and RuntimeError on a non-200."""
+    fetch, rng, now_ts = fetch or default_fetch, rng or DEFAULT_RNG, now.timestamp()
+
+    def get(url: str) -> str:
+        fresh = state.board is not None and state.stamp(now_ts) - state.board[0] <= BOARD_FRESH_S
+        if not fresh and state.ask_board(fetch, url, now_ts, cadence(conn, 0)[1], rng) is None:
+            state.board_wanted = True
+            raise Deferred("espn is backing off or its rate window is full; the feed asks the scoreboard next")
+        _ts, status, text = state.board  # type: ignore[misc]
+        if status != 200:
+            raise RuntimeError(f"scoreboard: {text}")
+        return text
+
+    return get
 
 
 def _note_yahoo(conn: psycopg.Connection, state: PollerState, out: dict[str, Any]) -> None:

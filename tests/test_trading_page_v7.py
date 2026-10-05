@@ -116,24 +116,19 @@ def test_every_chip_has_a_word_and_every_details_a_summary(client: Any, conn: An
     assert chr(0x2014) not in client.get("/trading").text
 
 
-def test_ingame_slot_shows_a_second_meta_line(client: Any, conn: Any, monkeypatch: Any) -> None:
-    """Step 6C sets assignment["ingame_line"]; the row shows it as its second .row-meta."""
-    from host.api import dashboard_trading
-    from host.trading import assignments
+def test_ingame_slot_shows_a_second_meta_line(client: Any, conn: Any) -> None:
+    """Step 6C: an assignment trading in-game shows its live state as the row's second
+    .row-meta (.row-ingame); one without anything in-game keeps a single grey line."""
+    from tests.test_ingame_dashboard import _game_state, _ingame_model, _set_ingame
 
     setup = trade_setup(conn)
-    real = assignments.list_assignments
-
-    def with_line(c: Any, *a: Any, **kw: Any) -> list[dict[str, Any]]:
-        rows = real(c, *a, **kw)
-        for r in rows:
-            r["ingame_line"] = "Q3 7:12 · KC 17-10 · 4 s ago"
-        return rows
-
-    monkeypatch.setattr(dashboard_trading.assignments, "list_assignments", with_line)
+    row = page(client.get("/fragments/trading").text).row("assignment", setup.assignment["id"])
+    assert len(row.select(".row-meta")) == 1
+    _set_ingame(conn, setup.assignment, _ingame_model(conn), True)
+    _game_state(conn, age_s=4)
     row = page(client.get("/fragments/trading").text).row("assignment", setup.assignment["id"])
     metas = row.select(".row-meta")
-    assert len(metas) == 2 and metas[1].text == "Q3 7:12 · KC 17-10 · 4 s ago"
+    assert len(metas) == 2 and metas[1].has_class("row-ingame") and metas[1].text.startswith("Q3 4:12 · 17-14 · 4 s ago")
 
 
 def test_view_shaping_helpers() -> None:

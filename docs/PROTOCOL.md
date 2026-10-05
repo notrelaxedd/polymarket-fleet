@@ -1123,3 +1123,94 @@ is `validation_seasons`.
 - The owner's kill cancels open sells like buys. Fills of a sell carry
   `fills.basis_cents` (the basis the sale removed) and post a ledger `sell` row; settled
   sells get their own `bets` row (`order_side` sell, `result` sold, `stake_cents` 0).
+
+## Step 6 additions (Part C: in-game, docs/INGAME.md)
+
+### Data for workers
+- `GET /api/v1/data/pbp?seasons=A-B` (worker bearer; 401 without a valid token):
+  every `pbp_rows` row of the seasons (`A` or `A-B`, 1999..2100, 400 otherwise; every
+  season when omitted), ordered by game then play. The body is gzip-compressed JSON
+  lines, one object per row in this key order: `game_id, play_id, season, home_win,
+  score_diff, seconds_remaining, half, down, ydstogo, yardline_100, posteam_is_home,
+  home_timeouts, away_timeouts, pregame_p_home, vegas_wp` (reals rounded to 6 digits),
+  served as `Content-Type: application/x-ndjson+gzip` with no `Content-Encoding`, so
+  urllib stores it as is. `ETag: "<count>-<max season>-<checksum>"` over the selected
+  rows (unchanged by an idempotent re-ingest), `Cache-Control: no-cache`, 304 on a
+  matching `If-None-Match`.
+- The worker keeps it as `<state>/cache/pbp.jsonl.gz` with `pbp.etag` (`{"seasons",
+  "etag"}`; the ETag is sent only for the same season selection), streamed to a
+  temporary file and checked for the gzip magic before it replaces the cache; a failed
+  fetch falls back to the cached file (`fleet/worker/pbp_cache.py`).
+
+### Runner context and the in-game search
+- A `model_search` with `params.family` `"ingame_wp"` gets the context `{"games_path":
+  null, "model": null, "pbp_path": "<cache file>"}` and the games feed is not fetched.
+  It asks for the seasons from the first train season to the last validation season
+  (an open end is the current UTC year). Rows unavailable with no cached copy fail the
+  job with `context unavailable: ...`.
+- Params (`host/ingame_jobparams.py`, 400 on error): `{"family": "ingame_wp",
+  "train_seasons": [first, last] (default [2012, 2021]), "validation_seasons": [first,
+  last or null] (default [2022, null]), "n" (1..500, default 20), "seed" (default 1),
+  "top_k" (1..20, default 5), "train_fraction" (above 0, at most 1, default 0.3)}`.
+  Seasons are ints in 1999..2100; `seasons` is accepted in place of `train_seasons`
+  (not both); a null last train season is capped at the season before the validation
+  era; the train era must end before the validation era starts; any other key is 400
+  (`unknown ingame_wp model_search params: ...`). No settings are copied in.
+- Result: `{"evaluated", "train_seasons", "validation_seasons", "train_fraction",
+  "n_fit_plays", "top", "create_models"}`. Each `create_models` entry is `{"family":
+  "ingame_wp", "params", "artifact", "summary", "trained_through": null,
+  "parent_model_id": null, "backtest_metrics" (the selection metrics with `"era":
+  "search"`), "validation_metrics" (with `"era": "validation"`), "stress_metrics":
+  null}`; the agent posts them to `POST /api/v1/models` as for any search. When the
+  identity hits an existing ingame_wp root whose artifact differs, the host replaces
+  the artifact, the three metrics and the summary in one update.
+- A `backtest` of family `ingame_wp`, and a `backtest`, `validate` or `train` naming an
+  ingame_wp `model_id`, is 400 at creation; a worker that gets one anyway fails it.
+
+### `GET /api/v1/trade/state`
+- `settings` gains `ingame_tick_s, ingame_max_state_age_s, ingame_quiet_seconds,
+  ingame_cutoff_seconds, ingame_dead_zone, ingame_min_edge, ingame_max_bet_cents,
+  ingame_gtd_seconds`.
+- Each assignment entry gains `"ingame": {"enabled" (trade_ingame and an in-game model
+  set), "model": {"id", "family", "params", "artifact"} | null, "game_state":
+  {"state", "ts", "age_s", "source", "last_change": {"kind", "ts"} | null} | null,
+  "pregame_p_home" (devigged closing moneyline, else the frozen closing price of the
+  home market, else null), "lag": {"suspended", "median_lag_s", "n"}}`; `state` has
+  exactly the keys `status, period, clock_seconds, home_score, away_score, possession,
+  down, distance, yardline_100, home_timeouts, away_timeouts`. Open orders carry
+  `ingame`.
+
+### `POST /api/v1/orders/request`
+- Optional `"ingame": true` (default false) and `"gtd_seconds"` (int 1..86400 or null,
+  400 outside). An in-game request is decided by `host/trading/ingame.py` (reasons
+  `ingame_disabled`, `ingame_paper_only`, `ingame_stale`, `ingame_quiet`,
+  `ingame_cutoff`, `ingame_lag_suspended`; docs/INGAME.md). The order's GTD is always
+  `settings.ingame_gtd_seconds`; the worker's `gtd_seconds` is only recorded in the
+  approval event (`gtd_seconds_requested`). The worker's in-game `client_request_id` is
+  `"ingame-" + sha256(assignment|market|snapshot_id|price|size|order_side|ingame)[:32]`.
+
+### Owner API
+- `POST /api/assignments` also takes `"ingame_model_id"` (an ingame_wp model of a lineage
+  that is not retired, else 400) and `"trade_ingame"` (bool; left out it takes
+  `settings.trade_ingame`, false for a live assignment; true on a live assignment is
+  409). An ingame_wp model as `model_id` is 400.
+- `POST /api/assignments/{id}/ingame {"ingame_model_id", "trade_ingame"}` changes only the
+  fields sent (an explicit null `ingame_model_id` clears it; an empty body is 400) on an
+  active or halted assignment (409 otherwise), audited as `assignment_ingame`. Turning
+  in-game trading off cancels the open in-game orders (`orders_cancelled` in the
+  answer); changing the in-game model once in-game orders exist is 409.
+- `GET /api/assignments` rows carry `ingame_model_id` and `trade_ingame`.
+- `GET /api/models`: every entry carries `ingame` (`{"games", "bets", "pnl_cents"}` or
+  null), `is_ingame`, `ingame_validation` and `ingame_reason`; ingame_wp lineages are
+  listed in `unranked` with the reason `in-game model`, after the others.
+- Dashboard forms: `POST /assignments/{id}/ingame` (the toggle), `POST
+  /exchange/probe-gamestate` (field `event`, digits only), `POST /settings/ingame`, and
+  `GET /trading?ingame_model=<id>` preselects the in-game model.
+
+### Ingest and operator commands
+- `python -m host.cli ingest-pbp-rows --season <year | first-last> [--file <csv.gz>]`
+  loads nflverse play-by-play into `pbp_rows` (docs/INGAME.md); the host refreshes the
+  current season weekly in season.
+- `python -m host.exchange.cli probe-gamestate --event <espn id> [--yahoo] [--url
+  <template>]`: one game-state request, printing the status, the first 64 KiB of the
+  payload and what the parser extracted; it never raises.

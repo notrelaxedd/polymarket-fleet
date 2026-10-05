@@ -26,9 +26,9 @@
   {% endfor %}
 </select>
 {%- endmacro %}
-{% macro family_select() -%}
+{% macro family_select(names) -%}
 <select name="family">
-  {% for f in families %}
+  {% for f in names %}
   <option value="{{ f }}"{% if values.family == f %} selected{% endif %}>{{ f }}</option>
   {% endfor %}
 </select>
@@ -68,7 +68,7 @@
   <input type="hidden" name="kind" value="backtest">
   <div class="fields">
     <label>Model <span class="help">or family + params</span>{{ model_select(true) }}</label>
-    <label>Family {{ family_select() }}</label>
+    <label>Family {{ family_select(pregame_families) }}</label>
     <label>Params <span class="help">JSON</span><textarea name="params" rows="2">{{ values.params }}</textarea></label>
     {{ seasons_fields() }}
     <label>Price source
@@ -88,13 +88,23 @@
   {{ form_error('model_search') }}
   <input type="hidden" name="kind" value="model_search">
   <div class="fields">
-    <label>Family {{ family_select() }}</label>
+    <label>Family {{ family_select(families) }}</label>
     <label>Candidates <span class="help">1..5000</span><input type="text" name="n" value="{{ values.n }}" inputmode="numeric" autocomplete="off"></label>
     <label>Seed <input type="text" name="seed" value="{{ values.seed }}" inputmode="numeric" autocomplete="off"></label>
     {{ seasons_fields() }}
     <label>Keep top <span class="help">1..20</span><input type="text" name="top_k" value="{{ values.top_k }}" inputmode="numeric" autocomplete="off"></label>
     {{ target_select() }}
   </div>
+  <fieldset class="ingame-eras" data-card="ingame-eras">
+    <legend>ingame_wp only</legend>
+    <p class="help">These replace the seasons above for an ingame_wp search; blank = train {{ ingame_defaults.train_seasons[0] }}-{{ ingame_defaults.train_seasons[1] }}, validation {{ ingame_defaults.validation_seasons[0] }} on. Candidates blank = {{ ingame_defaults.n }}.</p>
+    <div class="fields">
+      <label>Train first <input type="text" name="ingame_train_first" value="{{ values.ingame_train_first }}" inputmode="numeric" autocomplete="off"></label>
+      <label>Train last <input type="text" name="ingame_train_last" value="{{ values.ingame_train_last }}" inputmode="numeric" autocomplete="off"></label>
+      <label>Validation first <input type="text" name="ingame_validation_first" value="{{ values.ingame_validation_first }}" inputmode="numeric" autocomplete="off"></label>
+      <label>Validation last <span class="help">blank = open</span><input type="text" name="ingame_validation_last" value="{{ values.ingame_validation_last }}" inputmode="numeric" autocomplete="off"></label>
+    </div>
+  </fieldset>
   <div class="form-actions"><button type="submit" class="btn primary">Send search</button></div>
   </form>
 {% endcall %}

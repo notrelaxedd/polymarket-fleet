@@ -178,7 +178,7 @@ def test_fragment_refresh_carries_positions_and_sell_chips(client, conn):
     assert not fragment.has("html") and not fragment.has("#trading-live") and not fragment.has('[data-card="assign"]')
     assert fragment.card("positions").has(".pnl-pos") and "+$2.75" in fragment.card("positions").text
     assert fragment.count('[data-chip="sell"]') == 4, "open sell, two recent sells, one sell fill"
-    assert "positions" in fragment.cards() and len(fragment.cards()) == 9, "positions is a card (step 4 had 8)"
+    assert "positions" in fragment.cards() and len(fragment.cards()) == 10, "positions is a card (step 4 had 8, step 6C adds the in-game feed)"
     assert _live(client).count('[data-card="positions"]') == 1
 
 

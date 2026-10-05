@@ -148,7 +148,12 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   `?train_model=<id>`, the validate form behind `?validate_model=<id>` (model
   preselected), or the form just rejected (400, error inline, values kept). Model labels
   are "K 24 · HFA 55 · MOV on · thru 2024 w18 · 8f173b7b" (or "untrained"); defaults
-  come from settings.
+  come from settings. (step 6C) The Model search family select lists `ingame_wp`; for it
+  the "ingame_wp only" fieldset (train first and last, validation first and last; blank
+  = the host defaults [2012, 2021] and [2022, open]) is sent as `train_seasons` and
+  `validation_seasons` instead of the pre-game seasons. The Backtest family select and
+  the Backtest, Train and Validate model selects leave ingame_wp out (the host refuses
+  those jobs for it).
 - Two tabs (links with `aria-current`): Running (queued, leased, cancel requested, held)
   and Done (`?tab=done`, the last 50 succeeded, failed and cancelled). Each job is one
   row: kind and target (the model, the family and size, the game), a "snapshots" chip on
@@ -193,6 +198,22 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 - "Unranked (n)": a closed disclosure with the not validated and retired lineages, the
   reason on each row. With no ranked lineage one line says why ("No lineage is validated
   yet, so none is ranked." or "No models yet. Send a model search from the Jobs page.").
+- (step 6C) A pre-game row whose lineage has in-game bets gets a third grey line
+  (`.row-meta.row-ingame`, "in-game 2 bets · -$1.20", from `model_scores.ingame_n_bets`
+  and `ingame_pnl_cents`); the others stay two lines.
+- (step 6C) "In-game models (n)" (`#ingame`, a closed disclosure `models-ingame` whose
+  summary counts the ones beating vegas_wp; `host/api/models_ingame_view.py`): the
+  ingame_wp lineages, never ranked with the pre-game ones (in `GET /api/models` they are
+  in `unranked` with the reason "in-game model", after the others), the ones beating
+  vegas_wp first, then by the log-loss gain over it. One row each (`data-row="ingame-model"`):
+  "ingame_wp L2 1.00 · time 1.00 · field 1.00" with a green "beats vegas_wp" chip (or a
+  dashed "not validated" chip); the grey line has the status chip (its reason as the
+  title) and "41,812 plays 2022-2024 · log-loss 0.447 vs 0.452"; the second grey line is
+  the status reason ("its validation log-loss is worse than the vegas_wp baseline",
+  "validated on N plays, fewer than 10000"), or, once the lineage has in-game bets, the
+  in-game paper record ("in-game paper 3 bets · +$4.80", `.row-ingame`). At the side the
+  log-loss gain per play ("+0.005"), then the menu: Details, "Assign in-game"
+  (`/trading?ingame_model=<id>#assign`) and Retire (both hidden once retired).
 - The page ends with the nflverse attribution line (CC BY 4.0, links to nflverse-data
   and the licence).
 
@@ -219,7 +240,24 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   Paper results (the paper record with the shrunk CLV and its 90% range, the live record
   when there is one), Assignments (the games this lineage was assigned to, a red LIVE chip
   on live ones) and History (the lineage members and the jobs that created, trained,
-  validated or replayed it).
+  validated or replayed it). (step 6C) Paper results adds an "in-game bets" line when the
+  lineage has in-game bets.
+- (step 6C) An ingame_wp model page (judged on held-out play-by-play against nflverse's
+  vegas_wp, never backtested for edge): the stats are the log-loss (vegas_wp's and the
+  gain as its note), the held-out plays (seasons, 10,000 needed) and the in-game paper
+  record; the verdict reads "Cleared for in-game paper trading: it beats vegas_wp over
+  41,812 held-out plays. In-game orders never go live in this step." or "Not cleared for
+  in-game paper trading: <reason>. Paper ok needs ..."; one caption explains log-loss and
+  vegas_wp; the actions are "Assign in-game" and "Retire lineage" in the menu (no Train,
+  Validate, Assign or snapshot replay). The Summary disclosure shows "held-out
+  validation" (with a "beats vegas_wp" or amber "does not beat vegas_wp" chip), "status
+  rule" and "in-game paper record" instead of the shrunk ROIs. In place of Robustness,
+  Backtest metrics, Snapshot replay and Paper results it has (`_model_ingame.html`,
+  `#ingame-validation`) the closed disclosures In-game validation (log-loss and Brier
+  against vegas_wp, the plays left out without a vegas_wp), By period (Q1 to Q4, OT), By
+  score (home minus away before the play: <=-9, -8..-1, 0, 1..8, >=9) and Calibration
+  (plays, mean p, mean outcome, vegas_wp mean), each with a one-line reading, or "No
+  held-out validation stored."; then Assignments and History.
 
 ## Settings `/settings` (changed: step 7)
 - Stats: live trading on/off, kill switch, max bet, market source (each a link to its group).
@@ -270,8 +308,19 @@ layout or wording, `docs/UI.md` wins and this file follows it.
     which reports in the flash).
   - Audit log: the last 20 owner actions as rows (action, entity, time, actor,
     confirmation text).
-- Step 6C adds an "In-game" group (`_settings_ingame.html`, its own `data-form`,
-  `data-card` and `data-field`s) after Trading.
+  - (step 6C) In-game (`_settings_ingame.html`, `#ingame`, `POST /settings/ingame`,
+    `host/settings_forms_ingame.py`, validators in `host/settings_schema_ingame.py`),
+    after Trading; its header reads "off by default · max bet $5.00 · min edge 5.0% · lag
+    limit 20 s · feed espn · paper only". A line says in-game orders are paper-only, then
+    three headings. Trade rules: "Trade in-game by default" (`trade_ingame`), in-game
+    tick (1..60 s), max game-state age (5..300 s), quiet seconds (0..300), cutoff (0..900
+    game seconds), dead zone (0..0.5), in-game min edge (0..0.5), in-game max bet in
+    dollars (`ingame_max_bet_cents`), in-game order lifetime (10..3600 s). Feed lag: max
+    feed lag (above 0, at most 600 s), min measured events (1..100). Game-state feed: poll
+    each live game every 3..5 s (`gamestate_poll_s`), ESPN max requests per second (above
+    0, at most 10), one checkbox per source (ESPN, Yahoo; stored as `gamestate_sources`),
+    the ESPN summary URL (must contain `{event_id}`), the Yahoo play-by-play URL (empty =
+    off, else must contain `{event_id}`), Yahoo poll (5..120 s).
 
 ## Trading `/trading` (step 4; changed: step 7)
 Every action is a form that redirects back to `/trading` with a flash, and a refused
@@ -284,7 +333,15 @@ error page.
   (models of non-retired lineages, trained first; an untrained one says it mirrors the
   market and never trades), mode (live appears only while `live_enabled`), bankroll and
   optional max bet in dollars. `POST /assignments` calls `create_assignment`. The button
-  is disabled with a one-line reason when no game or no model qualifies.
+  is disabled with a one-line reason when no game or no model qualifies. (step 6C) An
+  "In-game model" select (`ingame_model_id`, ingame_wp models of non-retired lineages,
+  "ingame_wp · L2 1.00 · time 1.00 · field 1.00 · paper_ok · 8f173b7b", first option "no
+  in-game model") and a "Trade in-game (paper only)" box (`trade_ingame`, ticked by
+  default when `settings.trade_ingame` is true); a hidden `ingame_form=1` marker tells an
+  unticked box (explicit off) from a post without the fields (the step 4 call). The
+  pre-game model select leaves ingame_wp models out (they trade only in-game);
+  `?ingame_model=<id>` (the "Assign in-game" actions) or `?model=<id>` of an ingame_wp
+  model opens the form with it preselected in the in-game select.
 - `#trading-live`, refreshed every 5 s from `/fragments/trading`:
   - Stats: "Paper today +$6.57" (all time as its note), (changed: step 7) "Live today"
     (`data-stat="live-today"`, all time as its note) while live is on or real money is
@@ -303,11 +360,33 @@ error page.
     a red line says assignments stay halted; after the reset "Activate all paper (N)"
     (`POST /assignments/activate-paper`) shows while halted paper assignments of
     unfinished games exist. There is no Fund action: the API has no top-up route.
+    (step 6C, `host/trading/views_ingame.py`, `_ingame_row.html`) An assignment with an
+    in-game model, switch or game state gets a third grey line (`.row-meta.row-ingame`):
+    an "in-game on" (green, accent ring) or "in-game off" chip, the latest game state as
+    "Q3 4:12 · 17-14 · 3 s ago" (away-home as in the "KC @ LV" title; "Half", "End Q1",
+    "OT 1:01", "Final", "Pre-game"), or an amber "state stale" chip before the last line
+    once the state is older than `ingame_max_state_age_s` (a final state never goes
+    stale), or "no game state yet"; while the game is in progress the in-game model's home
+    probability next to the home market mid ("model LV 62% · mid 58%", `data-p-home`
+    carries three decimals). A paper assignment that can still trade has the in-game
+    switch in its menu (`data-form="ingame-toggle"`, `POST /assignments/{id}/ingame`:
+    in-game model select, "Trade in-game" box, "Save in-game"), which calls
+    `assignments_ingame.set_ingame` (audited; turning it off cancels the open in-game
+    orders, named in the flash; a refusal is a flash). A live assignment's menu says
+    in-game orders are paper only.
+  - (step 6C) In-game feed (`#ingame-feed`, `data-card="ingame"`, `_trading_ingame.html`),
+    a closed disclosure right after the assignments (open while buys are suspended): the
+    header has a "not suspended" (green) or "buys suspended" (red) chip and the lag per
+    source ("ESPN 6 s behind · ESPN scoreboard 3 of 5 events"); inside, one line per
+    source over its last 20 measured events ("ESPN: median 6 s behind the market over 12
+    events", "ahead of" when negative, "not enough data (3 of 5 events measured)" below
+    `ingame_lag_min_events`), the reason line (median lag against `ingame_max_lag_s`;
+    sells stay allowed) and the polled sources.
   - Closed disclosures, each with a count and a one-line summary, keyed
     `trading-<name>` and wrapped in a section with the old anchor:
     - Open orders (`#open-orders`): "Cancel all" (`POST /cancel-all`, confirm, no kill),
-      then one row per order: "20 @ 0.58 (18 filled) · $11.84" with the live, sell
-      and smoke chips, the market, exchange id, model, worker and time on the grey line,
+      then one row per order: "20 @ 0.58 (18 filled) · $11.84" with the live, sell,
+      smoke and (step 6C) `in-game` chips, the market, exchange id, model, worker and time on the grey line,
       the status chip and Cancel (`POST /orders/{id}/cancel`) in the menu.
     - (step 6B) Positions (`#positions`): per assignment holding contracts, its label
       and total unrealized P&L, then one row per market: side, size, average cost with
@@ -315,8 +394,13 @@ error page.
       when there is none).
     - Recent orders (`#orders`, last 50): the same rows plus a second grey line with the
       reject reason in red ("max_bet: over max bet $71.06 > $25.00"), the cause of a
-      cancelled or expired order ("kill", "gtd expired") and the rationale.
-    - Fills (`#fills`, last 50): "18 @ 0.58" ("sold N @ p" with a sell chip), the order,
+      cancelled or expired order ("kill", "gtd expired") and the rationale. (step 6C)
+      The in-game reject reasons read in words: `ingame_disabled`, `ingame_paper_only`,
+      `ingame_stale` ("game state too old"), `ingame_quiet`, `ingame_cutoff`,
+      `ingame_lag_suspended`; `max_bet` on an in-game order names the lower of the caps
+      including `ingame_max_bet_cents`.
+    - Fills (`#fills`, last 50): "18 @ 0.58" ("sold N @ p" with a sell chip, an
+      `in-game` chip on the fill of an in-game order), the order,
       fee, basis, market, worker and time, the realized P&L of a sell.
     - Markets (`#markets`): every confirmed market with game, side, bid / ask,
       liquidity and closing price, the snapshot age (amber when older than 60 s or
@@ -330,20 +414,24 @@ error page.
       with live orders (the group then opens by itself), the last errors and "Probe
       markets" (`POST /exchange/probe`), which renders the raw truncated payload on its
       own page (`probe.html`: source and HTTP status stats, the URL, a Copy button).
+      (step 6C) Beside it the "Probe game state" form (`data-form="probe-gamestate"`: the
+      ESPN event id, digits only, with the event ids of assigned unfinished games offered
+      as suggestions) posting to `POST /exchange/probe-gamestate`, which renders
+      `probe.html` as "Game-state probe": the event and its game as a stat, event_id,
+      game_id (or "no game has this ESPN event id"), url, status, error, the parsed
+      states (Copy) and the raw payload (Copy).
     - Ledger check (`#ledger`): "OK" with the number of bankrolls whose replay matches,
       or a red "problems" chip with one line per disagreement (the group then opens).
-  - Step 6C adds a second grey line (`.row-meta.row-ingame`: score, clock, state age) to
-    an assignment row and an "In-game feed" disclosure (`_trading_ingame.html`) after
-    the assignments; the Models rows and the model page get the same in-game line and
-    an "In-game" disclosure (`_model_ingame.html`).
 
 ## Screenshots and layout checks
 
 `tests/hw/screenshots.py` (see tests/hw/README.md) seeds a throwaway database
-(`tests/hw/seed_shots.py` with the step 3, 4, 5, 6 and 6B seeds) and captures Home,
+(`tests/hw/seed_shots.py` with the step 3, 4, 5, 6, 6B and 6C seeds) and captures Home,
 Fleet, Jobs (both tabs), the job pages (sleep, search, backtest, validate, snapshot
-replay), Models, the model pages (paper-ranked, flagged, snapshot-ranked), Trading,
-Settings and the market probe page, the validate form and the New assignment form, at
+replay), Models, the model pages (paper-ranked, flagged, snapshot-ranked, ingame_wp),
+Trading (with the in-game line, chips and the In-game feed), Settings, the market and
+game-state probe pages, the validate form and the New assignment form (also with an
+ingame_wp model preselected), at
 390x844 and 1280x800 in light and dark; then settings, trading, fleet and home with live
 on, after an auto-kill, after a hand kill, and trading after the reset. Every capture
 runs the `docs/UI.md` assertions (`tests/hw/ui_checks.py`): no horizontal overflow,

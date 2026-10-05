@@ -14,6 +14,10 @@ A retired lineage stays retired. The status is written to every row of the linea
 Whenever a lineage leaves `live_eligible` its active live assignments are halted,
 which cancels their orders (docs/LIVE.md).
 
+Step 6 Part C: an ingame_wp lineage is judged by host/ingame_eligibility.py instead
+(paper_ok when its held-out validation beats the vegas_wp baseline over at least
+10000 plays, else candidate; never live_eligible, and the paper gate skips it).
+
 `thresholds` reads the setting FOR SHARE, and every model write reads it before it
 touches a model row: a write that overlaps a thresholds change waits for the new
 value, and the thresholds UPDATE waits for in-flight model writes, so the
@@ -26,6 +30,7 @@ from typing import Any
 import psycopg
 
 from host.events import add_audit
+from host.ingame_eligibility import ingame_status, is_ingame, is_ingame_lineage
 
 DEFAULT_THRESHOLDS: dict[str, Any] = {
     "min_bets": 50, "min_roi": 0.02, "max_drawdown": 0.30, "require_validation": True,
@@ -127,7 +132,10 @@ def status_for(current: str, metrics: dict[str, Any] | None, limits: dict[str, A
 
 
 def root_status(root: dict[str, Any], current: str, limits: dict[str, Any]) -> str:
-    """status_for over the era `limits` selects on the root row."""
+    """status_for over the era `limits` selects on the root row (the in-game rule for
+    an ingame_wp root)."""
+    if is_ingame(root):
+        return ingame_status(current, root.get("validation_metrics"))
     return status_for(current, gate_metrics(root, limits), limits, root.get("stress_metrics"))
 
 
@@ -146,7 +154,8 @@ def recompute_lineage(
     if was is not None and was["status"] == "live_eligible":
         approval_lock(conn, "live")
     rows = conn.execute(
-        "SELECT id, status, backtest_metrics, validation_metrics, stress_metrics FROM models WHERE lineage_id = %s FOR UPDATE",
+        "SELECT id, family, status, backtest_metrics, validation_metrics, stress_metrics FROM models"
+        " WHERE lineage_id = %s FOR UPDATE",
         (lineage_id,),
     ).fetchall()
     root = next((r for r in rows if r["id"] == lineage_id), None)
@@ -193,8 +202,18 @@ from host.paper_gate import (  # noqa: E402
     paper_ci,
     paper_stats,
     paper_thresholds,
-    recompute_paper,
 )
+from host.paper_gate import recompute_paper as _recompute_paper  # noqa: E402
+
+
+def recompute_paper(conn: psycopg.Connection, lineage_id: Any, actor: str | None = "settle") -> str | None:
+    """The paper gate (host.paper_gate.recompute_paper), except for an ingame_wp
+    lineage: in-game orders are paper-only, so its paper record never promotes it and
+    only the in-game validation rule applies."""
+    if is_ingame_lineage(conn, lineage_id):
+        return recompute_lineage(conn, lineage_id, actor=actor)
+    return _recompute_paper(conn, lineage_id, actor)
+
 
 __all__ = [
     "DEFAULT_PAPER_THRESHOLDS", "DEFAULT_THRESHOLDS", "ci_low", "gate_limits", "gate_metrics", "halt_live_assignments",

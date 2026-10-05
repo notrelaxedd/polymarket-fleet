@@ -13,7 +13,11 @@ simulated crash with a lost register reply (the retry with the previous token su
 held_jobs are re-adopted). Between the trading and the crash phases runs the step 5
 live phase (tests/e2e_live.py: the exchange loop with a fake live gateway, the typed
 switch, a live assignment placed, filled, timed out and reconciled, an auto-kill from
-an unknown exchange order, the smoke order, cancel-all --direct, live settlement).
+an unknown exchange order, the smoke order, cancel-all --direct, live settlement), then
+the step 6 Part C in-game phase (tests/e2e_ingame.py: a tiny in-game search, a game in
+progress fed by a fake ESPN through the exchange's gamestate task, an in-game paper buy
+approved and filled after kickoff, the paper-only, stale, quiet and cutoff rejections,
+KILL cancelling a resting in-game order, simulate-final scoring the in-game lineage).
 Between the models and the trading phases runs the step 6 Part A phase
 (tests/e2e_validation.py: a pooled search with a held-out validation era, the same
 search single-process giving the same numbers, a validate job on the trained lineage,
@@ -50,6 +54,7 @@ from host.api.app import create_app
 from host.config import Config
 from host.loop import LoopThread
 from tests.conftest import flash_cookie, heartbeat_body
+from tests.e2e_ingame import phase_ingame
 from tests.e2e_live import phase_live
 from tests.e2e_models import CountingRunner, phase_models
 from tests.e2e_paper_gate import phase_paper_gate
@@ -547,6 +552,7 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     phase_trading(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_live(live_host, state_dir, worker_id, first, models, tmp_path, monkeypatch, wait_for, settled)
     refused = phase_signals(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
+    phase_ingame(live_host, state_dir, worker_id, first, models, tmp_path, wait_for, settled)
     phase_crash(live_host, state_dir, worker_id, first, agents)
     phase_paper_gate(live_host, validated)
 

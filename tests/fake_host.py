@@ -27,8 +27,9 @@ Step 4: the trade role. A trade worker's heartbeat claims up to want_jobs queued
 jobs (none under kill). TradeStore holds assignments (game, model, bankroll, two
 markets with a snapshot each), orders and the trade settings behind
 GET /api/v1/trade/state, POST /api/v1/orders/request (a small approval: duplicate,
-killed, lease, assignment, market, kickoff, bankroll; approved orders are paper and
-open at once with the reservation taken), POST /api/v1/orders/{id}/cancel and
+killed, lease, assignment, market, kickoff (not for "ingame" requests), bankroll;
+approved orders are paper and open at once with the reservation taken, and echo
+"ingame"; an assignment given an "ingame" block serves it in the state), POST /api/v1/orders/{id}/cancel and
 POST /api/v1/trade/release (cancels the orders, requeues the jobs). Controls:
 add_assignment(), set_snapshot()/set_ask(), halt_assignment(), set_kickoff_past(),
 set_trade_settings(); orders() and trade_calls() expose the store and the calls.
@@ -37,10 +38,17 @@ Step 6B: GET /api/v1/data/prices?since=&platform= serves the market rows given t
 set_prices() (confirmed rows of games with kickoff_at >= since; platform "sim" rows
 only when the query names platform=sim) as {"markets", "count"} with an ETag (304 on
 If-None-Match); prices_queries() lists the query strings received.
+
+Step 6C: GET /api/v1/data/pbp?seasons=A-B serves the play-by-play rows given to
+set_pbp() (only the seasons A..B; all rows without the query) like host/api/data_pbp.py:
+gzip-compressed JSON lines, Content-Type application/x-ndjson+gzip, no
+Content-Encoding, ETag '"<count>-<max season>-<stamp>"' and 304 on If-None-Match;
+pbp_queries() lists the query strings received.
 """
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 import io
 import json
@@ -249,10 +257,12 @@ class TradeStore:
                     "max_bet_cents": a["max_bet_cents"], "game": dict(a["game"]), "model": dict(a["model"]), "bankroll": dict(a["bankroll"]),
                     "markets": [{k: v for k, v in self.markets[m].items() if k != "assignment_id"} for m in a["market_ids"].values()],
                     "open_orders": [
-                        {k: o[k] for k in ("id", "market_id", "price", "size", "filled_size", "status", "snapshot_id", "created_at")}
+                        {**{k: o[k] for k in ("id", "market_id", "price", "size", "filled_size", "status", "snapshot_id", "created_at")},
+                         "ingame": bool(o.get("ingame"))}
                         for o in self.orders.values() if o["assignment_id"] == a["id"] and o["status"] in OPEN_ORDER_STATUSES
                     ],
                     "positions": [],
+                    **({"ingame": a["ingame"]} if a.get("ingame") is not None else {}),
                 })
             return {"kill": self.host.kill_switch, "server_time": _iso(time.time()), "settings": dict(self.settings), "assignments": entries}
 
@@ -269,6 +279,7 @@ class TradeStore:
             "price": float(body["price"]), "size": int(body["size"]), "cost_cents": cost, "snapshot_id": body.get("snapshot_id"),
             "status": status, "reject_reason": None, "filled_size": 0, "my_p": body.get("my_p"), "market_p": body.get("market_p"),
             "edge": body.get("edge"), "rationale": body.get("rationale"), "created_at": _iso(time.time()),
+            "ingame": body.get("ingame") is True,
         }
 
     def request(self, w: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
@@ -298,7 +309,8 @@ class TradeStore:
                 return self._reject(w, body, "assignment", cost)
             if market["assignment_id"] != a["id"]:
                 return self._reject(w, body, "market", cost)
-            if self.settings.get("trade_pregame_only") and _parse_iso(a["game"]["kickoff_at"]) <= time.time():
+            if (self.settings.get("trade_pregame_only") and not body.get("ingame")
+                    and _parse_iso(a["game"]["kickoff_at"]) <= time.time()):
                 return self._reject(w, body, "kickoff", cost)
             if cost > a["bankroll"]["available_cents"]:
                 return self._reject(w, body, "bankroll", cost)
@@ -389,6 +401,9 @@ class FakeHost:
         self.prices_rows: list[dict[str, Any]] = []
         self.prices_etag = "p0"
         self.prices_query_log: list[str] = []
+        self.pbp_rows: list[dict[str, Any]] = []
+        self.pbp_stamp = "0"
+        self.pbp_query_log: list[str] = []
         self.models_store: dict[str, dict[str, Any]] = {}
         self.model_calls: list[dict[str, Any]] = []
         self.trade = TradeStore(self)
@@ -451,8 +466,9 @@ class FakeHost:
             return w["token"]
 
     def fail_next(self, suffix: str, status: int = 503, count: int = 1) -> None:
-        """Answer the next `count` requests whose path ends with /<suffix> with `status`
-        (0 = drop the connection without an answer, like a network failure)."""
+        """Answer the next `count` requests whose path (with or without its query) ends
+        with /<suffix> with `status` (0 = drop the connection without an answer, like a
+        network failure)."""
         with self.lock:
             self.failures.append({"suffix": "/" + suffix.strip("/"), "status": status, "count": count})
 
@@ -513,6 +529,36 @@ class FakeHost:
                     and (not platform or m.get("platform") == platform)
                     and (m.get("platform") != "sim" or platform == "sim")]
         return 200, {"markets": rows, "count": len(rows)}, etag
+
+    def set_pbp(self, rows: list[dict[str, Any]]) -> None:
+        """Replace the play-by-play rows served by GET /api/v1/data/pbp."""
+        with self.lock:
+            self.pbp_rows = [dict(r) for r in rows]
+            self.pbp_stamp = "%x" % int(time.time() * 1000)
+
+    def pbp_queries(self) -> list[str]:
+        with self.lock:
+            return list(self.pbp_query_log)
+
+    def pbp(self, w: dict[str, Any], query: str, if_none_match: str | None) -> tuple[int, bytes, str]:
+        """(status, gzip body, etag) of the pbp feed for one query string."""
+        text = {k: v[-1] for k, v in parse_qs(query).items()}.get("seasons") or ""
+        with self.lock:
+            self.pbp_query_log.append(query)
+            if text:
+                try:
+                    bounds = [int(part) for part in text.split("-")]
+                except ValueError:
+                    raise ApiError(400, f"not a season or a season range: {text!r}") from None
+                first, last = bounds[0], bounds[-1]
+                rows = [r for r in self.pbp_rows if first <= int(r.get("season") or 0) <= last]
+            else:
+                rows = list(self.pbp_rows)
+            etag = '"%d-%d-%s"' % (len(rows), max((int(r.get("season") or 0) for r in rows), default=0), self.pbp_stamp)
+        if if_none_match and if_none_match.strip() == etag:
+            return 304, b"", etag
+        lines = "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows).encode("utf-8")
+        return 200, gzip.compress(lines, mtime=0), etag
 
     def add_model(self, model: dict[str, Any] | None = None) -> str:
         """Seed a model row (defaults filled in); returns its id."""
@@ -579,7 +625,7 @@ class FakeHost:
     def _take_failure(self, path: str) -> int | None:
         with self.lock:
             for entry in self.failures:
-                if entry["count"] > 0 and path.endswith(entry["suffix"]):
+                if entry["count"] > 0 and (path.endswith(entry["suffix"]) or urlsplit(path).path.endswith(entry["suffix"])):
                     entry["count"] -= 1
                     return int(entry["status"])
         return None
@@ -991,19 +1037,21 @@ class _Handler(BaseHTTPRequestHandler):
     def host(self) -> FakeHost:
         return self.server.host  # type: ignore[attr-defined]
 
-    def _send(self, status: int, payload: Any, raw: bytes | None = None, etag: str | None = None) -> None:
+    def _send(self, status: int, payload: Any, raw: bytes | None = None, etag: str | None = None,
+              content_type: str | None = None) -> None:
         body = b"" if status == 304 else (raw if raw is not None else json.dumps(payload).encode("utf-8"))
+        with self.host.lock:  # logged before the answer leaves, so a test that saw its effect sees the request
+            self.host.requests.append((self.command, self.path, status))
         self.send_response(status)
         if etag is not None:
             self.send_header("ETag", etag)
         if status != 304:
-            self.send_header("Content-Type", "application/octet-stream" if raw is not None else "application/json")
+            default_type = "application/octet-stream" if raw is not None else "application/json"
+            self.send_header("Content-Type", content_type or default_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if body:
             self.wfile.write(body)
-        with self.host.lock:
-            self.host.requests.append((self.command, self.path, status))
 
     def _drop_connection(self) -> None:
         """Simulate a network failure: no answer at all."""
@@ -1059,6 +1107,10 @@ class _Handler(BaseHTTPRequestHandler):
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, body, etag = self.host.prices(w, urlsplit(self.path).query, self.headers.get("If-None-Match"))
                 self._send(status, body, etag=etag)
+            elif urlsplit(self.path).path == "/api/v1/data/pbp":
+                w = self.host.auth_any_worker(self.headers.get("Authorization"))
+                status, raw, etag = self.host.pbp(w, urlsplit(self.path).query, self.headers.get("If-None-Match"))
+                self._send(status, None, raw=raw, etag=etag, content_type="application/x-ndjson+gzip")
             elif urlsplit(self.path).path == "/api/v1/data/games":
                 w = self.host.auth_any_worker(self.headers.get("Authorization"))
                 status, body, etag = self.host.games(w, self.headers.get("If-None-Match"))

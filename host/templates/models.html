@@ -39,6 +39,9 @@
 {% endcall %}
 </div>
 {% endif %}
-{# Step 6C: the in-game column group joins each row as a second .row-meta line (row-meta row-ingame) in _model_row.html. #}
+{# Step 6C: a pre-game row whose lineage has in-game bets carries its in-game record as
+   the row's .row-meta.row-ingame line (_model_row.html); the ingame_wp lineages are
+   never ranked with the pre-game ones and sit in their own closed group. #}
+{% include "_models_ingame.html" %}
 <p class="attribution muted">{{ attribution }} <a href="https://github.com/nflverse/nflverse-data">nflverse-data</a> &middot; <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a></p>
 {% endblock %}

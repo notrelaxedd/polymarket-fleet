@@ -13,6 +13,11 @@ A backtest with params.price_source "snapshots" (docs/ROBUSTNESS.md B1) replays 
 recorded prices of the context's prices_path on params.price_platform (platform sim
 refused unless params.allow_sim_prices) with params.decision_minutes_before_kickoff
 and params.participation (settings copied by the host; defaults 60 and 0.5).
+Step 6C: a model_search with params.family "ingame_wp" runs the in-game search
+(fleet.sim.ingame through fleet.worker.pbp_cache) on the play-by-play rows of the
+context's pbp_path, with params train_seasons, validation_seasons, n, seed, top_k and
+train_fraction; its result carries create_models like every search. The pre-game
+backtest, validate and train kinds refuse the ingame_wp family.
 """
 
 from __future__ import annotations
@@ -36,6 +41,7 @@ DEFAULT_LIMITS: dict[str, Any] = {
 DEFAULT_VALIDATION_SEASONS: list[int | None] = [2022, None]
 PRICE_SOURCES = ("closing_line", "snapshots")
 DEFAULT_SEED = 1
+INGAME_FAMILY = "ingame_wp"
 
 
 def run_sleep(
@@ -96,16 +102,26 @@ def _load_games(params: dict[str, Any]) -> list[dict[str, Any]]:
     return load_games(str(path))
 
 
-def _family_and_params(params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def refuse_ingame(family: Any, kind: str) -> None:
+    """ValueError for the in-game family on a pre-game job kind (it predicts from a game
+    state, not from a game row; the in-game search validates it)."""
+    if family == INGAME_FAMILY:
+        raise ValueError(f"{kind} does not run the {INGAME_FAMILY} family: run a model_search with family "
+                         f"{INGAME_FAMILY} (the in-game search validates it on held-out plays)")
+
+
+def _family_and_params(params: dict[str, Any], kind: str = "backtest") -> tuple[str, dict[str, Any]]:
     """family/params from the job, or from the context model when params.model_id is set."""
     if params.get("model_id"):
         model = _context(params).get("model")
         if not isinstance(model, dict) or not model.get("family"):
             raise ValueError("job context has no model for params.model_id")
+        refuse_ingame(model["family"], kind)
         return str(model["family"]), dict(model.get("params") or {})
     family = params.get("family")
     if not family:
         raise ValueError("params need family or model_id")
+    refuse_ingame(family, kind)
     return str(family), dict(params.get("params") or {})
 
 
@@ -182,10 +198,14 @@ def run_model_search_job(params: dict[str, Any], checkpoint: dict[str, Any] | No
     from fleet.sim.parallel import resolve_workers
     from fleet.sim.search import run_search
 
-    limits = limits_from_params(params)
     family = str(params.get("family") or "")
     if not family:
         raise ValueError("model_search needs params.family")
+    if family == INGAME_FAMILY:
+        from fleet.worker.pbp_cache import run_ingame_search_job
+
+        return run_ingame_search_job(params, checkpoint, emit, should_stop)
+    limits = limits_from_params(params)
     games = _load_games(params)
     return run_search(
         games, family, int(params.get("n", 200)), int(params.get("seed", 0)), _seasons(params, limits),
@@ -217,6 +237,7 @@ def run_validate_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
     model = _context(params).get("model")
     if not isinstance(model, dict) or not model.get("family"):
         raise ValueError("validate needs the model in the job context (params.model_id)")
+    refuse_ingame(model["family"], "validate")
     limits = limits_from_params(params)
     seasons = _season_pair(params.get("validation_seasons")) or list(DEFAULT_VALIDATION_SEASONS)
     search_metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else None
@@ -236,6 +257,7 @@ def run_train_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
     model = _context(params).get("model")
     if not isinstance(model, dict):
         raise ValueError("train needs the parent model in the job context (params.model_id)")
+    refuse_ingame(model.get("family"), "train")
     games = _load_games(params)
     return run_train(games, model, params.get("through"), emit, should_stop, checkpoint)
 

@@ -40,6 +40,9 @@ STATE_KEYS = ("status", "period", "clock_seconds", "home_score", "away_score", "
               "yardline_100", "home_timeouts", "away_timeouts")
 CLOCK_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})(?:\.\d+)?\s*$")
 SPOT_RE = re.compile(r"^\s*([A-Za-z]{2,4})?\s*(\d{1,2})\s*$")
+OFF_NAMES = ("STATUS_POSTPONED", "STATUS_CANCELED", "STATUS_CANCELLED", "STATUS_FORFEIT")
+MAX_SCORE = 999
+NUL_ESCAPE_RE = re.compile(r"(?<!\\)((?:\\\\)*)\\u0000")
 
 
 def _int(value: Any, lo: int | None = None, hi: int | None = None) -> int | None:
@@ -84,11 +87,13 @@ def clock_seconds(value: Any) -> int | None:
 
 
 def status_of(status: dict[str, Any]) -> str | None:
-    """ESPN status block to "pre" | "in" | "half" | "end_period" | "final"."""
+    """ESPN status block to "pre" | "in" | "half" | "end_period" | "final"; a postponed,
+    cancelled or forfeited game is final for the feed. Without type.state only a name
+    that says what the game is doing counts: any other STATUS_* name is None."""
     kind = _dict(status.get("type"))
     name = str(kind.get("name") or "").upper()
     state = str(kind.get("state") or "").lower()
-    if kind.get("completed") is True or name.startswith("STATUS_FINAL") or state == "post":
+    if kind.get("completed") is True or name.startswith("STATUS_FINAL") or name in OFF_NAMES or state == "post":
         return "final"
     if state == "pre" or name == "STATUS_SCHEDULED":
         return "pre"
@@ -96,7 +101,7 @@ def status_of(status: dict[str, Any]) -> str | None:
         return "half"
     if name in ("STATUS_END_PERIOD", "STATUS_END_OF_PERIOD"):
         return "end_period"
-    return "in" if state == "in" or name.startswith("STATUS_") else None
+    return "in" if state == "in" or name == "STATUS_IN_PROGRESS" else None
 
 
 def sides(competition: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -110,7 +115,7 @@ def sides(competition: dict[str, Any]) -> dict[str, dict[str, Any]]:
         team = _dict(entry.get("team"))
         ids = {str(v) for v in (team.get("id"), entry.get("id")) if v is not None}
         code = teams.resolve(team.get("abbreviation")) if isinstance(team.get("abbreviation"), str) else None
-        out[side] = {"ids": ids, "code": code, "score": _int(entry.get("score"), 0)}
+        out[side] = {"ids": ids, "code": code, "score": _int(entry.get("score"), 0, MAX_SCORE)}
     return out if len(out) == 2 else {}
 
 
@@ -185,7 +190,7 @@ def play_rows(drives: dict[str, Any], sides_: dict[str, dict[str, Any]], timeout
     seen: set[str] = set()
     for play in plays:
         play_id = play.get("id")
-        after = (_int(play.get("homeScore"), 0), _int(play.get("awayScore"), 0))
+        after = (_int(play.get("homeScore"), 0, MAX_SCORE), _int(play.get("awayScore"), 0, MAX_SCORE))
         if play_id is None or str(play_id) in seen:
             continue
         seen.add(str(play_id))
@@ -204,7 +209,7 @@ def play_rows(drives: dict[str, Any], sides_: dict[str, dict[str, Any]], timeout
         state["home_timeouts"], state["away_timeouts"] = timeouts
         before = after
         text = play.get("text")
-        out.append({**state, "play_id": str(play_id), "play_text": str(text)[:1000] if text is not None else None,
+        out.append({**state, "play_id": _text(play_id), "play_text": _text(text)[:1000] if text is not None else None,
                     "event_ts": parse_time(play.get("wallclock")), "raw": play})
     return out
 
@@ -260,10 +265,21 @@ def parse_scoreboard_states(payload: Any) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _text(value: Any) -> str:
+    """Text for a Postgres text column, which cannot hold NUL."""
+    return str(value).replace("\x00", "")
+
+
 def raw_fragment(value: Any, limit: int = 8 * 1024) -> Any:
     """The source fragment for game_state.raw: as is when its JSON fits in `limit`
-    characters, else {"truncated": true, "text": the first `limit` characters}."""
-    text = json.dumps(value, default=str)
-    if len(text) <= limit:
-        return value
-    return {"truncated": True, "text": text[:limit]}
+    characters (NUL characters dropped: jsonb refuses them), else {"truncated": true,
+    "text": the first `limit` characters}; a fragment with NaN or Infinity, which JSON
+    lacks, is kept as text too."""
+    try:
+        text = json.dumps(value, default=str, allow_nan=False)
+    except ValueError:
+        text = json.dumps(value, default=str)
+        return {"truncated": True, "text": text[:limit]}
+    if len(text) > limit:
+        return {"truncated": True, "text": text[:limit]}
+    return json.loads(NUL_ESCAPE_RE.sub(r"\1", text)) if "\\u0000" in text else value

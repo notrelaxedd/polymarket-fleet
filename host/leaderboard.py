@@ -16,6 +16,11 @@ Step 6 Part B (host/leaderboard_snapshot.py): a lineage with snapshot replay met
 carries a "snapshot" group, and between paper and validation sits rank mode
 "snapshot" (30 snapshot-scored bets, by shrunk snapshot CLV). Like paper, it only
 ranks a lineage the held-out era has judged.
+
+Step 6 Part C (host/leaderboard_ingame.py): every entry carries its in-game record
+(`ingame`, None without in-game bets), and an ingame_wp lineage is listed among the
+unranked ones with the reason "in-game model" (after the others, ordered by its
+held-out log-loss gain over vegas_wp), with its `ingame_validation`.
 """
 from __future__ import annotations
 
@@ -23,6 +28,7 @@ from typing import Any
 
 import psycopg
 
+from host import leaderboard_ingame as ingame
 from host.eligibility import model_flags
 from host.leaderboard_snapshot import rank_mode, snapshot_key, snapshot_summary
 from host.models import get_model, lineage_rows
@@ -122,6 +128,8 @@ def short_params(family: str, params: dict[str, Any] | None) -> str:
             f"shrink {shrink:.1f}" if shrink is not None else "shrink ?",
             f"L2 {l2:.2f}" if l2 is not None else "L2 ?",
         ])
+    if family == ingame.INGAME_FAMILY:
+        return ingame.short_params(params)
     parts = []
     for key in sorted(params)[:3]:
         value = params[key]
@@ -150,16 +158,16 @@ def validation_summary(root: dict[str, Any]) -> dict[str, Any] | None:
 
 def lineage_row(
     root: dict[str, Any], members: int, records: dict[tuple[Any, str], dict[str, Any]] | None = None,
-    paper_cis: dict[Any, dict[str, Any]] | None = None,
+    paper_cis: dict[Any, dict[str, Any]] | None = None, ingame_records: dict[Any, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """The leaderboard entry of a lineage from its root row, the pooled trading
-    records and the cached paper intervals."""
+    records, the cached paper intervals and the in-game records."""
     records = records or {}
     paper = records.get((root["lineage_id"], "paper"), EMPTY_RECORD)
     validation = validation_summary(root)
     stress = root.get("stress_metrics") if isinstance(root.get("stress_metrics"), dict) else None
     snapshot = snapshot_summary(root)
-    return {
+    entry = {
         "id": root["id"],
         "lineage_id": root["lineage_id"],
         "family": root["family"],
@@ -186,6 +194,7 @@ def lineage_row(
         "created_at": root["created_at"],
         "updated_at": root["updated_at"],
     }
+    return ingame.decorate(entry, root, (ingame_records or {}).get(root["lineage_id"]))
 
 
 def _rank_key(entry: dict[str, Any]) -> tuple[float, float, Any]:
@@ -202,6 +211,8 @@ def unranked_reason(entry: dict[str, Any]) -> str | None:
     """Why a lineage sits in the unranked list, or None when it ranks."""
     if entry["status"] == "retired":
         return UNRANKED_REASONS["retired"]
+    if entry.get("is_ingame"):  # judged on held-out plays against vegas_wp, listed apart
+        return ingame.INGAME_REASON
     if not entry["validated"]:  # a paper record never ranks a lineage the held-out era has not judged
         return UNRANKED_REASONS["not_validated"]
     return None
@@ -219,11 +230,15 @@ def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
     ).fetchall()
     records = trading_records(conn)
     cis = paper_intervals(conn)
-    by_paper, by_snapshot, by_validation, unranked = [], [], [], []
+    ingame_records = ingame.ingame_records(conn)
+    by_paper, by_snapshot, by_validation, unranked, ingame_rows = [], [], [], [], []
     for root in roots:
-        entry = lineage_row(root, int(root["members"]), records, cis)
+        entry = lineage_row(root, int(root["members"]), records, cis, ingame_records)
         reason = unranked_reason(entry)
-        if reason is not None:
+        if entry["is_ingame"]:
+            entry["unranked_reason"] = reason
+            ingame_rows.append(entry)
+        elif reason is not None:
             entry["unranked_reason"] = reason
             unranked.append(entry)
         elif entry["rank_mode"] == "paper":
@@ -238,7 +253,8 @@ def leaderboard(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
     ranked = by_paper + by_snapshot + by_validation
     for position, entry in enumerate(ranked, start=1):
         entry["rank"] = position
-    return {"ranked": ranked, "unranked": unranked}
+    ingame_rows.sort(key=ingame.ingame_key)
+    return {"ranked": ranked, "unranked": unranked + ingame_rows}
 
 
 def model_jobs(conn: psycopg.Connection, model_id: Any) -> list[dict[str, Any]]:
@@ -272,6 +288,7 @@ def model_detail(conn: psycopg.Connection, model_id: Any) -> dict[str, Any]:
     model["paper_score"] = shrunk_clv(model["paper"])
     model["paper_ci"] = _paper_ci(conn.execute("SELECT * FROM lineage_paper_ci WHERE lineage_id = %s", (model["lineage_id"],)).fetchone())
     model["snapshot"] = snapshot_summary(model)
+    ingame.decorate(model, model, ingame.lineage_ingame_record(conn, model["lineage_id"]))
     model["rank_mode"] = rank_mode(paper_ranked(model["paper"]), model["snapshot"])
     model["lineage"] = [
         {

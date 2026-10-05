@@ -14,7 +14,7 @@ from host.money import format_cents
 from host.settings import FLAG_NAMES
 
 SEP = " · "  # a middle dot between the parts of a summary
-GROUPS = ("limits", "trading", "robustness", "replay", "fleet", "data")
+GROUPS = ("limits", "trading", "ingame", "robustness", "replay", "fleet", "data")
 
 
 def _dict(settings: dict[str, Any], key: str) -> dict[str, Any]:
@@ -92,6 +92,23 @@ def trading(settings: dict[str, Any]) -> str:
     )
 
 
+def ingame(settings: dict[str, Any]) -> str:
+    """The in-game rules (step 6 Part C): the default switch, the bet cap, the feed-lag
+    suspension and the polled sources; in-game orders are paper only."""
+    sources = settings.get("gamestate_sources") if isinstance(settings.get("gamestate_sources"), list) else []
+    lag = _plain(settings.get("ingame_max_lag_s"))
+    return SEP.join(
+        [
+            "on for new assignments" if settings.get("trade_ingame") is True else "off by default",
+            f"max bet {_money(settings.get('ingame_max_bet_cents'))}",
+            f"min edge {_pct(settings.get('ingame_min_edge'))}",
+            f"lag limit {lag} s" if lag != "-" else "lag limit -",
+            "feed " + (", ".join(str(s) for s in sources) if sources else "off"),
+            "paper only",
+        ]
+    )
+
+
 def robustness(settings: dict[str, Any]) -> str:
     """The backtest gate and the two eras it is judged on."""
     gate = _dict(settings, "thresholds_backtest")
@@ -138,7 +155,10 @@ def data(settings: dict[str, Any]) -> str:
     return f"refresh every {_plain(settings.get('nflverse_refresh_hours'))} h"
 
 
-READERS = {"limits": limits, "trading": trading, "robustness": robustness, "replay": replay, "fleet": fleet, "data": data}
+READERS = {
+    "limits": limits, "trading": trading, "ingame": ingame, "robustness": robustness, "replay": replay, "fleet": fleet,
+    "data": data,
+}
 
 
 def summaries(settings: dict[str, Any]) -> dict[str, str]:

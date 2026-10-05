@@ -15,7 +15,9 @@ feed_seen_at - market_moved_at` (positive: the feed is behind the market). A row
 retried for 15 minutes, then left without a market move.
 
 `lag_status` reads the last 20 measured rows: in-game buying is suspended while their
-median lag exceeds `settings.ingame_max_lag_s`.
+median lag exceeds `settings.ingame_max_lag_s`, and only once at least
+`settings.ingame_lag_min_events` (default 5) rows are measured. Fewer rows are "not
+enough data" (`enough_data` is false): reported, never a suspension.
 """
 from __future__ import annotations
 
@@ -35,6 +37,7 @@ MOVE_THRESHOLD = 0.03
 RETRY_FOR = timedelta(minutes=15)
 LAST_N = 20
 DEFAULT_MAX_LAG_S = 20.0
+DEFAULT_MIN_EVENTS = 5
 
 
 def baseline(conn: psycopg.Connection, game_id: str, source: str) -> dict[str, Any] | None:
@@ -164,9 +167,25 @@ def max_lag_s(conn: psycopg.Connection) -> float:
         return DEFAULT_MAX_LAG_S
 
 
-def _summary(lags: list[float], limit: float) -> dict[str, Any]:
+def min_events(conn: psycopg.Connection) -> int:
+    """settings.ingame_lag_min_events: measured events needed before the lag can suspend."""
+    value = get_setting(conn, "ingame_lag_min_events", DEFAULT_MIN_EVENTS)
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_MIN_EVENTS
+
+
+def enough_data(summary: dict[str, Any], needed: int) -> bool:
+    """True when a lag summary rests on at least `needed` measured events (else the
+    dashboard says "not enough data")."""
+    return int(summary.get("n") or 0) >= needed
+
+
+def _summary(lags: list[float], limit: float, needed: int) -> dict[str, Any]:
     median = float(statistics.median(lags)) if lags else None
-    return {"suspended": median is not None and median > limit, "median_lag_s": median, "n": len(lags)}
+    suspended = median is not None and len(lags) >= needed and median > limit
+    return {"suspended": suspended, "median_lag_s": median, "n": len(lags)}
 
 
 def _lags(conn: psycopg.Connection, source: str | None) -> list[float]:
@@ -183,9 +202,10 @@ def _lags(conn: psycopg.Connection, source: str | None) -> list[float]:
 
 def lag_status(conn: psycopg.Connection, source: str | None = None) -> dict[str, Any]:
     """{"suspended", "median_lag_s", "n", "by_source": {source: {"suspended",
-    "median_lag_s", "n"}}} over the last 20 measured rows (of `source` when given)."""
-    limit = max_lag_s(conn)
-    out = _summary(_lags(conn, source), limit)
+    "median_lag_s", "n"}}} over the last 20 measured rows (of `source` when given).
+    Suspended only with at least ingame_lag_min_events measured rows."""
+    limit, needed = max_lag_s(conn), min_events(conn)
+    out = _summary(_lags(conn, source), limit, needed)
     names = conn.execute(
         """
         SELECT DISTINCT source FROM feed_lag
@@ -193,5 +213,5 @@ def lag_status(conn: psycopg.Connection, source: str | None = None) -> dict[str,
         """,
         {"source": source},
     ).fetchall()
-    out["by_source"] = {r["source"]: _summary(_lags(conn, r["source"]), limit) for r in names}
+    out["by_source"] = {r["source"]: _summary(_lags(conn, r["source"]), limit, needed) for r in names}
     return out
