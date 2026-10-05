@@ -163,7 +163,10 @@ def _backtest(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
             seasons = [seasons[0], latest_season(conn)]  # a replay runs through the season in progress
         out["seasons"] = resolve_seasons(conn, seasons)
         check_testable(conn, out["seasons"])
-        if "model_id" in out:  # the result becomes the lineage's search-era metrics
+        if "model_id" in out and out.get("price_source") != SNAPSHOTS:
+            # A closing-line result becomes the lineage's search-era metrics, so it must
+            # end before the validation era. A snapshot replay is stored apart, in
+            # snapshot_metrics, and replays recorded prices of recent seasons by design.
             check_before_validation(conn, out["seasons"])
     return out
 
