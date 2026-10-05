@@ -46,14 +46,23 @@ def cache_dir(directory: str) -> str:
     return os.path.join(directory, CACHE_DIR_NAME)
 
 
-def games_cache_path(directory: str) -> str:
-    """<state>/cache/games.json: the games rows handed to runners as games_path."""
-    return os.path.join(cache_dir(directory), GAMES_CACHE_NAME)
+def _games_name(name: str, minutes: int | None) -> str:
+    if minutes is None:
+        return name
+    stem, ext = os.path.splitext(name)
+    return f"{stem}.d{int(minutes)}{ext}"
 
 
-def games_etag_path(directory: str) -> str:
-    """<state>/cache/games.etag: the ETag of the cached games.json."""
-    return os.path.join(cache_dir(directory), GAMES_ETAG_NAME)
+def games_cache_path(directory: str, minutes: int | None = None) -> str:
+    """<state>/cache/games.json: the games feed handed to runners as games_path. A feed
+    fetched with an explicit injury cutoff (a snapshot backtest) is games.d<N>.json, so
+    different cutoffs never share a cache."""
+    return os.path.join(cache_dir(directory), _games_name(GAMES_CACHE_NAME, minutes))
+
+
+def games_etag_path(directory: str, minutes: int | None = None) -> str:
+    """<state>/cache/games.etag (games.d<N>.etag): the ETag of that cached feed."""
+    return os.path.join(cache_dir(directory), _games_name(GAMES_ETAG_NAME, minutes))
 
 
 def _platform_slug(platform: str) -> str:

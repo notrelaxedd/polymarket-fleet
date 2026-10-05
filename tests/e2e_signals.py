@@ -40,8 +40,9 @@ PLATFORM = "sim"
 CLOSE = 0.58
 LIQUIDITY = 5_000_000
 DECISION_MINUTES = 60
-# (minutes after the decision time, mid, bid, ask): a rising market; the last bar at or
-# before the decision time is the one the replay buys at, the one after it is lookahead.
+# (minutes after the decision time, mid, bid, ask): a rising market; the last bar whose
+# minute closed by the decision time is the one the replay buys at, the one after it is
+# lookahead.
 RISING = [(-25, 0.395, 0.39, 0.40), (-15, 0.405, 0.40, 0.41), (-5, 0.415, 0.41, 0.42), (5, 0.50, 0.49, 0.51)]
 LATE_ONLY = [(-45, 0.415, 0.41, 0.42), (5, 0.415, 0.41, 0.42)]
 DEPTH = {"bid": 0.40, "ask": 0.41, "mid": 0.405, "bid_depth": [[0.40, 300.0]], "ask_depth": [[0.41, 30.0], [0.42, 400.0]]}

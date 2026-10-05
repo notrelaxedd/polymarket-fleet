@@ -135,6 +135,9 @@ def seed_sells(url: str, trader_id: str, assignment_id: str) -> dict[str, str]:
         orders.record_fill(conn, bought["id"], 0.64, 12, sell_fee_cents(0.64, 12, fee_model), "paper", "exchange", snapshot_id=snap["id"])
         conn.execute("UPDATE orders SET created_at = now() - interval '200 seconds' WHERE id = %s", (bought["id"],))
         conn.execute("UPDATE fills SET ts = now() - interval '198 seconds' WHERE order_id = %s", (bought["id"],))
+        # The buy-time book dates from the backdated buy, so the 0.61 bid below is the
+        # latest snapshot on Positions as on Markets (one transaction: now() is shared).
+        conn.execute("UPDATE price_snapshots SET ts = now() - interval '200 seconds' WHERE id = %s", (snap["id"],))
         insert_snapshot(conn, eagles["market_id"], bid=0.61, ask=0.63, liquidity_usd_cents=185_000, age_s=3)
         return {"sell_order": str(sold["id"]), "open_sell": str(resting["id"])}
 

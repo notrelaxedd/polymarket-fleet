@@ -716,12 +716,14 @@ trade job this worker holds: `{"id", "job_id", "lease_token", "status", "mode",
 "family", "params", "artifact"}, "bankroll": {"available_cents", "reserved_cents",
 "open_cost_cents", "realized_pnl_cents"}, "markets": [{"id", "side", "bid", "ask", "mid",
 "tick", "min_size", "snapshot_id", "snapshot_at", "liquidity_usd_cents", "ask_depth",
-"status"}], "open_orders": [{"id", "market_id", "price", "size", "filled_size", "status"}],
-"positions": [{"market_id", "side", "size", "basis_cents", "avg_cost"}]}` (step 6 Part B
-renamed `avg_price` to `avg_cost`; see "Selling" below). Markets below the liquidity
+"bid_depth", "status"}], "open_orders": [{"id", "market_id", "side", "price", "size",
+"filled_size", "status"}], "positions": [{"market_id", "side", "size", "basis_cents",
+"avg_cost"}]}` (step 6 Part B added `bid_depth`, the open order's `side` and the game's
+`signals` and `team_stats`, and renamed `avg_price` to `avg_cost`; see "Step 6 additions
+(Part B)" below). Markets below the liquidity
 floor are included but flagged `"below_floor": true`. (changed: detail) Only markets with a
-confirmed mapping are listed; `game` is the games row without `raw`; `positions` entries
-also carry `basis_cents`; `open_orders` entries also carry `snapshot_id` and `created_at`;
+confirmed mapping are listed; `game` is the games row without `raw`; `open_orders` entries
+also carry `snapshot_id` and `created_at`;
 an entry is omitted when a held trade job's assignment no longer exists.
 
 ### `POST /api/v1/orders/request` (worker bearer)
@@ -978,8 +980,17 @@ is `validation_seasons`.
 
 ### Data for workers
 - `GET /api/v1/data/games` (worker bearer, unchanged route, `ETag`, `304`, `Cache-Control:
-  no-cache`): the body becomes `{"games": [...], "count": n, "team_game_stats": [...]}`.
-  Workers that predate the change ignore the new keys. Each game row gains `"signals":
+  no-cache`): the body becomes `{"games": [...], "count": n, "team_game_stats": [...],
+  "decision_minutes_before_kickoff": m}`. Workers that predate the change ignore the new
+  keys. An optional query `?decision_minutes=N` (integer 0..300, 400 otherwise) sets the
+  injury cutoff; without it the current `decision_minutes_before_kickoff` setting
+  applies. `m` is the cutoff the signals used. A snapshot backtest fetches the feed
+  with its own `params.decision_minutes_before_kickoff` into its own cache file
+  (`<state>/cache/games.d<N>.json` and `.etag`), so a setting changed after the job was
+  created never lets it count a report filed after its bet; a feed that states another
+  cutoff, or none, fails the job. The agent caches the object body whole (games,
+  `team_game_stats` and `m`), so `load_games` attaches each game's team stats; a bare
+  list from an older host is cached as it is. Each game row gains `"signals":
   {"home_qb_changed", "away_qb_changed", "home_out_qb", "away_out_qb", "home_out_count",
   "away_out_count"}` (ints; the flags are 0 or 1):
   - `*_qb_changed` is 1 when the team's starting quarterback for this game
@@ -988,20 +999,21 @@ is `validation_seasons`.
     unknown (an unplayed game), read 0.
   - `*_out_count` counts the players of the game's (season, game_type, week, team) listed
     `Out` in `injuries`; `*_out_qb` is 1 when any of them plays QB. Only rows whose
-    `date_modified` is strictly before the decision time (kickoff minus the
-    `decision_minutes_before_kickoff` setting) count; a row modified later, or without a
+    `date_modified` is strictly before the decision time (kickoff minus the decision
+    minutes: the query's, else the `decision_minutes_before_kickoff` setting) count; a row modified later, or without a
     date, never counts, so a backtest cannot use a report written after its bet.
   `team_game_stats` lists every team-game row `{"game_id", "season", "week", "team",
   "kickoff_at", "off_epa_per_play", "def_epa_per_play", "pass_rate", "plays",
   "success_rate"}` sorted by `kickoff_at, game_id, team` (`kickoff_at` from `games` when
   the game is known, ISO UTC with `Z`). The ETag is
   `<games count>-<games max updated_at>.<injuries count>-<max updated_at>.<team_game_stats
-  count>-<max updated_at>.d<decision_minutes_before_kickoff>`: it changes when games,
-  injuries or team stats change, or when the decision lead (which the injury signals
-  depend on) does. Clients treat it as opaque.
+  count>-<max updated_at>.d<decision minutes used>`: it changes when games, injuries or
+  team stats change, or when the decision lead (which the injury signals depend on)
+  does. Clients treat it as opaque.
 - The trade state's `game` carries the same `signals` plus `team_stats: {"home": [...],
-  "away": [...]}`: each side's team_game_stats rows strictly before this game's kickoff,
-  oldest first, at most 16 (`host/signals.py` `game_signals`).
+  "away": [...]}`: each side's team_game_stats rows strictly before this game's kickoff
+  with both EPA values (the worker's games cache drops a row without them too), oldest
+  first, at most 16 (`host/signals.py` `game_signals`).
 - `GET /api/v1/data/prices?since=<iso>&platform=<name>` (worker bearer, `ETag`,
   `If-None-Match` as for games, `304`, `Cache-Control: no-cache`) -> `{"markets":
   [{"market_id", "game_id", "side": "home"|"away", "platform", "confirmed": true,
@@ -1022,6 +1034,48 @@ is `validation_seasons`.
   - ETag: `<price_bars count>-<max minute>-<max price_snapshots id>-<max markets
     updated_at>-<games ETag>-<hash of since and platform>`. A bad `since` or `platform`
     is 400; a missing or unknown token is 401.
+
+### Snapshot replay jobs and results (docs/ROBUSTNESS.md B1)
+- `backtest` params gain an optional `"price_source": "closing_line" | "snapshots"`
+  (stored only when named; absent means `closing_line` on host and worker; any other
+  value is 400, and the key is 400 on the other kinds as an unknown param). A
+  `snapshots` backtest also gets, copied from settings at creation,
+  `decision_minutes_before_kickoff` (0..300, default 60), `allow_sim_prices` (true only
+  when the setting is exactly true), `price_platform` (settings `market_source`) and
+  `participation` (0..1, default 0.5); a closing-line backtest does not get them. For a
+  `snapshots` backtest a null last season, in its own `seasons` or in the copied
+  `backtest_seasons`, resolves to the newest season in `games` (the season in progress
+  included), without the validation-era cap.
+- Runner context: a `snapshots` backtest's context also has `"prices_path"`, the worker's
+  cache of `GET /api/v1/data/prices?since=2000-01-01&platform=<price_platform>`
+  (`<state>/cache/prices-<platform>.json` and `.etag`). Platform `sim` without
+  `allow_sim_prices` is not fetched and the job fails (`SimPricesRefused`).
+- Result: the backtest metrics object plus `"price_source": "snapshots"`, `"platform"`,
+  `"n_unscored_no_prices"` (also in each `per_season` entry) and a top-level
+  `"avg_clv"` (the plain mean CLV over bets, null without bets). A closing-line result is
+  unchanged (none of these keys).
+- `POST /api/v1/models/{id}/backtest` routes by the job's `params.price_source`: a
+  `snapshots` result is stored in `models.snapshot_metrics` on every row of the lineage,
+  logged as job event `model_snapshot_backtest`, and leaves `backtest_metrics` and the
+  status alone; the metrics' own `price_source` must match the job's (400 otherwise). A
+  child created later inherits the lineage's `snapshot_metrics`.
+- Owner API: each leaderboard entry and the model detail gain `snapshot` (`{n_games,
+  n_bets, roi, pnl_cents, avg_clv, clv_estimated, clv_ci, roi_ci, log_loss,
+  market_log_loss, platform, n_unscored_no_prices, seasons, score}` or null; `avg_clv` is
+  the result's, else the middle of `ci.avg_clv` with `clv_estimated` true) and
+  `rank_mode` can be `snapshot`; entries also carry `snapshot_score`. Ranked: paper
+  first, then lineages with at least 30 snapshot bets and a CLV by `score` (`clv * bets
+  / (bets + 25)`) desc, snapshot ROI desc, `created_at`, validated or not, then the
+  validation-ranked ones.
+- Migrations: `0007_signals.sql` (tables `injuries` and `team_game_stats`,
+  `models.snapshot_metrics`, settings `allow_sim_prices false`,
+  `decision_minutes_before_kickoff 60`, `nflverse_injuries_url`, `nflverse_pbp_url`,
+  `signals_refresh_hours 24`) and `0008_sells.sql` (`orders.side`, `fills.basis_cents`,
+  ledger kind `sell`, `bets.result` `sold`, `bets.order_side`).
+- Dashboard routes: `POST /jobs` with kind `backtest` takes `price_source`; settings
+  groups `replay` (`decision_minutes_before_kickoff`, the `allow_sim_prices` checkbox,
+  unticked = false) and `signals` (`signals_refresh_hours` 1..168, `nflverse_injuries_url`
+  and `nflverse_pbp_url`, http(s) templates that must contain `{season}`).
 
 ### Ingest (host)
 - `injuries` is loaded from nflverse `injuries_{season}.csv` (setting
@@ -1061,8 +1115,8 @@ is `validation_seasons`.
   team side and is ignored. A buy's `client_request_id` keeps the step 4 formula; a
   sell's is `sha256(assignment|market|snapshot_id|price|size|sell)[:32]`. A sell is
   approved by `host/trading/sells.py` `approve_sell`: kill, lease, assignment, market,
-  kickoff, mode, stale book, participation on the bid side, price band (`price >= bid -
-  0.05`), then `no_position`, `sell_exceeds_position` (size above the position minus the
+  kickoff, mode, stale book, participation on the bid side, price band (0.01 to 0.99, on
+  the tick, and `price >= bid - 0.05`), then `no_position`, `sell_exceeds_position` (size above the position minus the
   open sells) and `open_sell_exists` (at most one open sell per market). A sell reserves
   nothing (`cost_cents` 0) and skips the money checks. A sell may coexist with an open
   buy on the same market.

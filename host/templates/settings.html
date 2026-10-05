@@ -174,7 +174,7 @@
   <p class="help">A backtest with price source "snapshots" buys at the recorded ask at the decision time, walks the recorded book (participation from the Trading group) and measures CLV against the frozen closing price. It replays the market source chosen in the Trading group.</p>
   {{ form_error('replay') }}
   <div class="fields">
-    {{ field('decision_minutes_before_kickoff', 'Decision minutes before kickoff', '0..300; the replay bets this long before kickoff, on prices recorded within 30 minutes before that', 'numeric') }}
+    {{ field('decision_minutes_before_kickoff', 'Decision minutes before kickoff', "0..300; the replay bets this long before kickoff, on prices recorded within 30 minutes before that; also the cutoff for injury reports in every model's features (searches, backtests and trading)", 'numeric') }}
     {{ check('allow_sim_prices', 'Allow sim prices', 'testing only: sim prices are made up, so a replay on them proves nothing') }}
   </div>
   <button type="submit" class="btn primary">Save replay</button>

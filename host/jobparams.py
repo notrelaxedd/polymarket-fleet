@@ -221,16 +221,20 @@ def copied_settings(conn: psycopg.Connection, kind: str = "backtest") -> dict[st
 
 
 def _snapshot_copies(conn: psycopg.Connection, kind: str, out: dict[str, Any]) -> dict[str, Any]:
-    """The replay settings a snapshot backtest carries ({} for any other job), and its
-    backtest_seasons with a null last resolved to the latest season in games (the
-    season in progress included; no validation cap, a replay selects nothing)."""
+    """The replay settings a snapshot backtest carries ({} for any other job). Without
+    explicit seasons its backtest_seasons run from the setting's first season through
+    the latest season in games (the season in progress included), whatever last season
+    the setting stores: a replay selects nothing, so neither the search-era last season
+    nor the validation cap applies, and the worker drops seasons without recorded
+    markets anyway."""
     if kind != "backtest" or out.get("price_source") != SNAPSHOTS:
         return {}
     copies = snapshot_settings(conn)
     seasons = get_setting(conn, "backtest_seasons", [2010, None])
-    if isinstance(seasons, list) and len(seasons) == 2 and seasons[1] is None and latest_season(conn) is not None:
+    latest = latest_season(conn)
+    if "seasons" not in out and isinstance(seasons, list) and len(seasons) == 2 and latest is not None:
         try:
-            copies["backtest_seasons"] = resolve_seasons(conn, [seasons[0], latest_season(conn)], "backtest_seasons")
+            copies["backtest_seasons"] = resolve_seasons(conn, [seasons[0], latest], "backtest_seasons")
         except BadRequest:
             pass  # keep the closing-line copy
     return copies

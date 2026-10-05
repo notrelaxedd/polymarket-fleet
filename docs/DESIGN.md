@@ -1,6 +1,6 @@
 # Design
 
-Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
+Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`, robustness (step 6 Parts A and B) in `docs/ROBUSTNESS.md`, in-game trading (step 6 Part C) in `docs/INGAME.md` and the UI overhaul (step 7) in `docs/UI.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
 
 ## Summary
 
@@ -8,8 +8,8 @@ Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is spe
 2. Worker: one zero-dependency Python agent, one installer, 5 s heartbeat, role switch within 10 s after checkpoint/cancel, automatic restart from host state.
 3. Trading: workers only propose; the host approves every order against per-game bankroll, max bet, max daily loss and the liquidity floor. Paper by default, live behind a typed switch, one kill button.
 4. Learning: per-game scoring (PnL, bets, CLV), all-games leaderboard by lineage, backtest AND paper gates before real money, no override.
-5. Five build steps, hard stop after each for the owner's test and OK. All five are done.
-6. Final state: a Windows 11 host (Docker Compose: `db`, `host`, `exchange`) behind Tailscale serve; Debian workers on roles (backtest, model_search, train, trade); nflverse data and elo_blend models searched, trained and scored by lineage; simulated and real Polymarket US market data snapshotted; paper trading by default; live trading behind the typed dated switch, a `live_eligible` lineage (no override) and an authenticated, clock-checked exchange session, with Ed25519-signed requests, GTD orders, restart reconciliation, open-order audit, auto-kill, `exchange-smoke` and `cancel-all --direct`. The Polymarket US request shapes remain unverified and configurable (see `docs/LIVE.md`).
+5. Five build steps, hard stop after each for the owner's test and OK. All five are done; step 6 (robustness) Parts A and B are done too, Part C (in-game) and step 7 (UI overhaul) are pending.
+6. Final state: a Windows 11 host (Docker Compose: `db`, `host`, `exchange`) behind Tailscale serve; Debian workers on roles (backtest, model_search, train, trade); nflverse data (schedules, injury reports, play-by-play) and elo_blend and epa_blend models searched, validated, trained and scored by lineage; simulated and real Polymarket US market data snapshotted and replayed in snapshot backtests; paper trading by default, buying and selling; live trading behind the typed dated switch, a `live_eligible` lineage (no override) and an authenticated, clock-checked exchange session, with Ed25519-signed requests, GTD orders, restart reconciliation, open-order audit, auto-kill, `exchange-smoke` and `cancel-all --direct`. The Polymarket US request shapes remain unverified and configurable (see `docs/LIVE.md`).
 7. Every limit number (lease, online window, bankroll, max bet, daily loss, floor, edge, Kelly, games per worker, thresholds) is editable on the dashboard settings page. Values quoted in this file are test defaults, not policy.
 
 ## Assumptions and things to verify
@@ -37,21 +37,25 @@ Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is spe
 ## Repository layout
 
 ```
-pyproject.toml                       package "fleet"; extras [host], [exchange], [dev]
+pyproject.toml                       project "polymarket-fleet" (packages fleet, host); extras [host], [dev]
 Dockerfile, docker-compose.yml, .env.example
 fleet/common/{http,sysinfo}.py
-fleet/models/{base,registry,elo_blend}.py
-fleet/sim/{fills,backtest,search,train}.py
-fleet/worker/{__main__,agent,runner,jobs,trade}.py
-host/{db,queue,limits,kill,eligibility,scoring,auth,ratelimit}.py
-host/migrations/NNNN_*.sql
-host/api/{app,workers,jobs,trade,dashboard}.py + templates/ + static/style.css   fleet-host (FastAPI)
-host/exchange/{main,adapter,polymarket_us,paper,reconcile}.py                  fleet-exchange
-host/data/{nflverse,espn,nws}.py
-host/cli.py                          enroll-token | send-job | role | workers | jobs | cancel | kill | cancel-all | roletest | audit
-host/exchange/cli.py                 exchange-smoke | cancel-all --direct | probe-account | auth-check | simulate-final | probe | run-once
+fleet/models/{base,registry,elo,blend_fit,elo_blend,epa_features,epa_blend,newton,search_space,summary_text}.py
+fleet/sim/{data,odds,signals,fills,book,prices,metrics,records,stats,robust,stress,backtest,validate,search,parallel,train,control}.py
+fleet/worker/{__main__,agent,runner,launch,jobs,context,config,posts,update,watchdog,trade,sell}.py
+host/{main,config,db,auth,errors,events,leases,queue,loop,scheduling,heartbeat,recovery,bundle,kill,settings,settings_schema,settings_forms,settings_forms_replay,web,views}.py
+host/{nflverse,data_refresh,ingest_injuries,ingest_pbp,signals,games_feed,prices_feed}.py          data and feeds
+host/{models,model_owner,model_validation,jobparams,snapshot_store,leaderboard,leaderboard_snapshot,eligibility,paper_gate,stats,pnl,money}.py
+host/trading/{assignments,ledger,limits,sells,orders,positions,state,live,views,views_positions}.py
+host/migrations/0001_init.sql .. 0008_sells.sql
+host/api/{app,deps,workers,jobs,data,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
+host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials}.py   fleet-exchange
+host/exchange/adapters/{base,sim,polymarket_us,polymarket_us_live,polymarket_clob,live_http,live_parse,live_policy,signing,teams}.py
+host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
+host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all --direct | probe-account | auth-check
 deploy/{install_worker.sh,fleet-worker.service}
-tests/test_{limits,kill_switch,queue,role_change,paper_fills,executor,models,scoring,live_switch,auth}.py + hw/{roletest,netcheck}.sh
+tests/test_*.py + hw/{roletest.sh,screenshots.py,seed_step*.py}
+tools/workflows/                     the build orchestration scripts
 ```
 
 ## Database schema
@@ -62,13 +66,14 @@ Money `bigint` cents; timestamps `timestamptz`; the owner's day uses `settings.t
 - **enroll_tokens**: `token_hash PK`, `expires_at`, `used_by_worker_id`, `used_at`.
 - **jobs**: `id uuid PK`, `kind`, `role`, `status` (queued,leased,cancel_requested,succeeded,failed,cancelled), `target_worker_id`, `auto_role`, `params`, `checkpoint`, `progress`, lease fields (`lease_worker_id`, `lease_token`, `lease_expires_at`), `expiries`, `max_expiries` (NULL for trade), `run_after`, `preempt_requested`, `idempotency_key UNIQUE`, `result`, `error`.
 - **job_events**: append-only `job_id`, `ts`, `worker_id`, `event`, `detail`.
-- **models**: `id`, `lineage_id`, `family`, `params`, `params_hash`, `artifact`, `parent_model_id`, `trained_through`, `summary`, `status` (candidate,paper_ok,live_eligible,retired; held per lineage), `backtest_metrics`, `created_by_job_id`. UNIQUE `(family, params_hash, trained_through)`.
+- **models**: `id`, `lineage_id`, `family`, `params`, `params_hash`, `artifact`, `parent_model_id`, `trained_through`, `summary`, `status` (candidate,paper_ok,live_eligible,retired; held per lineage), `backtest_metrics`, (step 6A) `validation_metrics`, `stress_metrics`, (step 6B) `snapshot_metrics` (the snapshot replay result, never read by eligibility), `created_by_job_id`. UNIQUE `(family, params_hash, trained_through)`.
+- **injuries** (step 6B): nflverse injury reports, PK `(season, game_type, week, team, gsis_id)`, with `full_name`, `position`, `report_status`, `date_modified`. **team_game_stats** (step 6B): per team-game play-by-play aggregates, PK `(game_id, team)`, with `season`, `week`, `kickoff_at`, `off_epa_per_play`, `def_epa_per_play`, `pass_rate`, `plays`, `success_rate`.
 - **games**: nflverse `id`, `season`, `week`, teams, `kickoff_at`, `status`, scores, `closing_home_p`, `spread_line`, `temp`, `wind`, `roof`.
 - **markets**: `id`, `game_id`, `platform`, `market_ref`, `side`, `mapping_confirmed` (default false), `liquidity_usd_cents`, `best_bid`, `best_ask`, `closing_price`, `status`, `tick`, `min_size`. `closing_price` = mid of the last snapshot strictly before kickoff (last trade if no book), frozen at kickoff.
 - **price_snapshots**: one row per book fetch, partitioned by day: `market_id`, `ts`, `bid`, `ask`, `mid`, `last_trade`, depth (<= 10 levels within 5 cents of touch), `liquidity_usd_cents`. Cadence 2 s for markets with an active assignment, 30 s for other current-week markets (about 0.5M rows a day); raw partitions dropped after `snapshot_retention_days`; a nightly job downsamples into **price_bars** (minute OHLC, kept forever). `closing_price` and CLV are frozen first.
 - **assignments**: `job_id`, `game_id`, `model_id`, `mode` (paper,live), `bankroll_id`, `max_bet_cents NULL` (may only lower the global), `status` (active,halted,settled). One live model per game via a partial unique index `ON assignments(game_id) WHERE mode='live' AND status IN ('active','halted')`; paper up to `paper_models_per_game` per game, counted under `FOR UPDATE` on the games row, plus a unique `(game_id, model_id)` partial index for paper.
-- **bankrolls** and **ledger**: ledger is append-only (trigger forbids UPDATE/DELETE) with kinds fund, reserve, release, fill, fee, settle, adjust; a nightly replay asserts `initial + realized_pnl = available + reserved + open_cost`.
-- **orders** (current state only; `id` is the client order id), **order_events** (append-only, trigger on every status change; fleet-exchange adds exchange responses), **fills**, **bets** (skill columns plus `order_id`, `model_id`, `game_id`, `mode`; `clv = closing_price - entry_price`, NULL for in-play entries), **model_scores** (PK `(model_id, game_id, mode)`).
+- **bankrolls** and **ledger**: ledger is append-only (trigger forbids UPDATE/DELETE) with kinds fund, reserve, release, fill, (step 6B) sell, settle, adjust (fees are inside the fill and sell rows); a nightly replay asserts `initial + realized_pnl = available + reserved + open_cost`.
+- **orders** (current state only; `id` is the client order id; step 6B `side` buy or sell), **order_events** (append-only, trigger on every status change; fleet-exchange adds exchange responses), **fills** (step 6B `basis_cents`: the basis a buy adds or a sell removes), **bets** (skill columns plus `order_id`, `model_id`, `game_id`, `mode`; `clv = closing_price - entry_price`, NULL for in-play entries and for sells; step 6B `order_side`, and `result` gains `sold`), **model_scores** (PK `(model_id, game_id, mode)`).
 - **settings**: `key PK`, `value jsonb`. Seeds (test defaults, all editable on the dashboard): `live_enabled=false`, `kill_switch=false`, `tz`, `lease_seconds=30`, `heartbeat_seconds=5`, `online_after_seconds=15`, `max_expiries=3`, `liquidity_floor_cents=50000`, `max_bet_cents=2500`, `max_daily_loss_cents={live:30000, paper:100000}`, `default_bankroll_cents=10000`, `min_edge=0.03`, `kelly_fraction=0.25`, `trade_max_games=6`; later steps add `max_exposure_cents` (null = off), `paper_models_per_game=3`, `participation=0.5`, `book_max_age_s=60`, `orphan_cancel_after_s=30`, `gtd_seconds=900`, `snapshot_retention_days=14`, `fee_model`, `rate_limits`, eligibility thresholds.
 - **exchange_state** (fleet-exchange only): heartbeat, `auth_ok`, balance, buying power, clock skew. **audit_log**: `ts`, `actor` (Tailscale login), `ip`, `action`, `entity`, `before`, `after`, `confirmation_text`. **schema_migrations**.
 
@@ -78,10 +83,11 @@ Worker routes, enrollment, downloads and the step 1 owner routes are defined in 
 
 | Method | Path | Purpose | Caller |
 |---|---|---|---|
-| GET/POST | `/api/data/games`, `/api/models/{id}`, `/api/models` | nflverse cache (ETag); artifact JSON; upload artifact+metrics+summary as candidate | agent |
+| GET/POST | `/api/data/games`, `/api/models/{id}`, `/api/models` | nflverse cache (ETag; from step 6B with per-game signals and team stats); artifact JSON; upload artifact+metrics+summary as candidate | agent |
+| GET | `/api/v1/data/prices?since=&platform=` | step 6B: recorded bars and depth per confirmed market for snapshot replay (ETag) | agent |
 | GET | `/api/trade/state` | my assignments, books above the floor, features, bankrolls, positions, open orders, kill | trade worker |
 | POST | `/api/trade/release` | `{lease_token}`: cancel this worker's open orders, wait up to 3 s, return `{cancelled, pending}` | trade worker, role change |
-| POST | `/api/orders/request`, `/api/orders/{id}/cancel` | order proposal (approved or rejected with reason); cancel request | trade worker |
+| POST | `/api/orders/request`, `/api/orders/{id}/cancel` | order proposal, a buy or (step 6B) a sell (`order_side`), approved or rejected with reason; cancel request | trade worker |
 | GET | `/`, `/jobs`, `/jobs/{id}`, `/models`, `/models/{id}`, `/trading`, `/settings` | dashboard pages (JSON for refresh via `/api/fleet`) | owner |
 | POST | `/trading/assignments`, `/trading/markets/{id}/link` | assignment + trade job; manual market-to-game link | owner |
 | POST | `/kill`, `/kill/reset`, `/live`, `/live/off` | one-tap kill; reset `confirm=RESUME`; live `confirm="ENABLE LIVE TRADING YYYY-MM-DD"` | owner, CLI |
@@ -112,11 +118,11 @@ Full specification: `docs/TRADING.md`. The host is two processes in compose: `fl
 
 1. Owner creates an assignment (game, model, mode=paper default, bankroll): ledger fund + trade job. Live needs `live_enabled` and a `live_eligible` lineage.
 2. fleet-exchange polls books for mapped markets into `price_snapshots`; matches markets to games by team+date; unconfirmed mappings are not tradeable until linked on `/trading`.
-3. Trade tick (5 s per assignment): read `/api/trade/state`; `my_p = model.predict(game, market_p, features)`; per side `edge = my_p - ask - fee`; if `edge >= min_edge` and no open same-side order, stake `kelly_fraction x available x edge/(1-ask)`; cancel own resting orders whose edge went negative; `POST /api/orders/request` with a deterministic `client_request_id`.
-4. **Approval** (`host/limits.approve_order`, one transaction, advisory lock per mode, bankroll `FOR UPDATE`), in order: idempotent replay, kill switch, lease fence, assignment/market/mapping/cutoff checks, mode gate (live: `live_enabled`, lineage `live_eligible`, `auth_ok`), stale book, liquidity floor (cited and newest snapshot), participation, price band, max bet (including open same-side cost, assignment may only lower), per-game bankroll, daily loss, optional exposure cap, live balance (buying power if reported, else cash minus reserved; a cash balance already reflects fills). Pass: ledger reserve + order `approved`; fail: order `rejected` with reason. Limit fields in the payload are ignored.
+3. Trade tick (5 s per assignment): read `/api/trade/state`; `my_p = model.predict(game, market_p, features)`; per side `edge = my_p - ask - fee`; if `edge >= min_edge` and no open same-side order, stake `kelly_fraction x available x edge/(1-ask)`; cancel own resting orders whose edge went negative; `POST /api/orders/request` with a deterministic `client_request_id`. From step 6B, per market held, `sell_edge = bid - fee - p_side`; at `>= min_edge` a limit sell at the bid, never more than the position (`docs/TRADING.md`, "Selling").
+4. **Approval** (`host/trading/limits.approve_order`, one transaction, advisory lock per mode, bankroll `FOR UPDATE`), in order: idempotent replay, kill switch, lease fence, assignment/market/mapping/cutoff checks, mode gate (live: `live_enabled`, lineage `live_eligible`, `auth_ok`), stale book, liquidity floor (cited and newest snapshot), participation, price band, max bet (including open same-side cost, assignment may only lower), per-game bankroll, daily loss, optional exposure cap, live balance (buying power if reported, else cash minus reserved; a cash balance already reflects fills). Pass: ledger reserve + order `approved`; fail: order `rejected` with reason. Limit fields in the payload are ignored. A sell (step 6B, `host/trading/sells.py`) skips the money checks and reserves nothing but must fit the held position, one open sell per market.
 5. **Executor outbox** (fleet-exchange, 250 ms): `approved` to `submitting` (commit), rate token (live only), `adapter.place(client_order_id, gtd)`, then `open`. A timeout stays `submitting` and is reconciled by client id, never resubmitted blind. A4 fallback: single-flight live submission with an open-order diff; ambiguous result triggers auto-kill.
-6. **Fills**: live polled; paper simulated in `fleet/sim/fills.py` against later snapshots, walking ask levels up to the price, taking at most `participation` of each level; resting bids fill only when a later snapshot crosses.
-7. **Settlement**: ESPN final (nflverse confirms next day): ledger settle, `bets` rows, `model_scores`, assignment settled, lineage eligibility recomputed.
+6. **Fills**: live polled; paper simulated in `host/exchange/paper.py` (with `fleet/sim/book.py`) against later snapshots, walking ask levels up to the price for a buy and (step 6B) bid levels down to the price for a sell, taking at most `participation` of each level; resting orders fill at their limit only when a later snapshot crosses.
+7. **Settlement**: ESPN final (nflverse confirms next day): ledger settle, `bets` rows (from step 6B a sold row per sell and buy rows for the contracts still held), `model_scores`, assignment settled, lineage eligibility recomputed.
 
 ## Limits, kill switch, live switch, eligibility, rate limiting, liquidity floor
 
@@ -136,10 +142,10 @@ Specified exactly in `docs/TRADING.md` (approval order, kill transaction, settle
 The step 3 scope (data, model interface, `elo_blend`, backtest rule and metrics, search, training, summaries, eligibility, leaderboard) is specified exactly in `docs/MODELS.md`; where it differs from the summary below, `docs/MODELS.md` wins. Step 3 signatures: `fit(games, through, should_stop)` and `summary(params, metrics)`.
 
 - `Model` interface, one signature everywhere: `fit(games, stop)`, `predict(game, market_p, features) -> p_home`, `to_json/from_json`, `summary(metrics) -> 3 sentences`; `registry.py` maps family to class.
-- First family `elo_blend` (pure Python): Elo with MOV multiplier, HFA, rest, season regression; logit blend with the market fitted by gradient descent; search space K, HFA, regress, MOV, a, b, min_edge, kelly. No existing model code was provided; any later model plugs in behind `Model`.
+- First family `elo_blend` (pure Python): Elo with MOV multiplier, HFA, rest, season regression; logit blend with the market fitted by gradient descent; search space K, HFA, regress, MOV, a, b, min_edge, kelly, and from step 6B a quarterback-change and a per-player-Out penalty. Second family (step 6B) `epa_blend`: a logistic regression on Elo, shrunk rolling EPA per play, rest, quarterback change, players Out, divisional games and the market logit, fitted by Newton with L2. No existing model code was provided; any later model plugs in behind `Model`.
 - **Job kinds**: *backtest* `{model_id|params, seasons}`; *model_search* `{family, seed, n, seasons}` yielding top-5 new `models`; *train* `{model_id, through}` yielding a child row in the same lineage.
-- Backtester: walk-forward by season, two labelled price regimes: (a) nflverse closing line with the closing-line fill rule (CLV is 0 by construction); (b) own `price_snapshots`/`price_bars` with the paper simulator. Per-game bankroll reset; checkpoint per season.
-- Scoring per `(model, game, mode)`: `n_bets`, `stake`, `pnl` (fees in), stake-weighted `avg_clv`; in-play excluded from CLV. **Leaderboard rolls up by `lineage_id`**; ranked only with `games >= 5 AND bets >= 30` in the rank mode; sort by shrunk CLV `clv x bets/(bets+25)`, tiebreak ROI. From step 6A the backtest ranking uses the held-out validation era (shrunk ROI then log-loss gain), with unvalidated models listed unranked; see `docs/ROBUSTNESS.md` A1.
+- Backtester: walk-forward by season, two labelled price regimes: (a) nflverse closing line with the closing-line fill rule (CLV is 0 by construction); (b) from step 6B (`price_source` "snapshots") own `price_snapshots`/`price_bars`, served by `GET /api/v1/data/prices`: the bet is placed at the recorded ask a set time before kickoff and filled on the recorded book with the paper participation rule (`fleet/sim/prices.py`, `docs/ROBUSTNESS.md` B1). Per-game bankroll reset; checkpoint per season.
+- Scoring per `(model, game, mode)`: `n_bets`, `stake`, `pnl` (fees in), stake-weighted `avg_clv`; in-play excluded from CLV. **Leaderboard rolls up by `lineage_id`**; ranked only with `games >= 5 AND bets >= 30` in the rank mode; sort by shrunk CLV `clv x bets/(bets+25)`, tiebreak ROI. From step 6A the backtest ranking uses the held-out validation era (shrunk ROI then log-loss gain), with unvalidated models listed unranked; see `docs/ROBUSTNESS.md` A1. From step 6B a lineage with 30 or more snapshot replay bets ranks on shrunk snapshot CLV between the paper-ranked and the validation-ranked lineages (`docs/ROBUSTNESS.md` B1).
 
 ## Data sources
 
@@ -147,9 +153,11 @@ Free only for now. Paid sources are considered only after the system shows profi
 
 | Source | Use | Cost |
 |---|---|---|
-| nflverse `games.csv` + schedules (CC-BY-4.0, attribution shown) | schedule, scores, closing spread/ML, temp/wind/roof; host-cached | free |
+| nflverse `games.csv` + schedules (CC-BY-4.0, attribution shown) | schedule, scores, closing spread/ML, temp/wind/roof, starting quarterbacks; host-cached | free |
+| nflverse `injuries_{season}.csv` (step 6B) | players listed Out per team and week, filtered by report time; host table `injuries`, refreshed every `signals_refresh_hours` | free |
+| nflverse `play_by_play_{season}.csv.gz` (step 6B) | per team-game EPA per play, pass rate, success rate; host table `team_game_stats`, streamed, never held in memory | free |
 | ESPN scoreboard JSON (unofficial) | live finals; 1 req/10 s; nflverse fallback next day | free |
-| Polymarket US gateway (public) | markets, books into own `price_snapshots` from day one | free (A1) |
+| Polymarket US gateway (public) | markets, books into own `price_snapshots` from day one; replayed by snapshot backtests (step 6B) | free (A1) |
 | NWS `api.weather.gov` (public domain, User-Agent required) | forecasts for outdoor games, host-cached hourly | free |
 | The Odds API, Kalshi historical, SportsDataIO/Sportradar, Open-Meteo, offshore CLOB history | not used | deferred until profit |
 
@@ -193,12 +201,15 @@ The step 2 dashboard (pages, fragments, forms, auth, empty states) is specified 
 | 3 (done) | Delivered: nflverse ingest (`host.cli ingest-games`, Settings Refresh, `GET /api/v1/data/games`), `fleet/models` (`Model` interface, registry, `elo_blend`), `fleet/sim` (walk-forward backtest, model search, train) with sub-3 s checkpointed units, jobs page and `/jobs/{id}`, Models page with per-season table and Train, leaderboard by lineage on the root model's backtest, eligibility candidate to paper_ok, three-sentence summaries; spec in `docs/MODELS.md` | Model search on any idle: box switches, 5 models with summaries appear, box returns to idle; role switch mid-search resumes elsewhere repeating at most one candidate-season; Train gives a child row in the same lineage |
 | 4 (done) | `fleet-exchange` container (heartbeat, watchdog), adapter interface, snapshots + partitions/bars, matching UI, approval with all three limits, ledger, executor outbox, `order_events`, `/api/trade/release`, paper simulator, trade tick, `/trading`, settlement/scoring, paper eligibility, kill end to end, orphan rule | Three paper models on one game: approvals/rejections with reasons, realistic fills; tiny paper daily loss gives `daily_loss`; KILL cancels all paper orders in under 2 s; stopping fleet-exchange with an open order shows the banner within 15 s; next day: bets rows, lineage paper line, ledger replay OK |
 | 5 (done) | Delivered, spec in `docs/LIVE.md`: `polymarket_us.py` (Ed25519, place/cancel/open/fills/balance), restart reconciliation, rate buckets + 429 backoff, live switch, live halt, buying-power check, GTD, auto-kill triggers, `exchange-smoke`, `cancel-all --direct` | Keys in `exchange.env` give "auth OK"; typed dated phrase gives LIVE; `exchange-smoke` order visible in the exchange UI; KILL cancels it and live flips off; restart mid-order gives no duplicate. Steps 1 to 5 are complete |
-| 6A (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part A: held-out validation era (`validation_seasons`; the search era keeps the `backtest_seasons` key), `validate` job, bootstrap intervals and market test, stress tests and flags, stricter gates, multi-core search (`search_workers`) | Settings shows validation seasons and search workers; a search fills validation columns on Models; Validate on an older model; Robustness section on the model page; a search on 4 cores runs about 3x faster. Step 6B (snapshot replay, richer signals) is pending |
+| 6A (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part A: held-out validation era (`validation_seasons`; the search era keeps the `backtest_seasons` key), `validate` job, bootstrap intervals and market test, stress tests and flags, stricter gates, multi-core search (`search_workers`) | Settings shows validation seasons and search workers; a search fills validation columns on Models; Validate on an older model; Robustness section on the model page; a search on 4 cores runs about 3x faster |
+| 6B (done) | Delivered, spec in `docs/ROBUSTNESS.md` Part B and `docs/TRADING.md` "Selling": migrations `0007_signals.sql` and `0008_sells.sql`; `GET /api/v1/data/prices` and snapshot replay backtests (`price_source`, `snapshot_metrics`, snapshot leaderboard column and rank mode); quarterback-change and injury signals and per team-game EPA in the games feed (`ingest-injuries`, `ingest-pbp`, periodic refresh); `elo_blend` penalties; the `epa_blend` family; selling a held position end to end (worker rule, `approve_sell`, paper sell fills, ledger `sell`, settlement after partial sales, kill, live `side_sell`, Trading page positions and sell chips) | Signals loaded by the CLI; an `epa_blend` search fills Models; a snapshot backtest (sim prices allowed for the test, then turned off) shows the replay line and the snapshot column; a paper assignment shows positions and, when the bid overshoots the model, a sell with its realized P&L (README "How to test step 6B") |
+| 6C (pending) | Spec in `docs/INGAME.md`: live game-state feed, the `ingame_wp` family, conservative in-game rules, scoring and dashboard | Not started |
+| 7 (pending) | Spec in `docs/UI.md`: the same dashboard, shorter and easier to read; no API, data model or rule changes | Not started |
 
 ## Risks
 
 - Polymarket US API unverified (A1 to A5); the live adapter is built from assumptions kept in `market_source_config` and may need rework from the owner's probe output; the paper fee model may be wrong until then.
-- Paper fills are optimistic; expect live below paper. Backtest CLV is 0 until own snapshots accumulate.
+- Paper fills are optimistic; expect live below paper. Closing-line backtest CLV is 0 by construction; snapshot replays (step 6B) measure CLV only on games the exchange recorded, so they start small.
 - Single host is a single point of failure, and a Windows desktop can sleep, update or reboot: with the host down, resting live orders depend on GTD expiry and the kill is unavailable. Disable sleep, keep Docker Desktop starting at login, back up the Postgres volume.
 - Docker Desktop port publishing and `tailscale serve` must both be healthy for workers to reach the host; the dashboard should show stale workers promptly.
 - ESPN is unofficial; settlement may lag a day. Pure-Python models cap complexity.

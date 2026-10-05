@@ -277,6 +277,7 @@ log-loss vs market, max drawdown, seasons, summary. Step 4 adds the paper (and l
 live) record per lineage and the paper rank mode (docs/TRADING.md, "Leaderboard and P&L").
 Step 6A ranks on the validation era (docs/ROBUSTNESS.md A1); step 6B adds a snapshot
 column group and the snapshot rank mode between paper and validation (at least 30
-replayed bets, by shrunk snapshot CLV `clv * bets / (bets + 25)`, ties by snapshot ROI;
+replayed bets on a real platform, by shrunk snapshot CLV `clv * bets / (bets + 25)`,
+ties by snapshot ROI; a replay on sim prices is shown but never ranks;
 `host/leaderboard_snapshot.py`, docs/ROBUSTNESS.md B1). The short params of an
 `epa_blend` lineage read "window 8 · shrink 3.0 · L2 1.00".

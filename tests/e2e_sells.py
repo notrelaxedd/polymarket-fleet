@@ -18,6 +18,7 @@ up to the bankroll's realized change.
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from pathlib import Path
@@ -188,9 +189,8 @@ def _run(host: Any, worker_id: str, model_id: str, exchange: ExchangeThread, wai
     host.post("/api/settings", {"participation": (first + 0.5) / top, "snapshot_active_s": SNAPSHOT_S})
     part = wait_for(lambda: (o := host.get(f"/api/orders/{sell['id']}"))["filled_size"] > 0 and o, "the sell partly filled",
                     timeout=FILL_TIMEOUT)
-    if part["status"] == "partial":
-        assert part["filled_size"] == first
-        ledger_clean(host)
+    assert part["status"] == "partial" and part["filled_size"] == first, "one snapshot fills only part of it"
+    ledger_clean(host)
     wait_for(lambda: host.get(f"/api/orders/{sell['id']}")["status"] == "filled", "the sell filled", timeout=FILL_TIMEOUT)
     ledger_clean(host)
     fills = _db(host, "SELECT * FROM fills WHERE order_id = %s ORDER BY id", (sell["id"],))
@@ -211,16 +211,18 @@ def _run(host: Any, worker_id: str, model_id: str, exchange: ExchangeThread, wai
     sold_basis, sold_realized = sum(expect_basis), sum(r["d_realized"] for r in ledger)
     now = host.get(f"/api/assignments/{aid}")
     assert now["positions"][0]["size"] == held - size and now["positions"][0]["basis_cents"] == basis - sold_basis
-    buy_fees = sum(int(f["fee_cents"]) for o in buys for f in _db(host, "SELECT fee_cents FROM fills WHERE order_id = %s", (o["id"],)))
+    buy_fees = sum(int(f["fee_cents"]) for o in buys
+                   for f in _db(host, "SELECT fee_cents FROM fills WHERE order_id = %s", (o["id"],)))
     assert now["bankroll"]["realized_pnl_cents"] == sold_realized - buy_fees, "realized: the sale less the buy fees"
     trading = page(host.client.get("/trading").text)
     sell_rows = [r for r in trading.rows("order") if r.attr("data-id") == str(sell["id"])]
     assert sell_rows and all("sell" in r.chips() for r in sell_rows) and trading.row("assignment", aid)
 
     # simulate-final, home wins: a sold row and pro-rata buy rows for what is still held.
-    summary = run_cli(["simulate-final", SELL_GAME, "--home", "27", "--away", "17"])
-    assert '"winner": "home"' in summary and f'"bets": {len(buys) + 1}' in summary, summary
-    _check_bets(host, aid, model_id, sell, sold_basis, sold_realized, held - size)
+    summary = json.loads(run_cli(["simulate-final", SELL_GAME, "--home", "27", "--away", "17"]))
+    assert summary["winner"] == "home" and summary["bets"] == len(buys), "the summary counts buys, like n_bets"
+    total = _check_bets(host, aid, model_id, sell, sold_basis, sold_realized, held - size)
+    assert summary["pnl_cents"] == total, "the sale's P&L is part of the game's"
     wait_for(lambda: host.worker(worker_id)["current_jobs"] == [], "sell trade job dropped by the worker")
     assert host.job(job_id)["status"] == "succeeded"
     host.set_role(worker_id, "idle")
@@ -233,7 +235,8 @@ def _split(total: int, weights: list[int]) -> list[int]:
 
 
 def _check_bets(host: Any, aid: str, model_id: str, sell: dict[str, Any], sold_basis: int, sold_realized: int,
-                still_held: int) -> None:
+                still_held: int) -> int:
+    """The settled rows against the fills and the ledger; returns the total P&L."""
     bets = {b["order_id"]: b for b in rows(host, "SELECT * FROM bets WHERE assignment_id = %s", (aid,))}
     sold = bets.pop(sell["id"])
     assert sold["order_side"] == "sell" and sold["result"] == "sold" and sold["stake_cents"] == 0 and sold["clv"] is None
@@ -260,3 +263,4 @@ def _check_bets(host: Any, aid: str, model_id: str, sell: dict[str, Any], sold_b
     assert len(score) == 1 and score[0]["model_id"] == model_id and score[0]["pnl_cents"] == total
     assert score[0]["n_bets"] == len(buys), "n_bets counts buys"
     ledger_clean(host)
+    return total

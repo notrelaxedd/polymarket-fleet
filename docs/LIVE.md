@@ -149,7 +149,11 @@ assignments, which cancels their orders).
   after the last one closed: `fills(since the earliest submission - 60 s)` ->
   `orders.record_fill` with `exchange_fill_id` idempotency; a fill whose client id is
   unknown -> auto-kill `unknown_fill`; a fill the ledger cannot book (its order already
-  closed, or over its open size) -> auto-kill `late_fill`.
+  closed, or over its open size, or from step 6 Part B a sell fill larger than the
+  position the assignment holds or on a resolved market) -> auto-kill `late_fill`. Each
+  fill is booked in its own savepoint: a refused fill leaves no fills row, so the next
+  poll reports it late again. A sell fill posts a ledger
+  `sell` row through the same `record_fill` (docs/TRADING.md "Selling").
 - Open-order audit every `open_orders_audit_s` (60) and at start: remote open orders not
   in our active set -> cancel them and auto-kill `unknown_order`; our active orders missing
   remotely -> read fills, then `cancelled`/`filled`/`expired` accordingly with release.

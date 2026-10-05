@@ -151,7 +151,7 @@ def test_backtest_metrics_update_runs_eligibility_lineage_wide(client, conn, mak
 def test_games_feed_with_etag(client, conn, make_worker):
     w = make_worker("box1")
     r = client.get("/api/v1/data/games", headers=w.headers)
-    assert r.status_code == 200 and r.json() == {"games": [], "count": 0, "team_game_stats": []}
+    assert r.status_code == 200 and r.json() == {"games": [], "count": 0, "team_game_stats": [], "decision_minutes_before_kickoff": 60}
     assert r.headers["etag"] == '"0-0.0-0.0-0.d60"', "games, injuries and team_game_stats stamps plus the decision minutes"
     ingest_fixture(conn)
     r = client.get("/api/v1/data/games", headers=w.headers)

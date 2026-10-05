@@ -132,20 +132,28 @@ Delivered in step 6B (host side of B1):
   row of the lineage (a child trained later inherits it), logged as the job event
   `model_snapshot_backtest`, and never touches `backtest_metrics` or the status. The
   metrics' own `price_source` must match the job's (400 otherwise), so neither kind of
-  result can overwrite the other.
+  result can overwrite the other. A replay that scored no game (`n_games` 0, e.g. no
+  season with recorded markets) is logged with `stored: false` and keeps the lineage's
+  earlier snapshot metrics.
 - Leaderboard (`host/leaderboard_snapshot.py`): each entry carries `snapshot` (games,
   bets, ROI, P&L, `avg_clv` with `clv_ci`, platform, games skipped for lack of prices,
   seasons, `score` = shrunk CLV) and `snapshot_score`. Rank basis: paper (unchanged) >
-  snapshot (at least 30 snapshot-scored bets with a CLV, sorted by `clv * bets / (bets +
-  25)`, ties by snapshot ROI) > validation. Like paper, a snapshot-ranked lineage ranks
-  before it is validated; the unranked reasons are unchanged. The CLV point value is the
+  snapshot (at least 30 snapshot-scored bets with a CLV on a real platform, sorted by
+  `clv * bets / (bets + 25)`, ties by snapshot ROI) > validation. Like paper, a
+  snapshot-ranked lineage ranks before it is validated; the unranked reasons are
+  unchanged. A replay on simulated prices (platform `sim`, run only with
+  `allow_sim_prices`) is shown with its `sim` tag but never sets the rank basis, even
+  while the setting is on. The CLV point value is the
   result's `avg_clv`; when a result does not report one, the middle of `ci.avg_clv` is
   used (`clv_estimated: true`).
 - Eligibility does not read snapshot metrics in this step.
-- Seasons: a snapshot backtest whose last season is null (in the request or in settings
-  `backtest_seasons`) replays through the latest season in `games`, the season in
-  progress included (its played games are scored), not only the last complete one; no
-  validation-era cap applies, since a replay selects nothing. The worker plans the same
+- Seasons: a snapshot backtest whose last season is null in the request replays through
+  the latest season in `games`, the season in progress included (its played games are
+  scored), not only the last complete one. One that names no seasons (the model page's
+  "Replay on snapshots" button) takes the first season of settings `backtest_seasons`
+  and replays through the same latest season, whatever last season the setting stores
+  (the migrated default ends at 2021, the search era). No validation-era cap applies,
+  since a replay selects nothing. The worker plans the same
   way (`season_plan(..., through_latest=True)`) and only replays seasons with at least
   one recorded market.
 - The result carries a top-level `avg_clv` (the plain mean CLV over its bets, null
@@ -164,8 +172,10 @@ Delivered in step 6B (worker side of B1):
 - Replay (`fleet/sim/prices.py`, `run_replay_fold` in `fleet/sim/backtest.py`): the
   confirmed markets of the one platform, by game and side. The decision time is kickoff
   minus `decision_minutes_before_kickoff` (clamped to 0..300). A played game is scored
-  when a side's market has a bar in the 30 minutes before or at the decision time; the
-  last such bar gives that side's mid (its close, else the bid/ask midpoint), its ask and
+  when a side's market has a bar whose minute closed within the 30 minutes before the
+  decision time (a bar is labelled with the start of its minute and holds that minute's
+  last snapshot, so the bar of the decision minute is never used); the last such bar
+  gives that side's mid (its close, else the bid/ask midpoint), its ask and
   its `min_liquidity_usd_cents`. `p_market` is the devigged home mid (one recorded side:
   its own mid, away as `1 - mid`); the model predicts with it and `ll_market` uses it. A
   played game without such a bar counts in `n_unscored_no_prices`; an unplayed one is
@@ -173,14 +183,16 @@ Delivered in step 6B (worker side of B1):
 - Fill: the side with the larger edge at its ask (home on a tie), sized by the
   closing-line Kelly rule (`fleet/sim/fills.py`) to whole contracts, `floor(stake /
   (cost * 100))`. With a depth snapshot in the 2 minutes before or at the decision time
-  the fill walks its ask levels at or below the bar's ask with `fleet.sim.book.walk` at
+  the fill walks its ask levels at or below that snapshot's own best ask (its first level
+  with size; the bar's ask when the book is empty) with `fleet.sim.book.walk` at
   `participation` (the settings value copied into the job, default 0.5); otherwise it
   fills at the bar's ask, capped at `floor(participation * min_liquidity_usd_cents /
   (100 * ask))` contracts. The fee is `taker_rate * price * (1 - price)` per contract on
   each fill price; `stake_cents` is the rounded cost of the fills including fees and the
   bet's `edge` is measured at that average cost. CLV = the bought side's closing price
   minus the average entry price, where the closing price is the market's frozen
-  `closing_price`, else the mid of its last bar before kickoff. Settlement and P&L are the
+  `closing_price`, else the mid of its last bar whose minute closed by kickoff. Settlement
+  and P&L are the
   closing-line rule's (a tie returns the stake).
 - Seasons: the plan is the closing-line plan through the latest season (see "Seasons"
   above) restricted to seasons with a recorded market for at least one game, so a
@@ -194,8 +206,8 @@ Delivered in step 6B (worker side of B1):
   snapshot records; `validate` and `model_search` still run on closing lines only.
 
 Deviations from the B1 text above, as built:
-- The fill limit is the bar's ask: recorded depth above that ask (or an empty book)
-  fills nothing and the game is scored without a bet; a touch fill without a recorded
+- The fill limit is the recorded book's best ask (the bar's ask without depth): an empty
+  book fills nothing and the game is scored without a bet; a touch fill without a recorded
   `min_liquidity_usd_cents` also fills nothing.
 - Contracts are whole numbers (the trade worker's rule), not the closing-line rule's
   fractional contracts.
@@ -231,7 +243,11 @@ Delivered in step 6B (B2), with the details in docs/MODELS.md ("Data", "First fa
   used by both the host (`host/signals.py`) and the worker's games.csv adapter.
 - Injury signals only count reports whose `date_modified` is strictly before the game's
   decision time (kickoff minus `decision_minutes_before_kickoff`), so a backtest never
-  sees a report written after its bet; a row without a date never counts.
+  sees a report written after its bet; a row without a date never counts. The games
+  feed takes the cutoff as `?decision_minutes=N`, so a snapshot backtest gets the one
+  its params carry even when the setting changed after the job was created. The worker
+  asks for it into its own cache file (`games.d<N>.json`) and fails the job when the
+  feed states another cutoff, or none.
 - Ingest: `host/ingest_injuries.py` and `host/ingest_pbp.py`, the CLI commands
   `ingest-injuries` and `ingest-pbp` (`--season <year>`, `--season all` or `--file`), and
   a refresh of the current and previous season every `signals_refresh_hours`

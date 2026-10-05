@@ -167,7 +167,10 @@ def record_fills(
             log.warning("fill %s without size or price: %s", fill_id, fill)
             continue
         try:
-            orders.record_fill(conn, row["id"], float(price), size, _int(fill.get("fee_cents")) or 0, "live", actor, exchange_fill_id=fill_id)
+            # A savepoint per fill: a fill the ledger refuses leaves no fills row behind,
+            # so the next poll reports it late again instead of skipping it as seen.
+            with conn.transaction():
+                orders.record_fill(conn, row["id"], float(price), size, _int(fill.get("fee_cents")) or 0, "live", actor, exchange_fill_id=fill_id)
             recorded += 1
         except Conflict as exc:
             log.error("fill %s cannot be applied to order %s: %s", fill_id, row["id"], exc)

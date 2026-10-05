@@ -50,7 +50,7 @@ per-step test walkthroughs.
 ## 3. State of the repository
 
 Branches on `origin` (tags do not survive the git proxy; publish branches):
-- `step4` (ff6ed16), `step5` (6cc3818) and `step6a`: stable installs, newest last.
+- `step4` (ff6ed16), `step5` (6cc3818), `step6a` and `step6b`: stable installs, newest last.
 - `main`: step 5 final is 4478bb7; the docs commit 6cc3818 adds the selling rule and
   the in-game spec; the commits after that are work-in-progress snapshots of step 6
   Part A, ending with the handoff commit that had one green full-suite run.
@@ -86,32 +86,31 @@ validate job that ranks the lineage, and the paper CLV interval gate
 (`tests/e2e_paper_gate.py`). The screenshot tool needs `playwright==1.56.0` (the
 release that matches the sandbox's Chromium build 1194).
 
-### Step 6 Part B: not started
+### Step 6 Part B: done, branch `step6b`
 
-Spec: `docs/ROBUSTNESS.md` Part B (snapshot replay backtests, richer signals,
-`epa_blend`) and `docs/TRADING.md` section "Selling (step 6 Part B): mark-to-model".
-A build split that keeps paths disjoint:
-- Builder "sim" (worker): `fleet/sim/` (price_source `snapshots` in the backtester,
-  the decision time, CLV against frozen closing prices, sim exclusion), QB-change and
-  injury features in `fleet/sim/data.py`, EPA features, the new family
-  `fleet/models/epa_blend.py` registered in `fleet/models/registry.py`, search spaces,
-  its tests.
-- Builder "host-data": migration `0007_signals.sql` (`injuries`, `team_game_stats`,
-  backtest params), `GET /api/v1/data/prices` and the signals served with the games
-  feed (`host/api/data.py`, `host/nflverse.py` plus new ingest modules for injuries
-  and play-by-play), settings keys (`allow_sim_prices`, `decision_minutes_before_kickoff`),
-  the backtest form's `price_source` choice, leaderboard snapshot columns
-  (`host/leaderboard.py`, `host/api/dashboard_models.py`, Models templates), docs.
-- Builder "trading": migration `0008_sells.sql` (`orders.side`, `bets.result` gains
-  `sold`), sells end to end: `fleet/worker/trade.py` proposes sells, `host/trading/`
-  approval path for sells (no reservation, no daily-loss check, size within the
-  position, one open sell per market, no shorting), `host/exchange/paper.py` sell
-  fills, ledger rules for a sell fill, settlement after partial sales,
-  `model_scores` including sells, Trading page chips and positions, kill cancels open
-  sells, the live gateway `side: SELL`. Tests listed in the TRADING.md section.
-Then integrate, review (lenses: replay correctness and CLV sign, signal leakage and
-feature timing, sell maths and ledger invariants), fix, verify, commit, publish
-`step6b`.
+Built 2026-10-05 by seven builders on disjoint paths (contract in
+`tools/workflows/step6b-contract.txt`), then one workflow: integrate; e2e phase
+(`tests/e2e_signals.py`, `tests/e2e_sells.py`), screenshots and docs in parallel; five
+review lenses (replay, leakage, sells, safety, UI and docs) with one skeptical verifier
+per high or medium finding; area fixers; a final verifier. 16 of 17 findings were
+confirmed and fixed, among them: the replay read the decision-time bar by its opening
+minute (it now uses closed bars only), a fill row could be written before a refused
+ledger movement (now one savepoint), a live sell fill after settlement was half-booked,
+sim-price replays ranked on the leaderboard (now shown, never ranked), the games feed
+injury cutoff followed the current setting rather than the job's (the worker fetches the
+feed per decision-minutes cutoff), the QB-change signal was 0 at trade time (fixed), and
+the worker dropped `team_game_stats` when caching the games feed. What it contains:
+- Snapshot replay backtests (`price_source: snapshots`, `fleet/sim/prices.py`, the shared
+  order-book walk `fleet/sim/book.py`), stored in `models.snapshot_metrics` and ranked
+  on snapshot CLV after 30 bets (validated lineages only, never on sim prices).
+- Signals: QB change and injuries (nflverse `injuries`, `host/ingest_injuries.py`),
+  team EPA per game (`host/ingest_pbp.py`, `team_game_stats`), served with the games
+  feed; `elo_blend` penalties; the `epa_blend` family (`fleet/models/newton.py`).
+- Selling (mark-to-model): `fleet/worker/sell.py`, `host/trading/sells.py`,
+  `host/exchange/settle_sells.py`, signed positions with average cost, the `sell`
+  ledger kind, sold bets rows, the live gateway's `side_sell`.
+Steps 6A and 6B were merged through the branch `merge-6a-6b`; the rule that a lineage
+never validated stays unranked (step 6A review) wins over the 6B draft.
 
 ### Step 6 Part C: not started
 
