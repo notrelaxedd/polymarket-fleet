@@ -125,7 +125,7 @@ def search_phase(host: Any, worker_id: str, wait_for: Callable[..., Any], settle
     assert '<span class="k">validation ROI</span>' in page and '<span class="k">beats market</span>' in page
     for mid in ids:
         row = _row(page, mid)
-        assert 'href="/jobs?validate_model=' in row and ("chip chip-beats" in row or ">no <span" in row)
+        assert 'href="/jobs?validate_model=' in row and ("chip chip-beats" in row or "no <span" in row)
         if host.get(f"/api/models/{mid}")["validation_metrics"]["n_bets"]:
             assert '<span class="range">' in row, "the ROI interval is printed next to the validation ROI"
     return ids

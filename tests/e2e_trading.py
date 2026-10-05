@@ -388,7 +388,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     board = host.get("/api/models")
     entry = next(m for m in board["ranked"] + board["unranked"] if m["id"] == models_root(host, model_id))
     assert entry["paper"]["games"] == 1 and entry["paper"]["bets"] == 2 and entry["paper"]["pnl_cents"] == pnl_cents
-    assert entry["paper"]["avg_clv"] is not None and entry["rank_mode"] == "backtest", "one game: not yet ranked on paper"
+    assert entry["paper"]["avg_clv"] is not None and entry["rank_mode"] == "validation", "one game: not yet ranked on paper (step 6A ranks by the validation era)"
     assert f"1 g &middot; 2 bets &middot; {dollars}" in host.client.get("/models").text
     assert f"1 games &middot; 2 bets &middot; {dollars}" in host.client.get(f"/models/{model_id}").text
     page = host.client.get("/trading").text
