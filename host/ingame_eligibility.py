@@ -60,4 +60,4 @@ def ingame_reason(metrics: dict[str, Any] | None) -> str:
         return "its validation log-loss is worse than the vegas_wp baseline"
     if plays < MIN_PLAYS:
         return f"validated on {plays} plays, fewer than {MIN_PLAYS}"
-    return f"beats the vegas_wp baseline over {plays} held-out plays; paper only (in-game orders are paper-only)"
+    return f"beats vegas_wp over {plays} held-out plays; paper only"

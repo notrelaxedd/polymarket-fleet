@@ -202,7 +202,7 @@
 <h3>Lineage</h3>
 <ul class="rows" data-list="lineage">
   {% for r in model.lineage %}
-  {% set lt %}{{ r.id | short }}{% if r.id == model.id %} (this){% endif %}{% if r.is_root %} {{ ui.chip('muted', 'root', key='root') }}{% endif %}{% endset %}
+  {% set lt %}<span>{{ r.id | short }}{% if r.id == model.id %} (this){% endif %}</span>{% if r.is_root %} {{ ui.chip('muted', 'root', key='root') }}{% endif %}{% endset %}
   {% set lm %}{% if r.trained_through %}trained through {{ r.trained_through[0] }} week {{ r.trained_through[1] }}{% else %}untrained{% endif %} · {{ r.created_at | ts }}{% endset %}
   {% call ui.row('lineage', r.id, '/models/' ~ r.id, lt, meta=lm) %}
     {% set st = 'ok' if r.status in ('paper_ok', 'live_eligible') else 'muted' %}

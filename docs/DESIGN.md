@@ -8,7 +8,7 @@ Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is spe
 2. Worker: one zero-dependency Python agent, one installer, 5 s heartbeat, role switch within 10 s after checkpoint/cancel, automatic restart from host state.
 3. Trading: workers only propose; the host approves every order against per-game bankroll, max bet, max daily loss and the liquidity floor. Paper by default, live behind a typed switch, one kill button.
 4. Learning: per-game scoring (PnL, bets, CLV), all-games leaderboard by lineage, backtest AND paper gates before real money, no override.
-5. Five build steps, hard stop after each for the owner's test and OK. All five are done; step 6 (robustness) Parts A and B are done too, Part C (in-game) and step 7 (UI overhaul) are pending.
+5. Five build steps, hard stop after each for the owner's test and OK. All five are done; step 6 (robustness, Parts A and B; in-game trading, Part C) is done too, and so is step 7 (UI overhaul).
 6. Final state: a Windows 11 host (Docker Compose: `db`, `host`, `exchange`) behind Tailscale serve; Debian workers on roles (backtest, model_search, train, trade); nflverse data (schedules, injury reports, play-by-play) and elo_blend and epa_blend models searched, validated, trained and scored by lineage; simulated and real Polymarket US market data snapshotted and replayed in snapshot backtests; paper trading by default, buying and selling; live trading behind the typed dated switch, a `live_eligible` lineage (no override) and an authenticated, clock-checked exchange session, with Ed25519-signed requests, GTD orders, restart reconciliation, open-order audit, auto-kill, `exchange-smoke` and `cancel-all --direct`. The Polymarket US request shapes remain unverified and configurable (see `docs/LIVE.md`).
 7. Every limit number (lease, online window, bankroll, max bet, daily loss, floor, edge, Kelly, games per worker, thresholds) is editable on the dashboard settings page. Values quoted in this file are test defaults, not policy.
 
@@ -49,12 +49,12 @@ host/{models,model_owner,model_validation,jobparams,ingame_jobparams,snapshot_st
 host/trading/{assignments,assignments_ingame,ledger,limits,sells,ingame,orders,positions,state,live,views,views_positions,views_ingame}.py
 host/migrations/0001_init.sql .. 0009_ingame.sql
 host/api/{app,deps,workers,jobs,data,data_pbp,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,dashboard_ingame,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
-host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,feedlag}.py   fleet-exchange
+host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,gamestate_rate,feedlag}.py   fleet-exchange
 host/exchange/adapters/{base,sim,polymarket_us,polymarket_us_live,polymarket_clob,live_http,live_parse,live_policy,signing,teams}.py
 host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | ingest-pbp-rows | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
 host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U]
 deploy/{install_worker.sh,fleet-worker.service}
-tests/test_*.py + hw/{roletest.sh,screenshots.py,seed_step*.py}
+tests/test_*.py + hw/{roletest.sh,screenshots.py,ui_checks.py,test_ui.py,test_row_audit.py,seed_*.py}
 tools/workflows/                     the build orchestration scripts
 ```
 

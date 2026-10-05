@@ -47,7 +47,13 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   without storage). A stored "closed" never hides a group holding an inline error or the
   element the URL fragment names. `#anchor` links open every disclosure around their
   target on load and on `hashchange` (a banner's `/trading#exchange` opens the Exchange
-  group, `/settings#kill` the Live trading group).
+  group, `/settings#kill` the Live trading group); a section id opens the disclosure it
+  wraps, `/jobs#<kind>` picks that kind in the New job form, and anchors land below the
+  sticky top bar (`app.js` measures it into `--topbar-h`, used by `scroll-padding-top`).
+  Only toggles by hand are stored. A group the server opens (`data-server-open`: an
+  error, the kill, the exchange down with live orders, ledger problems, a model's
+  Assign) is never folded by a stored or earlier "closed", only by a fold by hand after
+  it opened.
 - Owner auth is the same as the API (`Tailscale-User-Login` header, Origin check on POST).
   401, 403, 404, 405, 413 render a small HTML page explaining the cause, with a "Back to
   the dashboard" link. Every page is sent with anti-framing headers and

@@ -8,8 +8,10 @@ from datetime import timedelta
 from typing import Any
 
 from host import eligibility, model_owner
+from host.api.dashboard_trading import reason_text
 from host.exchange import paper, settle
 from host.exchange.executor import Executor
+from host.settings import get_settings
 from host.trading import assignments_ingame, ledger
 from host.trading.state import trade_state
 from host.trading.views import list_orders
@@ -264,3 +266,13 @@ def test_a_retired_lineage_assignment_cannot_be_reactivated(conn):
     assert assignments.activate_all_paper(conn, "owner") == 1
     assert _assignment(conn, s)["status"] == "halted"
     assert _assignment(conn, other)["status"] == "active"
+def test_an_untagged_order_rejected_in_play_names_the_ingame_max_bet(conn):
+    s = ingame_setup(conn)
+    put_state(conn, s.game["game_id"])
+    set_setting(conn, "trade_pregame_only", False)
+    set_setting(conn, "ingame_max_bet_cents", 10)
+    decision = ask(conn, s, size=1, ingame_flag=False)
+    assert decision["reason"] == "max_bet"
+    row = {str(r["id"]): r for r in list_orders(conn)}[decision["order_id"]]
+    assert (row["ingame"], row["in_play"]) == (False, True)
+    assert reason_text(row, get_settings(conn)).endswith("> $0.10"), "the in-game cap it broke, not the pre-game one"

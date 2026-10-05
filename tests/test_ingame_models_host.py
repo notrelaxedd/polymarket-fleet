@@ -202,7 +202,7 @@ def test_leaderboard_lists_ingame_lineages_apart_with_their_validation(conn):
     assert board["ranked"][0]["paper"]["bets"] == 3, "the pooled paper record is unchanged"
     detail = leaderboard.model_detail(conn, best["id"])
     assert detail["is_ingame"] and detail["ingame"]["bets"] == 4 and detail["ingame_validation"]["n_plays"] == 25000
-    assert "beats the vegas_wp baseline" in detail["ingame_reason"]
+    assert "beats vegas_wp over" in detail["ingame_reason"] and "paper only" in detail["ingame_reason"]
 
 
 def test_models_pages_show_the_ingame_group(client, conn):

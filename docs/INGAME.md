@@ -25,7 +25,8 @@ The feed ingests plays, not just scores: the ESPN summary endpoint
 (`settings.espn_summary_url`, default
 `https://site.api.espn.com/apis/site/v2/sports/football/nfl/summary?event={event_id}`)
 publishes the drive and play list as the game goes. `host/exchange/gamestate.py` (the
-poller) and `host/exchange/gamestate_parse.py` (the parsers) read:
+poller, with its ESPN request window and backoff in `host/exchange/gamestate_rate.py`)
+and `host/exchange/gamestate_parse.py` (the parsers) read:
 
 - `header.competitions[0].status` (period, clock, displayClock, type state / completed /
   name) and `competitors[]` (homeAway, score, team id and abbreviation);
@@ -83,6 +84,11 @@ home_timeouts, away_timeouts, and `last_change` is the newest score or possessio
 (`{"kind", "ts"}`, the time a source first saw it) or null. This is what travels in the
 trade state payload as `game_state`. Failures are logged and leave the state stale;
 stale state blocks trading (below).
+
+The nightly retention pass (`host/exchange/retention.py`) deletes `game_state` rows older
+than `snapshot_retention_days` days but always keeps each game's newest row; settlement
+reads the state recorded at approval (`state_at_entry`) when the game turns final, long
+before that.
 
 ### Cadence, rate cap and backoff
 

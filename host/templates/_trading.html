@@ -43,8 +43,8 @@
 {% if assignments %}
 <ul class="rows" data-list="assignments">
 {% for a in assignments %}
-{# the LIVE chip leads so the ellipsis never cuts it; the paper chip may be cut #}
-{% set title %}{% if a.mode == 'live' %}{{ ui.chip("bad", "live", key="live", extra="chip-live") }} {% endif %}{{ a.game.away_team }} @ {{ a.game.home_team }}{% if a.mode != 'live' %} {{ ui.chip("muted", "paper", key="paper", extra="mode-paper") }}{% endif %}{% endset %}
+{# the LIVE chip leads; the teams sit in a span so only they ellipsise, never a chip #}
+{% set title %}{% if a.mode == 'live' %}{{ ui.chip("bad", "live", key="live", extra="chip-live") }} {% endif %}<span>{{ a.game.away_team }} @ {{ a.game.home_team }}</span>{% if a.mode != 'live' %} {{ ui.chip("muted", "paper", key="paper", extra="mode-paper") }}{% endif %}{% endset %}
 {% set meta %}{{ a.model.family }} {{ a.short_params }} &middot; {{ a.game.kickoff_at | ts }} &middot; {{ a.game_id }}{% if a.game.status == 'final' %} &middot; final {{ a.game.away_score }}-{{ a.game.home_score }}{% endif %}{% endset %}
 {% set igline = ig.line(a) | trim %}
 {% call ui.row("assignment", a.id, "/models/" ~ a.model_id, title, meta=meta, ingame=igline or None, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id}) %}
@@ -154,7 +154,7 @@
 {% if fills %}
 <ul class="rows" data-list="fills">
 {% for f in fills %}
-{% set title %}{% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }}{{ live_chip(f.mode) }}{% if f.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{{ ig.chip(f.ingame) }}{% endset %}
+{% set title %}<span>{% if f.order_side == 'sell' %}sold {% endif %}{{ f.size }} @ {{ f.price | price }}</span>{{ live_chip(f.mode) }}{% if f.order_side == 'sell' %} {{ ui.chip("muted", "sell", key="sell", extra="chip-sell") }}{% endif %}{{ ig.chip(f.ingame) }}{% endset %}
 {% set meta %}of {{ f.order_size }} @ {{ f.order_price | price }} &middot; fee {{ f.fee_cents | money }}{% if f.order_side == 'sell' and f.basis_cents is not none %} &middot; basis {{ f.basis_cents | money }}{% endif %} &middot; {{ f.market_title }} &middot; {{ names.get(f.worker_id, f.worker_id) or 'no worker' }} &middot; {{ f.ts | ts }}{% endset %}
 {% call ui.row("fill", f.id, None, title, meta=meta, cls="is-live" if f.mode == 'live' else "", attrs={"data-fill": f.id, "data-side": f.order_side or 'buy'}) %}
   {% if f.order_side == 'sell' and f.realized_cents is not none %}<span class="row-value">realized {{ pnl(f.realized_cents) }}</span>{% endif %}

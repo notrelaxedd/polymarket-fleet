@@ -50,7 +50,7 @@ per-step test walkthroughs.
 ## 3. State of the repository
 
 Branches on `origin` (tags do not survive the git proxy; publish branches):
-- `step4` (ff6ed16), `step5` (6cc3818), `step6a` and `step6b`: stable installs, newest last.
+- `step4` (ff6ed16), `step5` (6cc3818), `step6a`, `step6b`, `step6c` and `step7`: stable installs, newest last.
 - `main`: step 5 final is 4478bb7; the docs commit 6cc3818 adds the selling rule and
   the in-game spec; the commits after that are work-in-progress snapshots of step 6
   Part A, ending with the handoff commit that had one green full-suite run.
@@ -112,20 +112,68 @@ the worker dropped `team_game_stats` when caching the games feed. What it contai
 Steps 6A and 6B were merged through the branch `merge-6a-6b`; the rule that a lineage
 never validated stays unranked (step 6A review) wins over the 6B draft.
 
-### Step 6 Part C: not started
+### Step 6 Part C: done, branch `step6c`
 
-Spec: `docs/INGAME.md`. ESPN summary endpoint polled every 3 to 5 s per live game
-(about 1 request per second per IP, back off on 429 or 403), Yahoo play-by-play as a
-cross-check, a measured feed lag against the market, the `ingame_wp` family on
-play-by-play, conservative in-game rules, scoring and dashboard. Free data only.
-No Polymarket, ESPN or NFL.com host is reachable from the build sandbox, so adapters
-are built against recorded fixtures with probe commands the owner runs and pastes.
+Built 2026-10-05 by three builders on disjoint paths (contract in
+`tools/workflows/step6c-contract.txt`: feed, model, trading), then split workflows:
+integrate; an e2e phase (`tests/e2e_ingame.py`, scripted game states through the
+exchange loop), screenshots and docs in parallel; four review lenses (feed, model,
+trading, UI and docs) with one skeptical verifier per high or medium finding; area
+fixers; a final pass by the orchestrator. Fixed in review, among others: the feed now
+stores one row per observation (so a state's age is the time since the last good poll)
+and shares one ESPN request window and backoff with the scores task; kickoff plays are
+encoded as the live feed shows them (the kicking team at its own 35); a model's
+artifact and metrics are written together; an untagged order after kickoff no longer
+slips past the in-game rules (`ingame.route`: rejected `kickoff` with
+`trade_pregame_only` on, in-game checks with it off, never live); pre-game orders are
+always bounded by kickoff; a sold contract is attributed to the model that bought it
+(`host/exchange/settle_owners.py`); retiring an in-game lineage switches in-game trading
+off at once; a stale state's probability is muted on Trading. What it contains:
+- Live game state (`host/exchange/gamestate.py`, `gamestate_parse.py`,
+  `gamestate_rate.py`): ESPN summary per live assigned game every 3 to 5 s, scoreboard
+  fallback, about 1 request per second, jittered backoff on 429 or 403; `game_state`
+  rows (pruned after `snapshot_retention_days`, keeping each game's newest);
+  `probe-gamestate` CLI and dashboard button. Parsers are built from ESPN's
+  documented shapes, not a live game: the owner runs the probe during a game and pastes
+  the output. Yahoo is opt-in and has no parser until then.
+- Feed lag (`host/exchange/feedlag.py`, `feed_lag`): score and possession changes
+  against the first market move of more than 0.03; buys suspend past
+  `ingame_max_lag_s` over at least `ingame_lag_min_events` events.
+- The `ingame_wp` family (`fleet/models/ingame_wp.py`, trained on nflverse
+  play-by-play rows `pbp_rows`, validated against `vegas_wp`), searched as a
+  `model_search` with family `ingame_wp`.
+- In-game rules on the worker (`fleet/worker/trade_ingame.py`) and on the host
+  (`host/trading/ingame.py`: `ingame_disabled`, `ingame_paper_only`, `ingame_stale`,
+  `ingame_quiet`, `ingame_cutoff`, `ingame_lag_suspended`). In-game orders are paper
+  only in this step; a live in-game gate is a later owner decision once there are paper
+  results.
 
-### Step 7: UI overhaul, not started
+### Step 7: UI overhaul, done, branch `step7`
 
-Spec: `docs/UI.md`. Build it after Parts B and C, because both add rows and columns
-to the pages it redesigns. Keep every behavioural test; replace markup assertions
-with class-prefix or `data-*` lookups.
+Built 2026-10-05 in its own worktree while 6B and 6C were reviewed (contract in
+`tools/workflows/step7-contract.txt`): a harden pass first (every page test moved to
+`data-*` hooks through `tests/pagecheck.py`, the shared macros in
+`host/templates/_ui.html`, CSS tests turned into component-contract and WCAG checks),
+then builders for the shell (base, top bar, phone bottom nav, `style.css`, `app.js`),
+Home and Fleet and Jobs, Models, Trading and Settings; an integrate pass (the UI.md
+assertions in `tests/hw/screenshots.py`, the row-height audit); reviews on wording,
+behaviour, and phone use and accessibility, with a skeptical verifier per high or medium
+finding; the 6B and 6C pages ported into the new layout; two fixers (shell and pages).
+Fixed in review, among others: an offline or disabled worker's "..." menu drew under
+the next card on a phone (opacity made a stacking context) so its items could not be
+tapped, anchors landed under the sticky top bar, the model page's paper game count
+disagreed with the gate verdict (each game now counts once on the pages), Home never
+refreshed (it has a live region now), the price-stress reading overclaimed, and a halted
+assignment of a retired lineage could be re-activated (now 409, and "Activate all
+paper" skips it). What it contains:
+- Home `/` (new, with "Needs attention"), Fleet moved to `/fleet`, Jobs with tabs and a
+  "New job" disclosure, Models as rows with "Unranked (n)", the model page's first
+  screen plus disclosures, Trading stats, rows and disclosures, Settings in groups.
+- Every page works with JavaScript off, keeps its forms, auth, no-store and
+  anti-framing; `app.js` keeps disclosures open by `data-key` across refreshes.
+- Known, left for the owner: the paper ranking threshold ("5 paper games",
+  `host/leaderboard.py`) and the API's `paper.games` still count a game once per model
+  of the lineage, while the pages count each game once.
 
 ## 4. How the steps were built (the method that worked)
 

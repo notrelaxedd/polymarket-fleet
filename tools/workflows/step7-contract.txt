@@ -1,0 +1,41 @@
+Step 7 component contract (docs/UI.md). Every page builder uses exactly these class names, markup patterns and data hooks; the shell builder implements their CSS and JS. Tests look pages up by data-* attributes and class prefixes, never by whole tags or inline text with markup.
+
+Tokens (host/static/style.css :root, light and dark as now; keep every existing colour token and the WCAG pairs in tests/test_style.py):
+- spacing --s1 4px, --s2 8px, --s3 12px, --s4 16px, --s5 24px; --tap 44px; --radius 10px.
+- type --fs-body 1rem, --fs-meta 0.85rem, --fs-display 1.75rem (stats only). Two body sizes plus one display size, nothing else.
+- state colours: ok = green, warn = amber, bad = red, muted = grey; never decoration; always with a word.
+
+Page frame:
+- <main class="page" data-page="home|fleet|jobs|job|models|model|trading|settings"> with <h1> first, then an intro:
+  <details class="intro" data-key="intro-<page>" open><summary>What this page is</summary><p class="muted">one sentence</p></details>
+  app.js remembers a dismissed intro in localStorage (try/catch; works without storage).
+- The first screen at 390x844 shows the h1 and at least one .stat.
+
+Components:
+- Stats grid: <div class="stats"> holding 2 to 4 of
+  <a class="stat" data-stat="<name>" href="..."><span class="stat-value">+$6.57</span><span class="stat-label">Paper today</span><span class="stat-note">optional muted line</span></a>
+  (a <div class="stat"> when it is not a link). 2 columns at 390 px, 4 at >= 700 px.
+- Rows: <ul class="rows" data-list="<name>"> of
+  <li class="row" data-row="<kind>" data-id="<id>">
+    <a class="row-main" href="..."><span class="row-title">elo_blend K 40 &middot; HFA 70</span><span class="row-meta">meta, one line, ellipsis</span></a>
+    <span class="chip chip-ok" data-chip="paper_ok">paper</span>
+    <span class="row-value">CLV +0.6%</span>
+    <details class="menu"><summary aria-label="More actions">...</summary><div class="menu-list"> forms and links, each a .menu-item at least 44 px tall, with data-action="<verb>" </div></details>
+  </li>
+  At most 88 px tall at 390 px (one line, two at most). A row's primary action is the row link; everything else lives in its .menu.
+- Chip: <span class="chip chip-ok|chip-warn|chip-bad|chip-muted" data-chip="<state>">word</span>; existing specific classes (chip-overfit, chip-fragile, chip-regime_dependent, chip-beats, chip-sell, chip-live, ...) may stay as extra classes. Never empty.
+- Card: <section class="card" data-card="<name>"><header class="card-head"><h2>Title</h2><span class="count">3</span></header> ... </section>
+- Disclosure: <details class="disclosure" data-key="<page>-<name>"><summary><span class="disclosure-title">Open orders</span><span class="count">2</span><span class="disclosure-summary">one-line summary of what is inside</span></summary><div class="disclosure-body"> ... </div></details>
+  app.js keeps open/closed state across fragment refreshes by data-key (and across reloads in localStorage, try/catch).
+- Progress: <span class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="42"><span class="bar-fill" style="width: 42%"></span></span>
+- Number caption: <span class="caption">one plain sentence explaining the number</span> under a stat or a metric.
+- Buttons and forms keep the existing .btn classes and form mechanics (POST forms, CSRF/Origin as now, data-confirm).
+
+Shell:
+- Top bar: wordmark (links to Home /), mode pill (PAPER/LIVE), the P&L of the current mode only ("paper +$6.57 today"), KILL. The other mode's P&L moves to Trading. Banners (exchange down, unattended, killed) stay with their data-banner hooks.
+- Nav: five labels Fleet, Jobs, Models, Trading, Settings (Home is the wordmark); data-nav="<name>" on each link, aria-current="page" on the active one. Under 700 px the nav is a fixed bottom bar with an inline SVG icon above each label (44 px targets, safe-area padding), and the page gets bottom padding so nothing hides behind it.
+
+Formatting (host/web.py filters): money $1,234.56 with sign for P&L (+$6.57 / -$1.20); percentages one decimal; probabilities as whole percentages (62%); never raw floats with more than 3 decimals in a list; full precision stays on detail pages and the API.
+
+Hooks the tests use (keep them stable):
+- data-page, data-stat, data-row + data-id, data-chip, data-action, data-key, data-card, data-list, data-nav, data-banner, data-field="<settings key>" on each settings input wrapper, data-form="<name>" on forms, data-flash on the flash box.
