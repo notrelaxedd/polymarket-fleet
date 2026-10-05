@@ -161,6 +161,18 @@ def price(value: Any) -> str:
     return f"{whole}.{frac.ljust(2, '0')}"
 
 
+def pvalue(value: Any) -> str:
+    """A p-value: "p < 0.001" below 0.001 (the smallest a 10 000 flip test can give is
+    1/10001, which "0.000" would overstate), else "p = 0.012"; "-" when missing."""
+    if value is None or isinstance(value, bool):
+        return "-"
+    try:
+        p = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    return "p < 0.001" if p < 0.001 else f"p = {p:.3f}"
+
+
 def season_span(seasons: Any) -> str:
     """[2010, ..., 2025] -> "2010-2025"; "-" when empty."""
     if isinstance(seasons, (list, tuple)) and seasons:
@@ -174,7 +186,8 @@ def make_env() -> Environment:
     env.filters.update(
         {"money": format_cents, "dollars": cents_to_dollars, "pct": pct, "pct1": pct1, "gb": gb, "ago": ago,
          "ts": ts, "pretty_json": pretty_json, "compact_json": compact_json, "short": short,
-         "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span, "price": price}
+         "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span, "price": price,
+         "pvalue": pvalue}
     )
     return env
 

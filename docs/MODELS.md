@@ -250,7 +250,11 @@ and backtest metrics. Unit = one season of Elo replay.
    fewer than 50 bets (the leaderboard gate) it ends "... max drawdown (too few bets to
    judge)."; a null drawdown reads "an unknown max drawdown".
 3. Calibration: "Log-loss 0.662 against the market's 0.659; it leans on the market and adds
-   little, so treat the edge as unproven until paper trading shows positive CLV."
+   little, so treat the edge as unproven until paper trading shows positive CLV." It says
+   "it beats the closing line on calibration" only when the log-loss is more than 0.002
+   below the market's and (step 6) the era's market test gives p < 0.05; ahead by that
+   margin with a larger p it reads "it is ahead of the closing line but not significantly
+   (market test p 0.17), so treat the edge as unproven".
 The owner can edit the text on the Models page.
 
 ## Eligibility (host, `host/eligibility.py`)

@@ -193,20 +193,37 @@ def run_model_search_job(params: dict[str, Any], checkpoint: dict[str, Any] | No
     )
 
 
+def search_era_overlap(search_metrics: dict[str, Any] | None, validation_seasons: list[int | None]) -> list[int]:
+    """The seasons of the stored search-era metrics at or after the first validation
+    season (empty when the eras are clean or a bound is unknown)."""
+    first = validation_seasons[0] if validation_seasons else None
+    tested = (search_metrics or {}).get("seasons")
+    if first is None or not isinstance(tested, list):
+        return []
+    return [int(s) for s in tested if isinstance(s, int) and not isinstance(s, bool) and s >= first]
+
+
 def run_validate_job(params: dict[str, Any], checkpoint: dict[str, Any] | None,
                      emit: Emit, should_stop: ShouldStop) -> dict[str, Any]:
     """{"validation_metrics", "stress_metrics"} of the context model on the validation
     era (params.validation_seasons, default [2022, last complete]); the model's stored
-    backtest_metrics feed the overfit flag."""
+    backtest_metrics feed the overfit flag. Refused (ValueError, the job errors) when
+    those search-era metrics cover a validation-era season: the overfit check would
+    compare two overlapping eras and the validation would be in-sample (the host
+    refuses such a job at creation too, host/eras.py)."""
     from fleet.sim.validate import run_validate
 
     model = _context(params).get("model")
     if not isinstance(model, dict) or not model.get("family"):
         raise ValueError("validate needs the model in the job context (params.model_id)")
     limits = limits_from_params(params)
-    games = _load_games(params)
     seasons = _season_pair(params.get("validation_seasons")) or list(DEFAULT_VALIDATION_SEASONS)
     search_metrics = model.get("backtest_metrics") if isinstance(model.get("backtest_metrics"), dict) else None
+    overlap = search_era_overlap(search_metrics, seasons)
+    if overlap:
+        raise ValueError(f"the model's search-era metrics cover {overlap}, inside the validation era from {seasons[0]}:"
+                         " search again on seasons before the validation era")
+    games = _load_games(params)
     return run_validate(games, str(model["family"]), dict(model.get("params") or {}), seasons, limits, _seed(params),
                         emit, should_stop, checkpoint, search_metrics=search_metrics)
 

@@ -143,34 +143,42 @@ def permutation_market_test(d: Sequence[float], n_flips: int, rng: random.Random
 
 
 def brier_decomposition(p: Sequence[float], outcomes: Sequence[float], buckets: int = 10) -> dict[str, float]:
-    """Murphy's decomposition over equal-width forecast buckets.
+    """Murphy's decomposition over equal-width forecast buckets, with the two
+    within-bucket terms of Stephenson, Coelho and Jolliffe (2008) so that
 
-    reliability = mean over games of (bucket mean forecast - bucket mean outcome)^2,
-    resolution = mean of (bucket mean outcome - overall mean outcome)^2, uncertainty =
-    the variance of the outcomes (o * (1 - o) for binary outcomes; ties count 0.5).
-    brier = reliability - resolution + uncertainty exactly when the forecasts inside a
-    bucket are equal; otherwise a within-bucket term separates them."""
+        brier = reliability - resolution + uncertainty + within_variance - within_covariance
+
+    holds exactly for any forecasts. reliability = mean over games of (bucket mean
+    forecast - bucket mean outcome)^2, resolution = mean of (bucket mean outcome -
+    overall mean outcome)^2, uncertainty = the variance of the outcomes (ties count
+    0.5), within_variance = mean of (forecast - bucket mean forecast)^2 and
+    within_covariance = 2 * mean of (outcome - bucket mean outcome) * (forecast -
+    bucket mean forecast). Both within terms are 0 when the forecasts inside a bucket
+    are equal."""
     n = len(p)
+    zero = {"reliability": 0.0, "resolution": 0.0, "uncertainty": 0.0, "within_variance": 0.0, "within_covariance": 0.0}
     if n == 0:
-        return {"reliability": 0.0, "resolution": 0.0, "uncertainty": 0.0}
+        return zero
+    keys = [min(int(pi * buckets), buckets - 1) for pi in p]
     counts = [0] * buckets
     sum_p = [0.0] * buckets
     sum_y = [0.0] * buckets
-    for pi, yi in zip(p, outcomes):
-        k = min(int(pi * buckets), buckets - 1)
+    for k, pi, yi in zip(keys, p, outcomes):
         counts[k] += 1
         sum_p[k] += pi
         sum_y[k] += yi
+    mean_p = [sp / c if c else 0.0 for sp, c in zip(sum_p, counts)]
+    mean_y = [sy / c if c else 0.0 for sy, c in zip(sum_y, counts)]
     o_bar = sum(outcomes) / n
-    reliability = 0.0
-    resolution = 0.0
-    for c, sp, sy in zip(counts, sum_p, sum_y):
-        if not c:
-            continue
-        reliability += c * (sp / c - sy / c) ** 2
-        resolution += c * (sy / c - o_bar) ** 2
-    uncertainty = sum((yi - o_bar) ** 2 for yi in outcomes) / n
-    return {"reliability": reliability / n, "resolution": resolution / n, "uncertainty": uncertainty}
+    reliability = math.fsum(c * (mean_p[k] - mean_y[k]) ** 2 for k, c in enumerate(counts) if c)
+    resolution = math.fsum(c * (mean_y[k] - o_bar) ** 2 for k, c in enumerate(counts) if c)
+    within_variance = math.fsum((pi - mean_p[k]) ** 2 for k, pi in zip(keys, p))
+    within_covariance = 2.0 * math.fsum((yi - mean_y[k]) * (pi - mean_p[k]) for k, pi, yi in zip(keys, p, outcomes))
+    uncertainty = math.fsum((yi - o_bar) ** 2 for yi in outcomes) / n
+    return {
+        "reliability": reliability / n, "resolution": resolution / n, "uncertainty": uncertainty,
+        "within_variance": within_variance / n, "within_covariance": within_covariance / n,
+    }
 
 
 def _logit(p: float) -> float:

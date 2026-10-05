@@ -195,3 +195,17 @@ def test_paper_ci_gate_on_constructed_bets(conn):
     assert conn.execute("SELECT n_bets, clv_low FROM lineage_paper_ci WHERE lineage_id = %s", (blank["lineage_id"],)).fetchone() == {"n_bets": 0, "clv_low": None}
     assert eligibility.paper_ci(conn, uuid.uuid4()) == {"n_bets": 0, "avg_clv": None, "ci": None}
     assert eligibility.recompute_paper(conn, uuid.uuid4()) is None
+
+
+def test_a_paper_thresholds_change_through_the_api_recomputes_the_paper_gate(client, conn):
+    """POST /api/settings with thresholds_paper reruns the paper gate of every lineage
+    with a paper record, as the Settings form does."""
+    sure = _paper_lineage(conn, [0.03, 0.04, 0.02, 0.05, 0.03, 0.04])
+    mixed = _paper_lineage(conn, [0.05, -0.04, 0.03, -0.03, 0.04, -0.05])
+    loose = {"min_games": 2, "min_bets": 4, "min_days": 0, "min_clv": 0.0, "min_pnl_cents": 1, "clv_ci_excludes_zero": True}
+    assert client.post("/api/settings", json={"thresholds_paper": loose}).status_code == 200
+    assert model_row(conn, sure["id"])["status"] == "live_eligible" and model_row(conn, mixed["id"])["status"] == "paper_ok"
+    assert client.post("/api/settings", json={"thresholds_paper": {**loose, "clv_ci_excludes_zero": False}}).status_code == 200
+    assert model_row(conn, mixed["id"])["status"] == "live_eligible"
+    assert client.post("/api/settings", json={"thresholds_paper": loose}).status_code == 200
+    assert model_row(conn, mixed["id"])["status"] == "paper_ok", "the interval rule switched back on demotes"

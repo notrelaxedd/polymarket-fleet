@@ -119,7 +119,7 @@
     {{ field('max_drawdown', 'Max drawdown', '0..1', 'decimal') }}
     {{ field('min_roi_ci_low', 'Min ROI, 5th percentile', 'the bootstrap lower bound; 0 = the interval must not reach below zero', 'decimal') }}
     {{ field('max_market_p', 'Max market p', '0..1; 0.1 = suggestive, 0.05 = beats the market', 'decimal') }}
-    {{ check('require_validation', 'Require validation', 'off = judge the search-era backtest with the first three rules only, as in step 3') }}
+    {{ check('require_validation', 'Require validation', 'off = judge the search-era backtest with min bets, min ROI and max drawdown only') }}
     {{ check('forbid_overfit', 'Forbid overfit', 'search era much better than the held-out era') }}
     {{ check('forbid_fragile', 'Forbid fragile', 'edge gone with worse prices or a parameter nudge') }}
     {{ check('forbid_regime_dependent', 'Forbid regime-dependent', 'one regime holds the profit') }}

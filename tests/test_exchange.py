@@ -103,13 +103,15 @@ def make_market(
     ).fetchone())
 
 
-def book(bid: float, ask: float, size: float = 200, levels: int = 3, when: datetime = NOW) -> Book:
+def book(bid: float, ask: float, size: float = 200, levels: int = 3, when: datetime | None = None) -> Book:
+    when = NOW if when is None else when
     bids = [[round(bid - 0.01 * i, 4), size] for i in range(levels)]
     asks = [[round(ask + 0.01 * i, 4), size] for i in range(levels)]
     return Book(bids=bids, asks=asks, fetched_at=when)
 
 
-def snap(conn: psycopg.Connection, market_id: Any, bid: float, ask: float, when: datetime = NOW, size: float = 200, levels: int = 3) -> dict[str, Any]:
+def snap(conn: psycopg.Connection, market_id: Any, bid: float, ask: float, when: datetime | None = None, size: float = 200, levels: int = 3) -> dict[str, Any]:
+    when = NOW if when is None else when
     return snapshots.record_snapshot(conn, market_id, book(bid, ask, size, levels, when), when)
 
 

@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sys
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 from urllib.parse import unquote
@@ -66,6 +68,25 @@ def _template_is_current(admin: psycopg.Connection) -> bool:
 
 def _drop(admin: psycopg.Connection, name: str) -> None:
     admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+
+
+# Test modules whose module-level NOW is the wall clock (and the modules that import
+# it). The host compares stored times with the database clock (buying power age, book
+# age, leases), and a full run reaches some of these files minutes after collection,
+# so every such NOW is reset to one fresh value at the start of each test.
+WALL_CLOCK_NOW_MODULES = (
+    "tests.test_exchange", "tests.test_live_executor", "tests.test_review5_fixes", "tests.test_smoke",
+    "tests.test_paper_fills", "tests.test_review4_fixes",
+)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_wall_clock_now() -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    for name in WALL_CLOCK_NOW_MODULES:
+        module = sys.modules.get(name)
+        if module is not None and isinstance(getattr(module, "NOW", None), datetime):
+            module.NOW = now
 
 
 @pytest.fixture(scope="session")

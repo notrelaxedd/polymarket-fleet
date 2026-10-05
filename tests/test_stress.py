@@ -87,21 +87,25 @@ def test_fragile_flag_rules() -> None:
     assert not fragile_flag(base, _prices(90, 0.03), {"n": 0})
 
 
-def _regimes(**pnls: int) -> dict:
+def _regimes(bets: dict[str, int] | None = None, **pnls: int) -> dict:
     out = {name: {"n_games": 10, "n_bets": 5, "roi": 0.0, "pnl_cents": 0, "mean_ll_gain": 0.0} for pair in REGIME_DIMENSIONS for name in pair}
     for name, pnl in pnls.items():
         out[name]["pnl_cents"] = pnl
+    for name, n in (bets or {}).items():
+        out[name]["n_bets"] = n
     return out
 
 
 def test_regime_dependent_flag_rules() -> None:
     assert not regime_dependent_flag(_regimes(home=600, away=400))
-    assert regime_dependent_flag(_regimes(home=1200, away=-200)), "all the profit at home, losses away"
-    assert regime_dependent_flag(_regimes(underdog=500, favourite=-50))
+    assert regime_dependent_flag(_regimes(home=1200, away=-700)), "the profit at home, more than half of it lost away"
+    assert not regime_dependent_flag(_regimes(home=1200, away=-600)), "giving back exactly half does not flag"
+    assert not regime_dependent_flag(_regimes(home=1200, away=-200)), "a small loss on the other side does not flag"
+    assert regime_dependent_flag(_regimes(underdog=500, favourite=-300))
     assert not regime_dependent_flag(_regimes(home=1200, away=0)), "the other side must lose money"
     assert not regime_dependent_flag(_regimes(home=-300, away=-500)), "a losing lineage is not regime dependent"
     assert not regime_dependent_flag(_regimes(primetime=100, day=-500)), "a negative total is not judged"
-    assert stress_flags({"n_bets": 100, "roi": 0.05}, _prices(10, 0.01), _nbhd(0.02), _regimes(home=1200, away=-200)) == ["fragile", "regime_dependent"]
+    assert stress_flags({"n_bets": 100, "roi": 0.05}, _prices(10, 0.01), _nbhd(0.02), _regimes(home=1200, away=-700)) == ["fragile", "regime_dependent"]
     assert stress_flags({"n_bets": 100, "roi": 0.05}, _prices(90, 0.03), _nbhd(0.02), _regimes()) == []
 
 
@@ -190,3 +194,16 @@ def test_records_pack_and_rebuild_round_trip(games: list[dict], records: list[di
         unpack_probs(packed[:-3])
     with pytest.raises(ValueError):
         unpack_probs("not base64!")
+
+
+def test_regime_dependent_needs_a_material_loss_on_a_material_regime() -> None:
+    """Review 6A (medium): the old "more than 80% of the profit" test was met by any
+    losing side, so every profitable model was flagged. A loss counts only when the
+    losing side holds at least 20% of the pair's bets and gives back more than half of
+    the winning side's profit."""
+    assert not regime_dependent_flag(_regimes(home=10000, away=-1)), "home +$100.00, away -$0.01"
+    big_loss_few_bets = _regimes(bets={"home": 90, "away": 10}, home=1200, away=-900)
+    assert not regime_dependent_flag(big_loss_few_bets), "the losing side holds 10% of the bets"
+    at_share = _regimes(bets={"home": 80, "away": 20}, home=1200, away=-900)
+    assert regime_dependent_flag(at_share), "20% of the bets is enough"
+    assert not regime_dependent_flag(_regimes(bets={"home": 0, "away": 0}, home=0, away=0)), "no bets, nothing to judge"
