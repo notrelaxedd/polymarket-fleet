@@ -90,7 +90,11 @@ expectation the blend is fitted on, in `predict` and in the rating update, so fi
 predict apply the same shift. Both default to 0 and are read with a default rather than
 merged into a model's params, so an existing model keeps its params dict and predicts
 exactly as before. The search draws them after the original seven draws, so a seed
-reproduces the same earlier params.
+reproduces the same earlier params. Their search ranges are also clip bounds
+(`fleet/models/search_space.py`), so the neighbourhood stress never perturbs a penalty
+outside [0, 80] or [0, 15]; a model without the keys is not given them. The summary's
+first sentence names them when they are not zero ("QB change costs 40 points, 5.0
+points per player Out").
 `params_hash` = sha256 of the canonical JSON (sorted keys, 6 decimals), first 16 hex.
 
 Artifact: `{"ratings": {team: float}, "blend": {"a", "b", "c"}, "through": [season, week],
@@ -150,8 +154,10 @@ and third sentences are the elo_blend ones.
 
 ## Backtest (`fleet/sim/backtest.py`)
 
-Walk-forward by season over `seasons = [first, last]` (settings `backtest_seasons`,
-default `[2010, <last complete season>]`). For each test season `S`:
+Walk-forward by season over `seasons = [first, last]` (settings `backtest_seasons`; the
+step 3 default `[2010, <last complete season>]` became `[2010, 2021]` in step 6A, and a
+null last season resolves to the last complete season, capped before the validation era,
+docs/ROBUSTNESS.md A1). For each test season `S`:
 1. Replay Elo from 1999 through the end of season `S - 1` (cheap; no stored state needed).
 2. Fit the blend on all moneyline games in seasons `< S` (at least 3 seasons of history,
    otherwise skip `S`).
@@ -172,7 +178,7 @@ Betting rule ("closing-line fill", the only price we have for history):
   wins (ties: stake returned), else 0; `pnl = payout - stake`, rounded to cents.
 - CLV is 0 by construction here (entry at the close). Backtests on sportsbook closing lines
   measure calibration and discipline, not true edge; the paper phase on live Polymarket
-  prices (step 4) is where CLV is measured.
+  prices (step 4) and, from step 6B, the snapshot replay below are where CLV is measured.
 
 Metrics (whole backtest and per season): `n_games, n_bets, total_stake_cents, pnl_cents,
 roi = pnl / total_stake (0 if no bets), hit_rate, avg_edge, avg_stake_cents, log_loss`
@@ -186,6 +192,28 @@ eligibility gate), `seasons` (list), `blend` (the fitted `{a, b, c}` of that
 season's fold; the whole-backtest value is the last fold's, so `summary` can state the
 closing-line weight from params and metrics alone). `n_games` counts scored games (both
 moneylines present). Deterministic: no randomness anywhere.
+
+### Snapshot replay (step 6B, `price_source` "snapshots")
+
+A backtest job with `params.price_source = "snapshots"` runs the same walk-forward on
+the prices the host recorded instead of the closing line (docs/ROBUSTNESS.md B1 has the
+full rule and its deviations; `fleet/sim/prices.py`):
+- The worker reads the recorded markets of `params.price_platform` from the context's
+  `prices_path` (platform `sim` only with `allow_sim_prices`). A null last season replays
+  through the latest season present, the season in progress included, and only seasons
+  with a recorded market are planned.
+- A played game is scored only when a side's confirmed market has a bar within the 30
+  minutes before or at the decision time (kickoff minus
+  `decision_minutes_before_kickoff`). `p_market` is the devigged decision-time mid;
+  the model predicts with it as usual.
+- The bet buys the side with the larger edge at its recorded ask (`cost = ask + fee`,
+  no `half_spread`, since the ask already holds the spread), Kelly-sized as above but in
+  whole contracts, filled on the recorded book (depth within 2 minutes, at most
+  `participation` of each level, never above the ask) or at the ask capped by the bar's
+  liquidity. CLV = the bought side's frozen closing price minus the average entry price.
+- The result is the same metrics object plus `price_source: "snapshots"`, `platform`,
+  `n_unscored_no_prices` and a top-level `avg_clv`; the host stores it in
+  `models.snapshot_metrics`, never in `backtest_metrics`, and eligibility ignores it.
 
 ## Model search (`fleet/sim/search.py`)
 
@@ -243,3 +271,8 @@ One row per lineage, using the root model's backtest metrics: rank by shrunk ROI
 otherwise listed below as unranked. Columns: status, family, short params, ROI, bets,
 log-loss vs market, max drawdown, seasons, summary. Step 4 adds the paper (and later
 live) record per lineage and the paper rank mode (docs/TRADING.md, "Leaderboard and P&L").
+Step 6A ranks on the validation era (docs/ROBUSTNESS.md A1); step 6B adds a snapshot
+column group and the snapshot rank mode between paper and validation (at least 30
+replayed bets, by shrunk snapshot CLV `clv * bets / (bets + 25)`, ties by snapshot ROI;
+`host/leaderboard_snapshot.py`, docs/ROBUSTNESS.md B1). The short params of an
+`epa_blend` lineage read "window 8 · shrink 3.0 · L2 1.00".

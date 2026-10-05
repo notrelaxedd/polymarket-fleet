@@ -125,8 +125,60 @@ Delivered in step 6B (host side of B1):
   validation-era cap applies, since a replay selects nothing. The worker plans the same
   way (`season_plan(..., through_latest=True)`) and only replays seasons with at least
   one recorded market.
-- The result carries a top-level `avg_clv` (the plain mean CLV over its bets) next to
-  `ci.avg_clv`, plus `price_source: "snapshots"`, `platform` and `n_unscored_no_prices`.
+- The result carries a top-level `avg_clv` (the plain mean CLV over its bets, null
+  without bets) next to `ci.avg_clv`, plus `price_source: "snapshots"`, `platform` and
+  `n_unscored_no_prices` (also per season). A closing-line result gains none of these
+  keys, so it stays byte for byte what it was.
+
+Delivered in step 6B (worker side of B1):
+- Prices file (`fleet/worker/context.py`): a backtest with `price_source` "snapshots"
+  gets `prices_path` in its context, the body of `GET /api/v1/data/prices?since=
+  2000-01-01&platform=<price_platform>` cached at `<state>/cache/prices-<platform>.json`
+  with its ETag (conditional GET; the cached copy is used when the host is unreachable).
+  The worker refuses platform `sim` unless `allow_sim_prices` is true
+  (`SimPricesRefused`, a `ValueError`, so the job fails) and does not even fetch it. An
+  unknown `price_source` fails the job too.
+- Replay (`fleet/sim/prices.py`, `run_replay_fold` in `fleet/sim/backtest.py`): the
+  confirmed markets of the one platform, by game and side. The decision time is kickoff
+  minus `decision_minutes_before_kickoff` (clamped to 0..300). A played game is scored
+  when a side's market has a bar in the 30 minutes before or at the decision time; the
+  last such bar gives that side's mid (its close, else the bid/ask midpoint), its ask and
+  its `min_liquidity_usd_cents`. `p_market` is the devigged home mid (one recorded side:
+  its own mid, away as `1 - mid`); the model predicts with it and `ll_market` uses it. A
+  played game without such a bar counts in `n_unscored_no_prices`; an unplayed one is
+  not counted.
+- Fill: the side with the larger edge at its ask (home on a tie), sized by the
+  closing-line Kelly rule (`fleet/sim/fills.py`) to whole contracts, `floor(stake /
+  (cost * 100))`. With a depth snapshot in the 2 minutes before or at the decision time
+  the fill walks its ask levels at or below the bar's ask with `fleet.sim.book.walk` at
+  `participation` (the settings value copied into the job, default 0.5); otherwise it
+  fills at the bar's ask, capped at `floor(participation * min_liquidity_usd_cents /
+  (100 * ask))` contracts. The fee is `taker_rate * price * (1 - price)` per contract on
+  each fill price; `stake_cents` is the rounded cost of the fills including fees and the
+  bet's `edge` is measured at that average cost. CLV = the bought side's closing price
+  minus the average entry price, where the closing price is the market's frozen
+  `closing_price`, else the mid of its last bar before kickoff. Settlement and P&L are the
+  closing-line rule's (a tie returns the stake).
+- Seasons: the plan is the closing-line plan through the latest season (see "Seasons"
+  above) restricted to seasons with a recorded market for at least one game, so a
+  2010-to-now range does not fit empty folds.
+- Checkpoint: a snapshot season entry also stores `prices` (the price facts of its
+  scored games, in order) and `n_unscored_no_prices`, so a resume rebuilds finished
+  seasons without the prices file; a checkpoint from the other price source restarts the
+  run.
+- Price stress: the spread stress adds its half-spread change to the snapshot entry
+  price (`price_bump`) and "fee x1.5" scales `taker_rate`, so `price_stress` works on
+  snapshot records; `validate` and `model_search` still run on closing lines only.
+
+Deviations from the B1 text above, as built:
+- The fill limit is the bar's ask: recorded depth above that ask (or an empty book)
+  fills nothing and the game is scored without a bet; a touch fill without a recorded
+  `min_liquidity_usd_cents` also fills nothing.
+- Contracts are whole numbers (the trade worker's rule), not the closing-line rule's
+  fractional contracts.
+- A snapshot backtest result carries no price-stress table yet (the job is a plain
+  backtest; the stress tables come from `validate`, which stays on closing lines).
+- The prices fetch always asks `since=2000-01-01`, one cache file per platform.
 
 ### B2. Richer signals
 
@@ -146,6 +198,47 @@ Delivered in step 6B (host side of B1):
   betting params. Pure Python; the training set is at most a few thousand rows.
 - Honest reporting: every new feature is evaluated against the same validation era, CI
   and market test; the three-sentence summary names the signals that carried the result.
+
+Delivered in step 6B (B2), with the details in docs/MODELS.md ("Data", "First family",
+"Second family: epa_blend") and docs/PROTOCOL.md ("Step 6 additions (Part B)"):
+- Signals: the games feed gives every game `signals` (`home_qb_changed`,
+  `away_qb_changed`, `home_out_qb`, `away_out_qb`, `home_out_count`, `away_out_count`)
+  and a top-level `team_game_stats` list; the trade state's game carries the same
+  `signals` plus `team_stats`. The rules are the pure functions of `fleet/sim/signals.py`,
+  used by both the host (`host/signals.py`) and the worker's games.csv adapter.
+- Injury signals only count reports whose `date_modified` is strictly before the game's
+  decision time (kickoff minus `decision_minutes_before_kickoff`), so a backtest never
+  sees a report written after its bet; a row without a date never counts.
+- Ingest: `host/ingest_injuries.py` and `host/ingest_pbp.py`, the CLI commands
+  `ingest-injuries` and `ingest-pbp` (`--season <year>`, `--season all` or `--file`), and
+  a refresh of the current and previous season every `signals_refresh_hours`
+  (`host/data_refresh.py`). The host needs no pandas or pyarrow after all: the
+  play-by-play file is streamed through the standard library's gzip and csv.
+- `elo_blend` penalties and the `epa_blend` family as specified, searched over the
+  ranges above and evaluated on the same validation era, CI and market test. The
+  `epa_blend` summary names up to three signals that carried it; the `elo_blend`
+  summary names its penalties when they are not zero.
+
+Deviations from the B2 text above, as built:
+- `qb_changed` compares with the team's last known starter, so a past game with no
+  starter id does not reset the history (the text says "previous game"; the two differ
+  only there).
+- The two `elo_blend` penalties default to 0 and are read with a default, not merged
+  into a model's params, so an older model's params and predictions stay exactly as
+  they were. They are clipped to their search ranges in the neighbourhood stress.
+- `team_game_stats` carries `plays` (offensive plays per game) where the text says
+  "pace", plus `kickoff_at` and `game_id`; `injuries` keeps `gsis_id`, `full_name`,
+  `game_type` and `date_modified` besides the listed columns (a player without a
+  `gsis_id` is keyed `name:<full name>`).
+- `epa_blend` choices the text left open: the L2 penalty spares the intercept and the
+  market logit (heavy L2 means "the closing line alone"); its Elo runs with fixed
+  constants (K 20, home edge 55, regress 0.33, margin scaling on); the league mean
+  covers the rows seen in the current and previous season; without a market price
+  `predict` returns the Elo expectation; the rolling window is searched over 4 to 12
+  games (default 8).
+- The games feed ETag also carries `d<decision_minutes_before_kickoff>`, since the
+  injury signals depend on it; the prices feed ETag also carries the games ETag and a
+  hash of the query.
 
 ## Dashboard and docs
 
