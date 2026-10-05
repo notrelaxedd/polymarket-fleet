@@ -13,3 +13,11 @@ and an integrate script (integrate; e2e, screenshots and docs in parallel; five
 review lenses; one skeptical verifier per high or medium finding; one fixer per code
 area; a final verifier). Builders of later steps ran in git worktrees with their own
 venvs while the previous step was still being reviewed.
+
+Steps 6C and 7 were built at the same time in separate worktrees, and the Workflow tool
+runs at most two agents at once per workflow, so the work was split into many small
+workflows: `step6c-step7-split-builders.js` (args `step` "6c" or "7" and `keys`, two
+builders per run) and `step6c-step7-split-post.js` (args `step` and `phase`: integrate,
+extend, review with one lens and its verifiers, fix for one area, final). The 6C
+contract is `step6c-contract.txt`. The last fixes, the final passes and the clean runs
+were done by single agents and the orchestrator.
