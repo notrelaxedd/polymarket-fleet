@@ -11,6 +11,7 @@ from psycopg_pool import ConnectionPool
 from host import queue
 from host.settings import get_int_setting
 from host.trading import orders
+from host.workloads import loop as workloads_loop
 
 log = logging.getLogger(__name__)
 ORPHAN_ACTOR = "orphan"
@@ -46,6 +47,10 @@ def run_once(pool: ConnectionPool) -> dict[str, Any]:
         dispatched = queue.dispatch(conn)
     with pool.connection() as conn:
         orphaned = cancel_orphan_orders(conn)
+    try:  # the workloads step must never stop the Polymarket steps above
+        workloads_loop.run_once(pool)
+    except Exception:  # noqa: BLE001
+        log.exception("workloads loop step failed")
     if reaped or dispatched or orphaned:
         log.info("loop: reaped=%d dispatched=%d orphaned=%d", len(reaped), len(dispatched), len(orphaned))
     return {"reaped": len(reaped), "dispatched": len(dispatched), "orphaned": len(orphaned)}
