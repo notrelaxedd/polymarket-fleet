@@ -103,7 +103,7 @@ def assign(
     )
     if draining or leaving_live:
         if leaving_live:
-            scheduling.set_role(conn, machine["polymarket_worker_id"], "idle", actor)
+            _idle_workers(conn, machine, actor)
         after_row = conn.execute(
             """
             UPDATE workload_assignments SET state = 'draining', draining_to = %s, draining_to_set = true,
@@ -182,6 +182,16 @@ def _drain_done(conn: psycopg.Connection, machine: dict[str, Any], online_after:
     return w["reported_role"] == "idle" and w["acked_epoch"] == w["role_epoch"]
 
 
+def _idle_workers(conn: psycopg.Connection, machine: dict[str, Any], actor: str | None) -> None:
+    """Set idle (the existing role change, which runs the trade release handshake) every
+    polymarket worker on the machine that is not idle yet: the linked one and any other
+    sharing its boot_id, so a stale link cannot leave a trading worker out of the drain."""
+    for worker_id in pinning.machine_worker_ids(conn, machine["id"]):
+        w = conn.execute("SELECT desired_role FROM workers WHERE id = %s", (worker_id,)).fetchone()
+        if w is not None and w["desired_role"] != "idle":
+            scheduling.set_role(conn, worker_id, "idle", actor)
+
+
 def finish_drains(conn: psycopg.Connection) -> int:
     """Complete every drain whose worker has released its work; returns how many finished."""
     online_after = get_int_setting(conn, "online_after_seconds", 15)
@@ -194,6 +204,7 @@ def finish_drains(conn: psycopg.Connection) -> int:
     done = 0
     for row in rows:
         machine = conn.execute("SELECT * FROM machines WHERE id = %s", (row["machine_id"],)).fetchone()
+        _idle_workers(conn, machine, "system")  # a worker linked since the drain began is drained too
         if not _drain_done(conn, machine, online_after):
             continue
         target = row["draining_to"] if row["draining_to_set"] else None

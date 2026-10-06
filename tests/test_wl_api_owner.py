@@ -548,3 +548,20 @@ def test_owner_routes_are_refused_from_a_machine_ip(config, conn):
     allowed = dataclasses.replace(strict, allow_worker_ips=True)
     with TestClient(create_app(allowed)) as c:
         assert c.get("/api/machines", headers={**OWNER, "X-Forwarded-For": "100.64.0.5"}).status_code == 200
+
+
+def test_leaving_polymarket_idles_every_worker_on_the_machine(client, conn, make_worker):
+    """Re-review N2: a stale identity sharing the boot_id must not keep the real trader out
+    of the drain."""
+    add_workload(conn, polymarket_data(), size_mb=300)
+    add_workload(conn, manifest_data("hello"))
+    old = make_worker("old", role="trade")
+    new = make_worker("new", role="trade")
+    conn.execute("UPDATE workers SET boot_id = 'boot-9' WHERE id IN (%s, %s)", (old.id, new.id))
+    conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '1 hour' WHERE id = %s", (old.id,))
+    mid, token = enroll(client, conn, "box9", boot_id="boot-9", specs={**GOOD_SPECS, "ram_total_mb": 8000})
+    epoch = post_assign(client, mid, "polymarket").json()["epoch"]
+    beat(client, mid, token, acked_epoch=epoch, container=container("polymarket", epoch))
+    assert post_assign(client, mid, "hello").json()["state"] == "draining"
+    roles = {r["id"]: r["desired_role"] for r in conn.execute("SELECT id, desired_role FROM workers WHERE boot_id = 'boot-9'")}
+    assert roles == {old.id: "idle", new.id: "idle"}

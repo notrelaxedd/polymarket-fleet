@@ -1,6 +1,7 @@
 """The workloads table: manifests synced from disk, image digests recorded at publish."""
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -66,7 +67,9 @@ def _frozen_change(conn: psycopg.Connection, manifest: Manifest) -> str | None:
     repository, stop them at once), pinned live traders included, so it waits until the
     workload is assigned nowhere."""
     row = conn.execute("SELECT manifest FROM workloads WHERE name = %s", (manifest.name,)).fetchone()
-    if row is None or _run_shape(row["manifest"]) == _run_shape(manifest.to_json()):
+    # Compare in JSON form on both sides: to_json() keeps tuples, the stored jsonb gives lists.
+    fresh = json.loads(json.dumps(manifest.to_json()))
+    if row is None or _run_shape(row["manifest"]) == _run_shape(fresh):
         return None
     n = conn.execute("SELECT count(*) AS n FROM workload_assignments WHERE workload = %s OR draining_to = %s",
                      (manifest.name, manifest.name)).fetchone()["n"]

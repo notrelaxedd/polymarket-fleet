@@ -272,3 +272,23 @@ def test_a_broken_workloads_package_never_takes_the_polymarket_cli_down(monkeypa
         main(["--help"])
     assert exc.value.code == 0
     assert "workloads commands unavailable" in capsys.readouterr().err
+
+
+def test_an_unchanged_resync_of_an_assigned_workload_succeeds(conn, client, tmp_path):
+    """Re-review N1: tuples in Manifest.to_json() against lists in the stored jsonb must not
+    look like a change; fields outside the run shape may change while assigned."""
+    import shutil
+    from pathlib import Path
+
+    from host.workloads import registry
+
+    root = Path(__file__).resolve().parents[1] / "workloads"
+    shutil.copytree(root / "hello", tmp_path / "hello")
+    assert registry.sync_from_dir(conn, tmp_path)["synced"] == ["hello"]
+    conn.execute("UPDATE workloads SET image_digest = %s WHERE name = 'hello'", (DIGEST_A,))
+    mid, _ = enroll(client, conn, "box1")
+    assert client.post(f"/api/machines/{mid}/assign", json={"workload": "hello"}).status_code == 200
+    assert registry.sync_from_dir(conn, tmp_path) == {"synced": ["hello"], "errors": {}}
+    toml = tmp_path / "hello" / "workload.toml"
+    toml.write_text(toml.read_text().replace("min_disk_mb = 300", "min_disk_mb = 400"))
+    assert registry.sync_from_dir(conn, tmp_path)["synced"] == ["hello"], "a placement-only change is allowed"

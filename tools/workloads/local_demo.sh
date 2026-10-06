@@ -281,7 +281,8 @@ api POST "/api/machines/$MID/assign" '{"workload": null}'
 no_hello_container() { [ -z "$(docker ps -aq --filter label=fleet.workload=hello)" ]; }
 wait_for "hello container is gone" no_hello_container
 image_gone() { ! docker image inspect "$IMAGE_ID" >/dev/null 2>&1; }
-wait_for "hello image is removed from the machine" image_gone
+wait_for "hello image is removed from the machine" image_gone || {
+  tail -n 15 "$TMP/agent.log"; docker images --digests --format '{{.Repository}}:{{.Tag}} {{.Digest}} {{.ID}}' | grep -i hello; }
 scratch_empty() { [ -z "$(ls -A "$TMP/agent/data/hello/scratch" 2>/dev/null)" ]; }
 wait_for "hello scratch is empty" scratch_empty
 secret_files_gone() { [ -z "$(find "$TMP/agent/run" -name HELLO_GREETING 2>/dev/null)" ]; }
