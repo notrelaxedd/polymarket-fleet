@@ -1,0 +1,33 @@
+[Unit]
+Description=Fleet machine agent (polymarket-fleet)
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+StartLimitIntervalSec=0
+
+[Service]
+User=fleet-agent
+Group=fleet-agent
+# The docker group is root-equivalent: this unit can start any container on this machine.
+SupplementaryGroups=docker
+Environment=PYTHONPATH=/var/lib/fleet-agent/app/current
+Environment=FLEET_AGENT_STATE_DIR=/var/lib/fleet-agent
+Environment=FLEET_AGENT_DATA_DIR=/var/lib/fleet-workloads
+Environment=FLEET_AGENT_RUN_DIR=/run/fleet-agent
+Environment=HOME=/var/lib/fleet-agent
+StateDirectory=fleet-agent fleet-workloads
+RuntimeDirectory=fleet-agent
+RuntimeDirectoryPreserve=yes
+ExecStart=/usr/bin/python3 -m fleetagent run
+Restart=always
+RestartSec=3
+RestartPreventExitStatus=78
+# Stopping or restarting the agent must never stop the workload containers.
+KillMode=process
+TimeoutStopSec=15
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
