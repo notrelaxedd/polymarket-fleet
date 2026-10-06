@@ -504,9 +504,12 @@ Layout: `__init__.py`, `__main__.py` (`enroll`, `run`, `status`, `specs`), `conf
 
 ## 7. Polymarket workload (`workloads/polymarket/`)
 
-- `Dockerfile`: `FROM debian:trixie-slim`, `apt-get install --no-install-recommends python3
-  ca-certificates`, user `fleet` uid 10001, `bootstrap.py` at `/opt/fleet/bootstrap.py`,
-  `ENTRYPOINT ["/usr/bin/python3", "/opt/fleet/bootstrap.py"]`. **No Polymarket code in the
+- `Dockerfile`: `ARG BASE_IMAGE=debian:trixie-slim`, `FROM ${BASE_IMAGE}`, then
+  `apt-get install --no-install-recommends python3 ca-certificates` only when the base has
+  no `python3` (the production base never has it; a base that already ships Python, used
+  only where apt cannot run, skips the step), user `fleet` uid 10001, `bootstrap.py` at
+  `/opt/fleet/bootstrap.py`, `ENTRYPOINT ["python3", "/opt/fleet/bootstrap.py"]`; the
+  bootstrap execs the agent with `sys.executable`. **No Polymarket code in the
   image**: same Debian Python build as a native worker, same code from the host's `/dl`.
 - `bootstrap.py` (stdlib): `os.nice(nice)`; if `/state/app/current` is missing, download
   `/dl/version` and `/dl/worker.tar.gz` from `FLEET_HOST_URL`, verify the sha256 and the
@@ -609,7 +612,7 @@ once, like the worker enroll page). Each calls the same function as the JSON rou
   `outbound(kind, payload, dedupe_key, job=None) -> dict`, `outbound_status(id)`,
   `run_forever(handlers: dict[str, Callable[[Job], dict]], idle_sleep=5)` which installs
   a SIGTERM handler that releases the current job with reason `shutdown` and exits 0.
-- `workloads/hello/`: built from the template. Kind `hello`, params `{"name": str?,
+- `workloads/hello/`: built from the template (`ARG BASE_IMAGE=python:3.13-slim`, stdlib only, no apt step). Kind `hello`, params `{"name": str?,
   "steps": int 1..60 (default 3), "notify": bool}`. Reads `HELLO_GREETING` (default
   "Hello"), writes and reads back a file in `job.scratch`, reports progress per step,
   returns `{"greeting": "<greeting>, <name>!", "machine": ..., "epoch": ..., "steps": n}`;
@@ -626,6 +629,12 @@ once, like the worker enroll page). Each calls the same function as the JSON rou
 | dashboard | sonnet | `host/workloads/dashboard.py`, `host/workloads/views.py`, `host/templates/{machines,_machines,workloads,workload,outbound,unpin_confirm,machine_logs,machine_enroll_token,_fleet_subnav}.html`, `fleet.html` include, appended `style.css`, `tests/test_wl_pages.py` |
 | guardrails | sonnet | `tests/test_wl_placement.py`, `tests/test_wl_pinning.py`, `tests/test_wl_secret_isolation.py`, `tests/test_wl_outbound.py`, `tests/test_wl_queue.py`, `tests/wl_helpers.py` |
 | hello | sonnet | `workloads/hello/**`, `workloads/_template/**`, `workloads/README.md`, `README.md`, `tools/workloads/publish.sh`, `tools/workloads/local_demo.sh`, `tests/test_wl_manifests.py` |
+
+Docker in the build sandbox: a daemon runs and has `debian:trixie-slim`, `python:3.13-slim`
+and `registry:2` locally (Docker Hub is rate limited; never pull other images). Containers
+have no internet: never route container traffic through the session proxy and never run
+`apt-get` or `pip` inside a build; use stdlib code and those bases. Name test images and
+containers with your builder name as a prefix and remove them when done.
 
 Shared code already on the branch (use it, do not rewrite it): `host/migrations/0010_workloads.sql`,
 `host/workloads/__init__.py`, `host/workloads/manifest.py`, `host/workloads/errors.py`.
