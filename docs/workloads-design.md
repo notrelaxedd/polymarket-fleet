@@ -295,10 +295,13 @@ digest: str, size_mb: int | None)`, `image_ref(workload_row) -> str | None` =
 `f"{FLEET_REGISTRY}/{image_repo}@{image_digest}"`.
 
 `loop.py`: `run_once(pool) -> None`: `queue.reap`, `pinning.refresh_pins`,
-`machines` link refresh, `assign.finish_drains`, `outbound.expire_old`,
-`outbound.send_approved`, log pruning (newest 5000 lines per machine, nothing older than
-3 days); each step in its own transaction, each wrapped so one failure is logged and the
-rest still run.
+`machines` link refresh, `assign.finish_drains`, `outbound.expire_old`, log pruning
+(newest 5000 lines per machine, nothing older than 3 days); each step in its own
+transaction, each wrapped so one failure is logged and the rest still run.
+`send_once(pool)` sends at most 5 approved outbound actions per pass. Both run in their
+own threads (`start_threads`, started by `host/main.py` with their own small pool), never
+inside the Polymarket loop: `host/loop.py` is unchanged, so a hanging SMTP server or a slow
+workloads query cannot delay the reaper, the dispatcher or the orphan cancel.
 
 `agent_bundle.py`: builds the `fleetagent/` tarball like `host/bundle.py` (reuse its
 `source_files`, `compute_code_version`, `build_tarball` pattern; top-level dir
@@ -318,9 +321,8 @@ these names to it.
 ### 4.4 Edits to existing files (the only ones allowed)
 
 - `host/api/app.py`: include the five routers above.
-- `host/loop.py`: one call to `host.workloads.loop.run_once(pool)` after the existing steps,
-  inside `try/except Exception` with a log line, so a workloads error can never stop the
-  Polymarket reaper, dispatcher or orphan cancel.
+- `host/main.py`: start the workloads threads (`host.workloads.loop.start_threads`) with
+  their own pool, next to the existing loop thread. `host/loop.py` is not edited.
 - `host/auth.py` `owner_from_worker_ip`: also refuse a peer IP that is any
   `machines.remote_ip`.
 - `host/cli.py`: dispatch the new subcommand names to `host.workloads.cli.main`.
@@ -643,3 +645,32 @@ Shared code already on the branch (use it, do not rewrite it): `host/migrations/
 `host/workloads/__init__.py`, `host/workloads/manifest.py`, `host/workloads/errors.py`.
 `tests/conftest.py` and existing tests are not edited. Tests: `FLEET_TEST_DATABASE_URL`
 Postgres, run with `PYTHONPATH=$PWD /home/user/.venv-fleet/bin/python -m pytest <files>`.
+
+## 13. Changes after review (Phase 3)
+
+The integration review found these and the code now does them; they override anything
+above that says otherwise.
+- **Drains.** While a machine drains away from polymarket the `run` block keeps describing
+  the running container, so it stays up until the worker finished the trade release. A
+  drain finishes only when the machine is not pinned, nothing on it trades live, no
+  worker on it holds a leased job, and the linked worker acked idle (or went silent with
+  nothing leased: its trade jobs leave through the reaper and its orders through the
+  orphan rule first). Leaving polymarket always drains when a worker is linked; when no
+  worker can be identified while the container runs, the assign is 409.
+- **Live check.** `assign` calls `is_live_trading` directly (409) instead of waiting for
+  the loop to pin. `is_live_trading` looks at the linked worker and at every worker that
+  shares the machine's boot_id. The link prefers the single online worker when several
+  share a boot_id.
+- **Machine disable** is 409 while the machine is pinned or runs polymarket.
+- **Sync freeze.** `sync_from_dir` refuses (reported under `errors`) a manifest change to
+  the image, protocol, runtime or memory/cpu limits of a workload that is assigned to any
+  machine, so a re-sync can never stop or reshape running containers.
+- **Secrets at start.** With nothing stored, `/start` needs no key. For protocol
+  `fleet-worker` (polymarket) a missing or wrong key never blocks a restart: undecryptable
+  secrets are skipped with a log line (the enroll token only matters for a first start).
+- **Logs.** The host scrubs a workload's stored secret values from shipped log lines too.
+- **Email.** The sender refuses to log in when STARTTLS is not offered.
+- **Agent.** Workload containers run with `--init`; `deactivating` counts as an active
+  native worker; a removed container's image is freed on the next heartbeat; an
+  unassigned machine keeps no images.
+- **Enroll tokens** for machines never start with `-`.

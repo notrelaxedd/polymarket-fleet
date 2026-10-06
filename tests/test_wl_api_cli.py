@@ -13,7 +13,7 @@ from host.workloads import loop as wl_loop
 from host.workloads import machines, outbound, queue
 from tests.conftest import insert_job
 from tests.test_wl_api_support import (  # noqa: F401
-    DIGEST_A, GOOD_SPECS, _registry_env, add_workload, enroll, manifest_data, no_secrets_key, secrets_key,
+    DIGEST_A, GOOD_SPECS, _registry_env, add_workload, beat, enroll, manifest_data, no_secrets_key, secrets_key,
 )
 
 PUBLIC_URL = "http://127.0.0.1:8080"
@@ -158,6 +158,7 @@ def test_workloads_loop_step_runs_reaper_pins_outbound_and_pruning(pool, conn, c
     conn.execute("INSERT INTO machine_logs (machine_id, ts, stream, line) VALUES (%s, now() - interval '4 days', 'stdout', 'old')", (mid,))
     conn.execute("INSERT INTO machine_logs (machine_id, ts, stream, line) VALUES (%s, now(), 'stdout', 'new')", (mid,))
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert conn.execute("SELECT status FROM workload_jobs").fetchone()["status"] == "queued"
     statuses = {r["dedupe_key"]: r["status"] for r in conn.execute("SELECT * FROM outbound_actions")}
     assert statuses == {"o": "expired", "p": "sent"}, "the default log sender sends approved log actions"
@@ -188,26 +189,86 @@ def test_a_failing_workloads_step_does_not_stop_the_others(pool, conn, monkeypat
     assert "reap" in caplog.text and "reaper exploded" in caplog.text
 
 
-def test_host_loop_still_runs_the_polymarket_steps_when_the_workloads_step_raises(pool, conn, monkeypatch, caplog):
-    job = insert_job(conn, "sleep", status="leased", lease_token="00000000-0000-0000-0000-000000000009",
-                     lease_expires_at=conn.execute("SELECT now() - interval '1 minute' AS t").fetchone()["t"])
+def test_the_polymarket_loop_is_untouched_and_the_workloads_run_in_their_own_threads(pool, conn, monkeypatch):
+    """host/loop.py is byte-identical to main: a hanging SMTP server or a slow workloads query
+    can never delay the reaper, the dispatcher or the orphan cancel."""
+    import inspect
+    import subprocess
+
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    main_loop = subprocess.run(["git", "show", "main:host/loop.py"], cwd=root, capture_output=True, text=True)
+    if main_loop.returncode == 0:
+        assert (root / "host" / "loop.py").read_text() == main_loop.stdout
+    assert "workloads" not in inspect.getsource(host_loop)
     calls = []
+    monkeypatch.setattr(wl_loop, "run_once", lambda p: calls.append(("loop", p)))
+    monkeypatch.setattr(wl_loop, "send_once", lambda p: calls.append(("send", p)))
+    threads = wl_loop.start_threads(pool, 0.01)
+    try:
+        for _ in range(200):
+            if {"loop", "send"} <= {c[0] for c in calls}:
+                break
+            import time
 
-    def boom(_pool):
-        calls.append(1)
-        raise RuntimeError("workloads exploded")
-
-    monkeypatch.setattr(wl_loop, "run_once", boom)
-    out = host_loop.run_once(pool)
-    assert calls == [1] and out["reaped"] == 1, "the existing reaper ran and its result is returned"
-    assert conn.execute("SELECT status FROM jobs WHERE id = %s", (job["id"],)).fetchone()["status"] == "queued"
-    assert "workloads loop step failed" in caplog.text
-    ok = host_loop.run_once(pool)
-    assert ok["reaped"] == 0 and len(calls) == 2
+            time.sleep(0.01)
+    finally:
+        for thread in threads:
+            thread.stop()
+        for thread in threads:
+            thread.join(2)
+    assert {"loop", "send"} <= {c[0] for c in calls}
+    assert [t.name for t in threads] == ["workloads-loop", "outbound-sender"]
 
 
-def test_host_loop_calls_the_workloads_step_once_per_pass(pool, monkeypatch):
-    seen = []
-    monkeypatch.setattr(wl_loop, "run_once", lambda p: seen.append(p))
-    host_loop.run_once(pool)
-    assert seen == [pool]
+def test_the_sender_sends_a_bounded_batch_per_pass(pool, conn):
+    add_workload(conn, manifest_data("hello"))
+    for i in range(7):
+        a = outbound.queue_action(conn, workload="hello", machine_id=None, job_id=None, kind="log", payload={}, dedupe_key=f"k{i}")
+        outbound.approve(conn, a["id"], "t", None)
+    assert wl_loop.send_once(pool) == wl_loop.SEND_BATCH
+    assert wl_loop.send_once(pool) == 7 - wl_loop.SEND_BATCH
+
+
+def test_a_sync_never_changes_how_an_assigned_workload_runs(conn, client, tmp_path):
+    """Review H2: a changed image repository (which clears the digest) or runtime must not
+    reach machines that run the workload, pinned live traders included."""
+    from host.workloads import registry
+
+    add_workload(conn, manifest_data("hello"))
+    mid, token = enroll(client, conn, "box1")
+    assert client.post(f"/api/machines/{mid}/assign", json={"workload": "hello"}).status_code == 200
+    folder = tmp_path / "hello"
+    folder.mkdir()
+    data = manifest_data("hello")
+    lines = ['name = "hello"', 'image = "fleet/other"', 'protocol = "workload-v1"',
+             "[resources]", f"min_ram_mb = {data['resources']['min_ram_mb']}", "[runtime]", 'mode = "jobs"',
+             'job_kinds = ["hello"]']
+    (folder / "workload.toml").write_text("\n".join(lines) + "\n")
+    result = registry.sync_from_dir(conn, tmp_path)
+    assert result["synced"] == [] and "assigned to 1 machine" in result["errors"]["hello"][0]
+    row = conn.execute("SELECT image_repo, image_digest FROM workloads WHERE name = 'hello'").fetchone()
+    assert row["image_repo"] == data["image"] and row["image_digest"] is not None
+    assert beat(client, mid, token).json()["run"] is not None
+    client.post(f"/api/machines/{mid}/assign", json={"workload": None})
+    assert registry.sync_from_dir(conn, tmp_path)["synced"] == ["hello"]
+
+
+def test_a_broken_workloads_package_never_takes_the_polymarket_cli_down(monkeypatch, capsys):
+    """Review L2: kill, cancel-all and every other existing command keep working even if a
+    workloads module cannot be imported."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def broken(name, *args, **kwargs):
+        if name == "host.workloads" or name.startswith("host.workloads."):
+            raise ImportError("simulated broken workloads module")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", broken)
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+    assert exc.value.code == 0
+    assert "workloads commands unavailable" in capsys.readouterr().err

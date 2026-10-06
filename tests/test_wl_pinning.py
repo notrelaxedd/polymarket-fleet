@@ -222,27 +222,14 @@ def test_the_loop_pass_pins_a_live_machine_and_leaves_a_paper_machine_alone(pool
     assert len(audit_for(conn, action="machine_pin", entity=box.id)) == 1
 
 
-def test_the_host_loop_runs_the_workloads_pass_after_the_polymarket_steps(pool, conn, box):
+def test_pins_come_from_the_workloads_thread_not_the_polymarket_loop(pool, conn, box):
     from host import loop as host_loop
 
     live_trader(conn, box)
-    result = host_loop.run_once(pool)
-    assert isinstance(result, dict)
+    host_loop.run_once(pool)
+    assert pinned(conn, box) is False, "the Polymarket loop does not run workloads steps"
+    wl_loop.run_once(pool)
     assert pinned(conn, box) is True
-
-
-def test_a_workloads_failure_cannot_stop_the_polymarket_reaper(pool, conn, monkeypatch):
-    from host import loop as host_loop
-    worker = insert_worker(conn, "reap-w", role="backtest")
-    job = lease_job(conn, worker, kind="backtest")
-    expire_lease(conn, job["id"])
-
-    def boom(*_a, **_k):
-        raise RuntimeError("workloads exploded")
-
-    monkeypatch.setattr(wl_loop, "run_once", boom)
-    result = host_loop.run_once(pool)
-    assert result["reaped"] == 1
 
 
 def test_one_failing_step_does_not_stop_the_other_steps_of_the_workloads_pass(pool, conn, box, monkeypatch, caplog):
@@ -676,6 +663,8 @@ def test_the_loop_finishes_the_drain(draining, pool, conn):
 def test_a_silent_worker_does_not_hold_the_drain_forever(draining, pool, conn):
     box, setup, _ = draining
     set_heartbeat_age(conn, setup.worker.id, 3600)
+    assert call(pool, finish_drains) == 0, "silent but still holding a leased trade job: wait for the reaper"
+    release_trade_lease(conn, setup)  # what the reaper does once the lease expires
     assert call(pool, finish_drains) == 1
     assert assignment_of(conn, box.id)["workload"] == "hello"
     assert assignment_of(conn, box.id)["epoch"] == 4
@@ -702,7 +691,15 @@ def test_only_the_ready_drain_finishes(pool, conn, workloads):
     assert sb.job["status"] == "leased"
 
 
+def test_leaving_a_running_polymarket_without_an_identifiable_worker_is_refused(pool, conn, box):
+    """Review M1: with no worker to drain, the container's trades could not be released."""
+    with pytest.raises(Conflict):
+        call(pool, assign, box.id, "hello", "owner", None)
+    assert assignment_of(conn, box.id)["workload"] == "polymarket"
+
+
 def test_leaving_polymarket_without_a_linked_worker_moves_the_epoch_at_once(pool, conn, box):
+    conn.execute("UPDATE workload_assignments SET state = 'failed' WHERE machine_id = %s", (box.id,))
     call(pool, assign, box.id, "hello", "owner", None)
     a = assignment_of(conn, box.id)
     assert (a["workload"], a["epoch"], a["state"]) == ("hello", 4, "pending")

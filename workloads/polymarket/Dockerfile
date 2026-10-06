@@ -13,7 +13,7 @@ FROM ${BASE_IMAGE}
 RUN set -eu; \
     if ! command -v python3 >/dev/null 2>&1; then \
       apt-get update; \
-      apt-get install -y --no-install-recommends python3 ca-certificates; \
+      apt-get install -y --no-install-recommends python3 ca-certificates tzdata; \
       rm -rf /var/lib/apt/lists/*; \
     fi; \
     python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; \

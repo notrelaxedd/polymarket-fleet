@@ -30,6 +30,10 @@ def sync_from_dir(conn: psycopg.Connection, root: Path) -> dict[str, Any]:
         except ManifestError as exc:
             errors[folder.name] = exc.problems
             continue
+        frozen = _frozen_change(conn, manifest)
+        if frozen:
+            errors[folder.name] = [frozen]
+            continue
         conn.execute(
             """
             INSERT INTO workloads (name, manifest, image_repo) VALUES (%(n)s, %(m)s, %(r)s)
@@ -44,6 +48,32 @@ def sync_from_dir(conn: psycopg.Connection, root: Path) -> dict[str, Any]:
         )
         synced.append(manifest.name)
     return {"synced": synced, "errors": errors}
+
+
+def _run_shape(data: dict[str, Any]) -> dict[str, Any]:
+    """The manifest fields that shape a running container (the heartbeat run block)."""
+    res = data.get("resources") or {}
+    return {
+        "image": data.get("image"), "protocol": data.get("protocol"), "runtime": data.get("runtime"),
+        "memory": (res.get("memory_max_mb"), res.get("memory_max_pct"), res.get("cpus")),
+    }
+
+
+def _frozen_change(conn: psycopg.Connection, manifest: Manifest) -> str | None:
+    """A problem when the sync would change how an assigned workload's containers run.
+
+    Such a change would reach running machines on their next restart (or, for the image
+    repository, stop them at once), pinned live traders included, so it waits until the
+    workload is assigned nowhere."""
+    row = conn.execute("SELECT manifest FROM workloads WHERE name = %s", (manifest.name,)).fetchone()
+    if row is None or _run_shape(row["manifest"]) == _run_shape(manifest.to_json()):
+        return None
+    n = conn.execute("SELECT count(*) AS n FROM workload_assignments WHERE workload = %s OR draining_to = %s",
+                     (manifest.name, manifest.name)).fetchone()["n"]
+    if not n:
+        return None
+    return (f"not synced: the image, protocol, runtime or memory/cpu limits changed while {manifest.name} "
+            f"is assigned to {n} machine(s); assign those machines to none first")
 
 
 def get_workload(conn: psycopg.Connection, name: str, for_update: bool = False) -> dict[str, Any]:

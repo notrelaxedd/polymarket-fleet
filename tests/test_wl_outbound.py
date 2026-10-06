@@ -537,6 +537,7 @@ def test_the_loop_expires_old_pending_rows(secret_world: SecretWorld, pool):
     w = secret_world
     old = insert_outbound(w.conn, "alpha", "email", payload=mail(), age_days=8)
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert status(w.conn, old["id"]) == "expired"
 
 
@@ -599,7 +600,9 @@ def test_the_loop_never_connects_to_smtp_for_unapproved_rows(secret_world: Secre
     for s in ("pending", "rejected", "expired"):
         insert_outbound(w.conn, "alpha", "email", payload=mail(), status=s)
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert fake_smtp.sessions == []
 
 
@@ -612,6 +615,7 @@ def test_the_real_email_sender_uses_only_its_own_workloads_credentials_and_sends
     c = insert_outbound(w.conn, "charlie", "email", payload=mail(to="c-target@example.com", subject="Charlie subject"), status="approved")
     pending = insert_outbound(w.conn, "alpha", "email", payload=mail(to="never@example.com", subject="Pending subject"))
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert status(w.conn, a["id"]) == "sent" and status(w.conn, c["id"]) == "sent"
     assert status(w.conn, pending["id"]) == "pending"
     sessions = fake_smtp.sessions
@@ -628,6 +632,7 @@ def test_the_real_email_sender_uses_only_its_own_workloads_credentials_and_sends
     assert "charlie@" not in alpha_mail and "charlie-pw" not in alpha_mail
     assert ALPHA_FROM_VALUE not in charlie_mail and "alpha-smtp-pw" not in charlie_mail
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert len(fake_smtp.sessions) == 2, "a sent row is never sent again"
 
 
@@ -636,15 +641,18 @@ def test_the_real_log_sender_records_an_event_on_the_job_and_only_after_approval
     job = insert_wl_job(w.conn, "alpha", "alpha")
     waiting = insert_outbound(w.conn, "alpha", "log", payload={"m": "hi"}, job_id=job["id"])
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert status(w.conn, waiting["id"]) == "pending"
     assert not [e for e in wl_events(w.conn, job["id"]) if e["event"] == "outbound_sent"]
     assert approve_api(w.client, waiting["id"]).status_code == 200
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     after = outbound_row(w.conn, waiting["id"])
     assert after["status"] == "sent" and after["result"] == {"logged": True} and after["sent_at"] is not None
     events = [e for e in wl_events(w.conn, job["id"]) if e["event"] == "outbound_sent"]
     assert len(events) == 1
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert len([e for e in wl_events(w.conn, job["id"]) if e["event"] == "outbound_sent"]) == 1
 
 
@@ -652,4 +660,39 @@ def test_a_log_row_without_a_job_is_still_sent(secret_world: SecretWorld, pool):
     w = secret_world
     row = insert_outbound(w.conn, "alpha", "log", payload={"m": "no job"}, status="approved")
     wl_loop.run_once(pool)
+    wl_loop.send_once(pool)
     assert status(w.conn, row["id"]) == "sent"
+
+
+def test_email_never_logs_in_without_tls():
+    """Review M3: a server (or an on-path attacker) that offers no STARTTLS must not receive
+    the SMTP credentials in clear text."""
+    import smtplib
+
+    from host.workloads.senders import EmailSender
+
+    class NoTls:
+        def __init__(self, *a, **k):
+            self.logged_in = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def starttls(self):
+            raise smtplib.SMTPNotSupportedError("STARTTLS extension not supported by server.")
+
+        def login(self, user, password):
+            self.logged_in = True
+            raise AssertionError("credentials sent without TLS")
+
+        def send_message(self, msg):
+            raise AssertionError("must not send")
+
+    sender = EmailSender(smtp=NoTls)
+    action = {"kind": "email", "payload": {"to": "a@example.com", "subject": "s", "body": "b"}}
+    secrets = {"SMTP_URL": "smtp://user:pass@mail.example.com:587", "EMAIL_FROM": "me@example.com"}
+    with pytest.raises(ValueError, match="STARTTLS"):
+        sender.send(action, secrets)

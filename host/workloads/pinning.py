@@ -34,15 +34,28 @@ def _machine(conn: psycopg.Connection, machine_id: str, for_update: bool = False
 
 
 def is_live_trading(conn: psycopg.Connection, machine_id: str) -> bool:
-    """True when the machine's linked Polymarket worker holds a live trade job or an
-    open live order."""
-    row = conn.execute("SELECT polymarket_worker_id FROM machines WHERE id = %s", (machine_id,)).fetchone()
-    worker_id = row["polymarket_worker_id"] if row else None
-    if worker_id is None:
-        return False
-    if conn.execute(LIVE_TRADE_JOB + " LIMIT 1", {"wid": worker_id}).fetchone():
-        return True
-    return conn.execute(LIVE_OPEN_ORDER + " LIMIT 1", {"wid": worker_id, "open": list(OPEN_ORDER_STATUSES)}).fetchone() is not None
+    """True when any Polymarket worker on this machine (the linked one, or any worker that
+    shares the machine's boot_id, so a stale or ambiguous link never hides a live trader)
+    holds a live trade job or an open live order."""
+    for worker_id in machine_worker_ids(conn, machine_id):
+        if conn.execute(LIVE_TRADE_JOB + " LIMIT 1", {"wid": worker_id}).fetchone():
+            return True
+        if conn.execute(LIVE_OPEN_ORDER + " LIMIT 1", {"wid": worker_id, "open": list(OPEN_ORDER_STATUSES)}).fetchone():
+            return True
+    return False
+
+
+def machine_worker_ids(conn: psycopg.Connection, machine_id: str) -> list[str]:
+    """The linked worker plus every worker that shares the machine's boot_id."""
+    rows = conn.execute(
+        """
+        SELECT w.id FROM machines m JOIN workers w
+          ON w.id = m.polymarket_worker_id OR (m.boot_id IS NOT NULL AND w.boot_id = m.boot_id)
+         WHERE m.id = %s ORDER BY w.id
+        """,
+        (machine_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
 
 
 def _set_pin(conn: psycopg.Connection, machine_id: str, reason: str) -> dict[str, Any]:
@@ -55,7 +68,8 @@ def _set_pin(conn: psycopg.Connection, machine_id: str, reason: str) -> dict[str
 def refresh_pins(conn: psycopg.Connection) -> list[str]:
     """Pin every unpinned machine that is trading live now; returns the ids newly pinned."""
     rows = conn.execute(
-        "SELECT id FROM machines WHERE NOT pinned AND polymarket_worker_id IS NOT NULL ORDER BY id FOR UPDATE"
+        "SELECT id FROM machines WHERE NOT pinned AND (polymarket_worker_id IS NOT NULL OR boot_id IS NOT NULL)"
+        " ORDER BY id FOR UPDATE"
     ).fetchall()
     pinned: list[str] = []
     for row in rows:

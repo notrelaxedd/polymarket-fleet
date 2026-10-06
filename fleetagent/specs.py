@@ -30,8 +30,8 @@ def native_polymarket(
 ) -> str | None:
     """"active", "inactive" or "absent" for the native fleet-worker systemd unit.
 
-    `systemctl is-active` first ("activating" counts as active: a crash-looping worker
-    still owns the machine), then `is-enabled` to tell an installed-but-stopped unit
+    `systemctl is-active` first ("activating" and "deactivating" count as active: a
+    crash-looping or stopping worker still owns the machine), then `is-enabled` to tell an installed-but-stopped unit
     from a missing one. None when systemctl answers something unusable, so the caller
     can keep its last value instead of guessing; a missing systemctl binary is "absent".
     """
@@ -43,7 +43,7 @@ def native_polymarket(
     except (subprocess.TimeoutExpired, OSError):
         return None
     word = (active.stdout or "").strip().splitlines()[0] if (active.stdout or "").strip() else ""
-    if word in ("active", "activating", "reloading"):
+    if word in ("active", "activating", "deactivating", "reloading"):
         return "active"
     try:
         enabled = runner([exe, "is-enabled", unit], capture_output=True, text=True, timeout=10.0)

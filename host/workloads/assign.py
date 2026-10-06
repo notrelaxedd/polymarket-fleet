@@ -90,6 +90,10 @@ def assign(
         )
         if refusals:
             raise Unplaceable([(r.code, r.message) for r in refusals])
+    if (current["workload"] == POLYMARKET and not draining and machine["polymarket_worker_id"] is None
+            and current["state"] in ("running", "starting")):
+        raise Conflict("cannot identify the polymarket worker on this machine (no unique boot_id match), so its "
+                       "trades cannot be drained; set that worker idle on /fleet, wait for it to settle, then retry")
     before = _snapshot(current)
     # Any machine whose polymarket worker is known drains through the role handshake, even
     # when the last heartbeat did not report the container as running (a missed report must
@@ -148,8 +152,21 @@ def desired_run(
     }
 
 
-def _drain_done(conn: psycopg.Connection, worker_id: str | None, online_after: int) -> bool:
-    """True when the linked worker is idle and settled, holds no job, or has gone silent."""
+def _drain_done(conn: psycopg.Connection, machine: dict[str, Any], online_after: int) -> bool:
+    """True when the machine's polymarket worker has released its work: it acked idle (or
+    has gone silent) AND holds no job AND nothing on the machine trades live. A silent
+    worker alone never ends a drain: its leased trade jobs expire through the reaper and
+    its open orders through the orphan rule first."""
+    if machine["pinned"] or pinning.is_live_trading(conn, machine["id"]):
+        return False
+    for worker_id in pinning.machine_worker_ids(conn, machine["id"]):
+        held = conn.execute(
+            "SELECT 1 FROM jobs WHERE lease_worker_id = %s AND status IN ('leased', 'cancel_requested') LIMIT 1",
+            (worker_id,),
+        ).fetchone()
+        if held is not None:
+            return False
+    worker_id = machine["polymarket_worker_id"]
     if worker_id is None:
         return True
     w = conn.execute(
@@ -162,13 +179,7 @@ def _drain_done(conn: psycopg.Connection, worker_id: str | None, online_after: i
     ).fetchone()
     if w is None or w["silent"]:
         return True
-    if w["reported_role"] != "idle" or w["acked_epoch"] != w["role_epoch"]:
-        return False
-    held = conn.execute(
-        "SELECT 1 FROM jobs WHERE lease_worker_id = %s AND status IN ('leased', 'cancel_requested') LIMIT 1",
-        (worker_id,),
-    ).fetchone()
-    return held is None
+    return w["reported_role"] == "idle" and w["acked_epoch"] == w["role_epoch"]
 
 
 def finish_drains(conn: psycopg.Connection) -> int:
@@ -182,7 +193,8 @@ def finish_drains(conn: psycopg.Connection) -> int:
     ).fetchall()
     done = 0
     for row in rows:
-        if not _drain_done(conn, row["polymarket_worker_id"], online_after):
+        machine = conn.execute("SELECT * FROM machines WHERE id = %s", (row["machine_id"],)).fetchone()
+        if not _drain_done(conn, machine, online_after):
             continue
         target = row["draining_to"] if row["draining_to_set"] else None
         after = _switch(conn, row["machine_id"], target, "system")

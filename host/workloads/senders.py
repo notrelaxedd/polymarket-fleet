@@ -89,7 +89,9 @@ class EmailSender:
                 try:
                     server.starttls()
                 except smtplib.SMTPNotSupportedError:
-                    pass
+                    # Never send credentials in clear text (an on-path attacker can strip STARTTLS).
+                    if parsed.username:
+                        raise ValueError("the SMTP server offers no STARTTLS; refusing to log in without TLS") from None
             if parsed.username:
                 server.login(unquote(parsed.username), unquote(parsed.password or ""))
             server.send_message(msg)

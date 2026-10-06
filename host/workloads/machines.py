@@ -156,12 +156,31 @@ def verify_machine(conn: psycopg.Connection, machine_id: str, token: str) -> dic
 
 
 def link_polymarket_worker(conn: psycopg.Connection, machine: dict[str, Any]) -> str | None:
-    """Link the machine to the one Polymarket worker sharing its boot_id (the container
-    shares the kernel). An ambiguous or missing match leaves the link as it is."""
+    """Link the machine to the Polymarket worker sharing its boot_id (the container shares
+    the kernel): the only one, or the only one online when several share it. An ambiguous
+    or missing match leaves the link as it is."""
     current = machine.get("polymarket_worker_id")
     if not machine.get("boot_id"):
         return current
-    rows = conn.execute("SELECT id FROM workers WHERE boot_id = %s LIMIT 2", (machine["boot_id"],)).fetchall()
+    # Several workers can share a boot_id after a migration that enrolled a new identity:
+    # the one heard from most recently (within the online window) is the one running here.
+    rows = conn.execute(
+        """
+        SELECT id FROM workers WHERE boot_id = %s
+         ORDER BY last_heartbeat_at DESC NULLS LAST, id LIMIT 2
+        """,
+        (machine["boot_id"],),
+    ).fetchall()
+    if len(rows) == 2:
+        online_after = get_int_setting(conn, "online_after_seconds", 15)
+        fresh = conn.execute(
+            """
+            SELECT id FROM workers WHERE boot_id = %s
+               AND last_heartbeat_at > now() - make_interval(secs => %s)
+            """,
+            (machine["boot_id"], online_after),
+        ).fetchall()
+        rows = fresh if len(fresh) == 1 else []
     if len(rows) != 1:
         return current
     if rows[0]["id"] != current:

@@ -178,6 +178,11 @@ def test_native_polymarket_activating_counts_as_active_and_garbage_is_unknown() 
 
     assert specs.native_polymarket(activating, "systemctl") == "active"
 
+    def deactivating(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 3, "deactivating\n", "")
+
+    assert specs.native_polymarket(deactivating, "systemctl") == "active", "a stopping worker still owns the machine"
+
     def garbage(cmd, **kw):
         return subprocess.CompletedProcess(cmd, 1, "", "Failed to connect to bus: No such file or directory\n")
 

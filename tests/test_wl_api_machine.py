@@ -262,6 +262,10 @@ def test_start_without_a_secrets_key_is_409_when_secrets_are_declared(client, co
     mid, token = enroll(client, conn)
     epoch = assign(client, mid, "hello")["epoch"]
     r = client.post(f"/api/v1/machines/{mid}/start", json={"epoch": epoch}, headers=auth(token))
+    assert r.status_code == 200 and r.json()["secrets"] == {}, "nothing stored: the key is not needed"
+    conn.execute("INSERT INTO workload_secrets (workload, name, scope, nonce, ciphertext)"
+                 " VALUES ('hello', 'HELLO_GREETING', 'container', '\\x00', '\\x00')")
+    r = client.post(f"/api/v1/machines/{mid}/start", json={"epoch": epoch}, headers=auth(token))
     assert r.status_code == 409 and "FLEET_SECRETS_KEY" in r.json()["detail"]
     add_workload(conn, manifest_data("plain", secrets={"container": [], "host_only": []}, outbound={"actions": []}))
     epoch = assign(client, mid, "plain")["epoch"]
@@ -315,3 +319,15 @@ def test_agent_downloads_and_version_in_register(client, conn, config, tmp_path,
         assert beat(client, mid, token).json()["agent_version"] == v["agent_version"]
     finally:
         agent_bundle.reset_cache()
+
+
+def test_a_polymarket_restart_never_waits_on_the_secrets_key(client, conn, no_secrets_key):
+    """Review H3: a lost or changed FLEET_SECRETS_KEY must not keep a trading container down;
+    the enroll token is only needed for a first start."""
+    add_workload(conn, polymarket_data(), size_mb=300)
+    mid, token = enroll(client, conn, specs={**GOOD_SPECS, "ram_total_mb": 8000})
+    epoch = assign(client, mid, "polymarket")["epoch"]
+    conn.execute("INSERT INTO workload_secrets (workload, name, scope, nonce, ciphertext)"
+                 " VALUES ('polymarket', 'FLEET_ENROLL_TOKEN', 'container', '\\x00', '\\x00')")
+    r = client.post(f"/api/v1/machines/{mid}/start", json={"epoch": epoch}, headers=auth(token))
+    assert r.status_code == 200 and r.json()["secrets"] == {} and r.json()["run_token"]

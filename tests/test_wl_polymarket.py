@@ -83,7 +83,7 @@ def test_dockerfile_fixed_lines() -> None:
     code = [ln for ln in lines if ln and not ln.startswith("#")]
     assert code[0] == "ARG BASE_IMAGE=debian:trixie-slim" and code[1] == "FROM ${BASE_IMAGE}"
     text = "\n".join(code)
-    assert "if ! command -v python3" in text and "apt-get install -y --no-install-recommends python3 ca-certificates" in text
+    assert "if ! command -v python3" in text and "apt-get install -y --no-install-recommends python3 ca-certificates tzdata" in text
     assert "useradd --uid 10001" in text and " fleet;" in text
     assert "COPY bootstrap.py /opt/fleet/bootstrap.py" in text and "USER 10001:10001" in text
     assert code[-1] == 'ENTRYPOINT ["python3", "/opt/fleet/bootstrap.py"]'

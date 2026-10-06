@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import logging
 from typing import Any
 
 import psycopg
@@ -21,6 +22,8 @@ from host.workloads.errors import SecretsUnavailable
 from host.workloads.registry import get_workload, manifest_of
 
 MAX_VALUE_BYTES = 16 * 1024
+
+log = logging.getLogger(__name__)
 
 
 def secret_box():
@@ -136,15 +139,34 @@ def secrets_for_machine(conn: psycopg.Connection, machine_id: str, epoch: int) -
     if a is None or a["workload"] is None or a["epoch"] != epoch:
         raise Conflict("epoch is not current or nothing is assigned")
     workload = a["workload"]
-    declared = manifest_of(get_workload(conn, workload)).container_secrets
+    manifest = manifest_of(get_workload(conn, workload))
+    declared = manifest.container_secrets
     if not declared:
         return {}
-    box = _need_box()
     rows = conn.execute(
         "SELECT name, nonce, ciphertext FROM workload_secrets"
         " WHERE workload = %s AND scope = 'container' AND name = ANY(%s)",
         (workload, list(declared)),
     ).fetchall()
+    if not rows:
+        return {}  # nothing stored: no key needed (a polymarket restart must never wait on it)
+    if manifest.protocol == "fleet-worker":
+        # The polymarket worker needs its enroll token only for a first start (no worker.conf
+        # yet); a lost or changed FLEET_SECRETS_KEY must not keep a trading container down.
+        try:
+            box = secret_box()
+        except SecretsUnavailable:
+            box = None
+        out: dict[str, str] = {}
+        for r in rows:
+            try:
+                if box is None:
+                    raise SecretsUnavailable("FLEET_SECRETS_KEY is not configured")
+                out[r["name"]] = _decrypt(box, workload, r)
+            except SecretsUnavailable as exc:
+                log.warning("start of %s on %s without secret %s: %s", workload, machine_id, r["name"], exc.message)
+        return out
+    box = _need_box()
     return {r["name"]: _decrypt(box, workload, r) for r in rows}
 
 

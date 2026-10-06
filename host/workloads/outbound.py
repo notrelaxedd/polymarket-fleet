@@ -129,14 +129,16 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     return text[:500]
 
 
-def send_approved(conn: psycopg.Connection, senders: dict[str, Sender]) -> int:
-    """Send every approved action: approved -> sending -> sent or failed. Returns the number sent.
+def send_approved(conn: psycopg.Connection, senders: dict[str, Sender], limit: int | None = None) -> int:
+    """Send approved actions (oldest decision first, at most `limit`): approved -> sending ->
+    sent or failed. Returns the number sent.
 
     The `sending` mark is committed before the sender runs, so a crash mid-send leaves a
     `sending` row (visible to the owner) rather than a second send on the next pass.
     """
     ids = [r["id"] for r in conn.execute(
-        "SELECT id FROM outbound_actions WHERE status = 'approved' ORDER BY decided_at, created_at"
+        "SELECT id FROM outbound_actions WHERE status = 'approved' ORDER BY decided_at, created_at LIMIT %s",
+        (limit,),
     ).fetchall()]
     sent = 0
     for action_id in ids:

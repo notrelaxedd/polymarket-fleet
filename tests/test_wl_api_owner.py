@@ -273,7 +273,9 @@ def test_drain_waits_for_the_workers_leased_jobs_and_ends_when_it_goes_silent(cl
     conn.execute("UPDATE workers SET reported_role = 'idle', acked_epoch = role_epoch, last_heartbeat_at = now() WHERE id = %s", (w.id,))
     assert assign_mod.finish_drains(conn) == 0, "still holds a leased job"
     conn.execute("UPDATE workers SET last_heartbeat_at = now() - interval '1 hour' WHERE id = %s", (w.id,))
-    assert assign_mod.finish_drains(conn) == 1, "a silent worker no longer blocks"
+    assert assign_mod.finish_drains(conn) == 0, "silent but still leasing: wait for the reaper"
+    conn.execute("UPDATE jobs SET status = 'queued', lease_worker_id = NULL, lease_token = NULL WHERE id = %s", (job["id"],))
+    assert assign_mod.finish_drains(conn) == 1, "a silent worker with nothing leased no longer blocks"
     a = conn.execute("SELECT workload, state FROM workload_assignments WHERE machine_id = %s", (mid,)).fetchone()
     assert (a["workload"], a["state"]) == ("hello", "pending")
     assert job["id"]

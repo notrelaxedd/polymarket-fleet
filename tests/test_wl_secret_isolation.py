@@ -642,6 +642,10 @@ def test_without_the_key_start_is_409_when_the_workload_declares_container_secre
     insert_workload(conn, make_manifest("quiet", kinds=["quiet"]))
     a = insert_machine(conn, "alphabox", workload="alpha", epoch=2, state="running")
     q = insert_machine(conn, "quietbox", workload="quiet", epoch=2, state="running")
+    assert start_run(client, a, 2).status_code == 200, "nothing stored yet: no key is needed"
+    conn.execute("INSERT INTO workload_secrets (workload, name, scope, nonce, ciphertext)"
+                 " VALUES ('alpha', 'ALPHA_KEY', 'container', '\\x00', '\\x00')")
+    conn.execute("UPDATE workload_assignments SET run_token_hash = NULL WHERE machine_id = %s", (a.id,))
     r = start_run(client, a, 2)
     assert r.status_code == 409, r.text
     assert assignment_of(conn, a.id)["run_token_hash"] is None

@@ -382,10 +382,10 @@ Machines can run more than the Polymarket worker. A workload is a folder under `
 
 ### One-time setup on the host
 
-1. Pull the new code and start the stack. This adds a `registry` service (`registry:2`, published on `127.0.0.1:5000` only, data in the volume `fleet-registry`):
+1. Pull the new code and start the stack. This adds a `registry` service (`registry:2`, published on `127.0.0.1:5000` only, data in the volume `fleet-registry`). Rebuild only `host` and start `registry`: the `exchange` code is unchanged, and rebuilding it would restart the exchange (do that later, never while games are live):
 
 ```powershell
-docker compose up -d --build
+docker compose up -d --build host registry
 ```
 
 2. Put the registry on the tailnet, in an elevated PowerShell, so machines can pull from it:
@@ -436,7 +436,7 @@ curl -fsSL https://<host>/install-agent.sh | sudo bash -s -- https://<host> <tok
 systemctl status fleet-agent
 ```
 
-8. Open `/machines`. The machine appears with its disk type, RAM and Docker state. Pick `hello` in its workload dropdown (or `docker compose exec host python -m host.cli assign <machine> hello`). Workloads that do not fit are greyed with the reason, for example a write-heavy one on an SD card. Within a few heartbeats the container is running.
+8. Open `/machines`. The machine appears with its disk type, RAM and Docker state. Pick `hello` in its workload dropdown (or `docker compose exec host python -m host.cli machine-assign <machine> hello`; plain `assign` is the Polymarket game command). Workloads that do not fit are greyed with the reason, for example a write-heavy one on an SD card. Within a few heartbeats the container is running.
 9. Send a job and read the result on `/workloads/hello`:
 
 ```powershell
