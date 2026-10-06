@@ -1,0 +1,76 @@
+{% import "_ui.html" as ui %}
+<div class="stats">
+  {{ ui.stat("online", stats.online ~ " / " ~ stats.total, "Machines online") }}
+  {{ ui.stat("running", stats.running, "Running a workload", href="/workloads") }}
+  {{ ui.stat("pinned", stats.pinned, "Pinned") }}
+  {{ ui.stat("approvals", stats.approvals, "Approvals pending", href="/outbound") }}
+</div>
+{% if error %}
+<p class="error inline-error" role="alert" data-error>{{ error }}</p>
+{% endif %}
+{% if not machines %}
+<p class="empty">No machines yet. Mint a machine token below and run the install line on a Debian box.</p>
+{% endif %}
+<div class="cards" data-list="machines">
+{% for m in machines %}
+<article class="card machine{% if not m.enabled %} is-disabled{% endif %}" data-row="machine" data-id="{{ m.id }}" data-machine="{{ m.id }}">
+  <div class="row">
+    <span class="dot {{ m.dot }}" role="img" aria-label="{{ m.dot }}"></span>
+    <div class="row-main">
+      <span class="row-title">{{ m.name }}{% if m.dot != 'online' %} {{ ui.chip("warn" if m.dot == "stale" or (m.dot == "offline" and m.enabled) else "muted", m.dot, key=m.dot) }}{% endif %}{% if not m.enabled %} {{ ui.chip("muted", "disabled", key="disabled") }}{% endif %}</span>
+      <span class="row-flags">
+        {{ ui.chip("muted", m.disk_label, key="disk", title="Disk type and size of the disk Docker uses") }}
+        {{ ui.chip("muted", m.ram_label, key="ram") }}
+        {{ ui.chip(m.state_tone, m.state_word, key="state", title="State of the workload container on this machine") }}
+        {% if m.low_disk %}{{ ui.chip("bad", "low disk", key="low-disk") }}{% endif %}
+      </span>
+      <span class="row-meta">{{ m.meta }}</span>
+    </div>
+    {% call ui.menu() %}
+    <details class="machine-details" data-key="machine-{{ m.id }}" data-action="details"><summary class="menu-item">Details</summary>
+      <p class="muted small">CPU {{ (m.cpu_pct or 0) | round | int }}% &middot; free disk {{ m.free_label }} of {{ m.disk_total_label }}</p>
+      <p class="muted small">Docker {{ m.docker_version or '?' }}{% if not m.docker_ok %} (not working){% endif %} &middot; agent <span class="nowrap">{{ m.agent_version or '?' }}</span></p>
+      <p class="muted small">{{ m.id }}{% if m.hostname and m.hostname != m.name %} &middot; {{ m.hostname }}{% endif %}{% if m.arch %} &middot; {{ m.arch }}{% endif %}</p>
+      <p class="muted small">Polymarket worker: {{ m.worker_name or 'none linked' }} &middot; native {{ m.native_polymarket }}</p>
+      {% if m.a_error %}<p class="muted small">last error: {{ m.a_error }}</p>{% endif %}
+    </details>
+    <a class="menu-item" href="/machines/{{ m.id }}/logs" data-action="logs">Logs</a>
+    <form method="post" action="/machines/{{ m.id }}/disk-type" class="menu-form machine-form" data-form="disk-type" data-action="disk-type">
+      <label>Disk type
+        <select name="disk_type">
+          <option value="auto"{% if not m.disk_type_override %} selected{% endif %}>auto ({{ m.disk_type_detected }})</option>
+          {% for t in disk_types %}<option value="{{ t }}"{% if m.disk_type_override == t %} selected{% endif %}>{{ t }}</option>{% endfor %}
+        </select>
+      </label>
+      <button type="submit" class="btn small">Set</button>
+    </form>
+    {% if m.pinned %}
+    <a class="menu-item" href="/machines/{{ m.id }}/unpin" data-action="unpin">Unpin</a>
+    {% else %}
+    <form method="post" action="/machines/{{ m.id }}/pin" class="menu-form machine-form" data-form="pin" data-action="pin">
+      <label>Pin (keeps the workload as it is)
+        <input type="text" name="reason" maxlength="120" placeholder="Reason">
+      </label>
+      <button type="submit" class="btn small">Pin</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/machines/{{ m.id }}/enabled" data-action="{{ 'disable' if m.enabled else 'enable' }}">
+      <input type="hidden" name="enabled" value="{{ 'false' if m.enabled else 'true' }}">
+      <button type="submit" class="menu-item{% if m.enabled %} danger{% endif %}">{{ 'Disable' if m.enabled else 'Enable' }}</button>
+    </form>
+    {% endcall %}
+  </div>
+  <form class="machine-assign" data-form="assign" method="post" action="/machines/{{ m.id }}/assign">
+    <label class="visually-hidden" for="wl-{{ m.id }}">Workload</label>
+    <select id="wl-{{ m.id }}" name="workload" data-autosubmit="1"{% if m.locked %} disabled title="{{ m.lock_reason }}"{% endif %}>
+      {% for o in m.options %}
+      <option value="{{ o.value }}"{% if o.selected %} selected{% endif %}{% if o.disabled %} disabled{% endif %}{% if o.title %} title="{{ o.title }}"{% endif %}>{{ o.label }}</option>
+      {% endfor %}
+    </select>
+    {% if m.pinned %}{{ ui.chip("warn", m.pinned_word, key="pinned", title="Pinned: the assignment cannot change until you unpin it") }}{% endif %}
+    {% if m.native_active %}{{ ui.chip("warn", "native worker running", key="native", title="Stop the native fleet-worker before assigning a workload") }}{% endif %}
+    <button type="submit" class="btn js-hide"{% if m.locked %} disabled{% endif %}>Set</button>
+  </form>
+</article>
+{% endfor %}
+</div>

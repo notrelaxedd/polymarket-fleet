@@ -530,3 +530,32 @@ label.check input { width: 20px; height: 20px; margin: 0; }
   /* step 6 Part B: the position total drops under the label */
   .positions-head .positions-total { margin-left: 0; flex-basis: 100%; }
 }
+
+/* ================================================================ workloads (docs/workloads-design.md section 10)
+   The Fleet sub-nav (it reuses .tabs), the machine, secret and approval cards (a .row
+   with the select, form or payload under it), the menu forms and the log blocks. Rules
+   here only add; the components above are unchanged. */
+.subnav { position: relative; gap: 0; margin: 0 0 var(--s3); }
+.subnav a { padding: 0 var(--s2); }
+.subnav .count { margin-left: var(--s1); }
+.card.machine, .card.secret, .card.outbound { padding: var(--s1) var(--s3) var(--s3); }
+.card.machine > .row, .card.secret > .row, .card.outbound > .row { border-top: 0; }
+.card.machine .row-main, .card.secret .row-main, .card.outbound .row-main { min-width: 0; }
+.card.machine.is-disabled .row-title { color: var(--muted); }
+/* the assign select (and the pinned or native chip beside it) sits under the row, aligned with its text */
+.machine-assign { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; padding-left: calc(10px + var(--s3)); }
+.machine-assign select { flex: 1 1 12rem; min-width: 0; }
+.machine-assign .chip { flex: none; }
+/* the secret form: a write-only password input and one button, under the row */
+.secret-form { display: flex; align-items: center; gap: var(--s2); margin: 0; }
+.secret-form input[type="password"] { flex: 1 1 auto; min-width: 0; }
+/* a form with an input inside a "..." menu (disk type, pin, reject) */
+.menu-list form.machine-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s2); padding: var(--s2) var(--s4); border-top: 1px solid var(--line); }
+.menu-list form.machine-form label { flex: 1 1 8rem; }
+.menu-list form.machine-form .btn { min-height: var(--tap); }
+.menu-list details > .muted { white-space: normal; }
+.card.outbound > details.disclosure { margin: var(--s2) 0 0; }
+.card.outbound > .row > form { flex: none; margin: 0; }
+pre.log, pre.payload { max-height: 24rem; overflow: auto; margin: 0 0 var(--s2); }
+.digest { overflow-wrap: anywhere; }
+dl.props dd { overflow-wrap: anywhere; }

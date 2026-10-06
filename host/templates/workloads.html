@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Workloads{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{% block content %}
+<h1>Workloads</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("workloads", "What the fleet can run: one row per workload folder, whether its image is published, how many machines run it and how many jobs wait. Open one to send a job, read its logs or set its secrets.") }}
+<div class="stats" data-view="workloads">
+  {{ ui.stat("workloads", stats.enabled ~ " / " ~ stats.total, "Workloads enabled") }}
+  {{ ui.stat("running", stats.running, "Machines running one", href="/machines") }}
+  {{ ui.stat("queued", stats.queued, "Jobs queued") }}
+  {{ ui.stat("approvals", stats.approvals, "Approvals pending", href="/outbound") }}
+</div>
+{% if error %}<p class="error inline-error" role="alert" data-error>{{ error }}</p>{% endif %}
+{% if not workloads %}
+<p class="empty">No workloads yet. Add a folder with a workload.toml under the workloads directory and press Sync.</p>
+{% else %}
+<ul class="rows" data-list="workloads">
+{% for w in workloads %}
+{% set flags %}
+{{ ui.chip("ok" if w.image_digest else "warn", "image published" if w.image_digest else "no image", key="image", title="An image is published once publish.sh has pushed it to the registry") }}
+{% if not w.enabled %}{{ ui.chip("muted", "disabled", key="disabled") }}{% endif %}
+{% endset %}
+{% set meta %}{{ w.running }} running &middot; {{ w.assigned }} assigned &middot; {{ w.queued }} queued{% endset %}
+{% call ui.row("workload", w.name, "/workloads/" ~ w.name, w.name, meta=meta, flags=flags) %}
+  {% call ui.menu() %}
+  <a class="menu-item" href="/workloads/{{ w.name }}" data-action="open">Open</a>
+  <form method="post" action="/workloads/{{ w.name }}/enabled" data-action="{{ 'disable' if w.enabled else 'enable' }}">
+    <input type="hidden" name="enabled" value="{{ 'false' if w.enabled else 'true' }}">
+    <button type="submit" class="menu-item{% if w.enabled %} danger{% endif %}">{{ 'Disable' if w.enabled else 'Enable' }}</button>
+  </form>
+  {% endcall %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% endif %}
+<form method="post" action="/workloads/sync" class="form-actions" data-form="sync">
+  <button type="submit" class="btn" data-action="sync">Sync from disk</button>
+  <span class="help">Reads every workload.toml and updates the list. Never deletes.</span>
+</form>
+{% endblock %}
