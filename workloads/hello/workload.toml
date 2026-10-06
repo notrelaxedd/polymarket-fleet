@@ -1,0 +1,23 @@
+schema = 1
+name = "hello"
+description = "Says hello: a tiny jobs workload that exercises claims, scratch, a secret and an approved log action"
+image = "fleet/hello"
+protocol = "workload-v1"
+
+[resources]
+min_ram_mb = 128
+min_disk_mb = 300
+write_heavy = false
+memory_max_mb = 128
+
+[runtime]
+mode = "jobs"
+job_kinds = ["hello"]
+uid = 10001
+scratch_mb = 64
+
+[secrets]
+container = ["HELLO_GREETING"]
+
+[outbound]
+actions = ["log"]
