@@ -272,6 +272,8 @@ def _store_logs(conn: psycopg.Connection, machine_id: str, workload: str | None,
 
 def _keep_images(conn: psycopg.Connection, a: dict[str, Any]) -> list[str]:
     keep: list[str] = []
+    if not a["workload"]:
+        return keep  # nothing assigned: nothing to keep on a small disk
     if a["workload"]:
         current = get_workload(conn, a["workload"])["image_digest"]
         if current:

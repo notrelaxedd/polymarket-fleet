@@ -190,9 +190,17 @@ class Reconciler(StartMixin):
             else:
                 strays.append(c)
         clean = True
+        removed: set[str] = set()
         for c in strays:
             keep_files = match is not None and want is not None and c.workload == want[0]
-            clean = self._remove(c, keep_files) and clean
+            if self._remove(c, keep_files):
+                removed.add(c.id)
+            else:
+                clean = False
+        if removed:
+            # A removed container no longer protects its image: cleanup may free it right away.
+            self.seen = [c for c in self.seen if c.id not in removed]
+            self.cleaner.request()
         if want is None:
             self.managed = None
             self._pull = None

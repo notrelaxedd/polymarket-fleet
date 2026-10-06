@@ -68,6 +68,10 @@ class Cleaner:
         self.report = Report()
         self._last_run: float | None = None
 
+    def request(self) -> None:
+        """Make the next due() true (after a container was removed, free its image soon)."""
+        self._last_run = None
+
     def due(self) -> bool:
         return self._last_run is None or self._clock() - self._last_run >= self.interval
 
