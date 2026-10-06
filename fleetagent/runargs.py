@@ -50,6 +50,7 @@ def build_run_args(
         "--name", container_name(workload, epoch),
         "--label", f"fleet.workload={workload}",
         "--label", f"fleet.epoch={epoch}",
+        "--init",
         "--read-only",
         "--tmpfs", "/tmp:rw,nosuid,size=256m",
         "--security-opt", "no-new-privileges",

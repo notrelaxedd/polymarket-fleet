@@ -482,7 +482,7 @@ Layout: `__init__.py`, `__main__.py` (`enroll`, `run`, `status`, `specs`), `conf
      - desired and not running: low-disk check, `docker pull <image@digest>`,
        `POST /start` for the run token and secrets, write secrets (mode 0400, owner
        `run.uid`), wipe and create scratch, then `docker run -d` with
-       `--name fleet-<workload>-<epoch>`, `--label fleet.workload`, `--label fleet.epoch`,
+       `--name fleet-<workload>-<epoch>`, `--init` (an init process reaps orphaned children, as systemd does for the native worker), `--label fleet.workload`, `--label fleet.epoch`,
        `--read-only`, `--tmpfs /tmp:rw,nosuid,size=256m`, `--security-opt
        no-new-privileges`, `--user <uid>:<uid>`, `--memory <memory_mb>m --memory-swap -1`
        (when capped), `--cpus`, `--stop-timeout`, `--network <network>`, `--uts host` when

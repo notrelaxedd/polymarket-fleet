@@ -35,7 +35,10 @@ def test_register_reply_fields_and_enroll_token_is_single_use(client, conn):
     assert r.status_code == 200
     reply = r.json()
     assert {"machine_id", "machine_token", "heartbeat_seconds", "server_time", "agent_version"} <= set(reply)
-    assert reply["heartbeat_seconds"] == 5 and reply["agent_version"] is None, "fleetagent absent: no version"
+    from host.workloads import agent_bundle
+
+    expected = agent_bundle.current_version()
+    assert reply["heartbeat_seconds"] == 5 and reply["agent_version"] == expected, "the host offers its fleetagent version"
     assert client.post("/api/v1/machines/register", json=body).status_code == 401
     assert client.post("/api/v1/machines/register", json={"enroll_token": "nope", "name": "x"}).status_code == 401
     assert client.post("/api/v1/machines/register", json={"name": "x"}).status_code == 401

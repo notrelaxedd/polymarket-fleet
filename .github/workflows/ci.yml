@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Byte-compile fleet/ and fleetagent/
-        run: python3.11 -m compileall -q fleet fleetagent
+        run: python3.11 -m compileall -q fleet fleetagent workloads
       - name: Assert fleet/ and fleetagent/ import only the standard library
         run: |
           python3.11 - <<'PY'
@@ -70,5 +70,18 @@ jobs:
                   failed = True
               else:
                   print(f"{package}/ imports only stdlib")
+          # Workload code that runs on machines (the polymarket bootstrap, the SDK and the
+          # example apps) is stdlib only too; a file may also import its sibling modules.
+          from pathlib import Path
+          for path in sorted(Path("workloads").rglob("*.py")):
+              siblings = {p.stem for p in path.parent.glob("*.py")}
+              bad = set()
+              for line in path.read_text().splitlines():
+                  m = re.match(r"^\s*(?:import|from)\s+([A-Za-z_][\w]*)", line)
+                  if m and m.group(1) not in sys.stdlib_module_names and m.group(1) not in siblings:
+                      bad.add(m.group(1))
+              if bad:
+                  print(f"non-stdlib imports in {path}:", sorted(bad))
+                  failed = True
           sys.exit(1 if failed else 0)
           PY
