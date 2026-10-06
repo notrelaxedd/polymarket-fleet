@@ -345,6 +345,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from host.workloads import cli as workloads_cli
+
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if workloads_cli.handles(argv):  # workloads, machines, pin, secret-set, ... (docs/workloads-design.md section 9)
+        return workloads_cli.main(argv)
     args = build_parser().parse_args(argv)
     config = Config.from_env()
     try:
