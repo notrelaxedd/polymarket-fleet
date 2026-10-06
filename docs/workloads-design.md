@@ -375,12 +375,15 @@ Response:
          "uid": 10001, "memory_mb": 256, "cpus": 1.0, "nice": 0, "stop_timeout_s": 15,
          "state_volume": false, "scratch_mb": 512, "no_restart_exit_codes": [78],
          "env": {"FLEET_HOST_URL": "...", "FLEET_WORKLOAD": "hello",
-                 "FLEET_MACHINE_ID": "m_3f9a1c", "FLEET_EPOCH": "5"}},
+                 "FLEET_MACHINE_ID": "m_3f9a1c", "FLEET_EPOCH": "5", "FLEET_NICE": "0"}},
  "secrets_version": "9f2c...", "keep_images": ["sha256:...", "sha256:..."],
  "agent_version": "...", "server_time": "...", "heartbeat_seconds": 5}
 ```
-`run` is null when `workload` is null, while draining, while the machine is disabled, or
-when the image is not published. `memory_mb` is computed from `memory_max_mb` or
+`run` is null when `workload` is null, while the machine is disabled, or when the image is
+not published. While a machine drains away from polymarket, `run` keeps describing the
+running container (same workload and epoch) so it stays up until the worker finished the
+trade release; `finish_drains` then moves the epoch. Disabling a machine is refused (409)
+while it is pinned or runs polymarket. `memory_mb` is computed from `memory_max_mb` or
 `memory_max_pct * ram_total_mb / 100` (null = no cap). `keep_images` = digests of the
 current workload's image and the one that ran before it on this machine.
 Host-side processing in one transaction: update specs and `last_heartbeat_at`,
@@ -516,7 +519,7 @@ Layout: `__init__.py`, `__main__.py` (`enroll`, `run`, `status`, `specs`), `conf
   members with the installer's rules, install to `/state/app/<version>`, point `current`;
   if `/state/worker.conf` is missing, run `python3 -m fleet.worker enroll` with the token
   from `/run/fleet/secrets/FLEET_ENROLL_TOKEN` (exit 78 when there is none); then `execve`
-  `/usr/bin/python3 -m fleet.worker run` with `PYTHONPATH=/state/app/current` and
+  `sys.executable -m fleet.worker run` with `PYTHONPATH=/state/app/current` and
   `FLEET_STATE_DIR=/state`. Exit codes pass straight to the supervisor (75 restart, 78 stop).
 - Native to container migration (by hand, non-trading machines first): set the worker
   idle and disable it on `/fleet`; `sudo systemctl disable --now fleet-worker`;

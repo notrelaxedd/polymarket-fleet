@@ -136,6 +136,7 @@ def desired_run(
         "env": {
             "FLEET_HOST_URL": host_url, "FLEET_WORKLOAD": name,
             "FLEET_MACHINE_ID": machine["id"], "FLEET_EPOCH": str(assignment["epoch"]),
+            "FLEET_NICE": str(rt.nice),
         },
     }
 

@@ -136,7 +136,7 @@ def test_run_block_for_an_assigned_workload(client, conn):
     assert (run["uid"], run["memory_mb"], run["cpus"], run["nice"], run["stop_timeout_s"]) == (10001, 256, 1.0, 0, 15)
     assert (run["state_volume"], run["scratch_mb"], run["no_restart_exit_codes"]) == (False, 512, [78])
     assert run["env"] == {"FLEET_HOST_URL": "http://127.0.0.1:8080", "FLEET_WORKLOAD": "hello",
-                          "FLEET_MACHINE_ID": mid, "FLEET_EPOCH": "2"}
+                          "FLEET_MACHINE_ID": mid, "FLEET_EPOCH": "2", "FLEET_NICE": "0"}
     assert len(reply["secrets_version"]) == 16 and reply["keep_images"] == [DIGEST_A]
     a = conn.execute("SELECT acked_epoch FROM workload_assignments WHERE machine_id = %s", (mid,)).fetchone()
     assert a["acked_epoch"] == 1
