@@ -1,0 +1,166 @@
+{% extends "base.html" %}
+{% block title %}Workload {{ wl.name }}{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{% block content %}
+<h1>{{ wl.name }}</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("workload", wl.description or "A workload: a folder with a manifest, a Docker image and its own code.") }}
+<div class="stats" data-view="workload" data-workload="{{ wl.name }}">
+  {{ ui.stat("machines", stats.machines ~ " / " ~ stats.assigned, "Machines running it") }}
+  {{ ui.stat("queued", stats.queued, "Jobs queued") }}
+  {{ ui.stat("running", stats.running, "Jobs running") }}
+  {{ ui.stat("approvals", stats.approvals, "Approvals pending", href="/outbound") }}
+</div>
+{% if error %}<p class="error inline-error" role="alert" data-error>{{ error }}</p>{% endif %}
+
+<section class="card" data-card="image">
+  <header class="card-head"><h2>Image</h2>
+    {{ ui.chip("ok" if wl.image_digest else "warn", "published" if wl.image_digest else "not published", key="image") }}
+    {% if not wl.enabled %}{{ ui.chip("muted", "disabled", key="disabled") }}{% endif %}
+  </header>
+  <p class="muted small"><span class="nowrap">{{ wl.image_repo }}</span>{% if wl.image_digest %} <code class="digest" data-digest="{{ wl.image_digest }}" title="{{ wl.image_digest }}">{{ wl.image_digest[:19] }}</code>{% if wl.image_size_mb %} &middot; {{ wl.image_size_mb }} MB{% endif %}{% else %} &middot; run tools/workloads/publish.sh {{ wl.name }} to publish it{% endif %}</p>
+</section>
+
+<section class="card" data-card="machines">
+  <header class="card-head"><h2>Machines running it</h2><span class="count">{{ machines | length }}</span></header>
+  {% if machines %}
+  <ul class="rows" data-list="machines">
+  {% for m in machines %}
+  {% set meta %}epoch {{ m.epoch }}{% if m.up is not none %} &middot; up {{ (m.up or 0) | ago | replace(' ago', '') }}{% endif %}{% if m.restarts %} &middot; {{ m.restarts }} restarts{% endif %}{% if m.mem_mb is not none %} &middot; {{ m.mem_mb }} MB{% endif %}{% endset %}
+  {% call ui.row("machine", m.id, "/machines/" ~ m.id ~ "/logs", m.name, meta=meta, meta2=m.last_error) %}
+    {{ ui.chip(m.tone, m.word, key="state") }}
+  {% endcall %}
+  {% endfor %}
+  </ul>
+  {% else %}
+  <p class="muted">No machine runs it. Assign it from <a href="/machines">Machines</a>.</p>
+  {% endif %}
+</section>
+
+{% macro job_rows(list, kind) %}
+<ul class="rows" data-list="jobs-{{ kind }}">
+{% for j in list %}
+{% set meta %}{{ j.machine_name or 'any machine' }} &middot; {% if j.finished_age is not none %}{{ j.finished_age | ago }}{% else %}{{ j.age | ago }}{% endif %}{% endset %}
+{% call ui.row("job", j.id, None, j.kind ~ " " ~ (j.id | short), meta=meta, meta2=j.detail) %}
+  {% if j.status == 'leased' %}{{ ui.bar(j.progress | bar_pct) }}{% endif %}
+  {{ ui.chip(j.tone, j.word, key=j.status) }}
+  {% if j.cancellable %}
+  {% call ui.menu() %}
+  <form method="post" action="/workloads/{{ wl.name }}/jobs/{{ j.id }}/cancel" data-action="cancel">
+    <button type="submit" class="menu-item danger">Cancel</button>
+  </form>
+  {% endcall %}
+  {% endif %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% endmacro %}
+
+{% call ui.disclosure("workload-jobs-running", "Jobs: running", count=jobs.running | length, open=jobs.running | length > 0) %}
+{% if jobs.running %}{{ job_rows(jobs.running, "running") }}{% else %}<p class="muted">Nothing queued or running.</p>{% endif %}
+{% endcall %}
+{% call ui.disclosure("workload-jobs-done", "Jobs: done", count=jobs.done | length) %}
+{% if jobs.done %}{{ job_rows(jobs.done, "done") }}{% else %}<p class="muted">No finished jobs yet.</p>{% endif %}
+{% endcall %}
+
+{% if wl.is_jobs %}
+{% call ui.disclosure("workload-send", "Send a job", summary="Kinds: " ~ wl.kinds | join(", "), open=open_section == "send") %}
+<form method="post" action="/workloads/{{ wl.name }}/jobs" data-form="send-job" class="send">
+  <div class="fields">
+    <label>Kind
+      <select name="kind">
+        {% for k in wl.kinds %}<option value="{{ k }}"{% if submitted.kind == k %} selected{% endif %}>{{ k }}</option>{% endfor %}
+      </select>
+    </label>
+    <label>Machine
+      <select name="target">
+        <option value="any">any machine running it</option>
+        {% for t in targets %}<option value="{{ t.id }}"{% if submitted.target == t.id %} selected{% endif %}>{{ t.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="span-all">Params (a JSON object)
+      <textarea name="params" rows="3" spellcheck="false" placeholder="{}">{{ submitted.params }}</textarea>
+    </label>
+  </div>
+  <div class="form-actions"><button type="submit" class="btn primary" data-action="send-job">Send job</button></div>
+</form>
+{% endcall %}
+{% endif %}
+
+{% call ui.disclosure("workload-logs", "Logs", summary="The last 50 lines per machine") %}
+{% for entry in logs %}
+<h3>{{ entry.machine.name }}</h3>
+{% if entry.lines %}
+<pre class="log" data-list="log" data-machine="{{ entry.machine.id }}">{% for l in entry.lines %}{{ l.time }} {{ l.stream }} {{ l.line }}
+{% endfor %}</pre>
+{% else %}
+<p class="muted">No lines yet from {{ entry.machine.name }}.</p>
+{% endif %}
+{% else %}
+<p class="muted">No machine runs this workload, so there are no logs.</p>
+{% endfor %}
+{% endcall %}
+
+{% call ui.disclosure("workload-secrets", "Secrets", count=secrets | length, summary="Write-only: a value can be set or replaced, never read back", open=open_section == "secrets") %}
+{% if not secrets_ready %}
+<p class="muted" data-note="no-key">No FLEET_SECRETS_KEY is configured on the host, so a value cannot be saved yet.</p>
+{% endif %}
+{% for s in secrets %}
+<article class="card secret" data-row="secret" data-id="{{ s.name }}">
+  <div class="row">
+    <div class="row-main">
+      <span class="row-title">{{ s.name }}</span>
+      <span class="row-flags">
+        {{ ui.chip("muted", "host only" if s.scope == "host_only" else "container", key="scope", title="Container secrets are delivered to the workload; host-only ones stay on the host for outbound senders") }}
+        {{ ui.chip("ok" if s.set else "warn", "set" if s.set else "not set", key="set") }}
+        {% if not s.declared %}{{ ui.chip("muted", "not in manifest", key="undeclared") }}{% endif %}
+      </span>
+      {% if s.updated_at %}<span class="row-meta">updated {{ s.updated_at | ts }}</span>{% endif %}
+    </div>
+    {% if s.set %}
+    {% call ui.menu() %}
+    <form method="post" action="/workloads/{{ wl.name }}/secrets" data-action="delete-secret">
+      <input type="hidden" name="name" value="{{ s.name }}">
+      <input type="hidden" name="delete" value="1">
+      <button type="submit" class="menu-item danger">Delete value</button>
+    </form>
+    {% endcall %}
+    {% endif %}
+  </div>
+  {% if s.declared %}
+  <form method="post" action="/workloads/{{ wl.name }}/secrets" class="secret-form" data-form="secret" data-name="{{ s.name }}">
+    <input type="hidden" name="name" value="{{ s.name }}">
+    <label class="visually-hidden" for="secret-{{ s.name }}">New value for {{ s.name }}</label>
+    <input type="password" id="secret-{{ s.name }}" name="value" autocomplete="new-password" placeholder="{{ 'new value' if s.set else 'value' }}" required>
+    <button type="submit" class="btn small" data-action="set-secret">{{ 'Replace' if s.set else 'Set' }}</button>
+  </form>
+  {% endif %}
+</article>
+{% else %}
+<p class="muted">This workload declares no secrets.</p>
+{% endfor %}
+{% endcall %}
+
+{% if pending %}
+<section class="card" data-card="outbound">
+  <header class="card-head"><h2>Pending approvals</h2><span class="count">{{ pending | length }}</span><a href="/outbound">Review</a></header>
+  <ul class="rows" data-list="pending">
+  {% for a in pending %}
+  {% set meta %}{{ a.kind }} &middot; {{ a.age | ago }}{% endset %}
+  {% call ui.row("outbound", a.id, "/outbound#a-" ~ a.id, a.summary, meta=meta) %}
+    {{ ui.chip("warn", "pending", key="pending") }}
+  {% endcall %}
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% call ui.disclosure("workload-manifest", "Manifest", summary=wl.summary[0][1]) %}
+<dl class="props" data-list="manifest">
+  {% for label, value in wl.summary %}
+  <dt>{{ label }}</dt><dd>{{ value }}</dd>
+  {% endfor %}
+</dl>
+{% endcall %}
+{% endblock %}

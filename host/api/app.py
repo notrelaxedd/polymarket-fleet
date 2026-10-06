@@ -16,6 +16,7 @@ from host.api import dashboard, dashboard_forms, dashboard_models, data, data_pb
 from host.bundle import build_bundle
 from host.config import Config
 from host.errors import QueueError
+from host.workloads.dashboard import router as workloads_dashboard_router
 
 log = logging.getLogger(__name__)
 
@@ -164,6 +165,7 @@ def create_app(config: Config) -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(dashboard_forms.router)
     app.include_router(dashboard_models.router)
+    app.include_router(workloads_dashboard_router)
     # The stylesheet and script need no owner login; every other dashboard path does.
     app.mount("/static", StaticFiles(directory=str(web.STATIC_DIR)), name="static")
     app.add_middleware(BodySizeLimit)
