@@ -69,7 +69,9 @@ summary() {
 cleanup() {
   local rc=$?
   set +e
-  [ -n "$AGENT_PID" ] && kill "$AGENT_PID" 2>/dev/null
+  # Freeze the restart loop, stop the agent it runs, then end the loop.
+  [ -n "$AGENT_PID" ] && { kill -STOP "$AGENT_PID" 2>/dev/null; pkill -TERM -P "$AGENT_PID" 2>/dev/null
+    kill -TERM "$AGENT_PID" 2>/dev/null; kill -CONT "$AGENT_PID" 2>/dev/null; }
   [ -n "$HOST_PID" ] && kill "$HOST_PID" 2>/dev/null
   wait 2>/dev/null
   for w in hello heavy-test; do
@@ -199,7 +201,8 @@ api POST /api/machine-enroll-token
 TOKEN="$(echo "$BODY" | jq -r '.token // empty')"
 [ -n "$TOKEN" ] && ok "enroll token minted" || { bad "enroll token minted" "HTTP $HTTP_CODE $BODY"; stop_here "no token"; }
 
-printf '#!/bin/sh\necho inactive\nexit 3\n' >"$TMP/systemctl"
+# A machine without the native worker: is-active says inactive, is-enabled says not-found.
+printf '#!/bin/sh\ncase "$1" in is-active) echo inactive; exit 3;; *) echo not-found; exit 1;; esac\n' >"$TMP/systemctl"
 chmod +x "$TMP/systemctl"
 AGENT_ENV=(env FLEET_AGENT_STATE_DIR="$TMP/agent/state" FLEET_AGENT_DATA_DIR="$TMP/agent/data" FLEET_AGENT_RUN_DIR="$TMP/agent/run"
   FLEET_AGENT_SYSTEMCTL="$TMP/systemctl" PYTHONPATH="$ROOT" PYTHONDONTWRITEBYTECODE=1)
@@ -208,7 +211,20 @@ if "${AGENT_ENV[@]}" FLEET_ENROLL_TOKEN="$TOKEN" "$AGENT_PYTHON" -m fleetagent e
   || "${AGENT_ENV[@]}" "$AGENT_PYTHON" -m fleetagent enroll --host "$BASE" --token "$TOKEN" --name demo-box >>"$TMP/enroll.log" 2>&1; then
   ok "fleetagent enrolled"
 else cat "$TMP/enroll.log"; bad "fleetagent enroll"; stop_here "enroll failed"; fi
-"${AGENT_ENV[@]}" "$AGENT_PYTHON" -m fleetagent run >"$TMP/agent.log" 2>&1 &
+# Like systemd's Restart=always with PYTHONPATH=<state>/app/current: the first start runs
+# this checkout, self-updates to the host's version and exits 75; later starts run app/current.
+agent_loop() {
+  while :; do
+    local path="$ROOT"
+    [ -d "$TMP/agent/state/app/current" ] && path="$TMP/agent/state/app/current"
+    # Run from $TMP: `python -m` puts the cwd first on sys.path, which would shadow app/current.
+    (cd "$TMP" && exec "${AGENT_ENV[@]}" PYTHONPATH="$path" "$AGENT_PYTHON" -m fleetagent run)
+    local rc=$?
+    [ "$rc" -eq 78 ] && return "$rc"
+    sleep 3
+  done
+}
+agent_loop >"$TMP/agent.log" 2>&1 &
 AGENT_PID=$!
 machine_online() { [ "$(machine_field demo-box '.online')" = "true" ]; }
 wait_for "machine demo-box is online" machine_online || { tail -n 20 "$TMP/agent.log"; stop_here "machine never came online"; }
@@ -224,7 +240,10 @@ if echo "$BODY" | grep -q "$SECRET"; then bad "owner API never returns secret va
 api POST "/api/machines/$MID/assign" '{"workload": "hello"}'
 [ "$HTTP_CODE" = 200 ] && ok "hello assigned to the machine" || { bad "hello assigned to the machine" "HTTP $HTTP_CODE $BODY"; stop_here "assign"; }
 hello_container_running() { [ -n "$(docker ps -q --filter label=fleet.workload=hello)" ]; }
-wait_for "hello container is running" hello_container_running || { tail -n 30 "$TMP/agent.log"; stop_here "container never started"; }
+wait_for "hello container is running" hello_container_running || {
+  tail -n 30 "$TMP/agent.log"; api GET "/api/machines/$MID/logs?limit=40"; echo "$BODY" | tail -c 4000
+  api GET /api/machines; echo "$BODY" | jq -c '.[]? // .machines[]?' 2>/dev/null | tail -c 3000
+  stop_here "container never started"; }
 
 api POST /api/workload-jobs '{"workload": "hello", "kind": "hello", "params": {"name": "demo", "steps": 3, "notify": true}}'
 JOB_ID="$(echo "$BODY" | jq -r '(.job // .) | .id // empty')"
