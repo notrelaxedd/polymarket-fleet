@@ -10,13 +10,12 @@ from host.config import Config
 from host.errors import Conflict, NotFound
 from host.events import add_audit
 from host.settings import get_int_setting
-from host.workloads import queue
+from host.workloads import pinning, queue
 from host.workloads.errors import Unplaceable
 from host.workloads.placement import check_placement
 from host.workloads.registry import get_workload, image_ref, manifest_of
 
 POLYMARKET = "polymarket"
-RUNNING_STATES = ("running", "starting")
 
 
 def _snapshot(row: dict[str, Any]) -> dict[str, Any]:
@@ -73,8 +72,14 @@ def assign(
         return current
     if draining and workload == current["draining_to"]:
         return current
+    from host.workloads import machines as wl_machines  # machines imports this module
+
+    machine = {**machine, "polymarket_worker_id": wl_machines.link_polymarket_worker(conn, machine)}
     if machine["pinned"]:
         raise Conflict(f"pinned: {machine['pinned_reason'] or 'pinned'}; unpin first")
+    if pinning.is_live_trading(conn, machine_id):
+        # The loop pins it within one pass; never wait for that to protect a live trader.
+        raise Conflict("pinned: live trading right now; it will show as pinned on the next refresh")
     if machine["native_polymarket"] == "active":
         raise Conflict("native fleet-worker is running on this machine; stop it first")
     if workload is not None:
@@ -86,9 +91,11 @@ def assign(
         if refusals:
             raise Unplaceable([(r.code, r.message) for r in refusals])
     before = _snapshot(current)
+    # Any machine whose polymarket worker is known drains through the role handshake, even
+    # when the last heartbeat did not report the container as running (a missed report must
+    # not skip the trade release).
     leaving_live = (
-        current["workload"] == POLYMARKET and current["state"] in RUNNING_STATES
-        and machine["polymarket_worker_id"] is not None and not draining
+        current["workload"] == POLYMARKET and machine["polymarket_worker_id"] is not None and not draining
     )
     if draining or leaving_live:
         if leaving_live:

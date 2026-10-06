@@ -71,7 +71,7 @@ def test_enroll_command_writes_conf_and_status_runs(tmp_path, monkeypatch, host,
     monkeypatch.setenv("FLEET_AGENT_STATE_DIR", str(state))
     monkeypatch.setenv("FLEET_AGENT_DOCKER", str(tmp_path / "no-docker"))
     token = host.mint_enroll_token()
-    assert main(["enroll", "--host", host.url, "--token", token, "--name", "box9"]) == 0
+    assert main(["enroll", "--host", host.url, f"--token={token}", "--name", "box9"]) == 0
     conf = config.load_conf(str(state))
     assert conf["name"] == "box9" and conf["machine_id"] in host.machines
     assert stat.S_IMODE(os.stat(config.conf_path(str(state))).st_mode) == 0o600

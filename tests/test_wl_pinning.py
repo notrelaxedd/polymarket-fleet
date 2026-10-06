@@ -386,11 +386,9 @@ def test_pin_function_records_reason_actor_and_audit(pool, conn, workloads):
     assert len(audit) == 1 and audit[0]["actor"] == "owner@example.com"
 
 
-# ------------------------------------------------------------------ contract gaps (xfail: documented, not required)
+# ------------------------------------------------------------------ gaps found in review, now required
 
 
-@pytest.mark.xfail(reason="contract gap: assign checks the pinned flag only, which refresh_pins sets once per loop pass; "
-                          "a live trade job leased since the last pass is not protected yet", strict=False)
 def test_assign_also_checks_live_trading_directly_not_only_the_pin_flag(client, pool, conn, box):
     live_trader(conn, box)
     assert pinned(conn, box) is False, "refresh_pins has not run yet"
@@ -400,8 +398,6 @@ def test_assign_also_checks_live_trading_directly_not_only_the_pin_flag(client, 
     assert assignment_of(conn, box.id)["workload"] == "polymarket"
 
 
-@pytest.mark.xfail(reason="contract gap: disabling a machine blanks its heartbeat run block, which stops the container "
-                          "(and a live trader with it); the pin does not cover /enabled", strict=False)
 def test_a_machine_that_is_trading_live_cannot_be_disabled(client, pool, conn, box):
     live_trader(conn, box)
     refresh(pool)
@@ -730,7 +726,7 @@ def test_entering_polymarket_does_not_drain(pool, conn, workloads):
     assert (a["workload"], a["epoch"]) == ("polymarket", 3)
 
 
-def test_a_draining_machine_gets_no_run_block_in_its_heartbeat(client, pool, conn, box):
+def test_a_draining_machine_keeps_its_polymarket_container_until_the_drain_ends(client, pool, conn, box):
     setup = live_trader(conn, box, mode="paper")
     running = {"workload": "polymarket", "epoch": 3, "state": "running", "container_id": "abc123", "exit_code": None,
                "restarts": 0, "cpu_pct": 1.0, "mem_mb": 300, "error": None}
@@ -742,17 +738,19 @@ def test_a_draining_machine_gets_no_run_block_in_its_heartbeat(client, pool, con
     call(pool, assign, box.id, "hello", "owner", None)
     r = client.post(f"/api/v1/machines/{box.id}/heartbeat", json=body, headers=box.headers)
     assert r.status_code == 200, r.text
-    assert r.json()["run"] is None, "while draining the container must stop"
+    assert r.json()["run"] is not None and r.json()["workload"] == "polymarket", \
+        "the container stays up until the worker finished the trade release handshake"
     assert r.json()["epoch"] == 3
     assert assignment_of(conn, box.id)["state"] == "draining", "a heartbeat does not end a drain"
     assert setup.worker.id
 
 
-def test_desired_run_is_none_while_draining_and_for_a_disabled_machine(pool, conn, box):
+def test_desired_run_survives_a_drain_and_is_none_for_a_disabled_machine(pool, conn, box):
     live_trader(conn, box, mode="paper")
     row = machine_row(conn, box.id)
     assert call(pool, desired_run, row, assignment_of(conn, box.id)) is not None
     call(pool, assign, box.id, "hello", "owner", None)
-    assert call(pool, desired_run, machine_row(conn, box.id), assignment_of(conn, box.id)) is None
+    assert assignment_of(conn, box.id)["state"] == "draining"
+    assert call(pool, desired_run, machine_row(conn, box.id), assignment_of(conn, box.id)) is not None
     other = insert_machine(conn, "disabled-box", workload="hello", epoch=2, state="running", enabled=False)
     assert call(pool, desired_run, machine_row(conn, other.id), assignment_of(conn, other.id)) is None

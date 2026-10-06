@@ -208,7 +208,7 @@ AGENT_ENV=(env FLEET_AGENT_STATE_DIR="$TMP/agent/state" FLEET_AGENT_DATA_DIR="$T
   FLEET_AGENT_SYSTEMCTL="$TMP/systemctl" PYTHONPATH="$ROOT" PYTHONDONTWRITEBYTECODE=1)
 mkdir -p "$TMP/agent/state" "$TMP/agent/data" "$TMP/agent/run"
 if "${AGENT_ENV[@]}" FLEET_ENROLL_TOKEN="$TOKEN" "$AGENT_PYTHON" -m fleetagent enroll --host "$BASE" --name demo-box >"$TMP/enroll.log" 2>&1 \
-  || "${AGENT_ENV[@]}" "$AGENT_PYTHON" -m fleetagent enroll --host "$BASE" --token "$TOKEN" --name demo-box >>"$TMP/enroll.log" 2>&1; then
+  || "${AGENT_ENV[@]}" "$AGENT_PYTHON" -m fleetagent enroll --host "$BASE" --token="$TOKEN" --name demo-box >>"$TMP/enroll.log" 2>&1; then
   ok "fleetagent enrolled"
 else cat "$TMP/enroll.log"; bad "fleetagent enroll"; stop_here "enroll failed"; fi
 # Like systemd's Restart=always with PYTHONPATH=<state>/app/current: the first start runs

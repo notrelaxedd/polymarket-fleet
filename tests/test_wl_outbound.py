@@ -310,8 +310,6 @@ def test_a_missing_sender_never_marks_a_row_sent(secret_world: SecretWorld, pool
     assert status(w.conn, email_row["id"]) != "sent"
 
 
-@pytest.mark.xfail(reason="contract gap: nothing says sender errors are scrubbed of host-only secrets before they are stored "
-                          "and shown on /outbound; smtplib errors can echo credentials", strict=False)
 def test_a_sender_error_that_echoes_the_credentials_is_not_stored_verbatim(secret_world: SecretWorld, pool):
     w = secret_world
     row = insert_outbound(w.conn, "alpha", "email", payload=mail(), status="approved")

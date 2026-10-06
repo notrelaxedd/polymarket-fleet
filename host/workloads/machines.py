@@ -39,8 +39,12 @@ def new_machine_id() -> str:
 
 
 def create_enroll_token(conn: psycopg.Connection, ttl_seconds: int = ENROLL_TTL_SECONDS) -> dict[str, Any]:
-    """Mint a single-use machine enroll token: {"token", "expires_at"}."""
+    """Mint a single-use machine enroll token: {"token", "expires_at"}.
+
+    Never starts with "-": the installer and argparse would read such a token as an option."""
     token = mint_token()
+    while token.startswith("-"):
+        token = mint_token()
     expires_at = datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
     conn.execute(
         "INSERT INTO machine_enroll_tokens (token_hash, expires_at) VALUES (%s, %s)", (hash_token(token), expires_at)
@@ -255,6 +259,10 @@ def _store_container(conn: psycopg.Connection, a: dict[str, Any], c: dict[str, A
 def _store_logs(conn: psycopg.Connection, machine_id: str, workload: str | None, logs: Any) -> None:
     rows = clip_logs(logs)
     if rows:
+        # Defense in depth: the agent already redacts, the host scrubs again before storing.
+        values = wl_secrets.all_secret_values(conn, workload) if workload else []
+        if values:
+            rows = [{**r, "line": wl_secrets.scrub(r["line"], values)[:2048]} for r in rows]
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO machine_logs (machine_id, workload, ts, stream, line) VALUES (%s, %s, COALESCE(%s, now()), %s, %s)",

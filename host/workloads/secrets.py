@@ -170,3 +170,29 @@ def secrets_version(conn: psycopg.Connection, workload: str) -> str:
     for r in rows:
         digest.update(f"{r['name']}={r['updated_at'].isoformat()}\n".encode())
     return digest.hexdigest()[:16]
+
+
+def all_secret_values(conn: psycopg.Connection, workload: str) -> list[str]:
+    """Every stored secret value of a workload (both scopes), for scrubbing text the host
+    stores; empty when the key is missing or a value cannot be decrypted (best effort)."""
+    try:
+        box = secret_box()
+    except SecretsUnavailable:
+        return []
+    if box is None:
+        return []
+    rows = conn.execute("SELECT name, nonce, ciphertext FROM workload_secrets WHERE workload = %s", (workload,)).fetchall()
+    values: list[str] = []
+    for r in rows:
+        try:
+            values.append(_decrypt(box, workload, r))
+        except SecretsUnavailable:
+            continue
+    return [v for v in values if len(v) >= 4]
+
+
+def scrub(text: str, values: list[str]) -> str:
+    """Replace every value in text with [redacted], longest first."""
+    for v in sorted(values, key=len, reverse=True):
+        text = text.replace(v, "[redacted]")
+    return text
