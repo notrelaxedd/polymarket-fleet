@@ -165,7 +165,7 @@ def test_run_block_is_null_when_unpublished_disabled_or_unassigned(client, conn)
     assert reply["run"] is None and reply["workload"] == "hello", "machine disabled"
     client.post(f"/api/machines/{mid}/enabled", json={"enabled": True})
     conn.execute("UPDATE workload_assignments SET state = 'draining' WHERE machine_id = %s", (mid,))
-    assert beat(client, mid, token).json()["run"] is None, "draining"
+    assert beat(client, mid, token).json()["run"] is not None, "a draining container keeps running"
     conn.execute("UPDATE workload_assignments SET state = 'pending' WHERE machine_id = %s", (mid,))
     assign(client, mid, None)
     reply = beat(client, mid, token).json()

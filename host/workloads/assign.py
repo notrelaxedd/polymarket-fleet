@@ -110,9 +110,13 @@ def desired_run(
     conn: psycopg.Connection, machine: dict[str, Any], assignment: dict[str, Any], public_url: str | None = None
 ) -> dict[str, Any] | None:
     """The "run" block of the heartbeat reply (section 5.1), or None when nothing should run:
-    nothing assigned, draining, machine disabled, or the image is not published."""
+    nothing assigned, machine disabled, or the image is not published.
+
+    While a machine drains away from polymarket the block keeps describing the running
+    container (same workload, same epoch), so the supervisor leaves it up until the worker
+    has finished the trade release handshake; finish_drains then moves the epoch."""
     name = assignment.get("workload")
-    if name is None or assignment["state"] == "draining" or not machine["enabled"]:
+    if name is None or not machine["enabled"]:
         return None
     row = get_workload(conn, name)
     ref = image_ref(row)

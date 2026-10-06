@@ -12,7 +12,8 @@ from host.workloads import assign, secrets as wl_secrets, tokens
 def start(conn: psycopg.Connection, machine: dict[str, Any], epoch: int) -> dict[str, Any]:
     """Mint a new run token (the old one stops working) and return it with the container
     secrets: {"run_token", "secrets"}. 409 when `epoch` is not current, nothing is
-    assigned, the machine is disabled or draining, or the image is not published.
+    assigned, the machine is disabled, or the image is not published (a draining polymarket
+    container may still be restarted).
 
     The caller must send `Cache-Control: no-store` and must never log the result.
     """
@@ -21,7 +22,7 @@ def start(conn: psycopg.Connection, machine: dict[str, Any], epoch: int) -> dict
         raise Conflict("epoch is not current or nothing is assigned")
     current = conn.execute("SELECT * FROM machines WHERE id = %s", (machine["id"],)).fetchone()
     if assign.desired_run(conn, current, row) is None:
-        raise Conflict("nothing should run on this machine now (disabled, draining or image not published)")
+        raise Conflict("nothing should run on this machine now (disabled or image not published)")
     values = wl_secrets.secrets_for_machine(conn, machine["id"], epoch)
     token = tokens.mint_run_token(conn, machine["id"], epoch)
     conn.execute(

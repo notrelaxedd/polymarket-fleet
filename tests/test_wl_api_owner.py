@@ -245,7 +245,10 @@ def test_leaving_polymarket_drains_the_linked_worker_first(client, conn, make_wo
     assert (r.json()["draining_to"], r.json()["draining_to_set"]) == (None, True)
     worker = conn.execute("SELECT desired_role, role_epoch FROM workers WHERE id = %s", (w.id,)).fetchone()
     assert worker["desired_role"] == "idle" and worker["role_epoch"] == row["role_epoch"] + 1
-    assert beat(client, mid, token, container=container("polymarket", epoch)).json()["run"] is None, "no run while draining"
+    reply = beat(client, mid, token, container=container("polymarket", epoch)).json()
+    assert (reply["workload"], reply["epoch"]) == ("polymarket", epoch), "the container stays up while draining"
+    assert reply["run"] is not None and reply["run"]["env"]["FLEET_EPOCH"] == str(epoch)
+    assert client.post(f"/api/machines/{mid}/enabled", json={"enabled": False}).status_code == 409
     assert assign_mod.finish_drains(conn) == 0, "worker has not acked idle yet"
     assert post_assign(client, mid, "polymarket").status_code == 409, "cannot cancel a drain"
     conn.execute("UPDATE workers SET reported_role = 'idle', acked_epoch = role_epoch, last_heartbeat_at = now() WHERE id = %s", (w.id,))

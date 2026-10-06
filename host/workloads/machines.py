@@ -9,7 +9,7 @@ from typing import Any
 import psycopg
 
 from host.auth import hash_token, mint_token
-from host.errors import BadRequest, NotFound, Unauthorized
+from host.errors import BadRequest, Conflict, NotFound, Unauthorized
 from host.events import add_audit
 from host.heartbeat import server_time
 from host.settings import get_int_setting
@@ -197,8 +197,17 @@ def set_disk_type(conn: psycopg.Connection, machine_id: str, disk_type: str | No
 
 
 def set_enabled(conn: psycopg.Connection, machine_id: str, enabled: bool, actor: str | None, ip: str | None) -> dict[str, Any]:
-    """Enable or disable a machine (disabled: its run block is null); audited."""
+    """Enable or disable a machine (disabled: its run block is null); audited.
+
+    Disabling stops the container at once, so it is refused (409) on a pinned machine and
+    while polymarket runs there: assign none first, which drains the worker's trades."""
     before = get_machine(conn, machine_id, for_update=True)
+    if not enabled and before["enabled"]:
+        current = conn.execute("SELECT workload FROM workload_assignments WHERE machine_id = %s", (machine_id,)).fetchone()
+        if before["pinned"]:
+            raise Conflict(f"pinned: {before['pinned_reason'] or 'pinned'}; unpin first")
+        if current is not None and current["workload"] == "polymarket":
+            raise Conflict("polymarket runs on this machine; assign none first so its trades drain")
     row = conn.execute("UPDATE machines SET enabled = %s WHERE id = %s RETURNING *", (bool(enabled), machine_id)).fetchone()
     add_audit(conn, "machine_enabled", machine_id, actor, {"enabled": before["enabled"]}, {"enabled": row["enabled"]}, ip)
     return row
