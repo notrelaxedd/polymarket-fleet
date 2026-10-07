@@ -77,6 +77,25 @@ journalctl -u fleet-worker -f
 
 Re-running the installer upgrades the worker and keeps its identity. To keep the token out of the sudo log and the process list, pass it through the environment instead: `curl -fsSL https://<host>/install.sh | sudo FLEET_ENROLL_TOKEN=<token> bash -s -- https://<host>` (or `--token-file PATH`).
 
+## Automatic updates from GitHub (Debian host)
+
+Workers always update themselves from the host. To have the host itself follow `main` on GitHub, install the update timer once on the host, as root, from the checkout:
+
+```bash
+cd /root/polymarket-fleet
+bash tools/host/install_autoupdate.sh
+```
+
+Every 5 minutes it fetches `main`, fast-forwards the checkout and runs `docker compose up -d --build`, so only the services whose image changed restart. The exchange is held back while any assigned game (paper or live) is in progress or kicks off within the hour, and follows on the first pass after that. If `/healthz` does not come back after an update, the host goes back to the last good commit and skips the bad one until a newer commit is pushed.
+
+- Logs: `journalctl -u fleet-autoupdate -n 50`
+- Run a pass now: `systemctl start fleet-autoupdate`
+- Restart the exchange now even though games are live: `bash tools/host/autoupdate.sh --force-exchange`
+- Pause: `touch /var/lib/fleet-autoupdate/hold`; resume: `rm /var/lib/fleet-autoupdate/hold`
+- Remove: `bash tools/host/install_autoupdate.sh --remove`
+
+Do not edit tracked files on the host: the update only fast-forwards and stops (with a message in the log) when the checkout has local changes. `.env`, `exchange.env` and `secrets.env` are not tracked and are never touched.
+
 ## How to test step 1
 
 Run these commands on the host with `docker compose exec host` in front of each `python -m host.cli ...` (or set `FLEET_DEV=1` and run them from a venv).
