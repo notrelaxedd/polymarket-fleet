@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Unpin machine{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{# The typed confirmation: the exact phrase unpins the machine. A real form, so it works
+   without JavaScript; the host refuses (409) while the machine is trading live. #}
+{% block content %}
+<h1>Unpin {{ m.name }}?</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("unpin", "A pinned machine keeps its workload while it trades or may trade real money. Unpinning lets the workload be changed again. The host refuses while the machine holds a live order or a live trade job.") }}
+<div class="stats" data-view="unpin">
+  {{ ui.stat("workload", m.workload or "none", "Runs now") }}
+  {{ ui.stat("pin", m.pinned_word if m.pinned else "not pinned", "Pin reason") }}
+</div>
+<section class="card confirm" data-card="unpin">
+  {% if not m.pinned %}
+  <p>{{ m.name }} is not pinned. <a href="/machines">Back to Machines</a>.</p>
+  {% else %}
+  {% if error %}<p class="error inline-error" role="alert" data-error>{{ error }}</p>{% endif %}
+  <p>Type <code class="phrase" data-phrase>{{ phrase }}</code> to confirm.</p>
+  <form method="post" action="/machines/{{ m.id }}/unpin" data-form="unpin" class="live-form">
+    <label>Confirmation
+      <input type="text" name="confirm" value="{{ typed }}" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+    </label>
+    <button type="submit" class="btn danger big" data-action="unpin">Unpin</button>
+    <a class="btn big" href="/machines">Cancel</a>
+  </form>
+  {% endif %}
+</section>
+{% endblock %}

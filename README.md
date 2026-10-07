@@ -376,6 +376,97 @@ The UI overhaul changes only the pages (`docs/UI.md`, `docs/DASHBOARD.md`); ever
 5. With JavaScript off everything still works: the sections and "..." menus open on tap, every action is a form, and Jobs shows all five New job forms under their headings.
 6. Developers: `tests/hw/screenshots.py` captures every page at 390 and 1280 px in light and dark and checks the layout rules; `tests/hw/test_row_audit.py` checks Models and Trading stay under six phone screens with 20 rows each.
 
+## Workloads
+
+Machines can run more than the Polymarket worker. A workload is a folder under `workloads/` (a manifest, a Dockerfile, code); you publish its image to a registry on the host and assign it to a machine, and a small agent on the machine (`fleetagent/`, separate from the worker, standard library only) pulls the image by digest and runs the container. Everything about the contract is in `docs/workloads-design.md`; how to write a workload is in `workloads/README.md` and `workloads/_template/`. Polymarket's own orders keep their existing automatic approval, kill switch and live switch; these steps change none of that.
+
+### One-time setup on the host
+
+1. Pull the new code and start the stack. This adds a `registry` service (`registry:2`, published on `127.0.0.1:5000` only, data in the volume `fleet-registry`). Rebuild only `host` and start `registry`: the `exchange` code is unchanged, and rebuilding it would restart the exchange (do that later, never while games are live):
+
+```powershell
+docker compose up -d --build host registry
+```
+
+2. Put the registry on the tailnet, in an elevated PowerShell, so machines can pull from it:
+
+```powershell
+tailscale serve --bg --https=5000 http://127.0.0.1:5000
+tailscale funnel status
+```
+
+   The second command must still show nothing enabled.
+3. Add the registry address to `.env` (same machine and tailnet names as `FLEET_PUBLIC_URL`) and restart the host:
+
+```
+FLEET_REGISTRY=<machine>.<tailnet>.ts.net:5000
+```
+
+4. Create `secrets.env` next to `.env`. It holds the key that encrypts workload secrets in Postgres, is read only by the `host` service and is kept out of git and out of the image like every `*.env` file. Back it up: without the key the stored secrets cannot be read.
+
+```powershell
+python -c "import base64,os;print('FLEET_SECRETS_KEY=' + base64.b64encode(os.urandom(32)).decode())" > secrets.env
+docker compose up -d host
+```
+
+### Publish a workload and use it
+
+5. Sync the manifests (rebuild `host` first when a manifest changed, because the image carries `workloads/`), then publish the image. `publish.sh` is a bash script: run it in Git Bash or WSL on the host.
+
+```powershell
+docker compose exec host python -m host.cli workloads-sync
+bash tools/workloads/publish.sh hello
+```
+
+   Publishing builds the image on the host, pushes it to `localhost:5000`, and records its digest and size. The Workloads page (`/workloads`) now shows `hello` as published.
+6. Set the greeting secret (the value is read from standard input and is never shown again), or use the form on `/workloads/hello`:
+
+```powershell
+echo Ahoy | docker compose exec -T host python -m host.cli secret-set hello HELLO_GREETING
+```
+
+7. Install the agent on a machine. Mint a single-use token (valid 1 hour) and run the installer as a user with sudo; it installs `docker.io` with apt when Docker is missing, creates the `fleet-agent` user (a member of the `docker` group, which is root-equivalent on that machine), enrolls and starts the `fleet-agent` service. It never touches `fleet-worker.service` or `/var/lib/fleet`.
+
+```powershell
+docker compose exec host python -m host.cli machine-enroll-token
+```
+
+```bash
+curl -fsSL https://<host>/install-agent.sh | sudo bash -s -- https://<host> <token> --name <machine name>
+systemctl status fleet-agent
+```
+
+8. Open `/machines`. The machine appears with its disk type, RAM and Docker state. Pick `hello` in its workload dropdown (or `docker compose exec host python -m host.cli machine-assign <machine> hello`; plain `assign` is the Polymarket game command). Workloads that do not fit are greyed with the reason, for example a write-heavy one on an SD card. Within a few heartbeats the container is running.
+9. Send a job and read the result on `/workloads/hello`:
+
+```powershell
+docker compose exec host python -m host.cli wl-send-job hello hello --params '{"name": "Ada", "steps": 3, "notify": true}'
+```
+
+   The result greeting uses your secret. Because the job asked to `notify`, it also queued a log action: open `/outbound` (the Approvals tab under Fleet) and it waits there as pending. Nothing is sent until you press Approve; after that the host marks it sent.
+10. Assign `none` to the machine. The container stops and its scratch folder and secret files are wiped; the agent's hourly cleanup removes the image and prunes the build cache.
+
+To try all of this on one computer without touching a real machine, run `tools/workloads/local_demo.sh` (needs Docker, the local images `registry:2` and `python:3.13-slim`, jq, curl and a Postgres superuser URL in `FLEET_TEST_DATABASE_URL`). It starts a throwaway registry, database, host and agent, runs the hello job, checks the secret and log redaction, the approval queue, the cleanup and the write-heavy refusal, prints PASS or FAIL per step and removes everything. Note that the agent's cleanup runs `docker image prune` and `docker builder prune -af` on the local Docker daemon.
+
+### Rolling out to one non-trading machine first
+
+Do this before moving anything that trades. The host pins any machine whose worker holds a live trade or open live order, and refuses to assign a workload to a pinned machine; still, pick the machine yourself.
+
+1. On `/fleet` choose a worker that is idle and has no live assignment. Set it to idle and disable it, then stop the native worker: `sudo systemctl stop fleet-worker`. (Assignment is refused with a 409 while the native worker is active.)
+2. Install the agent as in step 7. On `/machines` check the machine is online, has no active native worker, shows a plausible disk type (set it by hand under Details if it was detected wrongly; an SD card must read `flash`) and that Docker is reported working.
+3. Assign `hello`, send the job from step 9, approve the log action, then assign `none`. On the machine confirm the cleanup:
+
+```bash
+docker ps -a
+docker images
+ls -A /var/lib/fleet-workloads/hello/scratch
+```
+
+   No `fleet.workload` container, no `fleet/hello` image and an empty scratch folder are what you want to see.
+4. Reboot the machine once with `hello` assigned. The agent starts at boot, adopts or restarts the container and the machine returns to `running` without you touching it.
+5. Re-enable the native worker: `sudo systemctl start fleet-worker`, then enable it on `/fleet`. Check `systemctl status fleet-worker`; its identity and code version are unchanged.
+6. Only then consider moving Polymarket itself into a container, one non-trading machine at a time, with the steps and the paper parity check in `docs/workloads-design.md` section 7 (`tools/workloads/paper_parity.py`). A machine that trades live stays native until you decide otherwise.
+
 ## Data
 
 Game schedules, scores and closing lines come from [nflverse](https://github.com/nflverse/nflverse-data) (`games.csv`), licensed CC BY 4.0. Attribution: "Data: nflverse (https://nflverse.com), CC BY 4.0." It is also shown on the Models page. From step 6B the host also loads two more nflverse-data files per season: the weekly injury reports (`injuries_{season}.csv`, for the players listed Out) and play-by-play (`play_by_play_{season}.csv.gz`, folded into per team-game EPA per play, pass rate and success rate). Both download URLs are editable templates in Settings. From step 6C play-by-play also becomes one row per play (`pbp_rows`), the training data of the in-game model, with nflverse's `vegas_wp` as its baseline. Prices for snapshot replays are the host's own recordings from the market source, never a third-party history. The live game state comes from ESPN's unofficial summary endpoint (the scoreboard as a fallback and for finals), at most one request per second by default and backing off on 429 or 403; broadcasts are never captured, and NFL.com's live feeds are not used.

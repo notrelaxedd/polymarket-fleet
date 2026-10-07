@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Machine token{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{# Shown once (the response is no-store): the token and the install one-liner. The Copy
+   buttons need the script (.js-only); without it the text is selectable as usual. #}
+{% block content %}
+<h1>New machine token</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("machine-token", "A single-use token that lets one box enroll as a machine. It is shown only on this page; mint another if you lose it.") }}
+<div class="stats" data-view="machine-token">
+  {{ ui.stat("valid", "1 hour", "Valid for") }}
+  {{ ui.stat("uses", "1", "Uses") }}
+</div>
+<section class="card" data-card="token">
+  <header class="card-head"><h2>Token</h2></header>
+  <p class="muted small">Expires <span data-expires>{{ expires_at | ts }}</span>.</p>
+  <p class="token-row"><code id="token" class="token">{{ token }}</code> <button type="button" class="btn small js-only" data-copy="token">Copy</button></p>
+</section>
+<section class="card" data-card="install">
+  <header class="card-head"><h2>Install on a Debian box</h2></header>
+  <p class="help">Run this on the box. It installs Docker when missing, then enrolls the machine.</p>
+  <pre id="cmd" class="cmd" data-command>{{ command }}</pre>
+  <p><button type="button" class="btn small js-only" data-copy="cmd">Copy</button></p>
+</section>
+<p class="help"><a href="/machines">&larr; Machines</a></p>
+{% endblock %}

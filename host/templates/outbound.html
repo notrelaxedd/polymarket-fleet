@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Approvals{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{% block content %}
+<h1>Approvals</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("outbound", "Anything a workload wants to send out (an email, a log entry) waits here. Nothing leaves the host until you approve it. Polymarket orders are not listed: they keep their own limits and the kill switch.") }}
+<div class="stats" data-view="outbound">
+  {{ ui.stat("pending", counts.pending, "Waiting for you") }}
+  {{ ui.stat("sent", counts.sent, "Sent") }}
+  {{ ui.stat("rejected", counts.rejected, "Rejected") }}
+  {{ ui.stat("failed", counts.failed, "Failed or expired") }}
+</div>
+{% if error %}<p class="error inline-error" role="alert" data-error>{{ error }}</p>{% endif %}
+{% if not pending %}
+<p class="empty" data-empty="pending">Nothing is waiting for approval.</p>
+{% endif %}
+<div class="cards" data-list="pending">
+{% for a in pending %}
+<article class="card outbound" id="a-{{ a.id }}" data-row="outbound" data-id="{{ a.id }}">
+  <div class="row">
+    <div class="row-main">
+      <span class="row-title" title="{{ a.summary }}">{{ a.summary }}</span>
+      <span class="row-flags">{{ ui.chip("warn", "pending", key="pending") }}</span>
+      <span class="row-meta">{{ a.workload }} &middot; {{ a.kind }}{% if a.machine_name %} &middot; {{ a.machine_name }}{% endif %} &middot; {{ a.age | ago }}</span>
+    </div>
+    <form method="post" action="/outbound/{{ a.id }}/approve" data-action="approve">
+      <button type="submit" class="btn primary">Approve</button>
+    </form>
+    {% call ui.menu() %}
+    <form method="post" action="/outbound/{{ a.id }}/reject" class="menu-form machine-form" data-action="reject">
+      <label>Reject (optional reason)
+        <input type="text" name="reason" maxlength="200" placeholder="Reason">
+      </label>
+      <button type="submit" class="btn small danger">Reject</button>
+    </form>
+    {% endcall %}
+  </div>
+  {% call ui.disclosure("outbound-" ~ a.id, "Full payload", summary="What exactly would be sent") %}
+  <pre class="payload" data-payload>{{ a.payload | pretty_json }}</pre>
+  {% endcall %}
+</article>
+{% endfor %}
+</div>
+{% call ui.disclosure("outbound-done", "Done", count=done | length, summary="The last 50 decided or sent actions") %}
+{% if done %}
+<ul class="rows" data-list="done">
+{% for a in done %}
+{% set meta %}{{ a.workload }} &middot; {{ (a.decided_age if a.decided_age is not none else a.age) | ago }}{% if a.decided_by %} &middot; {{ a.decided_by }}{% endif %}{% endset %}
+{% call ui.row("outbound-done", a.id, None, a.summary, meta=meta, meta2=a.error) %}
+  {{ ui.chip(a.tone, a.status, key=a.status) }}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="muted">Nothing decided yet.</p>
+{% endif %}
+{% endcall %}
+{% endblock %}

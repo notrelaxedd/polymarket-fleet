@@ -19,7 +19,11 @@ services:
   host:
     build: .
     restart: unless-stopped
-    env_file: .env
+    # secrets.env (optional, host only) holds FLEET_SECRETS_KEY for workload secrets.
+    env_file:
+      - .env
+      - path: secrets.env
+        required: false
     environment:
       DATABASE_URL: postgresql://fleet:fleet@db:5432/fleet
       FLEET_BIND: 0.0.0.0:8080
@@ -43,5 +47,16 @@ services:
       db:
         condition: service_healthy
 
+  registry:
+    image: registry:2
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: "true"
+    volumes:
+      - fleet-registry:/var/lib/registry
+
 volumes:
   fleet-db:
+  fleet-registry:

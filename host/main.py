@@ -10,6 +10,7 @@ from host.api.app import create_app
 from host.config import Config
 from host.data_refresh import DataRefreshThread
 from host.loop import LoopThread
+from host.workloads import loop as workloads_loop
 
 log = logging.getLogger("host.main")
 
@@ -27,13 +28,19 @@ def main() -> None:
     loop.start()
     data = DataRefreshThread(loop_pool)
     data.start()
+    # Workloads run in their own threads and pool, never inside the Polymarket loop above.
+    workloads_pool = db.make_pool(config.database_url, min_size=1, max_size=2)
+    workloads = workloads_loop.start_threads(workloads_pool, config.loop_seconds)
     log.info("serving on %s (public url %s, dev=%s)", config.bind, config.public_url, config.dev)
     try:
         uvicorn.run(app, host=config.bind_host, port=config.bind_port, log_level="info")
     finally:
         loop.stop()
         data.stop()
+        for thread in workloads:
+            thread.stop()
         loop_pool.close()
+        workloads_pool.close()
 
 
 if __name__ == "__main__":

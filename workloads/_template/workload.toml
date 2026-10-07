@@ -1,0 +1,67 @@
+# Manifest of one workload. Copy this folder to workloads/<name>/ and edit every value.
+# The host reads it with `workloads-sync`; the rules live in host/workloads/manifest.py.
+
+# Manifest format version. Always 1.
+schema = 1
+# The workload's name: lowercase letters, digits and dashes, 2 to 32 characters, starting
+# with a letter. It must equal the folder name (the template's own name is a placeholder).
+name = "my-workload"
+# One line for the dashboard, at most 300 characters.
+description = "What this workload does, in one sentence"
+# Registry repository the image is published under. No tag and no digest: the digest is
+# recorded when you run tools/workloads/publish.sh.
+image = "fleet/my-workload"
+# The container protocol. "workload-v1" for every new workload ("fleet-worker" is Polymarket's own).
+protocol = "workload-v1"
+
+[resources]
+# Placement refuses a machine with less total RAM than this (MB).
+min_ram_mb = 256
+# Placement refuses a machine whose free disk (on Docker's disk) is below this plus the image size (MB).
+min_disk_mb = 500
+# true: refused on flash storage (SD cards, USB sticks) and on disks of unknown type.
+# Set it when the workload writes a lot (databases, archives, downloads).
+write_heavy = false
+# Hard memory cap for the container in MB (docker --memory). Use this or memory_max_pct, not both;
+# with neither there is no cap.
+memory_max_mb = 256
+# Optional CPU limit, in CPUs (docker --cpus), for example 1.0 or 0.5.
+cpus = 1.0
+
+[runtime]
+# "jobs": the container claims jobs of the kinds below from the host queue.
+# "service": a long-running process that needs no job queue.
+mode = "jobs"
+# Job kinds this workload handles. Required when mode is "jobs": lowercase letters, digits and underscores.
+job_kinds = ["work"]
+# Container user id. It owns /state and the secret files, and the image should create it.
+uid = 10001
+# true: a persistent folder is mounted at /state and survives restarts and image updates.
+# false: the container has only /scratch and /tmp.
+state_volume = false
+# Size hint for /scratch in MB. /scratch is wiped at every container start and stop.
+scratch_mb = 512
+# Seconds Docker waits after SIGTERM before SIGKILL. Release or finish your job inside this time.
+stop_timeout_s = 15
+# Exit codes after which the supervisor does not restart the container (it reports failed instead).
+# Use 78 for "configuration error, do not retry". Every other exit is restarted after 3 seconds.
+no_restart_exit_codes = [78]
+# Process niceness, 0 to 19 (19 is the lowest priority).
+nice = 0
+
+[secrets]
+# Secrets delivered to the container as files /run/fleet/secrets/<NAME>. Names are UPPER_SNAKE_CASE.
+# You set the values on the host (dashboard or CLI); they never go in this repository.
+container = ["EXAMPLE_SECRET"]
+# Secrets the host keeps for its own senders (for example SMTP_URL for email). Never sent to a machine.
+# Only allowed together with outbound.actions.
+host_only = []
+
+[outbound]
+# Actions the workload may queue for the owner to approve: any of "log" and "email".
+# Empty means the workload cannot queue outbound actions at all.
+actions = []
+
+[trading]
+# Always false here. Only the Polymarket worker (protocol "fleet-worker") may trade.
+can_trade = false

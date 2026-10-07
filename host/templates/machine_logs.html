@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Machine logs{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{% block content %}
+<h1>Logs: {{ m.name }}</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("machine-logs", "The last 200 lines the machine agent shipped, newest last: the container's output and the agent's own messages. Secret values are redacted on the machine before they are sent.") }}
+<div class="stats" data-view="machine-logs">
+  {{ ui.stat("lines", lines | length, "Lines shown") }}
+  {{ ui.stat("workload", m.workload or "none", "Workload") }}
+  {{ ui.stat("state", m.state_word, "State") }}
+</div>
+<p class="help"><a href="/machines">&larr; Machines</a></p>
+{% if lines %}
+<section class="card" data-card="log">
+  <pre class="log" data-list="log">{% for l in lines %}{{ l.time }} {{ l.stream }} {{ l.line }}
+{% endfor %}</pre>
+</section>
+{% else %}
+<p class="empty">No log lines yet. They arrive with the machine's heartbeats.</p>
+{% endif %}
+{% endblock %}
