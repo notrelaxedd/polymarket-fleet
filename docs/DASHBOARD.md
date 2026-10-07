@@ -142,10 +142,9 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   and `GET /api/fleet/events` every 3 s, `POST /api/workers/{id}/role` and
   `POST /api/workers/{id}/reboot`. A chip in the corner reads "Live" while polls succeed
   and "Disconnected" once one fails, until a poll succeeds again.
-- Views: the same machines drawn several ways (the scenes in `fleet-ui/src/scene/`:
-  rack, core, city, liquid, solar, constellation), switched from the page; every view
-  shows each machine's role, online state, CPU, RAM and temperature, and a reboot in
-  progress.
+- Scene: the Data city (`fleet-ui/src/scene/city.ts`), one tower per worker on a grid
+  that fits any number of workers. A tower's height follows CPU load, its colour the
+  state (working, idle, running hot, offline), and its label shows the role, CPU and RAM.
 - Machine list: every worker by name with its state, role and load; picking one (in the
   list or in the scene) opens the inspector.
 - Inspector: the machine's name, host, role, online state and last heartbeat, CPU, RAM,

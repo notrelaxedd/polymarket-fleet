@@ -1,4 +1,4 @@
-// Fleet model for the 3D page: the node shape the views read every frame, the role
+// Fleet model for the 3D page: the node shape the scene reads every frame, the role
 // list (from GET /api/fleet), and the mapping from the API's worker rows to nodes.
 
 /** A role id as the host names it ("idle", "backtest", "model_search", "train", "trade"). */
@@ -22,7 +22,7 @@ export interface FleetNode {
   boot: Boot;
   /** Percent of rated life used, when the boot disk reports it. */
   wear: number | null;
-  /** Kept for the views' animation phase; always 0 for real data. */
+  /** Kept for the scene's animation phase; always 0 for real data. */
   bias: number;
   /** Last 48 CPU samples, one per poll, kept client side. */
   hist: number[];

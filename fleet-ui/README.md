@@ -21,17 +21,17 @@ bundled from `@fontsource`.
 
 Files:
 
-- `src/fleet.ts`: the node shape the views read, the role list, the API-to-node mapping.
+- `src/fleet.ts`: the node shape the scene reads, the role list, the API-to-node mapping.
 - `src/api.ts`: the four API calls.
 - `src/commands.ts`: the command bar's parser (`reboot 5`, `search on idle`, `stop search`,
   `box3 to trade`, `backtest box1 box2`).
 - `src/App.tsx`, `src/Inspector.tsx`, `src/ui.ts`: the HUD (header, machine list,
   inspector, console, feed). Owns polling and actions.
-- `src/Scene.tsx`: renderer, bloom, labels, controls; rebuilds the view when the roles,
-  the worker ids or the set of trade games change.
-- `src/scene/`: one module per view (`city`, `solar`, `constellation`, `core`, `liquid`,
-  `rack`, `globe`) plus `shared.ts` and `cityDistrict.ts`. Builders take
-  `(nodes, renderer, roles)` and lay out any number of workers.
+- `src/Scene.tsx`: renderer, bloom, labels, controls; rebuilds the city when the worker
+  ids change.
+- `src/scene/`: the Data city (`city.ts`: one tower per worker on a grid that fits any
+  number of workers; `cityDistrict.ts`: the surrounding streets, river and traffic) and
+  `shared.ts`.
 - `src/index.css`: all styling (design tokens at the top).
 
 ## Build

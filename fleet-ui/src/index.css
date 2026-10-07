@@ -31,7 +31,7 @@ button { cursor: pointer; }
 .conn { padding: 1px 7px; border: 1px solid var(--line-strong); color: var(--hot); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
 .conn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
 .conn.is-live { color: var(--ok); }
-.links { display: flex; gap: 4px 16px; flex-wrap: wrap; }
+.links { display: flex; gap: 4px 16px; flex-wrap: wrap; margin-left: auto; }
 .links a { display: inline-flex; align-items: center; min-height: 36px; color: var(--dim); font-size: 12px; letter-spacing: 0.04em; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
 .links a:hover { color: var(--fg); text-decoration-color: var(--fg); }
 .stats { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; }
@@ -39,10 +39,6 @@ button { cursor: pointer; }
 .stats dt { color: var(--dim); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
 .stats dd { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 18px; font-variant-numeric: tabular-nums; }
 .stats .warn { color: var(--hot); }
-.tabs { display: flex; gap: 2px; margin-left: auto; max-width: 100%; overflow-x: auto; }
-.tabs button { flex: none; min-height: 36px; padding: 0 12px; background: transparent; border: 1px solid transparent; border-bottom-color: var(--line); color: var(--dim); font-family: var(--font-display); font-weight: 600; font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
-.tabs button:hover { color: var(--fg); }
-.tabs button[aria-pressed='true'] { color: var(--ink); background: var(--ok); border-color: var(--ok); }
 
 /* stage */
 .stage { position: relative; min-height: 0; overflow: hidden; }
@@ -53,7 +49,6 @@ button { cursor: pointer; }
 .lbl { padding: 1px 5px; background: rgba(4, 7, 11, 0.6); color: var(--fg); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .lbl.is-sel { background: var(--fg); color: var(--ink); font-weight: 700; }
 .lbl-zone { background: transparent; color: var(--dim); font-family: var(--font-display); font-weight: 600; letter-spacing: 0.14em; font-size: 11px; }
-.lbl-core { background: transparent; font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.1em; }
 .lbl-head { display: grid; gap: 1px; padding: 5px 8px 6px; background: rgba(4, 9, 13, 0.88); border: 1px solid var(--line-strong); border-top: 2px solid var(--c); text-align: left; font-size: 10.5px; line-height: 1.3; }
 .lbl-head::after { content: ''; position: absolute; left: 50%; top: 100%; width: 1px; height: 12px; background: var(--line-strong); }
 .lbl-head b { font-family: var(--font-display); font-weight: 700; font-size: 12.5px; letter-spacing: 0.04em; color: var(--c); }
@@ -61,7 +56,6 @@ button { cursor: pointer; }
 .lbl-head.is-sel { border-color: var(--fg); }
 .lbl-head.compact:not(.is-sel) span { display: none; }
 .lbl-head.is-sel b, .lbl-head.is-sel span:nth-child(2) { color: var(--ink); }
-.lbl-left { transform-origin: left center; margin-left: 50%; }
 .hint { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); margin: 0; color: var(--dim); font-size: 11px; letter-spacing: 0.06em; white-space: nowrap; pointer-events: none; }
 
 .panel { background: var(--panel); border: 1px solid var(--line); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
@@ -131,7 +125,6 @@ button { cursor: pointer; }
 @media (max-width: 1020px) {
   html, body, #root { height: auto; }
   .app { height: auto; display: block; }
-  .tabs { margin-left: 0; }
   .blocker { position: static; margin: 16px; min-height: 240px; }
   .stage { overflow: visible; display: flex; flex-direction: column; gap: 12px; padding-block: 0 16px; }
   .scene { position: relative; inset: auto; height: 420px; }
@@ -142,7 +135,7 @@ button { cursor: pointer; }
   .roster { order: 3; }
   .feed .txt { white-space: normal; }
   .hint { top: 10px; }
-  .lbl:not(.is-sel):not(.lbl-zone):not(.lbl-core) { display: none !important; }
+  .lbl:not(.is-sel):not(.lbl-zone) { display: none !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {

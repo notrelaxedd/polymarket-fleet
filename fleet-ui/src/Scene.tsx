@@ -1,6 +1,6 @@
-// The 3D stage: one WebGL renderer, bloom, CSS labels and orbit controls, showing one
-// of the views in ./scene. Nodes are read through `nodesRef` every frame; the view is
-// rebuilt when the layout key (roles, worker ids in order, trade games) changes.
+// The 3D stage: one WebGL renderer, bloom, CSS labels and orbit controls showing the
+// Data city (./scene/city.ts). Nodes are read through `nodesRef` every frame; the city
+// is rebuilt when the layout key (the worker ids in order) changes.
 import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 import * as THREE from 'three';
@@ -10,32 +10,19 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { CSS2DRenderer, CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
-import type { FleetNode, Role } from './fleet';
-import { GLOW, RING, SPHERE, initTextures } from './scene/shared';
-import type { Builder, View, ViewId } from './scene/shared';
-import { solar } from './scene/solar';
-import { constellation } from './scene/constellation';
-import { core } from './scene/core';
-import { liquid } from './scene/liquid';
-import { rack } from './scene/rack';
+import type { FleetNode } from './fleet';
+import { GLOW, RING, initTextures } from './scene/shared';
+import type { View } from './scene/shared';
 import { city } from './scene/city';
-import { globe, marketsOf } from './scene/globe';
 
-export type { ViewId } from './scene/shared';
-
-const BUILDERS: Record<ViewId, Builder> = { solar, constellation, core, liquid, rack, city, globe };
-
-/** What a view's geometry depends on: the role ids, the worker ids in order, and the
- * set of trade games (the globe's pins). */
-export function layoutKeyOf(roles: Role[], nodes: FleetNode[]) {
-  return `${roles.map((r) => r.id).join(',')}|${nodes.map((n) => n.id).join(',')}|${marketsOf(nodes).join(',')}`;
-}
+/** What the city's geometry depends on: the worker ids in order (one tower each). */
+export const layoutKeyOf = (nodes: FleetNode[]) => nodes.map((n) => n.id).join(',');
 
 function disposeView(v: View) {
   v.group.traverse((o) => {
     if (o instanceof CSS2DObject) o.element.remove();
     const m = o as THREE.Mesh;
-    if (m.geometry && m.geometry !== SPHERE) m.geometry.dispose();
+    m.geometry?.dispose();
     const mats = Array.isArray(m.material) ? m.material : m.material ? [m.material] : [];
     mats.forEach((x) => {
       const tex = x as unknown as { map?: THREE.Texture | null; emissiveMap?: THREE.Texture | null };
@@ -46,17 +33,14 @@ function disposeView(v: View) {
 }
 
 interface Props {
-  view: ViewId;
   nodesRef: RefObject<FleetNode[]>;
-  rolesRef: RefObject<Role[]>;
   layoutKey: string;
   selected: string | null;
   onSelect: (id: string) => void;
 }
 
-export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, onSelect }: Props) {
+export default function Scene({ nodesRef, layoutKey, selected, onSelect }: Props) {
   const host = useRef<HTMLDivElement>(null);
-  const api = useRef<{ setView(v: ViewId): void } | null>(null);
   const selRef = useRef(selected);
   const pickRef = useRef(onSelect);
   const keyRef = useRef(layoutKey);
@@ -111,24 +95,20 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
     composer.addPass(new OutputPass());
 
     let current: View | null = null;
-    let currentId: ViewId | null = null;
     let builtKey = '';
     let touched = false;
-    /** Build `id`. A rebuild of the same view (layout change) keeps the camera once the
+    /** (Re)build the city. A rebuild after a layout change keeps the camera once the
      * owner has moved it, and reframes it otherwise. */
-    const build = (id: ViewId) => {
-      const same = id === currentId;
-      if (!same) touched = false;
-      currentId = id;
+    const build = () => {
+      const again = current !== null;
       if (current) { scene.remove(current.group); disposeView(current); }
-      renderer.localClippingEnabled = false;
       builtKey = keyRef.current;
-      current = BUILDERS[id](nodesRef.current ?? [], renderer, rolesRef.current ?? []);
+      current = city(nodesRef.current ?? [], renderer);
       scene.add(current.group);
       const target = new THREE.Vector3(...(current.target ?? [0, 0, 0]));
       const dist = target.distanceTo(new THREE.Vector3(...current.cam));
       controls.maxDistance = Math.max(95, dist * 1.6);
-      if (same && touched) {
+      if (again && touched) {
         // keep the owner's angle and zoom, follow the new centre
         camera.position.add(target.clone().sub(controls.target));
         controls.target.copy(target);
@@ -136,15 +116,13 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
         const narrow = window.innerWidth > 1020 ? 1.28 : el.clientWidth < 620 ? 1.2 : 1;
         camera.position.set(...current.cam).sub(target).multiplyScalar(narrow).add(target);
         controls.target.copy(target);
-        if (!same) controls.autoRotate = !calm && !!current.spin;
+        if (!again) controls.autoRotate = !calm && !!current.spin;
       }
       controls.autoRotateSpeed = current.spin ?? 0;
       controls.maxPolarAngle = current.maxPolar ?? Math.PI;
       controls.update();
     };
-    const setView = (id: ViewId) => { if (id !== currentId) build(id); };
-    api.current = { setView };
-    setView(view);
+    build();
 
     const resize = () => {
       const w = el.clientWidth, h = el.clientHeight;
@@ -190,7 +168,7 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
       const dt = Math.min(0.05, clock.getDelta()) * (calm ? 0.25 : 1);
       t += dt;
       stars.rotation.y += dt * 0.004;
-      if (currentId && keyRef.current !== builtKey) build(currentId);
+      if (keyRef.current !== builtKey) build();
       current?.update(t, dt, nodesRef.current ?? [], selRef.current);
       controls.update();
       composer.render();
@@ -211,12 +189,10 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
       composer.dispose();
       renderer.dispose();
       el.replaceChildren();
-      api.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { api.current?.setView(view); }, [view]);
 
   return <div ref={host} className="scene" role="img" aria-label="Live 3D view of the fleet. The machine list beside it has the same information." />;
 }

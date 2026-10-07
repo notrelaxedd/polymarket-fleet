@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import Scene, { layoutKeyOf } from './Scene';
-import type { ViewId } from './Scene';
 import { DEFAULT_ROLES, HOT_AT, jobName, jobShort, setJobs, toNodes } from './fleet';
 import type { FleetNode, Job, Role } from './fleet';
 import { ApiError, fetchEvents, fetchFleet, reboot, setRole } from './api';
@@ -9,16 +8,6 @@ import type { FleetEvent } from './api';
 import { parseCommand } from './commands';
 import Inspector from './Inspector';
 import { tone, useHeightVar } from './ui';
-
-const VIEWS: { id: ViewId; name: string }[] = [
-  { id: 'city', name: 'Data city' },
-  { id: 'solar', name: 'Solar system' },
-  { id: 'constellation', name: 'Constellation' },
-  { id: 'core', name: 'Core' },
-  { id: 'liquid', name: 'Liquid orbs' },
-  { id: 'rack', name: 'Rack twin' },
-  { id: 'globe', name: 'Market globe' },
-];
 
 const POLL_MS = 3000;
 const LIVE_MS = 10000;
@@ -30,10 +19,6 @@ interface Ev { key: string; ts: number; who: string; text: string; tone: string 
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const isAuth = (e: unknown) => e instanceof ApiError && (e.status === 401 || e.status === 403);
-const startView = (): ViewId => {
-  const h = window.location.hash.slice(1) as ViewId;
-  return VIEWS.some((v) => v.id === h) ? h : 'city';
-};
 
 export default function App() {
   const [nodes, setNodes] = useState<FleetNode[]>([]);
@@ -43,7 +28,6 @@ export default function App() {
   const [lastOk, setLastOk] = useState<number | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const [view, setView] = useState<ViewId>(startView);
   const [sel, setSel] = useState<string | null>(null);
   const [cmd, setCmd] = useState('');
   const [serverEvents, setServerEvents] = useState<Ev[]>([]);
@@ -53,8 +37,6 @@ export default function App() {
   const nodesRef = useRef(nodes);
   const consoleRef = useHeightVar('console-h');
   nodesRef.current = nodes;
-  const rolesRef = useRef(roles);
-  rolesRef.current = roles;
   const skew = useRef(0);
   const onlineAfter = useRef(30);
   const since = useRef<string | undefined>(undefined);
@@ -140,11 +122,6 @@ export default function App() {
     try { await work(); } finally { setPending((p) => p.filter((x) => !ids.includes(x))); afterAction(); }
   };
 
-  const pickView = (v: ViewId) => {
-    setView(v);
-    try { window.history.replaceState(null, '', '#' + v); } catch { /* the hash is a convenience */ }
-  };
-
   /** Set `role` on the targets. Moving into or out of trade asks first. */
   const assign = async (targets: FleetNode[], role: Job) => {
     if (!targets.length) return;
@@ -215,7 +192,7 @@ export default function App() {
   const node = nodes.find((n) => n.id === sel) ?? nodes[0] ?? null;
   const live = lastOk !== null && now - lastOk < LIVE_MS;
   const feed = [...serverEvents, ...localEvents].sort((a, b) => b.ts - a.ts).slice(0, SHOW_EVENTS);
-  const layoutKey = layoutKeyOf(roles, nodes);
+  const layoutKey = layoutKeyOf(nodes);
 
   return (
     <div className="app">
@@ -234,11 +211,6 @@ export default function App() {
           <a href="/fleet/list">List view</a>
           <a href="/">Dashboard</a>
         </nav>
-        {!signedOut && <nav className="tabs" aria-label="3D view">
-          {VIEWS.map((v) => (
-            <button key={v.id} type="button" aria-pressed={view === v.id} onClick={() => pickView(v.id)}>{v.name}</button>
-          ))}
-        </nav>}
       </header>
 
       {signedOut ? (
@@ -249,7 +221,7 @@ export default function App() {
         </main>
       ) : (
         <main className="stage">
-          <Scene view={view} nodesRef={nodesRef} rolesRef={rolesRef} layoutKey={layoutKey} selected={node?.id ?? null} onSelect={setSel} />
+          <Scene nodesRef={nodesRef} layoutKey={layoutKey} selected={node?.id ?? null} onSelect={setSel} />
           <p className="hint">Drag to rotate · scroll to zoom · click a machine</p>
 
           <section className="panel roster" aria-label="Machines">
