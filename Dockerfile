@@ -21,7 +21,9 @@ WORKDIR /app
 
 COPY pyproject.toml ./
 COPY fleet/ ./fleet/
+COPY fleetagent/ ./fleetagent/
 COPY host/ ./host/
+COPY workloads/ ./workloads/
 COPY deploy/ ./deploy/
 
 RUN pip install --no-cache-dir ".[host]"
@@ -31,7 +33,8 @@ COPY --from=ui /ui/dist ./host/fleet_ui/
 
 ENV FLEET_BIND=0.0.0.0:8080 \
     FLEET_DEPLOY_DIR=/app/deploy \
-    FLEET_UI_DIR=/app/host/fleet_ui
+    FLEET_UI_DIR=/app/host/fleet_ui \
+    FLEET_WORKLOADS_DIR=/app/workloads
 
 EXPOSE 8080
 

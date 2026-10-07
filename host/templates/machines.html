@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Machines{% endblock %}
+{% block page %}fleet{% endblock %}
+{% import "_ui.html" as ui %}
+{% block content %}
+<h1>Machines</h1>
+{% include "_fleet_subnav.html" %}
+{{ ui.intro("machines", "Every box running the machine agent: what it is, what it runs and whether it is up. Pick a workload to move a box; a workload that does not fit is greyed out with the reason.") }}
+<div data-view="machines" id="machines-grid">
+{% include "_machines.html" %}
+</div>
+<form method="post" action="/machine-enroll-token" class="form-actions" data-form="enroll-token">
+  <button type="submit" class="btn" data-action="enroll-token">New machine token</button>
+  <span class="help">Single use, valid for one hour. Shows the install line for a Debian box.</span>
+</form>
+{% endblock %}

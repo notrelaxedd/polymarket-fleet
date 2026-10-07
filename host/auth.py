@@ -160,6 +160,12 @@ def owner_from_worker_ip(conn: psycopg.Connection, config: Config, peer_ip: str 
             f"owner requests from a worker machine are refused ({peer_ip} is worker {row['id']});"
             " set FLEET_OWNER_ALLOW_WORKER_IPS=1 to allow it"
         )
+    machine = conn.execute("SELECT id FROM machines WHERE remote_ip = %s LIMIT 1", (peer_ip,)).fetchone()
+    if machine is not None:
+        raise Forbidden(
+            f"owner requests from a worker machine are refused ({peer_ip} is machine {machine['id']});"
+            " set FLEET_OWNER_ALLOW_WORKER_IPS=1 to allow it"
+        )
 
 
 def check_origin(config: Config, method: str, origin_header: str | None) -> None:

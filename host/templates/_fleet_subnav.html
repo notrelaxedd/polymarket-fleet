@@ -1,0 +1,17 @@
+{#- Fleet sub-nav: Workers | Machines | Workloads | Approvals (N pending). Included by
+    /fleet/list (the worker cards; /fleet is the 3D page) and the workloads pages; the current link comes from the request path, and the
+    pending count from the page context or, on /fleet/list, the `pending_approvals` global
+    (host.workloads.dashboard). The main nav's Fleet item stays current on all of them. #}
+{% set sub_path = path | default('') %}
+{% set pending_n = approvals_pending if approvals_pending is defined else (pending_approvals(request) if pending_approvals is defined and request is defined else none) %}
+{% set subs = [
+  ("workers", "/fleet/list", "Workers", sub_path == "/fleet/list"),
+  ("machines", "/machines", "Machines", sub_path.startswith("/machines") or sub_path == "/machine-enroll-token"),
+  ("workloads", "/workloads", "Workloads", sub_path.startswith("/workloads")),
+  ("approvals", "/outbound", "Approvals", sub_path.startswith("/outbound")),
+] %}
+<nav class="tabs subnav" aria-label="Fleet sections" data-subnav-list>
+{% for key, href, label, current in subs %}
+  <a href="{{ href }}" data-subnav="{{ key }}"{% if current %} aria-current="page"{% endif %}>{{ label }}{% if key == 'approvals' and pending_n %} <span class="count" data-count="{{ pending_n }}" title="{{ pending_n }} pending">{{ pending_n }}<span class="visually-hidden"> pending</span></span>{% endif %}</a>
+{% endfor %}
+</nav>

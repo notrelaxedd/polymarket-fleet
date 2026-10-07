@@ -17,6 +17,11 @@ from host.api import owner_fleet
 from host.bundle import build_bundle
 from host.config import Config
 from host.errors import QueueError
+from host.workloads import api_dl as wl_api_dl
+from host.workloads import api_machine as wl_api_machine
+from host.workloads import api_owner as wl_api_owner
+from host.workloads import api_run as wl_api_run
+from host.workloads import dashboard as wl_dashboard
 
 log = logging.getLogger(__name__)
 
@@ -166,6 +171,11 @@ def create_app(config: Config) -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(dashboard_forms.router)
     app.include_router(dashboard_models.router)
+    app.include_router(wl_api_machine.router)
+    app.include_router(wl_api_run.router)
+    app.include_router(wl_api_owner.router)
+    app.include_router(wl_api_dl.router)
+    app.include_router(wl_dashboard.router)
     # The stylesheet and script need no owner login; every other dashboard path does.
     app.mount("/static", StaticFiles(directory=str(web.STATIC_DIR)), name="static")
     app.add_middleware(BodySizeLimit)

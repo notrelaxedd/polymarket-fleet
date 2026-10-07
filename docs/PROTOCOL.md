@@ -1227,7 +1227,7 @@ is `validation_seasons`.
 ### Settings: faster heartbeats, a longer online window
 `heartbeat_seconds` defaults to 3 (was 5) and `online_after_seconds` to 30 (was 15), so
 the page sees changes within a few seconds and a slow beat does not flicker a machine
-offline. Migration `0010_fleet_ui.sql` moves the stored values only where they still
+offline. Migration `0011_fleet_ui.sql` moves the stored values only where they still
 equal the old defaults; a value the owner changed is left alone. The code fallbacks for a
 missing row are 3 and 30 as well. The cross-field rules (`lease_seconds >= 2 *
 heartbeat_seconds + 5`, `online_after_seconds > heartbeat_seconds`) are unchanged.

@@ -1,0 +1,35 @@
+# The Polymarket worker agent (fleet.worker) as a workload (docs/workloads-design.md
+# sections 2 and 7). The image is only a Python runtime plus bootstrap.py; the agent
+# code comes from the host's /dl, exactly as on a native worker.
+schema = 1
+name = "polymarket"
+description = "Polymarket fleet worker agent (python3 -m fleet.worker run) in a container: same code from /dl, same identity as a native worker"
+image = "fleet/polymarket"
+protocol = "fleet-worker"
+
+[resources]
+min_ram_mb = 3000
+min_disk_mb = 2048
+write_heavy = false
+memory_max_pct = 85            # systemd MemoryMax=85%
+
+[runtime]
+mode = "service"
+network = "host"               # same IP as a native worker
+uts_host = true                # same hostname as a native worker
+uid = 10001
+state_volume = true            # /state holds worker.conf, app/ and cache/ (was /var/lib/fleet)
+scratch_mb = 512
+stop_timeout_s = 15            # systemd TimeoutStopSec=15
+no_restart_exit_codes = [78]   # systemd RestartPreventExitStatus=78
+nice = 5                       # systemd Nice=5
+
+[secrets]
+container = ["FLEET_ENROLL_TOKEN"]
+host_only = []
+
+[outbound]
+actions = []
+
+[trading]
+can_trade = true

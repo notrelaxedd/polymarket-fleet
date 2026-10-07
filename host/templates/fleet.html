@@ -4,6 +4,7 @@
 {% import "_ui.html" as ui %}
 {% block content %}
 <h1>Fleet</h1>
+{% include "_fleet_subnav.html" %}
 <p class="small"><a href="/fleet" data-action="fleet-3d">3D view</a> &middot; the same machines in the 3D control page</p>
 {{ ui.intro("fleet", "Every worker box: whether it is up, the role it plays and the job it is running. Pick a role to move a box.") }}
 {# The stats and the cards are both inside #fleet-grid, so the 5 s refresh keeps the counts in step with the cards. #}

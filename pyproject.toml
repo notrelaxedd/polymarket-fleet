@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["fleet*", "host*"]
+include = ["fleet*", "fleetagent*", "host*"]
 
 [tool.setuptools.package-data]
 host = ["migrations/*.sql", "templates/*.html", "templates/**/*.html", "static/*"]
