@@ -93,7 +93,7 @@ Worker routes, enrollment, downloads and the step 1 owner routes are defined in 
 | POST | `/kill`, `/kill/reset`, `/live`, `/live/off` | one-tap kill; reset `confirm=RESUME`; live `confirm="ENABLE LIVE TRADING YYYY-MM-DD"` | owner, CLI |
 | POST | `/settings` | edit every limit, floor, threshold, tz | owner |
 
-**Owner auth**: the app binds `127.0.0.1`; the only way in is `tailscale serve`, which injects `Tailscale-User-Login`. The request must carry that header equal to `FLEET_OWNER_LOGIN`, else 403. There is no `tailscale whois` call. **CSRF**: a state-changing owner request that carries `Origin` must match `FLEET_ALLOWED_ORIGINS` (default `FLEET_PUBLIC_URL`), else 403; requests without `Origin` (CLI) pass. `FLEET_DEV=1` skips the header check for local tests only. Worker routes need the per-worker bearer token bound to the path id.
+**Owner auth**: the app binds `127.0.0.1`; the only way in is `tailscale serve`, which injects `Tailscale-User-Login`. The request must carry that header equal to `FLEET_OWNER_LOGIN` (or to one of the logins in its comma separated list), else 403. There is no `tailscale whois` call. **CSRF**: a state-changing owner request that carries `Origin` must match `FLEET_ALLOWED_ORIGINS` (default `FLEET_PUBLIC_URL`), else 403; requests without `Origin` (CLI) pass. `FLEET_DEV=1` skips the header check for local tests only. Worker routes need the per-worker bearer token bound to the path id.
 
 ## Job queue semantics
 

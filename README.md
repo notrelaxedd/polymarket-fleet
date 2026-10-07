@@ -27,6 +27,8 @@ FLEET_PUBLIC_URL=https://<machine>.<tailnet>.ts.net
 FLEET_OWNER_LOGIN=<your tailscale login email>
 ```
 
+   To give a second person the dashboard, list both logins separated by a comma (`FLEET_OWNER_LOGIN=you@gmail.com,partner@gmail.com`), invite that person to your tailnet in the Tailscale admin console (Users, Invite users) and restart the host (`docker compose up -d host`). Every owner has the same powers, including KILL, the limits and the live switch; the audit log records which login did what.
+
 5. Start the stack. This now starts three services, `db`, `host` and `exchange`:
 
 ```powershell

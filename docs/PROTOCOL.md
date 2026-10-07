@@ -34,7 +34,8 @@ agent, stdlib only). Both sides are built against it. Change it deliberately.
 - Enrollment: `POST /api/v1/workers/register` with an `enroll_token` (minted by the owner,
   single use, default 1 hour expiry). Hashes only in `enroll_tokens`.
 - Owner routes (`/api/...` without `/v1/`, and the dashboard pages): the request must carry
-  `Tailscale-User-Login: <login>` equal to env `FLEET_OWNER_LOGIN`. That header is injected
+  `Tailscale-User-Login: <login>` equal to env `FLEET_OWNER_LOGIN` (one login, or a
+  comma separated list of owners, compared case-insensitively). That header is injected
   by `tailscale serve`, which is the only thing allowed to reach the host port (the app
   binds `127.0.0.1`). With env `FLEET_DEV=1` the header is not required (local testing).
   (changed: a compromised job on a worker must not reach owner routes) The request's peer
