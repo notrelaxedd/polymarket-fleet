@@ -1,6 +1,7 @@
 """Machines: enrollment, token rotation, heartbeat, and the link to a Polymarket worker."""
 from __future__ import annotations
 
+import logging
 import re
 import secrets as _secrets
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ _SPEC_COLUMNS = (
     "cpu_pct", "ram_used_mb", "ram_total_mb", "cpu_count", "arch", "disk_size_mb", "disk_free_mb",
     "docker_root", "docker_ok", "docker_version", "disk_type_detected",
 )
+log = logging.getLogger(__name__)
 SECRET_COLUMNS = ("token_hash", "prev_token_hash")
 
 
@@ -275,8 +277,11 @@ def _store_container(conn: psycopg.Connection, a: dict[str, Any], c: dict[str, A
     ).fetchone()
 
 
-def _store_logs(conn: psycopg.Connection, machine_id: str, workload: str | None, logs: Any) -> None:
-    rows = clip_logs(logs)
+def _store_logs(conn: psycopg.Connection, machine_id: str, workload: str | None, logs: Any) -> int:
+    """Store the shipped log lines (scrubbed); returns how many were dropped over the limits."""
+    rows, dropped = clip_logs(logs)
+    if dropped:
+        log.warning("machine %s: %d log lines over the per-heartbeat limit were dropped", machine_id, dropped)
     if rows:
         # Defense in depth: the agent already redacts, the host scrubs again before storing.
         values = wl_secrets.all_secret_values(conn, workload) if workload else []
@@ -287,16 +292,18 @@ def _store_logs(conn: psycopg.Connection, machine_id: str, workload: str | None,
                 "INSERT INTO machine_logs (machine_id, workload, ts, stream, line) VALUES (%s, %s, COALESCE(%s, now()), %s, %s)",
                 [(machine_id, workload, r["ts"], r["stream"], r["line"]) for r in rows],
             )
+    return dropped
 
 
 def _keep_images(conn: psycopg.Connection, a: dict[str, Any]) -> list[str]:
+    """The image this machine is assigned (its snapshot) and the one it runs now; never a
+    newer published image that has not been applied to it yet."""
     keep: list[str] = []
     if not a["workload"]:
         return keep  # nothing assigned: nothing to keep on a small disk
-    if a["workload"]:
-        current = get_workload(conn, a["workload"])["image_digest"]
-        if current:
-            keep.append(current)
+    current = a.get("run_image_digest") or get_workload(conn, a["workload"])["image_digest"]
+    if current:
+        keep.append(current)
     if a["image_digest_running"] and a["image_digest_running"] not in keep:
         keep.append(a["image_digest_running"])
     return keep
@@ -327,7 +334,7 @@ def heartbeat(conn: psycopg.Connection, machine: dict[str, Any], body: dict[str,
         assignment = conn.execute("INSERT INTO workload_assignments (machine_id) VALUES (%s) RETURNING *", (machine["id"],)).fetchone()
     assignment = _store_container(conn, assignment, container_block(body.get("container")), body.get("acked_epoch"))
     container = body.get("container") if isinstance(body.get("container"), dict) else None
-    _store_logs(conn, machine["id"], (container or {}).get("workload") or assignment["workload"], body.get("logs"))
+    dropped = _store_logs(conn, machine["id"], (container or {}).get("workload") or assignment["workload"], body.get("logs"))
     current = conn.execute("SELECT * FROM machines WHERE id = %s", (machine["id"],)).fetchone()
     if current["polymarket_worker_id"] is None:
         link_polymarket_worker(conn, current)
@@ -339,4 +346,5 @@ def heartbeat(conn: psycopg.Connection, machine: dict[str, Any], body: dict[str,
         "keep_images": _keep_images(conn, assignment),
         "agent_version": agent_bundle.current_version(), "server_time": server_time(conn),
         "heartbeat_seconds": get_int_setting(conn, "heartbeat_seconds", 5),
+        "logs_dropped": dropped,
     }

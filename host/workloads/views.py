@@ -30,7 +30,8 @@ SELECT m.id, m.name, m.hostname, m.remote_ip, m.agent_version, m.docker_version,
        EXTRACT(EPOCH FROM (now() - m.last_heartbeat_at))::bigint AS age,
        a.workload AS a_workload, a.state AS a_state, a.epoch AS a_epoch, a.draining_to AS a_draining_to,
        a.draining_to_set AS a_draining_to_set, a.restarts AS a_restarts, a.last_error AS a_error,
-       a.cpu_pct AS a_cpu_pct, a.mem_mb AS a_mem_mb
+       a.cpu_pct AS a_cpu_pct, a.mem_mb AS a_mem_mb, a.run_manifest AS a_run_manifest,
+       a.run_image_digest AS a_run_image_digest
   FROM machines m
   LEFT JOIN workload_assignments a ON a.machine_id = m.id
   LEFT JOIN workers w ON w.id = m.polymarket_worker_id
@@ -116,6 +117,15 @@ def _workload_models(conn: psycopg.Connection) -> list[dict[str, Any]]:
     return rows
 
 
+def update_available(assignment: dict[str, Any], workload_row: dict[str, Any]) -> bool:
+    """The machine runs an older manifest or image than the synced one (host.workloads.updates)."""
+    try:
+        from host.workloads.updates import is_outdated
+    except ImportError:  # only before the host modules land
+        return False
+    return is_outdated(assignment, workload_row)
+
+
 def placement_options(machine: dict[str, Any], workloads: list[dict[str, Any]], selected: str | None) -> list[dict[str, Any]]:
     """The assign select: "none" plus each workload; a refused one is disabled with the
     reason in its label ("demo-site (needs 8192 MB RAM, machine has 3800 MB)"). The one
@@ -145,7 +155,11 @@ def _machine_card(row: dict[str, Any], threshold: int, workloads: list[dict[str,
     native = row["native_polymarket"] == "active"
     pinned_word = f"pinned: {short_text(row['pinned_reason'], 40)}" if row["pinned_reason"] else "pinned"
     free = row["disk_free_mb"]
+    current = next((w for w in workloads if w["name"] == workload), None)
+    update = bool(current) and row["a_state"] != "draining" and update_available(
+        {"workload": workload, "run_manifest": row["a_run_manifest"], "run_image_digest": row["a_run_image_digest"]}, current)
     return {
+        "update_available": update,
         **row, "dot": dot, "online": dot == "online", "disk_label": disk_label(row), "ram_label": ram_label(row),
         "disk_type": effective_disk_type(row), "disk_total_label": size_label(row["disk_size_mb"]), "state_tone": tone, "state_word": word, "workload": workload,
         "native_active": native, "pinned_word": pinned_word, "locked": row["pinned"] or native,
@@ -235,14 +249,17 @@ def workload_machines(conn: psycopg.Connection, name: str) -> list[dict[str, Any
     """Machines whose assignment is this workload, with the container state."""
     rows = conn.execute(
         """
-        SELECT m.id, m.name, m.enabled, a.state, a.epoch, a.restarts, a.last_error, a.cpu_pct, a.mem_mb,
-               a.image_digest_running, EXTRACT(EPOCH FROM (now() - a.started_at))::bigint AS up
+        SELECT m.id, m.name, m.enabled, m.pinned, a.workload, a.state, a.epoch, a.restarts, a.last_error, a.cpu_pct,
+               a.mem_mb, a.image_digest_running, a.run_manifest, a.run_image_digest,
+               EXTRACT(EPOCH FROM (now() - a.started_at))::bigint AS up
           FROM workload_assignments a JOIN machines m ON m.id = a.machine_id
          WHERE a.workload = %s ORDER BY m.name
         """, (name,),
     ).fetchall()
+    wl = conn.execute("SELECT name, manifest, image_digest FROM workloads WHERE name = %s", (name,)).fetchone()
     for r in rows:
         r["tone"], r["word"] = state_chip(name, r["state"])
+        r["update_available"] = bool(wl) and r["state"] != "draining" and update_available(r, wl)
     return rows
 
 

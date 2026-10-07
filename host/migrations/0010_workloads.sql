@@ -66,6 +66,8 @@ CREATE TABLE workload_assignments (
   draining_to          text REFERENCES workloads(name),
   draining_to_set      boolean NOT NULL DEFAULT false,
   run_token_hash       text,
+  run_manifest         jsonb,  -- the manifest this machine was assigned with (snapshot)
+  run_image_digest     text,   -- the image digest it was assigned with (snapshot)
   assigned_by          text,
   assigned_at          timestamptz NOT NULL DEFAULT now(),
   container_id         text,

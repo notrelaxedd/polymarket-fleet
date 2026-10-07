@@ -13,7 +13,7 @@ from host.api.serialize import jsonable
 from host.config import Config
 from host.events import add_audit
 from host.settings import get_int_setting
-from host.workloads import assign, config as wl_config, machines, pinning, registry
+from host.workloads import assign, config as wl_config, machines, pinning, registry, updates
 from host.workloads.api_owner_ops import router as ops_router
 from host.workloads.placement import check_placement, effective_disk_type
 
@@ -70,8 +70,11 @@ def machine_view(conn: psycopg.Connection, machine: dict[str, Any], assignment: 
         for w in workloads
     }
     a = {k: v for k, v in (assignment or {}).items() if k != "run_token_hash"}
+    by_name = {w["name"]: w for w in workloads}
+    current = by_name.get(a.get("workload")) if a else None
     return {**machines.public_machine(machine), "assignment": a, "effective_disk_type": effective_disk_type(machine),
-            "online": age is not None and age <= online_after, "placement": placement}
+            "online": age is not None and age <= online_after, "placement": placement,
+            "update_available": bool(current and updates.is_outdated(a, current))}
 
 
 @router.get("/workloads")
@@ -119,6 +122,22 @@ def post_assign(machine_id: str, body: AssignBody, request: Request, actor: str 
     """Assign a workload (or null) to a machine: 404, 409 (pinned, native) or 422 (placement codes in detail)."""
     row = assign.assign(conn, machine_id, body.workload, actor, remote_ip(request))
     return jsonable({k: v for k, v in row.items() if k != "run_token_hash"})
+
+
+@router.post("/machines/{machine_id}/update")
+def post_update(machine_id: str, request: Request, actor: str = Depends(require_owner),
+                conn: psycopg.Connection = DB) -> dict[str, Any]:
+    """Apply the workload's synced manifest and published image to this machine."""
+    row = updates.apply_update(conn, machine_id, actor, remote_ip(request))
+    return jsonable({k: v for k, v in row.items() if k != "run_token_hash"})
+
+
+@router.post("/workloads/{name}/rollout")
+def post_rollout(name: str, request: Request, actor: str = Depends(require_owner),
+                 conn: psycopg.Connection = DB) -> dict[str, Any]:
+    """apply_update on every machine of the workload that runs an older manifest or image."""
+    registry.get_workload(conn, name)
+    return updates.rollout(conn, name, actor, remote_ip(request))
 
 
 @router.post("/machines/{machine_id}/pin")

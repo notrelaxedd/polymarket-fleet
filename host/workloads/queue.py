@@ -2,6 +2,7 @@
 fenced by (lease_token, lease_machine_id, lease_epoch) instead of (lease_token, worker)."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import psycopg
@@ -11,6 +12,7 @@ from host.errors import BadRequest, Conflict, NotFound
 from host.events import add_audit
 from host.leases import RELEASE_REASONS, as_uuid
 from host.settings import get_int_setting
+from host.workloads import secrets as wl_secrets
 from host.workloads.registry import get_workload, manifest_of
 
 ACTIVE = ("leased", "cancel_requested")
@@ -24,6 +26,24 @@ def add_event(conn: psycopg.Connection, job_id: Any, event: str, machine_id: str
         "INSERT INTO workload_job_events (job_id, machine_id, event, detail) VALUES (%s, %s, %s, %s)",
         (job_id, machine_id, event, Jsonb(detail) if detail is not None else None),
     )
+
+
+def _scrub(conn: psycopg.Connection, workload: str, value: Any) -> Any:
+    """`value` (a JSON object or a string) with every stored secret value of the workload
+    replaced by [redacted]: job results, errors and checkpoints are shown on the dashboard."""
+    if value is None:
+        return None
+    values = wl_secrets.all_secret_values(conn, workload)
+    if not values:
+        return value
+    if isinstance(value, str):
+        return wl_secrets.scrub(value, values)
+    # Inside JSON a value may appear escaped (quotes, backslashes, unicode): scrub both forms.
+    forms = values + [json.dumps(v)[1:-1] for v in values]
+    try:
+        return json.loads(wl_secrets.scrub(json.dumps(value), forms))
+    except ValueError:
+        return {"redacted": True}
 
 
 def lease_seconds(conn: psycopg.Connection) -> int:
@@ -134,6 +154,7 @@ def renew(conn: psycopg.Connection, *, job_id: Any, lease_token: str, machine_id
           progress: float, checkpoint: dict[str, Any] | None) -> dict[str, Any]:
     """Extend the lease and store progress; {"status", "cancel"} (cancel = stop and release)."""
     job = _fenced(conn, job_id, lease_token, machine_id, epoch)
+    checkpoint = _scrub(conn, job["workload"], checkpoint)
     row = conn.execute(
         """
         UPDATE workload_jobs SET lease_expires_at = now() + make_interval(secs => %s),
@@ -153,6 +174,7 @@ def release(conn: psycopg.Connection, *, job_id: Any, lease_token: str, machine_
     reasons leave `expiries` alone.
     """
     job = _fenced(conn, job_id, lease_token, machine_id, epoch)
+    checkpoint = _scrub(conn, job["workload"], checkpoint)
     reason = reason if reason in RELEASE_REASONS else None
     bump = 1 if reason == "oom" else 0
     expiries = job["expiries"] + bump
@@ -195,7 +217,7 @@ def complete(conn: psycopg.Connection, *, job_id: Any, lease_token: str, machine
         UPDATE workload_jobs SET status = 'succeeded', result = %s, progress = 1, finished_at = now(),
                lease_expires_at = NULL, updated_at = now() WHERE id = %s RETURNING *
         """,
-        (Jsonb(result), job["id"]),
+        (Jsonb(_scrub(conn, job["workload"], result)), job["id"]),
     ).fetchone()
     add_event(conn, job["id"], "succeeded", machine_id)
     return row
@@ -212,7 +234,7 @@ def fail(conn: psycopg.Connection, *, job_id: Any, lease_token: str, machine_id:
         return job
     if job["status"] not in ACTIVE:
         raise Conflict(f"job is {job['status']}")
-    text = (error or "")[:MAX_ERROR_CHARS].replace("\x00", "")
+    text = _scrub(conn, job["workload"], (error or "")[:MAX_ERROR_CHARS].replace("\x00", ""))
     row = conn.execute(
         """
         UPDATE workload_jobs SET status = 'failed', error = %s, finished_at = now(),

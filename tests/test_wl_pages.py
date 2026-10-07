@@ -293,7 +293,8 @@ def test_workload_enabled_form(client, conn, seeded):
 
 def test_assign_form_posts_and_redirects(client, conn, seeded):
     r = client.post(f"/machines/{seeded['old']}/assign", data={"workload": "hello"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/machines" and flash_cookie(r) == "old-box: assigned hello"
+    assert r.status_code == 303 and r.headers["location"] == "/machines"
+    assert flash_cookie(r) == "old-box: assigned hello (old-box is offline; the change takes effect when it comes back)"
     row = conn.execute("SELECT workload, state FROM workload_assignments WHERE machine_id = %s", (seeded["old"],)).fetchone()
     assert row["workload"] == "hello" and row["state"] == "pending"
     client.post(f"/machines/{seeded['old']}/assign", data={"workload": "none"})

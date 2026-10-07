@@ -14,14 +14,14 @@ from host.api.serialize import jsonable
 from host.config import Config
 from host.errors import BadRequest, NotFound, QueueError
 from host.events import add_audit
-from host.workloads import assign, config as wl_config, machines, outbound, pinning, queue, registry
+from host.workloads import assign, config as wl_config, machines, outbound, pinning, queue, registry, updates
 from host.workloads import secrets as wl_secrets
 
 ACTOR = "cli"
 MACHINE_ID_RE = re.compile(r"^m_[0-9a-f]{6}$")
 COMMANDS = (
     "workloads-sync", "workload-image", "machine-enroll-token", "machines", "machine-assign", "pin", "unpin",
-    "secret-set", "outbound", "wl-send-job",
+    "secret-set", "outbound", "wl-send-job", "machine-update", "workload-rollout",
 )
 
 
@@ -102,8 +102,31 @@ def cmd_assign(config: Config, args: argparse.Namespace) -> None:
     with db.connect(config.database_url) as conn:
         machine = resolve_machine(conn, args.machine)
         row = assign.assign(conn, machine["id"], target, ACTOR, None)
-    print(f"{machine['id']} workload={row['workload'] or 'none'} epoch={row['epoch']} state={row['state']}"
-          + (f" draining_to={row['draining_to'] or 'none'}" if row["state"] == "draining" else ""))
+    _print_assignment(machine["id"], row)
+
+
+def _print_assignment(machine_id: str, row: dict) -> None:
+    print(f"{machine_id} workload={row['workload'] or 'none'} epoch={row['epoch']} state={row['state']}"
+          + (f" draining_to={row['draining_to'] or 'none'}" if row["state"] == "draining" else "")
+          + (" (up to date)" if row.get("up_to_date") else ""))
+    if row.get("note"):
+        print(f"note: {row['note']}")
+
+
+def cmd_update(config: Config, args: argparse.Namespace) -> None:
+    with db.connect(config.database_url) as conn:
+        machine = resolve_machine(conn, args.machine)
+        row = updates.apply_update(conn, machine["id"], ACTOR, None)
+    _print_assignment(machine["id"], row)
+
+
+def cmd_rollout(config: Config, args: argparse.Namespace) -> None:
+    with db.connect(config.database_url) as conn:
+        out = updates.rollout(conn, args.workload, ACTOR, None)
+    print(f"updated: {', '.join(out['updated']) or 'none'}")
+    print(f"draining first: {', '.join(out['draining']) or 'none'}")
+    for name, reason in out["skipped"].items():
+        print(f"skipped {name}: {reason}")
 
 
 def cmd_pin(config: Config, args: argparse.Namespace) -> None:
@@ -188,6 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("machine", help="machine id or name")
         p.add_argument("workload", help="workload name or none")
         p.set_defaults(func=cmd_assign)
+    p = sub.add_parser("machine-update", help="apply the synced manifest and published image to a machine")
+    p.add_argument("machine", help="machine id or name")
+    p.set_defaults(func=cmd_update)
+    p = sub.add_parser("workload-rollout", help="apply the update to every machine of a workload that can take it")
+    p.add_argument("workload")
+    p.set_defaults(func=cmd_rollout)
     p = sub.add_parser("pin", help="pin a machine so it cannot be reassigned")
     p.add_argument("machine")
     p.add_argument("--reason", default="")

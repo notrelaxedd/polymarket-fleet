@@ -66,15 +66,17 @@ def parse_ts(value: Any) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
-def clip_logs(logs: Any) -> list[dict[str, Any]]:
+def clip_logs(logs: Any) -> tuple[list[dict[str, Any]], int]:
     """At most 200 entries and 64 KiB of text; lines cut at 2048 chars; NUL bytes removed.
 
-    Entries beyond a limit are dropped (the supervisor ships the rest in a later beat).
+    Returns (kept, dropped): entries beyond a limit are dropped and counted, so the
+    heartbeat reply can say so (the supervisor sends at most 200 lines a beat itself).
     Each kept entry is {"ts": datetime | None, "stream", "line"}.
     """
     out: list[dict[str, Any]] = []
     total = 0
-    for entry in logs if isinstance(logs, list) else []:
+    entries = logs if isinstance(logs, list) else []
+    for entry in entries:
         if len(out) >= MAX_LOG_ENTRIES:
             break
         if not isinstance(entry, dict) or not isinstance(entry.get("line"), str):
@@ -86,7 +88,8 @@ def clip_logs(logs: Any) -> list[dict[str, Any]]:
         total += size
         stream = entry.get("stream") if entry.get("stream") in LOG_STREAMS else "stdout"
         out.append({"ts": parse_ts(entry.get("ts")), "stream": stream, "line": line})
-    return out
+    valid = sum(1 for e in entries if isinstance(e, dict) and isinstance(e.get("line"), str))
+    return out, valid - len(out)
 
 
 def container_block(container: Any) -> dict[str, Any] | None:

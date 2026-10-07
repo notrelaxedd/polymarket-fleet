@@ -13,7 +13,7 @@ from host.workloads import loop as wl_loop
 from host.workloads import machines, outbound, queue
 from tests.conftest import insert_job
 from tests.test_wl_api_support import (  # noqa: F401
-    DIGEST_A, GOOD_SPECS, _registry_env, add_workload, beat, enroll, manifest_data, no_secrets_key, secrets_key,
+    DIGEST_A, DIGEST_B, GOOD_SPECS, _registry_env, add_workload, beat, enroll, manifest_data, no_secrets_key, secrets_key,
 )
 
 PUBLIC_URL = "http://127.0.0.1:8080"
@@ -232,13 +232,14 @@ def test_the_sender_sends_a_bounded_batch_per_pass(pool, conn):
 
 
 def test_a_sync_never_changes_how_an_assigned_workload_runs(conn, client, tmp_path):
-    """Review H2: a changed image repository (which clears the digest) or runtime must not
-    reach machines that run the workload, pinned live traders included."""
-    from host.workloads import registry
+    """A changed image repository (which clears the digest) or runtime is synced, but a
+    machine that runs the workload keeps its snapshot until the update is applied to it."""
+    from host.workloads import registry, updates
 
     add_workload(conn, manifest_data("hello"))
     mid, token = enroll(client, conn, "box1")
     assert client.post(f"/api/machines/{mid}/assign", json={"workload": "hello"}).status_code == 200
+    before = beat(client, mid, token).json()["run"]
     folder = tmp_path / "hello"
     folder.mkdir()
     data = manifest_data("hello")
@@ -246,13 +247,17 @@ def test_a_sync_never_changes_how_an_assigned_workload_runs(conn, client, tmp_pa
              "[resources]", f"min_ram_mb = {data['resources']['min_ram_mb']}", "[runtime]", 'mode = "jobs"',
              'job_kinds = ["hello"]']
     (folder / "workload.toml").write_text("\n".join(lines) + "\n")
-    result = registry.sync_from_dir(conn, tmp_path)
-    assert result["synced"] == [] and "assigned to 1 machine" in result["errors"]["hello"][0]
+    assert registry.sync_from_dir(conn, tmp_path) == {"synced": ["hello"], "errors": {}}
     row = conn.execute("SELECT image_repo, image_digest FROM workloads WHERE name = 'hello'").fetchone()
-    assert row["image_repo"] == data["image"] and row["image_digest"] is not None
-    assert beat(client, mid, token).json()["run"] is not None
-    client.post(f"/api/machines/{mid}/assign", json={"workload": None})
-    assert registry.sync_from_dir(conn, tmp_path)["synced"] == ["hello"]
+    assert row["image_repo"] == "fleet/other" and row["image_digest"] is None, "the workload row follows the sync"
+    assert beat(client, mid, token).json()["run"] == before, "the running machine keeps its snapshot"
+    assert updates.outdated(conn, "hello") == [mid]
+    conn.execute("UPDATE workloads SET image_digest = %s WHERE name = 'hello'", (DIGEST_B,))
+    r = client.post(f"/api/machines/{mid}/update")
+    assert r.status_code == 200 and r.json()["state"] == "pending"
+    after = beat(client, mid, token).json()["run"]
+    assert after["image"].endswith(f"fleet/other@{DIGEST_B}") and after["env"]["FLEET_EPOCH"] != before["env"]["FLEET_EPOCH"]
+    assert client.post(f"/api/machines/{mid}/update").json()["up_to_date"] is True
 
 
 def test_a_broken_workloads_package_never_takes_the_polymarket_cli_down(monkeypatch, capsys):

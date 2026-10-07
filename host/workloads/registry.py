@@ -21,7 +21,10 @@ def sync_from_dir(conn: psycopg.Connection, root: Path) -> dict[str, Any]:
     """Upsert every valid manifest under `root`; never deletes a workload.
 
     A changed image repository clears the recorded digest and size (they belonged to
-    the old repository). Returns {"synced": [names], "errors": {folder: [problems]}}.
+    the old repository). Machines keep running the manifest and digest they were assigned
+    with (workload_assignments.run_manifest / run_image_digest) until the owner applies
+    the update to them (host.workloads.updates), so a sync never touches a running
+    container. Returns {"synced": [names], "errors": {folder: [problems]}}.
     """
     synced: list[str] = []
     errors: dict[str, list[str]] = {}
@@ -30,10 +33,6 @@ def sync_from_dir(conn: psycopg.Connection, root: Path) -> dict[str, Any]:
             manifest = load_manifest(folder)
         except ManifestError as exc:
             errors[folder.name] = exc.problems
-            continue
-        frozen = _frozen_change(conn, manifest)
-        if frozen:
-            errors[folder.name] = [frozen]
             continue
         conn.execute(
             """
@@ -51,32 +50,15 @@ def sync_from_dir(conn: psycopg.Connection, root: Path) -> dict[str, Any]:
     return {"synced": synced, "errors": errors}
 
 
-def _run_shape(data: dict[str, Any]) -> dict[str, Any]:
-    """The manifest fields that shape a running container (the heartbeat run block)."""
+def run_shape(data: dict[str, Any]) -> dict[str, Any]:
+    """The manifest fields that shape a running container (the heartbeat run block),
+    compared in JSON form (to_json() keeps tuples, a stored jsonb gives lists)."""
+    data = json.loads(json.dumps(data))
     res = data.get("resources") or {}
     return {
         "image": data.get("image"), "protocol": data.get("protocol"), "runtime": data.get("runtime"),
-        "memory": (res.get("memory_max_mb"), res.get("memory_max_pct"), res.get("cpus")),
+        "memory": [res.get("memory_max_mb"), res.get("memory_max_pct"), res.get("cpus")],
     }
-
-
-def _frozen_change(conn: psycopg.Connection, manifest: Manifest) -> str | None:
-    """A problem when the sync would change how an assigned workload's containers run.
-
-    Such a change would reach running machines on their next restart (or, for the image
-    repository, stop them at once), pinned live traders included, so it waits until the
-    workload is assigned nowhere."""
-    row = conn.execute("SELECT manifest FROM workloads WHERE name = %s", (manifest.name,)).fetchone()
-    # Compare in JSON form on both sides: to_json() keeps tuples, the stored jsonb gives lists.
-    fresh = json.loads(json.dumps(manifest.to_json()))
-    if row is None or _run_shape(row["manifest"]) == _run_shape(fresh):
-        return None
-    n = conn.execute("SELECT count(*) AS n FROM workload_assignments WHERE workload = %s OR draining_to = %s",
-                     (manifest.name, manifest.name)).fetchone()["n"]
-    if not n:
-        return None
-    return (f"not synced: the image, protocol, runtime or memory/cpu limits changed while {manifest.name} "
-            f"is assigned to {n} machine(s); assign those machines to none first")
 
 
 def get_workload(conn: psycopg.Connection, name: str, for_update: bool = False) -> dict[str, Any]:
@@ -118,6 +100,11 @@ def set_enabled(conn: psycopg.Connection, name: str, enabled: bool, actor: str |
 
 def image_ref(workload_row: dict[str, Any]) -> str | None:
     """`<registry>/<repo>@<digest>`, or None while no image is published."""
-    if not workload_row.get("image_digest"):
+    return ref_for(workload_row.get("image_repo"), workload_row.get("image_digest"))
+
+
+def ref_for(repo: str | None, digest: str | None) -> str | None:
+    """`<registry>/<repo>@<digest>`, or None without a digest."""
+    if not repo or not digest:
         return None
-    return f"{config.registry()}/{workload_row['image_repo']}@{workload_row['image_digest']}"
+    return f"{config.registry()}/{repo}@{digest}"

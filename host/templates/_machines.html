@@ -23,6 +23,7 @@
         {{ ui.chip("muted", m.ram_label, key="ram") }}
         {{ ui.chip(m.state_tone, m.state_word, key="state", title="State of the workload container on this machine") }}
         {% if m.low_disk %}{{ ui.chip("bad", "low disk", key="low-disk") }}{% endif %}
+        {% if m.update_available %}{{ ui.chip("warn", "update available", key="update", title="A newer manifest or image was synced or published; this machine keeps what it was assigned until you apply it") }}{% endif %}
       </span>
       <span class="row-meta">{{ m.meta }}</span>
     </div>
@@ -44,6 +45,11 @@
       </label>
       <button type="submit" class="btn small">Set</button>
     </form>
+    {% if m.update_available %}
+    <form method="post" action="/machines/{{ m.id }}/update" data-action="apply-update">
+      <button type="submit" class="menu-item"{% if m.locked %} disabled title="{{ m.lock_reason }}"{% endif %}>Apply update</button>
+    </form>
+    {% endif %}
     {% if m.pinned %}
     <a class="menu-item" href="/machines/{{ m.id }}/unpin" data-action="unpin">Unpin</a>
     {% else %}

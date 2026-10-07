@@ -662,13 +662,30 @@ above that says otherwise.
   shares the machine's boot_id. The link prefers the single online worker when several
   share a boot_id.
 - **Machine disable** is 409 while the machine is pinned or runs polymarket.
-- **Sync freeze.** `sync_from_dir` refuses (reported under `errors`) a manifest change to
-  the image, protocol, runtime or memory/cpu limits of a workload that is assigned to any
-  machine, so a re-sync can never stop or reshape running containers.
+- **Snapshots and updates (replaces the sync freeze).** An assignment snapshots the workload's
+  manifest and image digest (`workload_assignments.run_manifest`, `run_image_digest`); the
+  heartbeat `run` block and `keep_images` come from the snapshot. A sync or publish only
+  changes the workloads row and never touches a running container, so it is never refused.
+  A machine moves to the new manifest and image when the owner applies the update:
+  `POST /api/machines/{id}/update` (dashboard "Apply update", CLI `machine-update`), or
+  `POST /api/workloads/{name}/rollout` (dashboard "Roll out the update", CLI
+  `workload-rollout`), which updates every machine that can take it and reports the rest.
+  Applying goes through every refusal of an assign (pinned or live 409, native 409,
+  placement 422) and, for polymarket, through the drain: the worker is set idle (its trades
+  released) before the container is replaced, and its role has to be set again on /fleet
+  afterwards. `GET /api/machines` carries `update_available`.
 - **Secrets at start.** With nothing stored, `/start` needs no key. For protocol
   `fleet-worker` (polymarket) a missing or wrong key never blocks a restart: undecryptable
   secrets are skipped with a log line (the enroll token only matters for a first start).
-- **Logs.** The host scrubs a workload's stored secret values from shipped log lines too.
+- **Scrubbing.** The host scrubs a workload's stored secret values from shipped log lines and from
+  job results, errors and checkpoints before storing them. Outbound payloads are not scrubbed:
+  the owner must see exactly what would be sent before approving it.
+- **Assign notes.** An assign or update of a machine that is offline (or never checked in)
+  succeeds and carries `note` (shown in the flash and by the CLI): the change waits for it.
+- **Dropped logs.** The heartbeat reply carries `logs_dropped` (lines over the per-beat limits),
+  and the host logs a warning.
+- **Disk type on VMs.** A virtual disk often reports `rotational=1` and shows as `hdd`; that is
+  the kernel's flag and is kept as is. The owner override corrects a misdetected disk.
 - **Email.** The sender refuses to log in when STARTTLS is not offered.
 - **Agent.** Workload containers run with `--init`; `deactivating` counts as an active
   native worker; a removed container's image is freed on the next heartbeat; an

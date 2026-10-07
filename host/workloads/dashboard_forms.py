@@ -69,7 +69,49 @@ def post_assign(request: Request, machine_id: str, form: Form = FORM, actor: str
         note = f"{name}: draining the Polymarket worker, then {target}"
     else:
         note = f"{name}: assigned {target}"
+    if isinstance(row, dict) and row.get("note"):
+        note += f" ({row['note']})"
     return web.redirect("/machines", note)
+
+
+@router.post("/machines/{machine_id}/update")
+def post_update(request: Request, machine_id: str, actor: str = Depends(require_owner),
+                conn: psycopg.Connection = DB) -> Response:
+    """Apply the synced manifest and published image to one machine."""
+    from host.workloads import updates
+
+    try:
+        row = updates.apply_update(conn, machine_id, actor, remote_ip(request))
+    except NotFound:
+        raise
+    except QueueError as exc:
+        return _machines_error(request, conn, exc)
+    name = _machine_name(conn, machine_id)
+    if row.get("up_to_date"):
+        note = f"{name}: already up to date"
+    elif row.get("state") == "draining":
+        note = f"{name}: draining the Polymarket worker, then restarting on the update"
+    else:
+        note = f"{name}: update applied"
+    if row.get("note"):
+        note += f" ({row['note']})"
+    return web.redirect("/machines", note)
+
+
+@router.post("/workloads/{name}/rollout")
+def post_rollout(request: Request, name: str, actor: str = Depends(require_owner),
+                 conn: psycopg.Connection = DB) -> Response:
+    """Apply the update to every machine of the workload that can take it."""
+    from host.workloads import registry, updates
+
+    registry.get_workload(conn, name)
+    out = updates.rollout(conn, name, actor, remote_ip(request))
+    parts = [f"updated {', '.join(out['updated']) or 'none'}"]
+    if out["draining"]:
+        parts.append(f"draining first {', '.join(out['draining'])}")
+    if out["skipped"]:
+        parts.append("skipped " + "; ".join(f"{n} ({r})" for n, r in out["skipped"].items()))
+    return web.redirect(f"/workloads/{name}", ". ".join(parts))
 
 
 @router.post("/machines/{machine_id}/pin")

@@ -154,13 +154,15 @@ def test_run_block_memory_percent_and_pending_states(client, conn):
     assert run["state_volume"] is True and run["nice"] == 5 and run["mode"] == "service"
 
 
-def test_run_block_is_null_when_unpublished_disabled_or_unassigned(client, conn):
+def test_run_block_is_null_when_disabled_or_unassigned_and_survives_an_unpublish(client, conn):
     add_workload(conn, manifest_data("hello"))
     mid, token = enroll(client, conn)
     assign(client, mid, "hello")
     assert beat(client, mid, token).json()["run"] is not None
     conn.execute("UPDATE workloads SET image_digest = NULL WHERE name = 'hello'")
-    assert beat(client, mid, token).json()["run"] is None, "image not published"
+    assert beat(client, mid, token).json()["run"] is not None, "the machine keeps the digest it was assigned"
+    conn.execute("UPDATE workload_assignments SET run_manifest = NULL, run_image_digest = NULL WHERE machine_id = %s", (mid,))
+    assert beat(client, mid, token).json()["run"] is None, "no snapshot and nothing published: nothing to run"
     conn.execute("UPDATE workloads SET image_digest = %s WHERE name = 'hello'", (DIGEST_A,))
     assert beat(client, mid, token).json()["run"] is not None
     assert client.post(f"/api/machines/{mid}/enabled", json={"enabled": False}).status_code == 200
@@ -205,13 +207,15 @@ def test_container_block_drives_the_assignment_state(client, conn):
     assert state()["acked_epoch"] == epoch, "an ack never moves backwards"
 
 
-def test_keep_images_lists_the_current_and_the_running_digest(client, conn):
+def test_keep_images_follows_the_assigned_snapshot_and_the_running_digest(client, conn):
     add_workload(conn, manifest_data("hello"))
     mid, token = enroll(client, conn)
     epoch = assign(client, mid, "hello")["epoch"]
     beat(client, mid, token, acked_epoch=epoch, container=container("hello", epoch))
     conn.execute("UPDATE workloads SET image_digest = %s WHERE name = 'hello'", (DIGEST_B,))
-    assert beat(client, mid, token).json()["keep_images"] == [DIGEST_B, DIGEST_A]
+    assert beat(client, mid, token).json()["keep_images"] == [DIGEST_A], "a newer publish is not pulled until applied"
+    assert client.post(f"/api/machines/{mid}/update").status_code == 200
+    assert beat(client, mid, token).json()["keep_images"] == [DIGEST_B, DIGEST_A], "the new image and the running one"
 
 
 def test_start_returns_a_run_token_and_secrets_no_store(client, conn, secrets_key):
@@ -251,6 +255,7 @@ def test_start_refuses_without_a_published_image_or_when_disabled(client, conn, 
     mid, token = enroll(client, conn)
     epoch = assign(client, mid, "hello")["epoch"]
     conn.execute("UPDATE workloads SET image_digest = NULL")
+    conn.execute("UPDATE workload_assignments SET run_manifest = NULL, run_image_digest = NULL")
     assert client.post(f"/api/v1/machines/{mid}/start", json={"epoch": epoch}, headers=auth(token)).status_code == 409
     conn.execute("UPDATE workloads SET image_digest = %s", (DIGEST_A,))
     client.post(f"/api/machines/{mid}/enabled", json={"enabled": False})

@@ -30,9 +30,16 @@
   {% set meta %}epoch {{ m.epoch }}{% if m.up is not none %} &middot; up {{ (m.up or 0) | ago | replace(' ago', '') }}{% endif %}{% if m.restarts %} &middot; {{ m.restarts }} restarts{% endif %}{% if m.mem_mb is not none %} &middot; {{ m.mem_mb }} MB{% endif %}{% endset %}
   {% call ui.row("machine", m.id, "/machines/" ~ m.id ~ "/logs", m.name, meta=meta, meta2=m.last_error) %}
     {{ ui.chip(m.tone, m.word, key="state") }}
+    {% if m.update_available %}{{ ui.chip("warn", "update available", key="update") }}{% endif %}
   {% endcall %}
   {% endfor %}
   </ul>
+  {% if machines | selectattr("update_available") | list %}
+  <form method="post" action="/workloads/{{ wl.name }}/rollout" data-form="rollout" class="form-actions">
+    <button type="submit" class="btn" data-action="rollout">Roll out the update</button>
+    <span class="muted small">Applies the synced manifest and image to every machine above that can take it; pinned or live-trading machines are skipped and keep what they run.</span>
+  </form>
+  {% endif %}
   {% else %}
   <p class="muted">No machine runs it. Assign it from <a href="/machines">Machines</a>.</p>
   {% endif %}

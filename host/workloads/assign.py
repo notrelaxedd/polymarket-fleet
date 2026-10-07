@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from host import scheduling
 from host.config import Config
@@ -13,7 +14,8 @@ from host.settings import get_int_setting
 from host.workloads import pinning, queue
 from host.workloads.errors import Unplaceable
 from host.workloads.placement import check_placement
-from host.workloads.registry import get_workload, image_ref, manifest_of
+from host.workloads.manifest import Manifest
+from host.workloads.registry import get_workload, manifest_of, ref_for
 
 POLYMARKET = "polymarket"
 
@@ -40,16 +42,21 @@ def _lock_assignment(conn: psycopg.Connection, machine_id: str) -> dict[str, Any
 
 
 def _switch(conn: psycopg.Connection, machine_id: str, target: str | None, actor: str | None) -> dict[str, Any]:
-    """Move to `target` now: new epoch, no run token, leased jobs of this machine released."""
+    """Move to `target` now: new epoch, no run token, leased jobs of this machine released.
+
+    The workload's current manifest and image digest are snapshotted on the assignment:
+    the machine runs exactly that until the owner applies a later sync or publish to it."""
+    wl = get_workload(conn, target) if target is not None else None
     row = conn.execute(
         """
         UPDATE workload_assignments SET workload = %s, epoch = epoch + 1,
                state = CASE WHEN %s::text IS NULL THEN 'stopped' ELSE 'pending' END,
                draining_to = NULL, draining_to_set = false, run_token_hash = NULL,
+               run_manifest = %s, run_image_digest = %s,
                assigned_by = %s, assigned_at = now(), last_error = NULL, updated_at = now()
          WHERE machine_id = %s RETURNING *
         """,
-        (target, target, actor, machine_id),
+        (target, target, Jsonb(wl["manifest"]) if wl else None, wl["image_digest"] if wl else None, actor, machine_id),
     ).fetchone()
     queue.release_machine_jobs(conn, machine_id)
     return row
@@ -72,12 +79,22 @@ def assign(
         return current
     if draining and workload == current["draining_to"]:
         return current
+    machine = guard_move(conn, machine, current, workload)
+    return _move(conn, machine, current, workload, actor, ip, "workload_assign")
+
+
+def guard_move(
+    conn: psycopg.Connection, machine: dict[str, Any], current: dict[str, Any], workload: str | None
+) -> dict[str, Any]:
+    """The refusals every move of a machine goes through (assign, apply update): pinned or
+    live 409, native fleet-worker 409, placement 422, unidentifiable polymarket worker 409.
+    Returns the machine with its polymarket worker link refreshed."""
     from host.workloads import machines as wl_machines  # machines imports this module
 
     machine = {**machine, "polymarket_worker_id": wl_machines.link_polymarket_worker(conn, machine)}
     if machine["pinned"]:
         raise Conflict(f"pinned: {machine['pinned_reason'] or 'pinned'}; unpin first")
-    if pinning.is_live_trading(conn, machine_id):
+    if pinning.is_live_trading(conn, machine["id"]):
         # The loop pins it within one pass; never wait for that to protect a live trader.
         raise Conflict("pinned: live trading right now; it will show as pinned on the next refresh")
     if machine["native_polymarket"] == "active":
@@ -90,10 +107,20 @@ def assign(
         )
         if refusals:
             raise Unplaceable([(r.code, r.message) for r in refusals])
-    if (current["workload"] == POLYMARKET and not draining and machine["polymarket_worker_id"] is None
+    if (current["workload"] == POLYMARKET and current["state"] != "draining" and machine["polymarket_worker_id"] is None
             and current["state"] in ("running", "starting")):
         raise Conflict("cannot identify the polymarket worker on this machine (no unique boot_id match), so its "
                        "trades cannot be drained; set that worker idle on /fleet, wait for it to settle, then retry")
+    return machine
+
+
+def _move(
+    conn: psycopg.Connection, machine: dict[str, Any], current: dict[str, Any], workload: str | None,
+    actor: str | None, ip: str | None, action: str,
+) -> dict[str, Any]:
+    """Switch now, or start a drain when leaving (or restarting) a polymarket container."""
+    machine_id = machine["id"]
+    draining = current["state"] == "draining"
     before = _snapshot(current)
     # Any machine whose polymarket worker is known drains through the role handshake, even
     # when the last heartbeat did not report the container as running (a missed report must
@@ -113,8 +140,24 @@ def assign(
         ).fetchone()
     else:
         after_row = _switch(conn, machine_id, workload, actor)
-    add_audit(conn, "workload_assign", machine_id, actor, before, _snapshot(after_row), ip)
-    return after_row
+    add_audit(conn, action, machine_id, actor, before, _snapshot(after_row), ip)
+    note = offline_note(conn, machine)
+    return {**after_row, "note": note} if note else after_row
+
+
+def offline_note(conn: psycopg.Connection, machine: dict[str, Any]) -> str | None:
+    """A hint when the machine is not heartbeating: the change waits for it to come back."""
+    online_after = get_int_setting(conn, "online_after_seconds", 15)
+    row = conn.execute(
+        "SELECT last_heartbeat_at IS NULL AS never,"
+        " last_heartbeat_at < now() - make_interval(secs => %s) AS off FROM machines WHERE id = %s",
+        (online_after, machine["id"]),
+    ).fetchone()
+    if row is None or not (row["never"] or row["off"]):
+        return None
+    if row["never"]:
+        return f"{machine['name']} has not checked in yet; the change takes effect when it does"
+    return f"{machine['name']} is offline; the change takes effect when it comes back"
 
 
 def desired_run(
@@ -129,11 +172,16 @@ def desired_run(
     name = assignment.get("workload")
     if name is None or not machine["enabled"]:
         return None
-    row = get_workload(conn, name)
-    ref = image_ref(row)
+    manifest_json, digest = assignment.get("run_manifest"), assignment.get("run_image_digest")
+    if manifest_json is None:  # assigned before the image was published: follow the workload row
+        row = get_workload(conn, name)
+        manifest_json, digest = row["manifest"], row["image_digest"]
+    m = Manifest.from_json(manifest_json)
+    if digest is None:  # snapshotted while unpublished (only possible by hand): use the published one
+        digest = get_workload(conn, name)["image_digest"]
+    ref = ref_for(m.image, digest)
     if ref is None:
         return None
-    m = manifest_of(row)
     res, rt = m.resources, m.runtime
     memory_mb: int | None = res.memory_max_mb
     if memory_mb is None and res.memory_max_pct is not None and machine.get("ram_total_mb"):
