@@ -254,7 +254,10 @@ wait_for "hello job finished" job_done
 api GET "/api/workload-jobs/$JOB_ID"
 if [ "$(echo "$BODY" | jq -r '(.job // .) | .status')" = succeeded ]; then ok "hello job succeeded"; else bad "hello job succeeded" "$BODY"; fi
 GREETING="$(echo "$BODY" | jq -r '(.job // .) | .result.greeting // empty')"
-if [ "$GREETING" = "$SECRET, demo!" ]; then ok "result greeting uses the secret"; else bad "result greeting uses the secret" "got: $GREETING"; fi
+# The greeting is the secret, which the host scrubs from stored results: "[redacted], demo!"
+# proves the container read the secret (the default would be "Hello, demo!") and that it
+# never reaches the database or the pages.
+if [ "$GREETING" = "[redacted], demo!" ]; then ok "result greeting used the secret and was scrubbed"; else bad "result greeting used the secret and was scrubbed" "got: $GREETING"; fi
 
 # ---------------------------------------------------------------- logs are redacted
 machine_logs() { api GET "/api/machines/$MID/logs?limit=200"; echo "$BODY"; }
