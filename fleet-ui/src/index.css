@@ -85,7 +85,7 @@ button { cursor: pointer; }
 .empty a, .blocker a { color: var(--ok); }
 
 /* inspector */
-.inspector { position: absolute; right: 16px; top: 16px; width: 308px; max-height: calc(100% - 32px - 150px); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.inspector { position: absolute; right: 16px; top: 16px; width: 308px; max-height: calc(100% - 48px - var(--console-h, 150px)); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 .inspector .name { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .inspector h3 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 28px; letter-spacing: 0.03em; line-height: 1; }
 .pill { padding: 3px 8px; border: 1px solid var(--c); color: var(--c); font-family: var(--font-display); font-weight: 600; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }

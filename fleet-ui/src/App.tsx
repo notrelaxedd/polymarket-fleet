@@ -8,7 +8,7 @@ import { ApiError, fetchEvents, fetchFleet, reboot, setRole } from './api';
 import type { FleetEvent } from './api';
 import { parseCommand } from './commands';
 import Inspector from './Inspector';
-import { tone } from './ui';
+import { tone, useHeightVar } from './ui';
 
 const VIEWS: { id: ViewId; name: string }[] = [
   { id: 'city', name: 'Data city' },
@@ -22,7 +22,7 @@ const VIEWS: { id: ViewId; name: string }[] = [
 
 const POLL_MS = 3000;
 const LIVE_MS = 10000;
-const SHOW_EVENTS = 6;
+const SHOW_EVENTS = 5;
 const EV_TONE: Record<string, string> = { ok: 'var(--ok)', hot: 'var(--hot)', off: 'var(--off)', fg: 'var(--fg)' };
 
 /** A feed line; `ts` is milliseconds on the server's clock. */
@@ -51,6 +51,7 @@ export default function App() {
   const [pending, setPending] = useState<string[]>([]);
 
   const nodesRef = useRef(nodes);
+  const consoleRef = useHeightVar('console-h');
   nodesRef.current = nodes;
   const rolesRef = useRef(roles);
   rolesRef.current = roles;
@@ -279,7 +280,7 @@ export default function App() {
               onRole={(role) => void assign([node], role)} onReboot={() => void restart(node)} />
           )}
 
-          <section className="panel console" aria-label="Command console">
+          <section className="panel console" aria-label="Command console" ref={consoleRef}>
             <form className="cmd" onSubmit={submit}>
               <label htmlFor="fleet-cmd">Command for the fleet</label>
               <span className="prompt" aria-hidden="true">&gt;</span>
