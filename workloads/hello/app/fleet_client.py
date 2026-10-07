@@ -255,6 +255,8 @@ def run_forever(handlers: dict[str, Handler], idle_sleep: float = 5, client: Cli
                     job.release("shutdown")
                 except Exception as exc:  # the lease expires and the job is requeued anyway
                     log(f"release on shutdown failed: {exc}")
+            # The signal may land inside a finished job's own cleanup: always free its scratch.
+            shutil.rmtree(job.scratch, ignore_errors=True)
         return 0
 
 
