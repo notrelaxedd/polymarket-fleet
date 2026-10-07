@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from host import db, web
 from host.api import dashboard, dashboard_forms, dashboard_models, data, data_pbp, dl, jobs, models, owner, owner_live, owner_trading, trade, workers
+from host.api import owner_fleet
 from host.bundle import build_bundle
 from host.config import Config
 from host.errors import QueueError
@@ -155,6 +156,7 @@ def create_app(config: Config) -> FastAPI:
     app.include_router(data_pbp.router)
     app.include_router(models.worker_router)
     app.include_router(owner.router)
+    app.include_router(owner_fleet.router)
     app.include_router(owner_trading.router)
     app.include_router(owner_live.router)
     app.include_router(data.owner_router)

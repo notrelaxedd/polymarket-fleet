@@ -36,10 +36,13 @@ Reboot (fleet UI): a heartbeat reply with `reboot: <request id>` makes an agent 
 unit set FLEET_REBOOT_TRIGGER stop the way a SIGTERM would (runners drained and
 released, trade jobs handed back through the release handshake that cancels their
 orders, unsent posts flushed), then write the id to the trigger file; the root
-fleet-reboot.path unit sees the file and reboots. The trigger lives on tmpfs, so an id
-found there at start means that request was already handled (the reboot did not
-happen) and is ignored. Telemetry (temperature, boot media, wear, GB written since
-boot) is read from /sys each heartbeat (fleet.common.hwinfo) and never written to disk.
+fleet-reboot.path unit sees the file and reboots. The trigger lives on tmpfs, so one
+found there at start means that reboot never happened: it is moved aside, its id is
+ignored, and reboots stay off (can_reboot false) until the agent restarts without a
+leftover. Without FLEET_REBOOT_TRIGGER (an install older than the reboot unit) a
+request is logged once and ignored. Telemetry (temperature, wear, GB written since
+boot) is read from /proc and /sys each heartbeat (fleet.common.hwinfo, no writes); the
+boot disk is found once at start.
 
 Step 3: before a backtest, model_search, train or validate runner starts,
 fleet.worker.context refreshes the games cache and fetches the job's model into
@@ -220,8 +223,8 @@ class Agent:
             log.error("worker.conf missing or unusable (%s); run enroll first", exc)
             return False
         self.pending_posts = [PendingPost.from_dict(p) for p in config.load_pending_posts(self.state_dir)]
-        if self.reboot_trigger:
-            self.reboot_done_id = config.read_reboot_trigger(self.reboot_trigger)
+        config.remove_legacy_status(self.state_dir)
+        self._settle_reboot()
         if self.pending_posts:
             log.info("resending %d unsent post(s) from the previous run", len(self.pending_posts))
         log.info("worker %s, host %s, code %s", self.conf["worker_id"], self.conf["host_url"], self.code_version)
@@ -554,6 +557,19 @@ class Agent:
             return
         self._maybe_self_update()
 
+    def _settle_reboot(self) -> None:
+        """At boot: remember the last handled request id; turn reboots off when the trigger
+        cannot be written or an earlier one was left over (the root unit did not act)."""
+        if self.reboot_trigger is None:
+            return
+        self.reboot_done_id, leftover = config.settle_reboot_trigger(self.reboot_trigger)
+        if leftover:
+            log.error("reboot trigger %s was still there: fleet-reboot.path did not reboot this machine; reboots off until the next start", self.reboot_done_id)
+            self.reboot_trigger = None
+        elif not config.trigger_writable(self.reboot_trigger):
+            log.error("cannot write the reboot trigger %s; reboots off", self.reboot_trigger)
+            self.reboot_trigger = None
+
     def _reboot_requested(self, resp: dict[str, Any]) -> bool:
         """A new reboot request id in the reply: stop the agent (the shutdown path drains
         and hands everything back) and remember the id for _request_reboot. False when
@@ -562,7 +578,7 @@ class Agent:
         if not isinstance(request, str) or not request or request in (self.reboot_id, self.reboot_done_id):
             return False
         if self.reboot_trigger is None:
-            log.warning("reboot requested but this install has no reboot unit (re-run install.sh)")
+            log.warning("reboot %s requested but this worker cannot reboot (re-run install.sh); ignored", request)
             self.reboot_done_id = request
             return False
         log.warning("reboot requested (%s): stopping runners and handing jobs back", request)

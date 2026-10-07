@@ -13,3 +13,7 @@ exchange.env
 dist/
 build/
 .pg_test/
+# The 3D fleet page build (fleet-ui/) and its copy inside the host package.
+host/fleet_ui/
+fleet-ui/node_modules/
+fleet-ui/dist/

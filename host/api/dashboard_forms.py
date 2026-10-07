@@ -36,7 +36,7 @@ def post_role(
 ) -> Response:
     """Set a worker's desired role (the role select)."""
     worker = queue.set_role(conn, worker_id, (form.get("role") or "").strip(), actor)
-    return web.redirect("/fleet", f"{worker['name']}: switching to {worker['desired_role']} (epoch {worker['role_epoch']})")
+    return web.redirect("/fleet/list", f"{worker['name']}: switching to {worker['desired_role']} (epoch {worker['role_epoch']})")
 
 
 @router.post("/workers/{worker_id}/enabled")
@@ -46,7 +46,7 @@ def post_enabled(
     """Enable or disable a worker."""
     worker = queue.set_enabled(conn, worker_id, _truthy(form.get("enabled")), actor)
     state = "enabled" if worker["enabled"] else "disabled"
-    return web.redirect("/fleet", f"{worker['name']} {state}")
+    return web.redirect("/fleet/list", f"{worker['name']} {state}")
 
 
 @router.post("/jobs")

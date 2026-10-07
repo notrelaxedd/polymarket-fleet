@@ -55,7 +55,7 @@ def test_fleet_shape(client, make_worker):
     r = client.get("/api/fleet")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"workers", "settings", "server_time"}
+    assert set(body) == {"workers", "settings", "server_time", "roles", "online_after_seconds"}
     assert body["server_time"].endswith("Z")
     assert set(body["settings"]) >= {"lease_seconds", "heartbeat_seconds", "online_after_seconds", "kill_switch"}
     workers = {x["name"]: x for x in body["workers"]}
@@ -63,6 +63,8 @@ def test_fleet_shape(client, make_worker):
         "id", "name", "online", "desired_role", "reported_role", "role_epoch", "acked_epoch",
         "switching", "auto_role", "enabled", "cpu_pct", "ram_used_mb", "ram_total_mb",
         "code_version", "python_version", "hostname", "last_heartbeat_at", "current_jobs",
+        "ram_pct", "temp_c", "boot_media", "wear_pct", "disk_gb_written", "seconds_since_heartbeat",
+        "can_reboot", "rebooting",
     }
     assert set(workers["box1"]) == expected_keys
     assert "token_hash" not in workers["box1"]
@@ -176,7 +178,7 @@ def test_settings_are_validated_and_audited(client, conn, make_worker):
         {"max_daily_loss_cents": {"live": 1}}, {"max_daily_loss_cents": {"live": "1", "paper": 2}},
         {"max_expiries": 0}, {"kill_switch": "no", "lease_seconds": 60},
         # MEDIUM: fleet timing is checked across fields over the merged settings
-        {"heartbeat_seconds": 60}, {"heartbeat_seconds": 13}, {"online_after_seconds": 5},
+        {"heartbeat_seconds": 60}, {"heartbeat_seconds": 13}, {"online_after_seconds": 5, "heartbeat_seconds": 5},
         {"lease_seconds": 20, "heartbeat_seconds": 10, "online_after_seconds": 30},
         {"max_bet_cents": 10**25}, {"max_daily_loss_cents": {"live": 10**25, "paper": 0}},
     ]

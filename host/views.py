@@ -5,7 +5,9 @@ from typing import Any
 
 import psycopg
 
+from host.fleet_events import ROLE_NAMES
 from host.leases import get_job
+from host.reboot import PENDING_SQL
 from host.scheduling import online_after
 from host.settings import get_setting, public_settings
 
@@ -33,14 +35,17 @@ def _current_jobs(conn: psycopg.Connection) -> dict[str, list[dict[str, Any]]]:
     return grouped
 
 
-def fleet_workers(conn: psycopg.Connection) -> list[dict[str, Any]]:
-    """Worker summaries as /api/fleet presents them."""
+def fleet_workers(conn: psycopg.Connection, online_after_s: int | None = None) -> list[dict[str, Any]]:
+    """Worker summaries as /api/fleet presents them (ages and the reboot window by the
+    database clock)."""
     rows = conn.execute(
-        """
-        SELECT w.*, (last_heartbeat_at > now() - make_interval(secs => %s)) AS online
+        f"""
+        SELECT w.*, (last_heartbeat_at > now() - make_interval(secs => %s)) AS online,
+               floor(extract(epoch FROM now() - last_heartbeat_at))::int AS heartbeat_age,
+               {PENDING_SQL} AS rebooting
           FROM workers w ORDER BY name, id
         """,
-        (online_after(conn),),
+        (online_after(conn) if online_after_s is None else online_after_s,),
     ).fetchall()
     jobs = _current_jobs(conn)
     out = []
@@ -65,6 +70,15 @@ def fleet_workers(conn: psycopg.Connection) -> list[dict[str, Any]]:
                 "hostname": w["hostname"],
                 "last_heartbeat_at": w["last_heartbeat_at"],
                 "current_jobs": jobs.get(w["id"], []),
+                "ram_pct": round(w["ram_used_mb"] / w["ram_total_mb"] * 100, 1)
+                if w["ram_used_mb"] is not None and w["ram_total_mb"] else None,
+                "temp_c": w["temp_c"],
+                "boot_media": w["boot_media"],
+                "wear_pct": w["wear_pct"],
+                "disk_gb_written": w["disk_gb_written"],
+                "seconds_since_heartbeat": None if w["heartbeat_age"] is None else max(0, w["heartbeat_age"]),
+                "can_reboot": bool(w["can_reboot"]),
+                "rebooting": bool(w["rebooting"]),
             }
         )
     return out
@@ -73,7 +87,9 @@ def fleet_workers(conn: psycopg.Connection) -> list[dict[str, Any]]:
 def fleet(conn: psycopg.Connection) -> dict[str, Any]:
     """The /api/fleet document."""
     now = conn.execute("SELECT now() AS t").fetchone()["t"]
-    return {"workers": fleet_workers(conn), "settings": public_settings(conn), "server_time": now}
+    after = online_after(conn)
+    return {"workers": fleet_workers(conn, after), "settings": public_settings(conn), "server_time": now,
+            "roles": [dict(role) for role in ROLE_NAMES], "online_after_seconds": after}
 
 
 def list_jobs(conn: psycopg.Connection, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:

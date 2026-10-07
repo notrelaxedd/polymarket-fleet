@@ -2,8 +2,9 @@
 
 status.json is rewritten after every heartbeat, so it lives in the runtime directory
 (FLEET_RUN_DIR, /run/fleet under systemd: tmpfs, no flash wear). Without that variable
-it falls back to /run/fleet when that exists next to the default state dir, else to the
-state dir itself (tests, hand runs)."""
+it falls back to /run/fleet when that exists next to the default state dir (so
+`python3 -m fleet.worker status` run by hand as root finds it), else to the state dir
+itself (tests, installs whose unit predates the runtime dir)."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from typing import Any
 DEFAULT_STATE_DIR = "/var/lib/fleet"
 DEFAULT_RUN_DIR = "/run/fleet"
 REBOOT_TRIGGER_ENV = "FLEET_REBOOT_TRIGGER"
+DONE_SUFFIX = ".done"
 CONF_NAME = "worker.conf"
 STATUS_NAME = "status.json"
 PENDING_POSTS_NAME = "pending_posts.json"
@@ -52,23 +54,57 @@ def status_path(directory: str) -> str:
     return os.path.join(run_dir(directory), STATUS_NAME)
 
 
+def remove_legacy_status(directory: str) -> None:
+    """Delete a status.json an older version left in the state dir once status lives in
+    the runtime dir, so nobody reads a stale copy (best effort)."""
+    if os.path.abspath(run_dir(directory)) == os.path.abspath(directory):
+        return
+    try:
+        os.unlink(os.path.join(directory, STATUS_NAME))
+    except OSError:
+        pass
+
+
 def reboot_trigger() -> str | None:
     """The file whose creation makes the root fleet-reboot.path unit reboot the machine
     (set by the unit install_worker.sh writes); None when this install cannot reboot."""
     return os.environ.get(REBOOT_TRIGGER_ENV) or None
 
 
+def trigger_writable(path: str) -> bool:
+    """True when the agent can create the trigger file (its directory is writable)."""
+    return os.access(os.path.dirname(path) or ".", os.W_OK)
+
+
 def read_reboot_trigger(path: str) -> str | None:
-    """The reboot request id written to the trigger file, or None."""
+    """The reboot request id written to a trigger file, or None."""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             return fh.read().strip() or None
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 
+def settle_reboot_trigger(path: str) -> tuple[str | None, bool]:
+    """At agent start: (id of the last handled reboot request, whether a trigger was
+    left over). The trigger lives on tmpfs, so one still present means its reboot never
+    happened. It is moved to <path>.done: a trigger left in place would reboot the
+    machine whenever fleet-reboot.path starts again (install.sh re-run, enable --now),
+    and the .done copy keeps the id so the host's still-pending request is ignored
+    across agent restarts until the host gives up on it."""
+    left = read_reboot_trigger(path)
+    leftover = os.path.lexists(path)
+    if leftover:
+        try:
+            os.replace(path, path + DONE_SUFFIX)
+        except OSError:
+            pass
+    return left or read_reboot_trigger(path + DONE_SUFFIX), leftover
+
+
 def write_reboot_trigger(path: str, request_id: str) -> bool:
-    """Create the trigger file with the request id; False when it could not be written."""
+    """Create the trigger file (atomically, by rename, which fleet-reboot.path sees)
+    holding the request id; False when it could not be written."""
     try:
         _write_text_atomic(path, request_id + "\n", 0o644)
     except OSError:

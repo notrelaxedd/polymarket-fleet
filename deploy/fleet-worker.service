@@ -20,8 +20,12 @@ Nice=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet
+# /run/fleet (tmpfs) holds status.json, rewritten every heartbeat, and the reboot
+# trigger. systemd creates it owned by fleet and exempts it from ProtectSystem=strict.
+# 0750 like the state dir: status.json carries the last heartbeat reply (lease tokens).
+# Preserve=yes keeps it across restarts, self-update exits and crashes until reboot.
 RuntimeDirectory=fleet
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 PrivateTmp=yes
 MemoryMax=85%

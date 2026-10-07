@@ -2,6 +2,9 @@
 
 Very simple and clean. Phone first. No framework, no build step, no external assets
 (the dashboard is tailnet-only and phones may be offline from the public internet).
+The one exception is the 3D fleet page at `/fleet` (React + three.js from `fleet-ui/`,
+built by Vite inside the Docker image, fonts bundled, still no external assets); every
+other page, including the fleet cards at `/fleet/list`, is server-rendered as below.
 Step 7 (`docs/UI.md`) made every page answer one question in the first screen of a
 phone and put everything else one tap away; where the two documents disagree about
 layout or wording, `docs/UI.md` wins and this file follows it.
@@ -57,7 +60,9 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 - Owner auth is the same as the API (`Tailscale-User-Login` header, Origin check on POST).
   401, 403, 404, 405, 413 render a small HTML page explaining the cause, with a "Back to
   the dashboard" link. Every page is sent with anti-framing headers and
-  `Cache-Control: no-store`.
+  `Cache-Control: no-store`. The 3D page's hashed build files under `/fleet/assets/`
+  are the one exception to no-store: `private, max-age=31536000, immutable` (their names
+  change with every build); they need the owner login like every page.
 - Money: stored in cents, entered in dollars (server converts; `1,500` is a thousands
   group, `1,5` is refused, one billion dollars is the ceiling), shown as `$1,234.56`,
   with a sign for P&L (`+$6.57`, `-$1.20`, `$0.00`). (step 7) In lists, percentages have
@@ -71,10 +76,10 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   remembered), then two to four stats (2 columns on a phone, 4 from 700 px). The first
   screen of a phone (390x844) always holds the title and at least one stat.
 - Top bar (sticky): the wordmark "Fleet" with a house icon is the link to Home (`/`);
-  the nav has five labels, Fleet (`/fleet`), Jobs, Models, Trading, Settings, each with
-  `data-nav` and `aria-current="page"` on the current section (a job page counts as
-  Jobs, a model page as Models, the probe page as Trading, the enroll page as
-  Settings); the status cluster: mode pill (`PAPER` grey or `LIVE` green from
+  the nav has five labels, Fleet (`/fleet`, the 3D page), Jobs, Models, Trading,
+  Settings, each with `data-nav` and `aria-current="page"` on the current section (a job
+  page counts as Jobs, a model page as Models, the probe page as Trading, the enroll page
+  as Settings, the card view `/fleet/list` as Fleet); the status cluster: mode pill (`PAPER` grey or `LIVE` green from
   `settings.live_enabled`), (changed: step 7) the P&L of the current mode only,
   "paper +$6.57 today" (from `/api/pnl`, a link to Trading, red when negative; the
   other mode's figure and the all-time figures moved to the Trading stats), red KILL
@@ -122,11 +127,57 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 - "Recent": the last 5 settled bets as rows (game, mode, contract, time, a win/loss
   chip, the P&L), each linking to its model.
 
-## Fleet `/fleet` (changed: step 7, was `/`)
+## Fleet `/fleet`: the 3D control page (changed: the cards moved to `/fleet/list`)
+- A single-page app from `fleet-ui/` (React + three.js, Vite with base `/fleet/`), served
+  by `host/api/dashboard_fleet3d.py`: `GET /fleet` is the built `index.html`
+  (`Cache-Control: no-store`), `GET /fleet/` redirects to `/fleet`, and
+  `GET /fleet/assets/<file>` serves the hashed JavaScript, CSS and fonts (a path that
+  would leave `assets/` is a 404). All three sit behind the same owner check as every
+  page (`Tailscale-User-Login`, worker-IP refusal) and carry the anti-framing headers.
+  The build is looked up in `FLEET_UI_DIR`, then `host/fleet_ui/` (where the Docker image
+  copies it), then `fleet-ui/dist` (a local build). Without a build `/fleet` is a 503
+  page saying "run npm ci && npm run build in fleet-ui, or rebuild the Docker image",
+  with a link to the card view.
+- It talks only to the owner JSON API (`docs/FLEET_UI_CONTRACT.md`): `GET /api/fleet`
+  and `GET /api/fleet/events` every 3 s, `POST /api/workers/{id}/role` and
+  `POST /api/workers/{id}/reboot`. A chip in the corner reads "Live" while polls succeed
+  and "Disconnected" once one fails, until a poll succeeds again.
+- Views: the same machines drawn several ways (the scenes in `fleet-ui/src/scene/`:
+  rack, core, city, liquid, solar, constellation), switched from the page; every view
+  shows each machine's role, online state, CPU, RAM and temperature, and a reboot in
+  progress.
+- Machine list: every worker by name with its state, role and load; picking one (in the
+  list or in the scene) opens the inspector.
+- Inspector: the machine's name, host, role, online state and last heartbeat, CPU, RAM,
+  temperature, boot disk (flash, SSD, HDD) with its wear and GB written since boot, and
+  its current jobs (a trade job shows its game); one button per role (Idle, Backtest,
+  Search, Train, Trade) and Reboot. Reboot needs a worker that is online and was
+  installed with the reboot unit (`can_reboot`); otherwise the host answers 409 ("worker
+  is offline", or "this worker cannot reboot yet: re-run install.sh on it") and the page
+  shows that text.
+- Command bar, one line, worker names separated by spaces or commas:
+  - `reboot <workers>`: request a reboot of each;
+  - `stop <role>`: every worker in that role goes to Idle;
+  - `<role> on idle`: every idle worker takes that role;
+  - `<role> <workers>`: those workers take that role.
+  Roles are the ids or short names from `/api/fleet` `roles`. A command that moves any
+  worker into or out of `trade` asks for a confirm first (leaving trade cancels that
+  worker's open orders).
+- Event feed: newest first, from `GET /api/fleet/events` (audit rows: role changes by
+  the owner and the auto-role, enable and disable, enrollment, reboot requested and
+  done, kill and kill reset; job events of jobs on a worker: claimed, succeeded, failed,
+  released, lease expired, cancelled) plus what the page derives by comparing polls
+  (a machine going offline or coming back, a temperature crossing). Each line has a
+  tone: ok, hot (warnings), off (machine down or going down) or neutral.
+
+## Fleet cards `/fleet/list` (changed: step 7 put them at `/fleet`, the 3D page moved them here)
+- The phone-friendly view of the same fleet, linked as "3D view" (to `/fleet`) under its
+  title; the nav marks Fleet as current here too. Home's offline-worker rows link here.
 - Stats (inside `#fleet-grid`, so the 5 s refresh keeps them current): online / total,
   running a job, offline, switching role.
 - One card per worker, sorted by name, two columns from 700 px. A card is one row: the
-  status dot (green online < 15 s, amber stale 15-60 s, grey offline > 60 s, announced
+  status dot (green online below `online_after_seconds`, 30 s by default, amber stale up
+  to 60 s, grey offline after that, announced
   through `aria-label`), the name with a "stale"/"offline" and a "disabled" chip, a grey
   line with the state in words ("offline 1 h ago · disabled · no job") and the current
   jobs ("job: model_search 42%"; a held `trade` job reads "KC @ LV held", one per
@@ -136,12 +187,12 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   job; the menu has an "Open job: ..." link for each current job. A running job's progress bar (`role="progressbar"` with numeric
   `aria-valuenow`) sits on a thin line under the row; a held trade job has none.
 - Role `<select>` with idle / backtest / model_search / train / trade and a Set button
-  (hidden when JS auto-submits; `POST /workers/{id}/role`, redirect back to `/fleet`).
+  (hidden when JS auto-submits; `POST /workers/{id}/role`, redirect back to `/fleet/list`).
   While `switching` is true the grey line reads "switching to backtest (epoch 7)…" until
   the ack; the select is disabled only while the worker is online (the ack takes
   seconds). A stale or offline worker keeps its select enabled so a wrong pick can be
   undone before it comes back.
-- The menu: Disable or Enable (`POST /workers/{id}/enabled`, back to `/fleet`) and a
+- The menu: Disable or Enable (`POST /workers/{id}/enabled`, back to `/fleet/list`) and a
   Details disclosure with the stats line (`CPU 12% · RAM 1.2 / 7.7 GB · 3 s ago · v
   a1b2c3d4e5f6`), the id, hostname and Python version, and today's P&L of the worker (its
   share of `/api/pnl`).

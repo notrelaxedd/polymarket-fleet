@@ -66,3 +66,33 @@ jobs:
               sys.exit(1)
           print("fleet/ imports only stdlib")
           PY
+
+  fleet-ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: fleet-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fleet-ui/package-lock.json
+      - name: Assert no em-dash (U+2014) in fleet-ui/src
+        shell: bash
+        run: |
+          # Byte search, so the result does not depend on the runner's locale.
+          # grep exits 0 on a match, 1 on none, 2 on an error (a missing folder fails too).
+          status=0
+          LC_ALL=C grep -rnF $'\xe2\x80\x94' src index.html || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "em-dash (U+2014) found above: use a hyphen, colon or comma instead"
+            exit 1
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "grep failed with status $status"
+            exit "$status"
+          fi
+      - run: npm ci
+      - run: npm run build

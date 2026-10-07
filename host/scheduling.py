@@ -37,7 +37,7 @@ def get_worker(conn: psycopg.Connection, worker_id: str, for_update: bool = Fals
 
 def online_after(conn: psycopg.Connection) -> int:
     """Seconds after which a silent worker counts as offline."""
-    return get_int_setting(conn, "online_after_seconds", 15)
+    return get_int_setting(conn, "online_after_seconds", 30)
 
 
 IDLE_PICK_RETRIES = 4

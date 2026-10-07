@@ -33,7 +33,7 @@ def test_every_page_renders(client, make_worker):
     job = client.post("/api/jobs", json={"kind": "sleep", "params": {"seconds": 3}}).json()
     for path, needle in [
         ("/", '[data-page="home"] [data-card="attention"]'),
-        ("/fleet", f'[data-page="fleet"] [data-row="worker"][data-id="{w.id}"]'),
+        ("/fleet/list", f'[data-page="fleet"] [data-row="worker"][data-id="{w.id}"]'),
         ("/jobs", '[data-form="backtest"]'),
         (f"/jobs/{job['id']}", '[data-list="events"]'),
         ("/settings", '[data-form="trading"]'),
@@ -140,7 +140,7 @@ def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker
     w = make_worker("box1")
     r = client.post(f"/workers/{w.id}/role", data={"role": "backtest"}, follow_redirects=False)
     assert r.status_code == 303
-    assert r.headers["location"] == "/fleet" and flash_cookie(r) == "box1: switching to backtest (epoch 2)"
+    assert r.headers["location"] == "/fleet/list" and flash_cookie(r) == "box1: switching to backtest (epoch 2)"
     assert "httponly" in r.headers["set-cookie"].lower() and "samesite=lax" in r.headers["set-cookie"].lower()
     row = worker_row(conn, w.id)
     assert row["desired_role"] == "backtest" and row["role_epoch"] == 2 and row["auto_role"] is False
@@ -157,10 +157,10 @@ def test_role_form_flips_role_and_redirects_with_flash(client, conn, make_worker
 def test_enabled_form(client, conn, make_worker):
     w = make_worker("box1")
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "false"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/fleet" and flash_cookie(r) == "box1 disabled"
+    assert r.status_code == 303 and r.headers["location"] == "/fleet/list" and flash_cookie(r) == "box1 disabled"
     assert worker_row(conn, w.id)["enabled"] is False
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "true"}, follow_redirects=False)
-    assert r.headers["location"] == "/fleet" and flash_cookie(r) == "box1 enabled"
+    assert r.headers["location"] == "/fleet/list" and flash_cookie(r) == "box1 enabled"
     assert worker_row(conn, w.id)["enabled"] is True
 
 
@@ -237,12 +237,12 @@ def test_settings_form_converts_rejects_and_audits(client, conn):
         assert any(message in e for e in p.card("trading").texts(".error")), (bad, message)
         assert _value(p, "max_bet") == bad["max_bet"], "submitted values are kept"
     assert client.get("/api/settings").json()["max_bet_cents"] == 1250
-    r = client.post("/settings/fleet", data={"lease_seconds": "45", "heartbeat_seconds": "5",
+    r = client.post("/settings/fleet", data={"lease_seconds": "45", "heartbeat_seconds": "3",
                                               "online_after_seconds": "20", "max_expiries": ""}, follow_redirects=False)
     assert r.status_code == 303
     s = client.get("/api/settings").json()
     assert s["lease_seconds"] == 45 and s["online_after_seconds"] == 20 and s["max_expiries"] is None
-    r = client.post("/settings/fleet", data={"lease_seconds": "5", "heartbeat_seconds": "5",
+    r = client.post("/settings/fleet", data={"lease_seconds": "5", "heartbeat_seconds": "3",
                                               "online_after_seconds": "20", "max_expiries": ""}, follow_redirects=False)
     assert r.status_code == 400 and "lease_seconds must be between 10 and 3600" in r.text
     r = client.post("/settings/tz", data={"tz": "Europe/Berlin"}, follow_redirects=False)
@@ -375,7 +375,7 @@ def test_fleet_timing_is_checked_across_fields(client):
     assert "online_after_seconds must be greater than heartbeat_seconds (60)" in r.text
     assert _value(page(r.text), "heartbeat_seconds") == "60", "submitted values are kept"
     s = client.get("/api/settings").json()
-    assert (s["lease_seconds"], s["heartbeat_seconds"], s["online_after_seconds"]) == (30, 5, 15), "nothing stored"
+    assert (s["lease_seconds"], s["heartbeat_seconds"], s["online_after_seconds"]) == (30, 3, 30), "nothing stored"
     r = client.post("/settings/fleet", data={**data, "lease_seconds": "125", "online_after_seconds": "61"}, follow_redirects=False)
     assert r.status_code == 303
     assert client.post("/api/settings", json={"lease_seconds": 100}).status_code == 400, "judged against stored values"

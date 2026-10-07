@@ -55,7 +55,7 @@ def worker_items(workers: list[dict[str, Any]], now: datetime) -> list[dict[str,
         age = _age_s(now, w["last_heartbeat_at"])
         if w["enabled"] and (age is None or age > OFFLINE_AFTER_S):
             seen = "never seen" if age is None else f"last seen {age // 60} min ago"
-            out.append(_item(f"worker-{w['id']}", "warn", "offline", f"{w['name']} is offline", seen, "/fleet"))
+            out.append(_item(f"worker-{w['id']}", "warn", "offline", f"{w['name']} is offline", seen, "/fleet/list"))
     return out
 
 

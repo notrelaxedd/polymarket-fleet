@@ -401,7 +401,7 @@ def phase_dashboard(host: LiveHost, state_dir: str, worker_id: str, agent: Agent
 
     t_role = time.monotonic()
     resp = host.form(f"/workers/{worker_id}/role", {"role": "train"})
-    assert resp.headers["location"] in ("/", "/fleet") and flash_cookie(resp).startswith("e2e-box: switching to train")
+    assert resp.headers["location"] in ("/", "/fleet/list") and flash_cookie(resp).startswith("e2e-box: switching to train")
     card = _card(host.fragment(), worker_id)
     assert f"switching to train (epoch {epoch_before + 1})" in card.text, card.text
     select = card.one('select[name="role"]')

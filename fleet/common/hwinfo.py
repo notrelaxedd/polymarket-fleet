@@ -22,6 +22,7 @@ WEAR_FILE = "/run/fleet-wear/wear.json"
 # hwmon drivers that measure the CPU package; other sensors (disks, chipset, wifi)
 # are only used when none of these exist.
 CPU_SENSORS = ("coretemp", "k10temp", "zenpower", "cpu_thermal", "k8temp", "via_cputemp", "acpitz")
+VIRTUAL_DISKS = ("loop", "ram", "zram", "nbd")
 MIN_PLAUSIBLE_C = 1.0
 MAX_PLAUSIBLE_C = 125.0
 
@@ -113,15 +114,23 @@ def boot_disk(sys_root: str = SYS_ROOT, proc_root: str = PROC_ROOT) -> str | Non
         if found:
             return found
     if source and source.startswith("/dev/"):
-        return _disk_of(os.path.join(sys_root, "class", "block", os.path.basename(source)), sys_root)
+        # /dev/sda2 directly; /dev/mapper/vg-root or /dev/disk/by-uuid/... through the
+        # symlink to its dm-N or sdXN node.
+        for name in (os.path.basename(source), os.path.basename(os.path.realpath(source))):
+            found = _disk_of(os.path.join(sys_root, "class", "block", name), sys_root)
+            if found:
+                return found
     return None
 
 
 def boot_media(disk: str | None) -> str:
-    """flash (USB, removable, SD or eMMC), ssd, hdd or unknown."""
+    """flash (USB, removable, SD or eMMC), ssd, hdd or unknown (also for loop, ram and
+    network block devices, whose real medium is elsewhere)."""
     if not disk:
         return "unknown"
     name = os.path.basename(disk)
+    if name.startswith(VIRTUAL_DISKS):
+        return "unknown"
     if "/usb" in disk or name.startswith("mmcblk") or _read(os.path.join(disk, "removable")) == "1":
         return "flash"
     rotational = _read(os.path.join(disk, "queue", "rotational"))
