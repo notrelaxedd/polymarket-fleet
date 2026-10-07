@@ -256,6 +256,8 @@ User=fleet
 Group=fleet
 Environment=PYTHONPATH=/var/lib/fleet/app/current
 Environment=FLEET_STATE_DIR=/var/lib/fleet
+Environment=FLEET_RUN_DIR=/run/fleet
+Environment=FLEET_REBOOT_TRIGGER=/run/fleet/reboot
 ExecStart=/usr/bin/python3 -m fleet.worker run
 Restart=always
 RestartSec=3
@@ -265,6 +267,9 @@ Nice=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet
+RuntimeDirectory=fleet
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 PrivateTmp=yes
 MemoryMax=85%
 
@@ -272,7 +277,111 @@ MemoryMax=85%
 WantedBy=multi-user.target
 UNITEOF
 
+# Reboot from the dashboard: the agent (user fleet, no privileges) writes the request
+# id to /run/fleet/reboot after handing its jobs back; this root path unit reboots.
+cat > /etc/systemd/system/fleet-reboot.path <<'UNITEOF'
+[Unit]
+Description=Reboot when the fleet worker asks for it (polymarket-fleet)
+
+[Path]
+PathExists=/run/fleet/reboot
+Unit=fleet-reboot.service
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+cat > /etc/systemd/system/fleet-reboot.service <<'UNITEOF'
+[Unit]
+Description=Reboot requested from the fleet dashboard (polymarket-fleet)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl reboot
+UNITEOF
+
+# Disk wear: SMART needs root, so a root-owned script (never the fleet-owned app code)
+# writes /run/fleet-wear/wear.json once an hour. tmpfs only: nothing touches the disk.
+if ! command -v smartctl >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends smartmontools >/dev/null 2>&1 \
+      || echo "warning: could not install smartmontools; disk wear will show as not reported" >&2
+  fi
+fi
+mkdir -p /usr/local/lib/fleet
+cat > /usr/local/lib/fleet/wear.py <<'PY'
+# BEGIN fleet-wear
+"""Write SMART wear (percent of rated life used) per disk to /run/fleet-wear/wear.json."""
+import json, os, subprocess, sys, tempfile, time
+
+SKIP = ("loop", "ram", "zram", "sr", "dm-", "md", "fd", "nbd")
+# ATA attributes whose normalised value is the percent of life left.
+LIFE_LEFT_IDS = (231, 233, 177, 202, 169)
+
+
+def wear_from(data):
+    nvme = (data.get("nvme_smart_health_information_log") or {}).get("percentage_used")
+    if isinstance(nvme, (int, float)):
+        return float(nvme)
+    for page in (data.get("ata_device_statistics") or {}).get("pages") or []:
+        for row in page.get("table") or []:
+            if row.get("name") == "Percentage Used Endurance Indicator" and isinstance(row.get("value"), (int, float)):
+                return float(row["value"])
+    rows = {row.get("id"): row for row in (data.get("ata_smart_attributes") or {}).get("table") or []}
+    for attr in LIFE_LEFT_IDS:
+        value = (rows.get(attr) or {}).get("value")
+        if isinstance(value, (int, float)) and 0 <= value <= 100:
+            return float(100 - value)
+    return None
+
+
+def main(out_path="/run/fleet-wear/wear.json"):
+    devices = {}
+    for dev in sorted(os.listdir("/sys/block")):
+        if dev.startswith(SKIP):
+            continue
+        try:
+            proc = subprocess.run(["smartctl", "-j", "-a", "/dev/" + dev], capture_output=True, text=True, timeout=60)
+            pct = wear_from(json.loads(proc.stdout))
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            continue
+        if pct is not None:
+            devices[dev] = {"wear_pct": round(pct, 1)}
+    os.makedirs(os.path.dirname(out_path), mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(out_path))
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"at": int(time.time()), "devices": devices}, fh)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, out_path)
+
+
+if __name__ == "__main__":
+    main(*sys.argv[1:])
+# END fleet-wear
+PY
+chmod 755 /usr/local/lib/fleet /usr/local/lib/fleet/wear.py
+cat > /etc/systemd/system/fleet-wear.service <<'UNITEOF'
+[Unit]
+Description=Read disk wear for the fleet dashboard (polymarket-fleet)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/fleet/wear.py
+UNITEOF
+cat > /etc/systemd/system/fleet-wear.timer <<'UNITEOF'
+[Unit]
+Description=Hourly disk wear reading (polymarket-fleet)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+UNITEOF
+
 systemctl daemon-reload
+systemctl enable --now fleet-reboot.path >/dev/null 2>&1 || echo "warning: could not enable fleet-reboot.path" >&2
+systemctl enable --now fleet-wear.timer >/dev/null 2>&1 || echo "warning: could not enable fleet-wear.timer" >&2
 systemctl enable fleet-worker.service >/dev/null 2>&1 || true
 systemctl restart fleet-worker.service
 sleep 1

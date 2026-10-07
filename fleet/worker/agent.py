@@ -32,6 +32,15 @@ trade_tick_s; lost[] drops a trade job, preempt/cancel release it through the us
 released[] handshake, and a role change away from trade calls POST /api/v1/trade/release
 (bounded, one retry) before the ack heartbeat.
 
+Reboot (fleet UI): a heartbeat reply with `reboot: <request id>` makes an agent whose
+unit set FLEET_REBOOT_TRIGGER stop the way a SIGTERM would (runners drained and
+released, trade jobs handed back through the release handshake that cancels their
+orders, unsent posts flushed), then write the id to the trigger file; the root
+fleet-reboot.path unit sees the file and reboots. The trigger lives on tmpfs, so an id
+found there at start means that request was already handled (the reboot did not
+happen) and is ignored. Telemetry (temperature, boot media, wear, GB written since
+boot) is read from /sys each heartbeat (fleet.common.hwinfo) and never written to disk.
+
 Step 3: before a backtest, model_search, train or validate runner starts,
 fleet.worker.context refreshes the games cache and fetches the job's model into
 job["context"] (a failure fails the job); a result with create_models becomes a post
@@ -50,7 +59,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import fleet
-from fleet.common import http, sysinfo
+from fleet.common import http, hwinfo, sysinfo
 from fleet.worker import config, context, launch, posts, update
 from fleet.worker.posts import PendingPost
 from fleet.worker.runner import Runner
@@ -172,6 +181,11 @@ class Agent:
         self.last_error: str | None = None
         self._update_failed_at: float | None = None
         self._cpu = sysinfo.CpuMeter()
+        self._boot_disk = hwinfo.boot_disk()
+        self.boot_media = hwinfo.boot_media(self._boot_disk)
+        self.reboot_trigger = config.reboot_trigger()
+        self.reboot_id: str | None = None
+        self.reboot_done_id: str | None = None
         self.watchdog = MemoryWatchdog(
             fraction=self.options.watchdog_rss_fraction,
             ram_total_mb=self.options.ram_total_mb,
@@ -195,6 +209,7 @@ class Agent:
             return 0
         finally:
             self.shutdown()
+            self._request_reboot()
 
     def boot(self) -> bool:
         """Load worker.conf and any posts left unsent by an earlier run. False when the conf is missing (exit 78)."""
@@ -205,6 +220,8 @@ class Agent:
             log.error("worker.conf missing or unusable (%s); run enroll first", exc)
             return False
         self.pending_posts = [PendingPost.from_dict(p) for p in config.load_pending_posts(self.state_dir)]
+        if self.reboot_trigger:
+            self.reboot_done_id = config.read_reboot_trigger(self.reboot_trigger)
         if self.pending_posts:
             log.info("resending %d unsent post(s) from the previous run", len(self.pending_posts))
         log.info("worker %s, host %s, code %s", self.conf["worker_id"], self.conf["host_url"], self.code_version)
@@ -241,6 +258,8 @@ class Agent:
             "python_version": platform.python_version(),
             "code_version": self.code_version,
             "boot_id": sysinfo.boot_id(),
+            "can_reboot": self.reboot_trigger is not None,
+            "boot_media": self.boot_media,
         }
 
     def register_once(self) -> bool:
@@ -420,6 +439,10 @@ class Agent:
             "want_jobs": self.want_jobs(),
             "code_version": self.code_version,
             "skew_ms": self.skew_ms,
+            "temp_c": hwinfo.temp_c(),
+            "boot_media": self.boot_media,
+            "wear_pct": hwinfo.wear_pct(self._boot_disk),
+            "disk_gb_written": hwinfo.gb_written(self._boot_disk),
         }
 
     def wants_job(self) -> bool:
@@ -507,6 +530,8 @@ class Agent:
             self._forget_lost(str(job_id))
         for job in resp.get("claimed") or []:
             self._start_job(job)
+        if self._reboot_requested(resp):
+            return
         cancelled = {str(j) for j in (resp.get("cancel") or [])}
         role_change = self.desired_role != self.role or self.role_epoch != self.acked_epoch
         preempt_ids = [str(j) for j in (resp.get("preempt") or [])]
@@ -528,6 +553,31 @@ class Agent:
                 self._out_of_cycle_heartbeat(depth + 1)
             return
         self._maybe_self_update()
+
+    def _reboot_requested(self, resp: dict[str, Any]) -> bool:
+        """A new reboot request id in the reply: stop the agent (the shutdown path drains
+        and hands everything back) and remember the id for _request_reboot. False when
+        there is none, it was already handled, or this install cannot reboot."""
+        request = resp.get("reboot")
+        if not isinstance(request, str) or not request or request in (self.reboot_id, self.reboot_done_id):
+            return False
+        if self.reboot_trigger is None:
+            log.warning("reboot requested but this install has no reboot unit (re-run install.sh)")
+            self.reboot_done_id = request
+            return False
+        log.warning("reboot requested (%s): stopping runners and handing jobs back", request)
+        self.reboot_id = request
+        self.stop.set()
+        return True
+
+    def _request_reboot(self) -> None:
+        """After shutdown: write the request id to the trigger file (the root path unit reboots)."""
+        if self.reboot_id is None or self.reboot_trigger is None:
+            return
+        if config.write_reboot_trigger(self.reboot_trigger, self.reboot_id):
+            log.warning("reboot trigger written; the machine restarts now")
+        else:
+            log.error("could not write the reboot trigger %s", self.reboot_trigger)
 
     def _out_of_cycle_heartbeat(self, depth: int) -> None:
         """Report the new role right away: a short timeout and one immediate retry."""
