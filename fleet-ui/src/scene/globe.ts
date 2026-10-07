@@ -68,7 +68,7 @@ export const globe: Builder = (nodes) => {
     const orbit = circleLine(R, 0x14303d, 0.6);
     orbit.quaternion.copy(q);
     group.add(orb.g, arc, orbit, ...sparks);
-    return { orb, u, v, a: h * TAU, R, arcPos, arc, sparks, h };
+    return { orb, u, v, a: hashOf(n.id + 'a') * TAU, R, arcPos, arc, sparks, h };
   });
   const ctrl = new THREE.Vector3(), tmp = new THREE.Vector3();
   const bez = (out: THREE.Vector3, a: THREE.Vector3, c: THREE.Vector3, b: THREE.Vector3, f: number) =>

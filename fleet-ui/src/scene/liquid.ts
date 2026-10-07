@@ -38,6 +38,7 @@ export const liquid: Builder = (nodes, renderer) => {
   const nrm = new THREE.Vector3(), p0 = new THREE.Vector3(), up = new THREE.Vector3();
   const w = (cols - 1) * DX + RAD * 2, h = (rows - 1) * DY + RAD * 2 + 1.6;
   const dist = Math.max(27, fitDistance(w, h));
+  const compact = cols > 4; // labels would overlap: name only, details on the selected orb
 
   return {
     group, cam: [0, 0.5, dist], spin: 0,
@@ -72,7 +73,8 @@ export const liquid: Builder = (nodes, renderer) => {
         });
         it.ring.visible = sel === n.id;
         (it.ring.material as THREE.SpriteMaterial).rotation = t * 0.6;
-        setText(it.lab, n.online ? `${n.name} · ${Math.round(n.cpu)}% · ${tempText(n)}` : `${n.name} · off`, sel === n.id);
+        const full = n.online ? `${n.name} · ${Math.round(n.cpu)}% · ${tempText(n)}` : `${n.name} · off`;
+        setText(it.lab, compact && sel !== n.id ? n.name : full, sel === n.id);
       });
     },
   };

@@ -113,9 +113,12 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
     let current: View | null = null;
     let currentId: ViewId | null = null;
     let builtKey = '';
-    /** Build `id`; a rebuild of the same view (layout change) keeps the camera. */
+    let touched = false;
+    /** Build `id`. A rebuild of the same view (layout change) keeps the camera once the
+     * owner has moved it, and reframes it otherwise. */
     const build = (id: ViewId) => {
       const same = id === currentId;
+      if (!same) touched = false;
       currentId = id;
       if (current) { scene.remove(current.group); disposeView(current); }
       renderer.localClippingEnabled = false;
@@ -125,7 +128,7 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
       const target = new THREE.Vector3(...(current.target ?? [0, 0, 0]));
       const dist = target.distanceTo(new THREE.Vector3(...current.cam));
       controls.maxDistance = Math.max(95, dist * 1.6);
-      if (same) {
+      if (same && touched) {
         // keep the owner's angle and zoom, follow the new centre
         camera.position.add(target.clone().sub(controls.target));
         controls.target.copy(target);
@@ -133,7 +136,7 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
         const narrow = window.innerWidth > 1020 ? 1.28 : el.clientWidth < 620 ? 1.2 : 1;
         camera.position.set(...current.cam).sub(target).multiplyScalar(narrow).add(target);
         controls.target.copy(target);
-        controls.autoRotate = !calm && !!current.spin;
+        if (!same) controls.autoRotate = !calm && !!current.spin;
       }
       controls.autoRotateSpeed = current.spin ?? 0;
       controls.maxPolarAngle = current.maxPolar ?? Math.PI;
@@ -167,7 +170,8 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
       const h = current ? ray.intersectObjects(current.pick, false)[0] : undefined;
       return h ? (h.object.userData.id as string) : null;
     };
-    const onDown = (e: PointerEvent) => { downAt = [e.clientX, e.clientY]; controls.autoRotate = false; };
+    const onDown = (e: PointerEvent) => { downAt = [e.clientX, e.clientY]; controls.autoRotate = false; touched = true; };
+    const onWheel = () => { touched = true; };
     const onUp = (e: PointerEvent) => {
       if (Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 6) return;
       const id = hit(e);
@@ -177,6 +181,7 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
     renderer.domElement.addEventListener('pointerdown', onDown);
     renderer.domElement.addEventListener('pointerup', onUp);
     renderer.domElement.addEventListener('pointermove', onMove);
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: true });
 
     const clock = new THREE.Clock();
     let raf = 0, t = 0;
@@ -199,6 +204,7 @@ export default function Scene({ view, nodesRef, rolesRef, layoutKey, selected, o
       renderer.domElement.removeEventListener('pointerdown', onDown);
       renderer.domElement.removeEventListener('pointerup', onUp);
       renderer.domElement.removeEventListener('pointermove', onMove);
+      renderer.domElement.removeEventListener('wheel', onWheel);
       if (current) disposeView(current);
       starGeo.dispose();
       controls.dispose();

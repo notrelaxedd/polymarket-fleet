@@ -109,15 +109,22 @@ def test_reboot_hands_trade_jobs_back_through_the_release_handshake(host: FakeHo
     assert (run_dir / "reboot").read_text().strip() == rid
 
 
-def test_reboot_in_a_reply_with_a_role_change_skips_the_drain_and_stops(host: FakeHost, state_dir: str, run_dir: Path, enrolled: str) -> None:
-    agent = Agent(state_dir=state_dir, options=AgentOptions(heartbeat_seconds=HB, http_timeout=2.0))
-    assert agent.boot() and agent.register_once()
-    agent.desired_role, agent.role_epoch = "backtest", agent.role_epoch + 1
-    agent.handle_response({"reboot": "rb_1", "preempt": [], "claimed": []})
-    assert agent.stop.is_set() and agent.reboot_id == "rb_1"
-    assert agent.role == "idle", "the shutdown path, not a drain, hands everything back"
-    assert agent.run_forever() == 0, "run_forever on a set stop event goes straight to shutdown"
-    assert (run_dir / "reboot").read_text().strip() == "rb_1"
+def test_reboot_in_the_same_reply_as_a_role_change_stops_instead_of_draining(host: FakeHost, state_dir: str, run_dir: Path, enrolled: str) -> None:
+    host.set_desired_role(enrolled, "backtest")
+    agent = AgentThread(state_dir).start()
+    try:
+        job_id = host.enqueue_job("sleep", {"seconds": 10})
+        host.wait_for(_leased(host, job_id, min_elapsed=1), timeout=8.0)
+        with host.lock:  # both land in the next reply
+            host.set_desired_role(enrolled, "idle")
+            rid = host.request_reboot(enrolled)
+        assert _stopped(agent) == 0
+    finally:
+        agent.stop()
+    assert agent.agent.role == "backtest", "no drain: the shutdown path hands the job back"
+    assert host.releases(job_id)[0]["reason"] == "shutdown"
+    assert host.job(job_id)["status"] == "queued"
+    assert (run_dir / "reboot").read_text().strip() == rid
 
 
 @pytest.mark.parametrize("where", ["leftover", "done"])

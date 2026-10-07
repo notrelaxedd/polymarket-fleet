@@ -71,7 +71,7 @@ export const rack: Builder = (nodes) => {
     return { g, body, bodyMat, bar, barMat, led, disk, lab, plume, h: hashOf(node.id) };
   });
 
-  const s = Math.max(1, slots / 12, (racks * RACK_DX) / 14);
+  const s = Math.max(1, slots / 12, (racks * RACK_DX) / 22);
   const tx = 0.8;
   return {
     group, cam: [tx + 12.2 * s, 3.5 * s, 16 * s], target: [tx, 0, 0], spin: 0,

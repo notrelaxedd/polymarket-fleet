@@ -13,9 +13,9 @@ import { buildDistrict } from './cityDistrict';
 const G = 6.5;
 const CSS_TONE = { ok: 'var(--ok)', hot: 'var(--hot)', idle: 'var(--ok)', off: 'var(--off)' } as const;
 
-function makeHead() {
+function makeHead(compact: boolean) {
   const el = document.createElement('div');
-  el.className = 'lbl lbl-head';
+  el.className = 'lbl lbl-head' + (compact ? ' compact' : '');
   el.innerHTML = '<b></b><span></span><span></span>';
   const o = new CSS2DObject(el);
   o.center.set(0.5, 1);
@@ -106,7 +106,7 @@ export const city: Builder = (nodes) => {
     const beacon = sprite(0xffa733, 1.4, 0);
     const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 40, 8), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false }));
     beam.visible = false;
-    const lab = makeHead();
+    const lab = makeHead(nodes.length > 12);
     group.add(tower, pool, beacon, beam, lab);
     return { cvs, tex, side, top, tower, pool, beacon, beam, lab, edgeMat, hgt: 0.5, next: k * 0.09, h: hashOf(n.id) };
   });

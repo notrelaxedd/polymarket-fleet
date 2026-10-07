@@ -2,12 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent } from 'react';
 import Scene, { layoutKeyOf } from './Scene';
 import type { ViewId } from './Scene';
-import { DEFAULT_ROLES, HOT_AT, jobName, jobShort, setJobs, statusOf, toNodes } from './fleet';
+import { DEFAULT_ROLES, HOT_AT, jobName, jobShort, setJobs, toNodes } from './fleet';
 import type { FleetNode, Job, Role } from './fleet';
 import { ApiError, fetchEvents, fetchFleet, reboot, setRole } from './api';
 import type { FleetEvent } from './api';
 import { parseCommand } from './commands';
 import Inspector from './Inspector';
+import { tone } from './ui';
 
 const VIEWS: { id: ViewId; name: string }[] = [
   { id: 'city', name: 'Data city' },
@@ -22,9 +23,7 @@ const VIEWS: { id: ViewId; name: string }[] = [
 const POLL_MS = 3000;
 const LIVE_MS = 10000;
 const SHOW_EVENTS = 6;
-const TONE = { ok: 'var(--ok)', hot: 'var(--hot)', idle: 'var(--ok)', off: 'var(--off)' } as const;
 const EV_TONE: Record<string, string> = { ok: 'var(--ok)', hot: 'var(--hot)', off: 'var(--off)', fg: 'var(--fg)' };
-export const tone = (n: FleetNode) => ({ '--c': TONE[statusOf(n)] }) as CSSProperties;
 
 /** A feed line; `ts` is milliseconds on the server's clock. */
 interface Ev { key: string; ts: number; who: string; text: string; tone: string }
@@ -170,7 +169,7 @@ export default function App() {
     await withPending([n.id], async () => {
       try {
         await reboot(n.id);
-        log(n.name, 'Reboot requested; it restarts within a few seconds', 'off');
+        log(n.name, 'Reboot requested', 'off');
       } catch (e) {
         log(n.name, `Reboot refused: ${errText(e)}`, 'hot');
       }
@@ -224,21 +223,21 @@ export default function App() {
           <h1>polymarket-fleet</h1>
           <span className={'conn' + (live ? ' is-live' : '')} role="status">{live ? 'Live' : tried ? 'Disconnected' : 'Connecting'}</span>
         </div>
-        <dl className="stats">
+        {!signedOut && <dl className="stats">
           <div><dt>Online</dt><dd>{online.length}/{nodes.length}</dd></div>
           <div><dt>Working</dt><dd>{online.filter((n) => n.job !== 'idle').length}</dd></div>
           <div><dt>Hot</dt><dd className={hot ? 'warn' : ''}>{hot}</dd></div>
           <div><dt>Avg temp</dt><dd>{avg === null ? 'n/a' : `${avg.toFixed(0)}°C`}</dd></div>
-        </dl>
+        </dl>}
         <nav className="links" aria-label="Other pages">
           <a href="/fleet/list">List view</a>
           <a href="/">Dashboard</a>
         </nav>
-        <nav className="tabs" aria-label="3D view">
+        {!signedOut && <nav className="tabs" aria-label="3D view">
           {VIEWS.map((v) => (
             <button key={v.id} type="button" aria-pressed={view === v.id} onClick={() => pickView(v.id)}>{v.name}</button>
           ))}
-        </nav>
+        </nav>}
       </header>
 
       {signedOut ? (
@@ -293,7 +292,7 @@ export default function App() {
             <ul className="feed" aria-live="polite">
               {feed.map((e) => (
                 <li key={e.key} style={{ '--c': EV_TONE[e.tone] ?? 'var(--fg)' } as CSSProperties}>
-                  <time dateTime={new Date(e.ts).toISOString()}>{new Date(e.ts - skew.current).toLocaleTimeString('en-GB')}</time>
+                  <time dateTime={new Date(e.ts).toISOString()}>{new Date(e.ts).toLocaleTimeString('en-GB')}</time>
                   <span className="who">{e.who}</span><span className="txt" title={e.text}>{e.text}</span>
                 </li>
               ))}

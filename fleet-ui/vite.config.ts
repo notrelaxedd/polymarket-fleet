@@ -9,6 +9,8 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    // three.js alone is ~600 kB; one chunk is fine for a page served on the tailnet
+    chunkSizeWarningLimit: 1200,
   },
   server: {
     proxy: {

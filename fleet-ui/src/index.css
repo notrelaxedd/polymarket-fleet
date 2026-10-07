@@ -1,6 +1,3 @@
-@tailwind base;
-@tailwind utilities;
-
 /* Layout: one-screen control room. The 3D scene fills the stage; roster, inspector and console float over it as glass panels. Stacks to one column on a phone. */
 :root {
   color-scheme: dark;
@@ -31,7 +28,12 @@ button { cursor: pointer; }
 .top { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 28px; padding-block: 12px; padding-inline: 16px; border-bottom: 1px solid var(--line); background: var(--panel-solid); }
 .brand { display: flex; align-items: baseline; gap: 10px; }
 .brand h1 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: 0.04em; }
-.sim { padding: 1px 6px; border: 1px solid var(--line-strong); color: var(--dim); font-size: 10px; letter-spacing: 0.12em; }
+.conn { padding: 1px 7px; border: 1px solid var(--line-strong); color: var(--hot); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
+.conn::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
+.conn.is-live { color: var(--ok); }
+.links { display: flex; gap: 4px 16px; flex-wrap: wrap; }
+.links a { display: inline-flex; align-items: center; min-height: 36px; color: var(--dim); font-size: 12px; letter-spacing: 0.04em; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.links a:hover { color: var(--fg); text-decoration-color: var(--fg); }
 .stats { display: flex; flex-wrap: wrap; gap: 6px 22px; margin: 0; }
 .stats div { display: flex; align-items: baseline; gap: 7px; }
 .stats dt { color: var(--dim); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; }
@@ -44,7 +46,7 @@ button { cursor: pointer; }
 
 /* stage */
 .stage { position: relative; min-height: 0; overflow: hidden; }
-.scene { position: absolute; inset: 0; }
+.scene { position: absolute; inset: 0; z-index: 0; }
 .scene canvas { display: block; touch-action: none; }
 .scene.no-gl::after { content: '3D view needs WebGL, which this browser has turned off. The machine list still works.'; position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: var(--dim); }
 .labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -57,6 +59,7 @@ button { cursor: pointer; }
 .lbl-head b { font-family: var(--font-display); font-weight: 700; font-size: 12.5px; letter-spacing: 0.04em; color: var(--c); }
 .lbl-head span:nth-child(2) { color: var(--dim); }
 .lbl-head.is-sel { border-color: var(--fg); }
+.lbl-head.compact:not(.is-sel) span { display: none; }
 .lbl-head.is-sel b, .lbl-head.is-sel span:nth-child(2) { color: var(--ink); }
 .lbl-left { transform-origin: left center; margin-left: 50%; }
 .hint { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); margin: 0; color: var(--dim); font-size: 11px; letter-spacing: 0.06em; white-space: nowrap; pointer-events: none; }
@@ -65,19 +68,21 @@ button { cursor: pointer; }
 .panel h2 { margin: 0; font-family: var(--font-display); font-weight: 600; font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--dim); }
 
 /* roster */
-.roster { position: absolute; left: 16px; top: 16px; bottom: 16px; width: 252px; display: flex; flex-direction: column; min-height: 0; }
+.roster { position: absolute; left: 16px; top: 16px; bottom: 16px; width: 276px; display: flex; flex-direction: column; min-height: 0; }
 .roster h2 { padding: 12px 14px 8px; }
 .roster ul { list-style: none; margin: 0; padding: 0 6px 6px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
-.row { width: 100%; display: grid; grid-template-columns: 10px 26px minmax(0, 1fr) 46px 34px; align-items: center; gap: 9px; min-height: 40px; padding: 0 8px; background: transparent; border: 1px solid transparent; text-align: left; font-variant-numeric: tabular-nums; }
+.row { width: 100%; display: grid; grid-template-columns: 10px minmax(0, 1fr) 72px 30px 32px; align-items: center; gap: 8px; min-height: 40px; padding: 0 8px; background: transparent; border: 1px solid transparent; text-align: left; font-variant-numeric: tabular-nums; }
 .row:hover { background: rgba(69, 196, 245, 0.07); }
 .row[aria-pressed='true'] { border-color: var(--fg); background: rgba(223, 234, 240, 0.08); }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 8px var(--c); }
 .dot.off { background: transparent; box-shadow: none; border: 1.5px solid var(--off); box-sizing: border-box; }
-.row .id { font-weight: 700; }
+.row .id { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .job { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini { height: 5px; background: var(--line); }
 .mini i { display: block; height: 100%; background: var(--c); transition: width 0.9s linear; }
-.row .t { text-align: right; color: var(--c); }
+.row .t { text-align: right; color: var(--c); white-space: nowrap; }
+.empty { margin: 0; padding: 4px 14px 14px; color: var(--dim); }
+.empty a, .blocker a { color: var(--ok); }
 
 /* inspector */
 .inspector { position: absolute; right: 16px; top: 16px; width: 308px; max-height: calc(100% - 32px - 150px); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
@@ -87,9 +92,9 @@ button { cursor: pointer; }
 .pill.solid { background: var(--c); color: var(--ink); }
 .facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
 .facts dt { color: var(--dim); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; }
-.facts dd { margin: 0; }
+.facts dd { margin: 0; overflow-wrap: anywhere; }
 .spark { display: block; width: 100%; height: 56px; }
-.meter { display: grid; grid-template-columns: 62px minmax(0, 1fr) 48px; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+.meter { display: grid; grid-template-columns: 62px minmax(0, 1fr) minmax(48px, auto); align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
 .meter .k { color: var(--dim); }
 .meter .bar { height: 8px; background: var(--line); }
 .meter .bar i { display: block; height: 100%; background: var(--c); transition: width 0.9s linear; }
@@ -100,9 +105,14 @@ button { cursor: pointer; }
 .btn:disabled { cursor: default; background: var(--ok); border-color: var(--ok); color: var(--ink); }
 .btn.wide { grid-column: 1 / -1; }
 .btn.go { background: var(--hot); border-color: var(--hot); color: var(--ink); }
+.btn.muted:disabled { background: transparent; border-color: var(--line); color: var(--dim); cursor: not-allowed; }
+.moves[aria-busy='true'] .btn:not(:disabled) { opacity: 0.6; cursor: progress; }
+.why { grid-column: 1 / -1; margin: 0; color: var(--dim); font-size: 12px; }
+.blocker { position: absolute; inset: 16px; display: grid; place-items: center; padding: 24px; text-align: center; }
+.blocker p { margin: 0; max-width: 34em; font-family: var(--font-display); font-weight: 600; font-size: 18px; letter-spacing: 0.02em; }
 
 /* console */
-.console { position: absolute; left: 284px; right: 16px; bottom: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.console { position: absolute; left: 308px; right: 16px; bottom: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .cmd { display: flex; gap: 8px; }
 .cmd label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 .cmd .prompt { display: grid; place-items: center; width: 28px; color: var(--ok); font-weight: 700; }
@@ -122,6 +132,7 @@ button { cursor: pointer; }
   html, body, #root { height: auto; }
   .app { height: auto; display: block; }
   .tabs { margin-left: 0; }
+  .blocker { position: static; margin: 16px; min-height: 240px; }
   .stage { overflow: visible; display: flex; flex-direction: column; gap: 12px; padding-block: 0 16px; }
   .scene { position: relative; inset: auto; height: 420px; }
   .roster, .inspector, .console { position: static; width: auto; max-height: none; margin-inline: 16px; }

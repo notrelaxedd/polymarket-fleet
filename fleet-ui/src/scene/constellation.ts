@@ -12,7 +12,7 @@ export const constellation: Builder = (nodes, _renderer, roles) => {
   const spread = Math.max(1, m / 5);
   const centres = roles.map((_, i) => {
     const a = Math.PI * 0.95 - (i / m) * TAU;
-    return new THREE.Vector3(Math.cos(a) * 11 * spread, Math.sin(a) * 6.5 * spread + 0.5, Math.sin(a * 2 + 0.6) * 4);
+    return new THREE.Vector3(Math.cos(a) * 11 * spread, Math.sin(a) * 5.5 * spread - 0.5, Math.sin(a * 2 + 0.6) * 4);
   });
   const OFF = new THREE.Vector3(16 * spread, -9 * spread, -7);
   const centreOf = (job: string, online: boolean) => {
