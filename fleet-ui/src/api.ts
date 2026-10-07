@@ -1,4 +1,4 @@
-// The owner API this page uses (docs/FLEET_UI_CONTRACT.md). Same origin, so the
+// The owner API this page uses (docs/PROTOCOL.md "Fleet UI additions"). Same origin, so the
 // Tailscale owner auth comes with the request; errors come back as {"detail": "..."}.
 import type { ApiFleet, ApiWorker, Job } from './fleet';
 

@@ -138,7 +138,7 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   copies it), then `fleet-ui/dist` (a local build). Without a build `/fleet` is a 503
   page saying "run npm ci && npm run build in fleet-ui, or rebuild the Docker image",
   with a link to the card view.
-- It talks only to the owner JSON API (`docs/FLEET_UI_CONTRACT.md`): `GET /api/fleet`
+- It talks only to the owner JSON API (`docs/PROTOCOL.md`, "Fleet UI additions"): `GET /api/fleet`
   and `GET /api/fleet/events` every 3 s, `POST /api/workers/{id}/role` and
   `POST /api/workers/{id}/reboot`. A chip in the corner reads "Live" while polls succeed
   and "Disconnected" once one fails, until a poll succeeds again.

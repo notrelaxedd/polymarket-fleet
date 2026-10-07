@@ -10,7 +10,7 @@ bundled from `@fontsource`.
 
 - Polls `GET /api/fleet` every 3 s (and right after every action) and
   `GET /api/fleet/events?since=<newest ts seen>` every 3 s. The API is specified in
-  `docs/FLEET_UI_CONTRACT.md`.
+  `docs/PROTOCOL.md`, "Fleet UI additions".
 - Role buttons and the command bar call `POST /api/workers/{id}/role` with
   `{"role": "<role id>"}`; Reboot calls `POST /api/workers/{id}/reboot`. Any change into
   or out of `trade` asks for confirmation first. Errors show the host's `detail`.

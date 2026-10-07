@@ -87,7 +87,7 @@ export function hashOf(id: string): number {
   return (h >>> 0) / 4294967296;
 }
 
-/* ---------- API shapes (docs/FLEET_UI_CONTRACT.md) ---------- */
+/* ---------- API shapes (docs/PROTOCOL.md "Fleet UI additions") ---------- */
 
 export interface ApiJob { id: string; kind: string; status: string; progress: number | null; game?: string | null }
 

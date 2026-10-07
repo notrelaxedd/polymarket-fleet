@@ -2,7 +2,7 @@
 
 The page is a React + three.js build from fleet-ui/ (Vite, base '/fleet/'): one
 index.html and hashed files under assets/. This module only serves those files; the
-page itself talks to the owner JSON API (docs/FLEET_UI_CONTRACT.md). The router is
+page itself talks to the owner JSON API (docs/PROTOCOL.md "Fleet UI additions"). The router is
 included from host.api.dashboard, so every route here sits behind require_owner like
 the rest of the dashboard: no owner login, no page and no assets.
 

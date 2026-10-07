@@ -1,4 +1,4 @@
-"""Fleet UI host side (docs/FLEET_UI_CONTRACT.md): heartbeat machine health, the
+"""Fleet UI host side (docs/PROTOCOL.md "Fleet UI additions"): heartbeat machine health, the
 reboot request flow, the extended /api/fleet and the /api/fleet/events feed."""
 from __future__ import annotations
 

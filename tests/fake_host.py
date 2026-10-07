@@ -455,7 +455,7 @@ class FakeHost:
                     job["preempt_requested"] = True
 
     def request_reboot(self, worker_id: str, reboot_id: str | None = None) -> str:
-        """Make the next heartbeat replies carry `reboot: <id>` (docs/FLEET_UI_CONTRACT.md)."""
+        """Make the next heartbeat replies carry `reboot: <id>` (docs/PROTOCOL.md "Fleet UI additions")."""
         with self.lock:
             rid = reboot_id or "rb_" + secrets.token_hex(4)
             self.workers[worker_id]["reboot_id"] = rid

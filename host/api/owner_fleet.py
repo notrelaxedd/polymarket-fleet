@@ -1,5 +1,5 @@
 """Owner routes for the 3D fleet page: reboot a worker and the event feed
-(docs/FLEET_UI_CONTRACT.md, docs/PROTOCOL.md "Fleet UI additions")."""
+(docs/PROTOCOL.md "Fleet UI additions")."""
 from __future__ import annotations
 
 from typing import Any

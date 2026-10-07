@@ -1,4 +1,4 @@
--- Fleet UI (docs/FLEET_UI_CONTRACT.md, docs/PROTOCOL.md "Fleet UI additions"): the
+-- Fleet UI (docs/PROTOCOL.md "Fleet UI additions"): the
 -- machine health a worker reports on each heartbeat, whether its install can reboot
 -- itself, and the owner's pending reboot request. Heartbeats move to every 3 s and a
 -- worker counts as offline after 30 s without one; a value the owner changed stays.

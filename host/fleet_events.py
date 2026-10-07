@@ -3,7 +3,7 @@ about workers and the kill switch, as short plain-English lines.
 
 Keys are `a:<audit_log.id>` and `j:<job_events.id>`; `who` is the worker's name or
 `fleet` for fleet-wide rows; `tone` is ok (normal), hot (warning), off (machine going
-down) or fg (neutral). See docs/FLEET_UI_CONTRACT.md.
+down) or fg (neutral). See docs/PROTOCOL.md "Fleet UI additions".
 """
 from __future__ import annotations
 

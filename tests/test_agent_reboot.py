@@ -1,4 +1,4 @@
-"""Reboot requests and hardware telemetry in the worker agent (docs/FLEET_UI_CONTRACT.md,
+"""Reboot requests and hardware telemetry in the worker agent (docs/PROTOCOL.md "Fleet UI additions",
 "Worker -> host additions"), against tests/fake_host.py like tests/test_agent.py."""
 
 from __future__ import annotations
