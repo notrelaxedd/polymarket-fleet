@@ -137,7 +137,7 @@ html:not(.js) .js-only { display: none; }
 .topbar.killed a, .topbar.killed .wordmark, .topbar.killed .pnl, .topbar.killed #updated, .topbar.killed .pill { color: var(--red-text); }
 .topbar.killed .pill { border-color: var(--red-text); }
 .topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(4, 18, 26, 0.18); box-shadow: inset 0 -2px 0 var(--ink); }
-.killed-text { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; text-decoration: none; }
+.killed-text { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.02em; text-decoration: none; }
 .topbar .chip.chip-killed { background: var(--ink); border-color: var(--ink); color: var(--red); font-weight: 700; }
 /* the light ring is not visible on the red bar (or the red bottom nav): ink there */
 .topbar.killed :focus-visible { outline-color: var(--ink); }
@@ -353,7 +353,7 @@ dl.kv[data-list="timing"] dd { overflow-wrap: anywhere; }
    The in-game line of an assignment row is a .row-meta (one line, ellipsis); the
    `in-game` chip keeps its state colours and only adds a doubled accent ring, so it never
    reads as the thin sell outline. A stale state is the amber chip plus the muted line. */
-.chip.chip-ingame { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.chip.chip-ingame { border: 1px solid var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .row-ingame .chip { vertical-align: 1px; }
 .game-line, .ingame-p { font-variant-numeric: tabular-nums; }
 /* a stale game state and the probability computed on it are dimmed (grey, italic; no
@@ -387,8 +387,13 @@ fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-family: var(--font-
   .topbar-note { padding: 0 var(--s4) 0.15rem; }
   .killed-text { flex-basis: 100%; text-align: right; font-size: var(--fs-meta); }
   .status .pnl { font-size: var(--fs-meta); }
-  /* the wordmark and the mode pill take the first line, the P&L and KILL the second */
+  /* the wordmark, the mode pill and KILL take the first line, the P&L the second, then
+     the killed line and the banners */
+  .status > .pill { margin-left: 0; }
   .status > .btn-kill, .status > .chip-killed { margin-left: auto; }
+  .status > .pnl { order: 1; }
+  .status > .killed-text { order: 2; }
+  .status > .banner { order: 3; }
   .banner { font-size: var(--fs-meta); }
   .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; gap: 0; background: var(--card); border-top: 1px solid var(--line); padding: 0 env(safe-area-inset-right, 0px) var(--safe-bottom) env(safe-area-inset-left, 0px); }
   .nav a { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; gap: 3px; min-height: var(--nav-h); padding: var(--s1) 0; font-size: 0.75rem; letter-spacing: 0.06em; line-height: 1.1; color: var(--muted); }
@@ -602,6 +607,10 @@ label.check input { width: 20px; height: 20px; margin: 0; }
 .subnav { position: relative; gap: 0; margin: 0 0 var(--s3); }
 .subnav a { padding: 0 var(--s2); }
 .subnav .count { margin-left: var(--s1); }
+@media (max-width: 699.98px) {
+  /* the four sub-nav tabs and the approvals count fit 390 px */
+  .subnav a { padding: 0 6px; }
+}
 .card.machine, .card.secret, .card.outbound { padding: var(--s1) var(--s3) var(--s3); }
 .card.machine > .row, .card.secret > .row, .card.outbound > .row { border-top: 0; }
 .card.machine .row-main, .card.secret .row-main, .card.outbound .row-main { min-width: 0; }

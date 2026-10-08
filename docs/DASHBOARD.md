@@ -11,8 +11,9 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 
 ## Mechanics
 - Server-rendered Jinja2 templates under `host/templates/` (`base.html` + one per page +
-  fragments). Autoescape on. One stylesheet `host/static/style.css` (CSS variables, system
-  font stack, light and dark via `prefers-color-scheme`), one script `host/static/app.js`
+  fragments). Autoescape on. One stylesheet `host/static/style.css` (CSS variables, the 3D
+  page's dark look and fonts served from `host/static/fonts/`, one dark scheme; see
+  `docs/UI.md` "One site"), one script `host/static/app.js`
   (vanilla, no dependencies). Static files served by the app at `/static/`.
 - (step 7) Every page is built from the components in `host/templates/_ui.html`: `stat`
   (a big number with its label and an optional muted note; a link when it has a page),
@@ -526,7 +527,7 @@ replay), Models, the model pages (paper-ranked, flagged, snapshot-ranked, ingame
 Trading (with the in-game line, chips and the In-game feed), Settings, the market and
 game-state probe pages, the validate form and the New assignment form (also with an
 ingame_wp model preselected), at
-390x844 and 1280x800 in light and dark; then settings, trading, fleet and home with live
+390x844 and 1280x800 (dark, the one scheme); then settings, trading, fleet and home with live
 on, after an auto-kill, after a hand kill, and trading after the reset. Every capture
 runs the `docs/UI.md` assertions (`tests/hw/ui_checks.py`): no horizontal overflow,
 every chip has text, every `<details>` has a summary with text; at 390 px the h1 and a

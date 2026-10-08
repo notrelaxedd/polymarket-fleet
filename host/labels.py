@@ -121,7 +121,7 @@ SPECIAL_WORDS = {
     "epa": "EPA", "qb": "QB", "pbp": "PBP", "ingame": "In-Game", "ssd": "SSD", "hdd": "HDD",
 }
 SMALL_WORDS = frozenset({"a", "an", "the", "and", "or", "of", "to", "in", "on", "by", "for", "at", "per", "vs"})
-IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_\- ]*")
+IDENTIFIER = re.compile(r"[a-z0-9][a-z0-9_\-]*")  # one token: a phrase with spaces is already words
 
 
 def title_words(text: str) -> str:
@@ -138,8 +138,8 @@ def title_words(text: str) -> str:
 
 
 def label(value: Any, group: str | None = None) -> str:
-    """The human label of a machine identifier; "" for None. Text that is not a
-    lowercase identifier (a name, a sentence with capitals) comes back unchanged."""
+    """The human label of a machine identifier; "" for None. Text that is not one
+    lowercase token (a name, words with spaces, capitals) comes back unchanged."""
     if value is None:
         return ""
     text = str(value)

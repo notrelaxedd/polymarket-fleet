@@ -52,7 +52,7 @@ def test_fallback_turns_unknown_snake_case_into_title_case() -> None:
     assert label("lease_expired_twice") == "Lease Expired Twice"
     assert label("rejected_by_exchange") == "Rejected by Exchange", "small words stay lower case after the first"
     assert label("clock_skew") == "Clock Skew" and label("stale_book") == "Stale Book"
-    assert label("cancel-all") == "Cancel-All" and label("in-game model") == "In-Game Model"
+    assert label("cancel-all") == "Cancel-All" and label("ingame_stale") == "In-Game Stale"
     assert label("max_clv_roi") == "Max CLV ROI", "known abbreviations in capitals"
     assert label("settings_changed", "action") == "Settings Changed", "an unknown group falls through"
 
@@ -60,6 +60,7 @@ def test_fallback_turns_unknown_snake_case_into_title_case() -> None:
 def test_text_that_is_not_an_identifier_and_none() -> None:
     assert label(None) == ""
     assert label("KC @ LV") == "KC @ LV" and label("box1 (Pi)") == "box1 (Pi)"
+    assert label("owner cancel") == "owner cancel", "a phrase is already words"
     assert label(2025) == "2025"
 
 

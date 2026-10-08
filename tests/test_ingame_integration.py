@@ -38,7 +38,7 @@ def test_jobs_form_sends_ingame_eras_for_an_ingame_search(client, conn):
             "seasons_last": "", "ingame_train_first": "2014", "ingame_train_last": "2020", "ingame_validation_first": "2021",
             "ingame_validation_last": "", "target": "any_idle"}
     r = client.post("/jobs", data=data, follow_redirects=False)
-    assert r.status_code == 303 and flash_cookie(r).startswith("model_search job "), r.text
+    assert r.status_code == 303 and flash_cookie(r).startswith("Model Search job "), r.text
     job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
     params = job["params"]
     assert params["family"] == "ingame_wp" and "seasons" not in params
