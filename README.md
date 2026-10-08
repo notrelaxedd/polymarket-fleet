@@ -27,6 +27,8 @@ FLEET_PUBLIC_URL=https://<machine>.<tailnet>.ts.net
 FLEET_OWNER_LOGIN=<your tailscale login email>
 ```
 
+   To give a second person the dashboard, list both logins separated by a comma (`FLEET_OWNER_LOGIN=you@gmail.com,partner@gmail.com`), invite that person to your tailnet in the Tailscale admin console (Users, Invite users) and restart the host (`docker compose up -d host`). Every owner has the same powers, including KILL, the limits and the live switch; the audit log records which login did what.
+
 5. Start the stack. This now starts three services, `db`, `host` and `exchange`:
 
 ```powershell
@@ -84,6 +86,25 @@ Re-running the installer upgrades the worker and keeps its identity. Workers ins
 - Rebuild after pulling changes to `fleet-ui/`: `docker compose build host` then `docker compose up -d`. If `/fleet` says the 3D page has not been built, the image was built without it; rebuild it the same way.
 - Local development: start the host on `127.0.0.1:8080` with `FLEET_DEV=1` (see Development below), then `cd fleet-ui && npm ci && npm run dev`. Vite serves the page with live reload and passes `/api` to the host. Role and reboot buttons post from Vite's own origin, so start the host with that origin allowed too, for example `FLEET_ALLOWED_ORIGINS=http://127.0.0.1:8080,http://localhost:5173`. `npm run build` writes `fleet-ui/dist`, which a host started from the checkout serves at `/fleet`.
 - Workers: each existing worker needs the one-line install command run once more to get the reboot and wear units (`curl -fsSL https://<host>/install.sh | sudo bash -s -- https://<host>`; an installed box keeps its identity and needs no new token). Self-update only replaces the code, so until then the page says it cannot reboot that box. Heartbeats now come every 3 s and a box counts as offline after 30 s without one (Settings > Fleet).
+
+## Automatic updates from GitHub (Debian host)
+
+Workers always update themselves from the host. To have the host itself follow `main` on GitHub, install the update timer once on the host, as root, from the checkout:
+
+```bash
+cd /root/polymarket-fleet
+bash tools/host/install_autoupdate.sh
+```
+
+Every 5 minutes it fetches `main`, fast-forwards the checkout and runs `docker compose up -d --build`, so only the services whose image changed restart. The exchange is held back while any assigned game (paper or live) is in progress or kicks off within the hour, and follows on the first pass after that. If `/healthz` does not come back after an update, the host goes back to the last good commit and skips the bad one until a newer commit is pushed.
+
+- Logs: `journalctl -u fleet-autoupdate -n 50`
+- Run a pass now: `systemctl start fleet-autoupdate`
+- Restart the exchange now even though games are live: `bash tools/host/autoupdate.sh --force-exchange`
+- Pause: `touch /var/lib/fleet-autoupdate/hold`; resume: `rm /var/lib/fleet-autoupdate/hold`
+- Remove: `bash tools/host/install_autoupdate.sh --remove`
+
+Do not edit tracked files on the host: the update only fast-forwards and stops (with a message in the log) when the checkout has local changes. `.env`, `exchange.env` and `secrets.env` are not tracked and are never touched.
 
 ## How to test step 1
 

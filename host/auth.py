@@ -127,7 +127,9 @@ def check_owner(config: Config, login_header: str | None) -> str:
     login = (login_header or "").strip()
     if config.dev:
         return login or "dev"
-    if not config.owner_login:
+    # FLEET_OWNER_LOGIN holds one login or a comma separated list; every listed login is an owner.
+    owners = [o.strip().lower() for o in config.owner_login.split(",") if o.strip()]
+    if not owners:
         raise Unauthorized("FLEET_OWNER_LOGIN is not configured")
     if not login:
         raise Unauthorized(
@@ -136,8 +138,8 @@ def check_owner(config: Config, login_header: str | None) -> str:
         )
     # Logins are email addresses; compare them case-insensitively, in constant time.
     presented = login.lower().encode("utf-8", "surrogateescape")
-    expected = config.owner_login.lower().encode("utf-8")
-    if not secrets.compare_digest(presented, expected):
+    matches = [secrets.compare_digest(presented, owner.encode("utf-8")) for owner in owners]
+    if not any(matches):
         raise Unauthorized(
             f"owner login required: this device is signed in to Tailscale as {login!r},"
             f" but FLEET_OWNER_LOGIN is set to {config.owner_login!r}"

@@ -25,6 +25,20 @@ def test_owner_header_required_unless_dev(config, make_worker):
         assert c.get("/api/fleet").status_code == 200, "FLEET_DEV skips the header"
 
 
+def test_owner_login_may_list_several_owners(config):
+    shared = dataclasses.replace(config, dev=False, owner_login=" Owner@example.com , second@example.com,")
+    with TestClient(create_app(shared)) as c:
+        for login in ("owner@example.com", "SECOND@example.com"):
+            r = c.get("/api/fleet", headers={"Tailscale-User-Login": login})
+            assert r.status_code == 200, login
+        assert c.get("/api/fleet", headers={"Tailscale-User-Login": "third@example.com"}).status_code == 401
+        assert c.get("/api/fleet", headers={"Tailscale-User-Login": "owner@example.com,second@example.com"}).status_code == 401
+        assert c.get("/api/fleet").status_code == 401
+    blank = dataclasses.replace(config, dev=False, owner_login=" , ")
+    with TestClient(create_app(blank)) as c:
+        assert c.get("/api/fleet", headers={"Tailscale-User-Login": "owner@example.com"}).status_code == 401
+
+
 def test_origin_mismatch_is_403(client):
     assert client.post("/api/enroll-token", headers={"Origin": "http://evil.example"}).status_code == 403
     assert client.post("/api/enroll-token", headers={"Origin": "http://127.0.0.1:8080"}).status_code == 200
