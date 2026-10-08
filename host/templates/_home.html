@@ -31,7 +31,7 @@
   <ul class="rows" data-list="recent">
     {% for b in recent %}
     {% call ui.row("bet", b.id, "/models/" ~ b.model_id, b.game or b.event, b.mode ~ " · " ~ b.contract ~ " · " ~ (b.settled_at | ts)) %}
-    {{ ui.chip("ok" if b.result == "win" else "bad" if b.result == "loss" else "muted", b.result, key=b.result) }}
+    {{ ui.chip("ok" if b.result == "win" else "bad" if b.result == "loss" else "muted", b.result | label, key=b.result) }}
     <span class="row-value{% if b.pnl_cents < 0 %} neg{% endif %}">{{ b.pnl_cents | pnl }}</span>
     {% endcall %}
     {% endfor %}

@@ -58,11 +58,11 @@ def test_the_summaries_read_the_stored_values(client, conn):
     p = _settings(client)
     assert "max bet $25.00" in _summary(p, "settings-limits")
     assert "daily loss $1,000.00 paper" in _summary(p, "settings-limits")
-    assert _summary(p, "settings-trading").startswith("sim · participation 50.0%")
+    assert _summary(p, "settings-trading").startswith("Sim · participation 50.0%")
     assert "pregame only" in _summary(p, "settings-trading")
-    assert _summary(p, "settings-ingame") == "off by default · max bet $5.00 · min edge 5.0% · lag limit 20 s · feed espn · paper only"
+    assert _summary(p, "settings-ingame") == "off by default · max bet $5.00 · min edge 5.0% · lag limit 20 s · feed ESPN · paper only"
     robust = _summary(p, "settings-robustness")
-    assert "50 bets" in robust and "validation on" in robust and "forbids overfit, fragile" in robust
+    assert "50 bets" in robust and "validation on" in robust and "forbids Overfit, Fragile" in robust
     assert "search 2010-2021" in robust and "held out from 2022" in robust
     assert _summary(p, "settings-replay") == "decides 60 min before kickoff · sim prices off · signals every 24 h"
     assert "lease 30 s" in _summary(p, "settings-fleet") and "America/New_York" in _summary(p, "settings-fleet")
@@ -102,9 +102,9 @@ def test_a_rejected_post_keeps_the_stats_on_the_stored_values(client, conn):
     r = client.post("/settings/trade", data=data, follow_redirects=False)
     assert r.status_code == 400
     p = page(r.text)
-    assert p.stat("market-source").one(".stat-value").text == "sim", "the stored source, not the rejected one"
+    assert p.stat("market-source").one(".stat-value").text == "Sim", "the stored source, not the rejected one"
     assert p.input("market_source").one("option[selected]").attr("value") == "polymarket_us", "the form keeps what was typed"
-    assert _summary(p, "settings-trading").startswith("sim")
+    assert _summary(p, "settings-trading").startswith("Sim")
     stored = conn.execute("SELECT value FROM settings WHERE key = 'market_source'").fetchone()["value"]
     assert stored == "sim"
 
@@ -135,7 +135,7 @@ def test_stats_on_the_first_screen(client, conn):
     assert stats.start < p.first("details.disclosure").start, "the stats come before the groups"
     assert p.stat("live").one(".stat-value").text == "Off" and p.stat("live").target == "#live"
     assert p.stat("kill").one(".stat-value").text == "Off" and p.stat("kill").target == "#kill"
-    assert p.stat("market-source").one(".stat-value").text == "sim"
+    assert p.stat("market-source").one(".stat-value").text == "Sim"
     assert p.count("[data-live-state]") == 1, "the live state hook stays unique"
     enable_live(conn)
     client.post("/kill", follow_redirects=False)
@@ -151,7 +151,7 @@ def test_audit_rows_are_one_line_each(client, conn):
     client.post("/settings/tz", data={"tz": "Europe/Berlin"}, follow_redirects=False)
     p = _settings(client)
     rows = p.rows("audit")
-    assert rows and rows[0].one(".row-title").text.startswith("settings_changed")
+    assert rows and rows[0].one(".row-title").text.startswith("Settings Changed")
     assert "CET" in rows[0].one(".row-meta").text or "CEST" in rows[0].one(".row-meta").text
     assert _group(p, "settings-audit").one(".count").text == str(len(rows))
 
@@ -196,10 +196,10 @@ def test_summary_formats():
     out = settings_summary.summaries(s)
     assert out["summary_limits"].startswith("max bet $1,234.56 · daily loss $1,000.00 paper, $300.00 live · min edge 3.0% · Kelly 0.25")
     assert "exposure $50.00 live" in out["summary_trading"] and "orders after kickoff allowed" in out["summary_trading"]
-    assert "validation off" in out["summary_robustness"] and "forbids regime-dependent" in out["summary_robustness"]
+    assert "validation off" in out["summary_robustness"] and "forbids Regime Dependent" in out["summary_robustness"]
     assert "search from 2010" in out["summary_robustness"] and "held out 2022-2024" in out["summary_robustness"]
     assert "3 expiries" in out["summary_fleet"]
     assert out["summary_ingame"] == "off by default · max bet - · min edge - · lag limit - · feed off · paper only"
     ingame = {"trade_ingame": True, "ingame_max_bet_cents": 500, "ingame_min_edge": 0.05, "ingame_max_lag_s": 20,
               "gamestate_sources": ["espn", "yahoo"]}
-    assert settings_summary.ingame(ingame) == "on for new assignments · max bet $5.00 · min edge 5.0% · lag limit 20 s · feed espn, yahoo · paper only"
+    assert settings_summary.ingame(ingame) == "on for new assignments · max bet $5.00 · min edge 5.0% · lag limit 20 s · feed ESPN, Yahoo · paper only"

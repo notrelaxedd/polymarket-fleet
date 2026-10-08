@@ -17,11 +17,11 @@
   <div class="row">
     <span class="dot {{ m.dot }}" role="img" aria-label="{{ m.dot }}"></span>
     <div class="row-main">
-      <span class="row-title">{{ m.name }}{% if m.dot != 'online' %} {{ ui.chip("warn" if m.dot == "stale" or (m.dot == "offline" and m.enabled) else "muted", m.dot, key=m.dot) }}{% endif %}{% if not m.enabled %} {{ ui.chip("muted", "disabled", key="disabled") }}{% endif %}</span>
+      <span class="row-title">{{ m.name }}{% if m.dot != 'online' %} {{ ui.chip("warn" if m.dot == "stale" or (m.dot == "offline" and m.enabled) else "muted", m.dot | label, key=m.dot) }}{% endif %}{% if not m.enabled %} {{ ui.chip("muted", "Disabled", key="disabled") }}{% endif %}</span>
       <span class="row-flags">
         {{ ui.chip("muted", m.disk_label, key="disk", title="Disk type and size of the disk Docker uses") }}
         {{ ui.chip("muted", m.ram_label, key="ram") }}
-        {{ ui.chip(m.state_tone, m.state_word, key="state", title="State of the workload container on this machine") }}
+        {{ ui.chip(m.state_tone, m.state_word | label, key="state", title="State of the workload container on this machine") }}
         {% if m.low_disk %}{{ ui.chip("bad", "low disk", key="low-disk") }}{% endif %}
         {% if m.update_available %}{{ ui.chip("warn", "update available", key="update", title="A newer manifest or image was synced or published; this machine keeps what it was assigned until you apply it") }}{% endif %}
       </span>

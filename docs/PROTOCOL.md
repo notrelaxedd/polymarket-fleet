@@ -1282,8 +1282,8 @@ Agent side (fleet/worker/agent.py, deploy/install_worker.sh):
 
 ### Owner routes (same owner auth as every `/api` route)
 - `GET /api/fleet` adds top-level `roles` (`[{"id", "name", "short"}]` in display
-  order: idle Idle/Idle, backtest Backtest/Backtest, model_search Model search/Search,
-  train Training/Train, trade Trading/Trade) and `online_after_seconds` (int). Each
+  order: idle Idle/Idle, backtest Backtest/Backtest, model_search Model Search/Search,
+  train Training/Train, trade Trading/Trade, from host/labels.py) and `online_after_seconds` (int). Each
   worker adds `ram_pct` (used/total * 100, one decimal, null when unknown), `temp_c`,
   `boot_media`, `wear_pct`, `disk_gb_written` (as last reported, null when never),
   `seconds_since_heartbeat` (int by the database clock, null before the first
@@ -1321,7 +1321,9 @@ Agent side (fleet/worker/agent.py, deploy/install_worker.sh):
   | job `lease_expired` | Lost a <kind> job (no heartbeat) | hot |
   | job `cancelled` | Cancelled a <kind> job | fg |
 
-  `<kind>` reads test (sleep), backtest, validation, model search, training or trading.
+  `<kind>` reads Test Sleep, Backtest, Validation, Model Search, Training or Trading
+  (host/labels.py), and `<reason>` is the auto-kill reason code in Title Case
+  (`clock_skew` reads Clock Skew).
   Job events count only when they name a worker. Online/offline and temperature
   crossings are not stored; the page derives them by comparing polls.
 

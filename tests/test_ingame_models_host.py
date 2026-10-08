@@ -202,7 +202,7 @@ def test_leaderboard_lists_ingame_lineages_apart_with_their_validation(conn):
     assert board["ranked"][0]["paper"]["bets"] == 3, "the pooled paper record is unchanged"
     detail = leaderboard.model_detail(conn, best["id"])
     assert detail["is_ingame"] and detail["ingame"]["bets"] == 4 and detail["ingame_validation"]["n_plays"] == 25000
-    assert "beats vegas_wp over" in detail["ingame_reason"] and "paper only" in detail["ingame_reason"]
+    assert "beats Vegas WP over" in detail["ingame_reason"] and "paper only" in detail["ingame_reason"]
 
 
 def test_models_pages_show_the_ingame_group(client, conn):
@@ -219,7 +219,7 @@ def test_models_pages_show_the_ingame_group(client, conn):
     group = doc.one("#ingame").card("ingame")
     assert group.one(".disclosure-title").text == "In-game models" and not group.is_open
     row = group.row("ingame-model", model["id"])
-    assert row.chip("beats-vegas").text == "beats vegas_wp" and row.chip("paper_ok").text == "paper ok"
+    assert row.chip("beats-vegas").text == "beats Vegas WP" and row.chip("paper_ok").text == "Paper OK"
     assert row.one(".row-ingame").text == "in-game paper 1 bet · +$4.80", "one bet reads 1 bet"
     assert row.one('.menu [data-action="assign-ingame"]').target == f"/trading?ingame_model={model['id']}#assign"
     pre = doc.row("model", pregame["id"])
@@ -238,9 +238,9 @@ def test_models_pages_show_the_ingame_group(client, conn):
     assert detail.prop("fitted on").startswith("train seasons 2012-2021"), "fitted by the search, from its search-era seasons"
     assert "not trained week by week" in detail.prop("fitted on") and "not trained (search candidate)" not in detail.text
     heads = detail.one("table.ingame-calibration").select("thead th")
-    assert [h.text for h in heads] == ["p", "plays", "model", "actual", "vegas_wp"], "short headers fit a phone"
+    assert [h.text for h in heads] == ["p", "plays", "model", "actual", "Vegas WP"], "short headers fit a phone"
     assert [h.attr("title") for h in heads[2:]] == ["mean model probability", "mean outcome: how often the home team won",
-                                                     "mean vegas_wp probability"], "the long names stay as titles"
+                                                     "mean Vegas WP probability"], "the long names stay as titles"
     pre_page = page(client.get(f"/models/{pregame['id']}").text)
     assert pre_page.has('[data-action="replay-snapshots"]') and not pre_page.has("#ingame-validation")
     assert "in-game bets" not in pre_page.text and pre_page.prop("trained through"), "no in-game line on a pre-game model page"

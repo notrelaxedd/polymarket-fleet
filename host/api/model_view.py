@@ -10,6 +10,7 @@ import psycopg
 
 from host.api.models_view import counted, games_of
 from host.eligibility import DEFAULT_THRESHOLDS, ci_low, gate_limits, gate_metrics, model_flags
+from host.labels import label
 from host.paper_gate import DEFAULT_PAPER_THRESHOLDS, paper_stats
 from host.settings import get_setting
 from host.web import pct1, pvalue, signed_money, signed_pct
@@ -64,7 +65,7 @@ def backtest_misses(model: dict[str, Any], limits: dict[str, Any]) -> list[str] 
             out.append(f"a market test of p {float(rules['max_market_p']):.2f} or less (now {pvalue(p)})")
     forbidden = [f for f in model_flags(metrics, model.get("stress_metrics")) if f in (rules.get("forbid_flags") or [])]
     if forbidden:
-        out.append("no " + _join([f.replace("_", "-") for f in forbidden]) + " flag")
+        out.append("no " + _join([label(f, "flag") for f in forbidden]) + " flag")
     return out
 
 

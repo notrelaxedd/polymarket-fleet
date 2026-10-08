@@ -11,6 +11,7 @@ from typing import Any
 import psycopg
 
 from host import web
+from host.labels import label
 from host.scheduling import online_after
 from host.workloads.manifest import Manifest
 
@@ -224,12 +225,12 @@ def manifest_lines(manifest: dict[str, Any]) -> list[tuple[str, str]]:
            f"{res['memory_max_pct']}% of RAM" if res.get("memory_max_pct") else "none")
     secrets = f"{len(manifest.get('container_secrets') or [])} container, {len(manifest.get('host_only_secrets') or [])} host only"
     return [
-        ("Mode", rt.get("mode", "?") + (": " + ", ".join(rt["job_kinds"]) if rt.get("job_kinds") else "")),
+        ("Mode", label(rt.get("mode", "?")) + (": " + ", ".join(label(k, "kind") for k in rt["job_kinds"]) if rt.get("job_kinds") else "")),
         ("Protocol", str(manifest.get("protocol", "?"))),
         ("Needs", f"{size_label(res.get('min_ram_mb'))} RAM, {size_label(res.get('min_disk_mb'))} free disk"),
         ("Write heavy", "yes: refused on flash and unknown disks" if res.get("write_heavy") else "no"),
         ("Memory cap", cap), ("CPUs", str(res.get("cpus") or "no cap")), ("Network", str(rt.get("network", "bridge"))),
-        ("Outbound", (", ".join(actions) + ": every send waits for your approval") if actions else "none"),
+        ("Outbound", (", ".join(label(a) for a in actions) + ": every send waits for your approval") if actions else "none"),
         ("Secrets", secrets), ("Trading", "can place orders" if manifest.get("can_trade") else "no"),
     ]
 
@@ -311,7 +312,7 @@ def outbound_summary(kind: str, payload: Any) -> str:
     if kind == "email":
         return short_text(f"email to {data.get('to', '?')}: {data.get('subject', '')}")
     detail = data.get("message") or data.get("text") or ""
-    return short_text(f"{kind}: {detail}" if detail else kind)
+    return short_text(f"{label(kind)}: {detail}" if detail else label(kind))
 
 
 _OUTBOUND_COLS = """

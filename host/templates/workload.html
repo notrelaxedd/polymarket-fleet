@@ -29,7 +29,7 @@
   {% for m in machines %}
   {% set meta %}epoch {{ m.epoch }}{% if m.up is not none %} &middot; up {{ (m.up or 0) | ago | replace(' ago', '') }}{% endif %}{% if m.restarts %} &middot; {{ m.restarts }} restarts{% endif %}{% if m.mem_mb is not none %} &middot; {{ m.mem_mb }} MB{% endif %}{% endset %}
   {% call ui.row("machine", m.id, "/machines/" ~ m.id ~ "/logs", m.name, meta=meta, meta2=m.last_error) %}
-    {{ ui.chip(m.tone, m.word, key="state") }}
+    {{ ui.chip(m.tone, m.word | label, key="state") }}
     {% if m.update_available %}{{ ui.chip("warn", "update available", key="update") }}{% endif %}
   {% endcall %}
   {% endfor %}
@@ -49,9 +49,9 @@
 <ul class="rows" data-list="jobs-{{ kind }}">
 {% for j in list %}
 {% set meta %}{{ j.machine_name or 'any machine' }} &middot; {% if j.finished_age is not none %}{{ j.finished_age | ago }}{% else %}{{ j.age | ago }}{% endif %}{% endset %}
-{% call ui.row("job", j.id, None, j.kind ~ " " ~ (j.id | short), meta=meta, meta2=j.detail) %}
+{% call ui.row("job", j.id, None, (j.kind | label('kind')) ~ " " ~ (j.id | short), meta=meta, meta2=j.detail) %}
   {% if j.status == 'leased' %}{{ ui.bar(j.progress | bar_pct) }}{% endif %}
-  {{ ui.chip(j.tone, j.word, key=j.status) }}
+  {{ ui.chip(j.tone, j.status | label('status'), key=j.status) }}
   {% if j.cancellable %}
   {% call ui.menu() %}
   <form method="post" action="/workloads/{{ wl.name }}/jobs/{{ j.id }}/cancel" data-action="cancel">
@@ -72,12 +72,12 @@
 {% endcall %}
 
 {% if wl.is_jobs %}
-{% call ui.disclosure("workload-send", "Send a job", summary="Kinds: " ~ wl.kinds | join(", "), open=open_section == "send") %}
+{% call ui.disclosure("workload-send", "Send a job", summary="Kinds: " ~ wl.kinds | map("label", "kind") | join(", "), open=open_section == "send") %}
 <form method="post" action="/workloads/{{ wl.name }}/jobs" data-form="send-job" class="send">
   <div class="fields">
     <label>Kind
       <select name="kind">
-        {% for k in wl.kinds %}<option value="{{ k }}"{% if submitted.kind == k %} selected{% endif %}>{{ k }}</option>{% endfor %}
+        {% for k in wl.kinds %}<option value="{{ k }}"{% if submitted.kind == k %} selected{% endif %}>{{ k | label('kind') }}</option>{% endfor %}
       </select>
     </label>
     <label>Machine
@@ -154,7 +154,7 @@
   <header class="card-head"><h2>Pending approvals</h2><span class="count">{{ pending | length }}</span><a href="/outbound">Review</a></header>
   <ul class="rows" data-list="pending">
   {% for a in pending %}
-  {% set meta %}{{ a.kind }} &middot; {{ a.age | ago }}{% endset %}
+  {% set meta %}{{ a.kind | label }} &middot; {{ a.age | ago }}{% endset %}
   {% call ui.row("outbound", a.id, "/outbound#a-" ~ a.id, a.summary, meta=meta) %}
     {{ ui.chip("warn", "pending", key="pending") }}
   {% endcall %}

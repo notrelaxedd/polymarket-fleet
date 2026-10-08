@@ -100,7 +100,7 @@ def test_machine_grid(client, seeded):
     doc = get(client, "/machines")
     assert doc.row_ids("machine") == [seeded[k] for k in ("mini", "native", "old", "pi1", "pi2")], "sorted by name"
     pi1 = doc.row("machine", seeded["pi1"])
-    assert pi1.chip("disk").text == "flash 16 GB" and pi1.chip("ram").text == "4 GB RAM" and pi1.chip("state").text == "running"
+    assert pi1.chip("disk").text == "flash 16 GB" and pi1.chip("ram").text == "4 GB RAM" and pi1.chip("state").text == "Running"
     assert pi1.one(".dot").attr("aria-label") == "online" and not pi1.has('[data-chip="offline"]')
     select = pi1.one("select[name=workload]")
     assert select.attr("data-autosubmit") == "1" and not select.disabled and pi1.one("form.machine-assign").target == f"/machines/{seeded['pi1']}/assign"
@@ -109,8 +109,8 @@ def test_machine_grid(client, seeded):
     assert pi1.has('[data-action="logs"]') and pi1.has('[data-action="pin"]') and pi1.has('[data-action="disk-type"]')
     assert pi1.has('[data-action="details"]') and pi1.action("disable").has('input[name="enabled"][value="false"]')
     old = doc.row("machine", seeded["old"])
-    assert old.one(".dot").attr("aria-label") == "offline" and old.chip("offline").text == "offline" and old.chip("disk").text == "hdd 488 GB"
-    assert doc.row("machine", seeded["mini"]).chip("state").text == "starting"
+    assert old.one(".dot").attr("aria-label") == "offline" and old.chip("offline").text == "Offline" and old.chip("disk").text == "hdd 488 GB"
+    assert doc.row("machine", seeded["mini"]).chip("state").text == "Starting"
     assert doc.stat("online").prop("Machines online") == "4 / 5" and doc.stat("pinned").prop("Pinned") == "1"
 
 
@@ -183,17 +183,17 @@ def test_workload_detail(client, seeded):
     doc = get(client, "/workloads/hello")
     assert doc.one("h1").text == "hello" and doc.card("image").chip("image").text == "published"
     assert sw.DIGEST[:19] in doc.card("image").text
-    assert doc.card("machines").row_ids("machine") == [seeded["pi1"]] and doc.card("machines").chip("state").text == "running"
+    assert doc.card("machines").row_ids("machine") == [seeded["pi1"]] and doc.card("machines").chip("state").text == "Running"
     jobs = doc.card("jobs-running")
-    assert [r.chip_texts()[0] for r in jobs.rows("job")] == ["running", "queued"] and jobs.one(".bar").attr("aria-valuenow") == "40"
+    assert [r.chip_texts()[0] for r in jobs.rows("job")] == ["Running", "Queued"] and jobs.one(".bar").attr("aria-valuenow") == "40"
     assert jobs.row("job", seeded["job"]).action("cancel").target.endswith(f"/jobs/{seeded['job']}/cancel")
-    assert sorted(r.chip_texts()[0] for r in doc.card("jobs-done").rows("job")) == ["failed", "succeeded"]
+    assert sorted(r.chip_texts()[0] for r in doc.card("jobs-done").rows("job")) == ["Failed", "Succeeded"]
     form = doc.form("send-job")
     assert form.target == "/workloads/hello/jobs" and [o.attr("value") for o in form.select("select[name=kind] option")] == ["hello"]
     assert {o.attr("value") for o in form.select("select[name=target] option")} >= {"any", seeded["pi1"]}
     log = doc.card("logs").one("pre.log").text
     assert log.endswith("line 60") and "stdout line 11 " in log and "stdout line 10 " not in log and log.count("stdout line") == 50
-    assert "Mode" in doc.card("manifest").text and "hello" in doc.card("manifest").text
+    assert "Mode" in doc.card("manifest").text and "Jobs: Hello" in doc.card("manifest").text
     assert doc.card("outbound").row_ids("outbound") and doc.stat("approvals").text.startswith("1")
 
 
@@ -233,7 +233,7 @@ def test_outbound_page(client, conn, seeded):
     assert row.one("details.disclosure").attr("data-key") == f"outbound-{seeded['mail']}"
     assert '"subject": "Your demo site is ready for review"' in row.one("pre.payload").text and "demo-site" in row.text
     done = {r.attr("data-id"): r for r in doc.rows("outbound-done")}
-    assert sorted(r.chip_texts()[0] for r in done.values()) == ["failed", "rejected", "sent"]
+    assert sorted(r.chip_texts()[0] for r in done.values()) == ["Failed", "Rejected", "Sent"]
     assert any("550 mailbox full" in r.text for r in done.values())
 
 
@@ -269,7 +269,7 @@ def test_machine_enabled_and_disk_type_forms(client, conn, seeded):
     r = client.post(f"/machines/{m}/enabled", data={"enabled": "false"}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/machines" and flash_cookie(r) == "pi-1 disabled"
     assert conn.execute("SELECT enabled FROM machines WHERE id = %s", (m,)).fetchone()["enabled"] is False
-    assert get(client, "/machines").row("machine", m).chip("disabled").text == "disabled"
+    assert get(client, "/machines").row("machine", m).chip("disabled").text == "Disabled"
     r = client.post(f"/machines/{m}/disk-type", data={"disk_type": "hdd"}, follow_redirects=False)
     assert r.status_code == 303 and conn.execute("SELECT disk_type_override FROM machines WHERE id = %s", (m,)).fetchone()["disk_type_override"] == "hdd"
     client.post(f"/machines/{m}/disk-type", data={"disk_type": "auto"})

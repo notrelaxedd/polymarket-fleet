@@ -608,4 +608,4 @@ def test_open_orders_name_the_model_and_cancelled_orders_show_their_cause(client
     assert row.one(f'a[data-assignment="{s.assignment["id"]}"]').text == f"elo_blend {str(s.model['id'])[:8]}"
     orders.cancel_order(conn, o["id"], "owner", "owner cancel")
     row = page(client.get("/fragments/trading").text).card("orders").row("order", o["id"])
-    assert row.chip("cancelled").text == "cancelled" and "owner cancel" in row.text
+    assert row.chip("cancelled").text == "Cancelled" and "owner cancel" in row.text

@@ -288,7 +288,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     rejected = wait_for(order_in(host, aid, "rejected"), "a proposal rejected for daily_loss", timeout=15.0)
     assert rejected["reject_reason"] == "daily_loss" and rejected["cost_cents"] > LOW_DAILY_LOSS
     assert host.get(f"/api/orders/{rejected['id']}")["events"][-1]["detail"] == {"reason": "daily_loss"}
-    assert "daily_loss: daily loss limit" in page(host.client.get("/trading").text).card("orders").row("order", rejected["id"]).text
+    assert "Daily Loss: daily loss limit" in page(host.client.get("/trading").text).card("orders").row("order", rejected["id"]).text
     host.post("/api/settings", {"max_daily_loss_cents": daily_loss})
 
     # The next approval opens, the sim moves against it and it rests; KILL cancels it
@@ -395,17 +395,17 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, c
     assert record.startswith("1 game · 2 bets · ") and dollars in record, record
     trading = page(host.client.get("/trading").text)
     row = trading.row("assignment", aid)
-    assert row.chip("settled").text == "settled" and GAME_ID in row.text
+    assert row.chip("settled").text == "Settled" and GAME_ID in row.text
     listed = set(trading.row_ids("order"))
     for order_id in (first["id"], second["id"], third["id"], fourth["id"], rejected["id"]):
         assert str(order_id) in listed, order_id
-    assert "daily_loss: daily loss limit" in trading.card("orders").row("order", rejected["id"]).text
+    assert "Daily Loss: daily loss limit" in trading.card("orders").row("order", rejected["id"]).text
     fills = trading.card("fills")
     assert fills.rows("fill") and "No fills yet." not in fills.text
     ledger = trading.card("ledger")
     assert ledger.chip("ledger-ok").text == "OK" and "Replay of 1 bankroll" in ledger.text
     exchange = trading.card("exchange")
-    assert not exchange.has('[data-chip="exchange-down"]') and exchange.prop("source") == "sim"
+    assert not exchange.has('[data-chip="exchange-down"]') and exchange.prop("source") == "Sim"
     assert host.client.get("/fragments/trading").status_code == 200
     assert "ledger ok" in run_cli(["ledger-check"])
 

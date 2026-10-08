@@ -162,9 +162,9 @@ def test_fleet_new_fields_and_roles(client, conn, heartbeat, make_worker):
     assert body["roles"] == [
         {"id": "idle", "name": "Idle", "short": "Idle"},
         {"id": "backtest", "name": "Backtest", "short": "Backtest"},
-        {"id": "model_search", "name": "Model search", "short": "Search"},
-        {"id": "train", "name": "Training", "short": "Train"},
-        {"id": "trade", "name": "Trading", "short": "Trade"},
+        {"id": "model_search", "name": "Model Search", "short": "Model Search"},
+        {"id": "train", "name": "Training", "short": "Training"},
+        {"id": "trade", "name": "Trading", "short": "Trading"},
     ]
     assert body["settings"]["heartbeat_seconds"] == 3 and body["settings"]["online_after_seconds"] == 30
     workers = {x["name"]: x for x in body["workers"]}
@@ -213,12 +213,12 @@ def test_fleet_events_feed(client, conn, heartbeat, make_worker):
     texts = [(e["who"], e["text"], e["tone"]) for e in events]
     assert texts[0] == ("fleet", "Kill switch on by owner@example.com", "hot")
     assert ("box3", "Reboot requested by owner@example.com", "off") in texts
-    assert ("box3", "Took a backtest job", "ok") in texts
-    assert ("box3", "Moved to Model search by owner@example.com", "ok") in texts
+    assert ("box3", "Took a Backtest job", "ok") in texts
+    assert ("box3", "Moved to Model Search by owner@example.com", "ok") in texts
     assert ("box3", "Moved to Backtest by owner@example.com", "ok") in texts
-    claimed = next(e for e in events if e["text"] == "Took a backtest job")
+    claimed = next(e for e in events if e["text"] == "Took a Backtest job")
     assert claimed["key"].startswith("j:") and claimed["worker_id"] == w.id
-    moved = next(e for e in events if e["text"].startswith("Moved to Model search"))
+    moved = next(e for e in events if e["text"].startswith("Moved to Model Search"))
     assert moved["key"].startswith("a:") and moved["worker_id"] == w.id
     assert next(e for e in events if e["who"] == "fleet")["worker_id"] is None
 
@@ -255,8 +255,8 @@ def test_fleet_events_job_texts_and_auto_kill(client, conn, make_worker):
     kill.auto_kill(conn, "clock_skew", {"skew_ms": 40000})
     events = client.get("/api/fleet/events").json()["events"]
     texts = [(e["who"], e["text"], e["tone"]) for e in events]
-    assert ("box1", "A backtest job failed", "hot") in texts
-    assert texts[0] == ("fleet", "Kill switch on automatically: clock skew", "hot")
+    assert ("box1", "A Backtest job failed", "hot") in texts
+    assert texts[0] == ("fleet", "Kill switch on automatically: Clock Skew", "hot")
     assert not any(t[1].startswith("Kill switch on by") for t in texts), "the auto kill is one line"
 
 

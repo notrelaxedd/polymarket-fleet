@@ -3,8 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
+<meta name="color-scheme" content="dark">
 <title>{% block title %}Fleet{% endblock %}</title>
+<link rel="preload" href="/static/fonts/jetbrains-mono-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/chakra-petch-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
 </head>
@@ -29,7 +31,7 @@
 <body>
 <header id="topbar" class="topbar{% if topbar.killed %} killed{% endif %}">
   <div class="topbar-row">
-    <a class="wordmark" href="/" data-nav="home"{% if page_name == 'home' %} aria-current="page"{% endif %} title="Home"><svg class="wordmark-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/></svg>Fleet</a>
+    <a class="wordmark" href="/" data-nav="home"{% if page_name == 'home' %} aria-current="page"{% endif %} title="Home">polymarket-fleet</a>
     <nav class="nav" aria-label="Sections">
 {% for name, href, label, pages, icon in sections %}
 {% set current = page_name in pages or path == href or path.startswith(href ~ '/') %}

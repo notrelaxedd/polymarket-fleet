@@ -21,7 +21,7 @@ chips, the In-game feed group), settings (with the In-game group), the market pr
 page (the Exchange group's Probe button) and the game-state probe page (its "Probe
 game state" form, answered by a stubbed ESPN), plus the validate form and the New
 assignment form opened from a model and from an ingame_wp model, at 390x844 and
-1280x800 in light and dark;
+1280x800 (dark, the one scheme);
 then (seed_step5.py) settings, trading, fleet and home with live on, after an auto-kill,
 after a hand POST /kill, and trading after the reset.
 
@@ -64,7 +64,7 @@ from tests.pagecheck import page as parse  # noqa: E402
 
 DEFAULT_OUT = Path(os.environ.get("SCREENSHOT_DIR", "/tmp/screenshots"))
 VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
-SCHEMES = ("light", "dark")
+SCHEMES = ("dark",)  # one scheme: the site is dark only, like the 3D page
 # captures that open a form at the top on purpose: the form, not a stat, is their first screen
 FORM_FIRST = {"jobs-validate-form", "trading-assign", "trading-assign-ingame"}
 
@@ -188,10 +188,10 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             problems.extend(found)
             if phone and name.startswith("model"):
                 check_phone_tables(page, f"{name}-{width}-{scheme}", problems)
-            if name == "fleet" and phone and scheme == "light":
+            if name == "fleet" and phone and scheme == SCHEMES[0]:
                 page.reload(wait_until="networkidle")
                 check_refresh_counter(page, problems)
-            if name == "models" and width == "1280" and scheme == "light":
+            if name == "models" and width == "1280" and scheme == SCHEMES[0]:
                 check_models_desktop(page, problems)
             context.close()
 

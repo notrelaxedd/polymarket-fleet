@@ -13,26 +13,11 @@ from typing import Any
 import psycopg
 
 from host.errors import BadRequest
+from host.labels import label, role_names
+from host.settings import ROLES
 
-# The roles in display order with the names the fleet page shows.
-ROLE_NAMES = (
-    {"id": "idle", "name": "Idle", "short": "Idle"},
-    {"id": "backtest", "name": "Backtest", "short": "Backtest"},
-    {"id": "model_search", "name": "Model search", "short": "Search"},
-    {"id": "train", "name": "Training", "short": "Train"},
-    {"id": "trade", "name": "Trading", "short": "Trade"},
-)
-ROLE_LABEL = {role["id"]: role["name"] for role in ROLE_NAMES}
-
-# Job kinds as they read in "Took a <kind> job".
-KIND_LABEL = {
-    "sleep": "test",
-    "backtest": "backtest",
-    "validate": "validation",
-    "model_search": "model search",
-    "train": "training",
-    "trade": "trading",
-}
+# The roles in display order with the names the fleet page shows (host.labels).
+ROLE_NAMES = tuple(role_names(ROLES))
 
 AUDIT_ACTIONS = (
     "set_role", "auto_role", "auto_idle", "set_enabled", "worker_enrolled",
@@ -66,7 +51,7 @@ def _by(text: str, actor: str | None) -> str:
 
 def _role(detail: dict[str, Any]) -> str:
     role = detail.get("desired_role")
-    return ROLE_LABEL.get(str(role), str(role or "another role"))
+    return label(role, "role") if role else "another role"
 
 
 def audit_text(action: str, actor: str | None, after: dict[str, Any]) -> tuple[str, str]:
@@ -88,34 +73,34 @@ def audit_text(action: str, actor: str | None, after: dict[str, Any]) -> tuple[s
     if action == "kill":
         return _by("Kill switch on", actor), "hot"
     if action == "auto_kill":
-        reason = str(after.get("reason") or "unknown").replace("_", " ")
+        reason = label(after.get("reason") or "unknown")
         return f"Kill switch on automatically: {reason}", "hot"
     if action == "kill_reset":
         return _by("Kill switch off", actor), "ok"
-    return action.replace("_", " ").capitalize(), "fg"
+    return label(action, "action"), "fg"
 
 
 def job_text(event: str, kind: str | None, detail: dict[str, Any]) -> tuple[str, str]:
     """(text, tone) for one job event."""
-    label = KIND_LABEL.get(str(kind), str(kind or "a"))
+    name = label(kind, "kind") if kind else "a"
     if event == "claimed":
-        return f"Took a {label} job", "ok"
+        return f"Took a {name} job", "ok"
     if event == "succeeded":
-        return f"Finished a {label} job", "ok"
+        return f"Finished a {name} job", "ok"
     if event == "failed":
-        return f"A {label} job failed", "hot"
+        return f"A {name} job failed", "hot"
     if event == "lease_expired":
-        return f"Lost a {label} job (no heartbeat)", "hot"
+        return f"Lost a {name} job (no heartbeat)", "hot"
     if event == "cancelled":
-        return f"Cancelled a {label} job", "fg"
+        return f"Cancelled a {name} job", "fg"
     if event == "released":
         reason = detail.get("reason")
         if reason == "oom":
-            return f"Ran out of memory on a {label} job", "hot"
+            return f"Ran out of memory on a {name} job", "hot"
         if reason == "cancel" or detail.get("status") == "cancelled":
-            return f"Stopped a cancelled {label} job", "fg"
-        return f"Handed back a {label} job", "fg"
-    return f"{event.replace('_', ' ').capitalize()} ({label} job)", "fg"
+            return f"Stopped a cancelled {name} job", "fg"
+        return f"Handed back a {name} job", "fg"
+    return f"{label(event, 'event')} ({name} job)", "fg"
 
 
 EVENTS_SQL = """

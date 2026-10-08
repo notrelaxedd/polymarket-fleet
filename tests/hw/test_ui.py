@@ -50,8 +50,8 @@ def test_role_select_autosubmits_and_the_switching_line_clears_on_ack(page, serv
     with page.expect_navigation():
         page.select_option(_role(w.id), "train")
     assert page.url == fleet, "the redirect carries no flash in the query string"
-    assert page.text_content("[data-flash]") == "box1: switching to train (epoch 2)"
-    assert "switching to train (epoch 2)" in _card(page, w.id)
+    assert page.text_content("[data-flash]") == "box1: switching to Training (epoch 2)"
+    assert "switching to Training (epoch 2)" in _card(page, w.id)
     assert page.is_disabled(_role(w.id)), "an online worker's select is held while it acks"
     conn.execute(
         "UPDATE workers SET reported_role = 'train', acked_epoch = 2, last_heartbeat_at = now() WHERE id = %s", (w.id,)
@@ -90,7 +90,7 @@ def test_connection_lost_shows_in_the_sticky_bar_and_dims_the_grid(page, server,
     assert page.evaluate("document.body.classList.contains('conn-lost')")
     box = page.locator("#updated").bounding_box()
     assert box is not None and box["y"] < 140, f"the indicator sits in the top bar, not the footer: {box}"
-    assert page.evaluate("getComputedStyle(document.querySelector('.dot')).backgroundColor") == "rgb(156, 163, 175)"
+    assert page.evaluate("getComputedStyle(document.querySelector('.dot')).backgroundColor") == "rgb(115, 133, 143)", "the --off grey"
     assert float(page.evaluate("getComputedStyle(document.querySelector('[data-list=\"workers\"]')).opacity")) < 1
     page.unroute("**/fragments/fleet")
     page.wait_for_function("/^updated [0-2] s ago$/.test(document.getElementById('updated').textContent)", timeout=8_000)

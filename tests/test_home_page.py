@@ -74,7 +74,7 @@ def test_needs_attention_lists_each_signal(client, conn, make_worker):
     assert row.chip("offline").text == "offline" and row.one("a.row-main").target == "/fleet/list"
     row = p.row("attention", f"assignment-{assignment['id']}")
     assert row.one(".row-title").text == "KC @ LV: no eligible model" and row.chip("no-model").has_class("chip-bad")
-    assert row.one(".row-meta").text == "paper assignment active, model retired"
+    assert row.one(".row-meta").text == "paper assignment active, model Retired"
     row = p.row("attention", f"validate-{failed['id']}")
     assert row.one(".row-meta").text == "out of memory" and row.one("a.row-main").target == f"/jobs/{failed['id']}"
     later = insert_job(conn, "validate", status="succeeded", params=Jsonb({"model_id": str(model["id"])}))
@@ -117,7 +117,7 @@ def test_live_assignment_halted_by_a_lost_eligibility_needs_attention(client, co
     assert conn.execute("SELECT status FROM assignments WHERE id = %s", (aid,)).fetchone()["status"] == "halted"
     row = _home(client).row("attention", f"assignment-{aid}")
     assert row.one(".row-title").text == "KC @ LV: no eligible model" and row.chip("no-model").has_class("chip-warn")
-    assert row.one(".row-meta").text == "live assignment halted, model candidate"
+    assert row.one(".row-meta").text == "live assignment halted, model Candidate"
     assert row.one("a.row-main").target == "/trading#assignments"
     conn.execute("UPDATE games SET status = 'final' WHERE game_id = %s", (setup.game["game_id"],))
     assert f"assignment-{aid}" not in _home(client).row_ids("attention"), "a finished game needs nothing more"

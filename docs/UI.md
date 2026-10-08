@@ -27,7 +27,7 @@ and `docs/DASHBOARD.md` disagree about layout or wording, this document wins and
    type, not a list.
 2. Rows are one line on a phone (two at most). Details open on tap.
 3. Say it in words first, then the number: "beats the market by 0.6%" above "CLV 0.006".
-4. Colour means state, never decoration. Green = good or on, amber = attention, red =
+4. Colour means state, never decoration. Cyan = good or on, amber = attention, red =
    stop or loss, grey = idle or unknown. Each colour always also has a word.
 5. One action per row, the rest in a "..." menu (a `<details>` element, no JS needed).
 6. No generated paragraphs in lists. The one-paragraph summary lives on the detail page.
@@ -42,7 +42,8 @@ and `docs/DASHBOARD.md` disagree about layout or wording, this document wins and
   with a one-line header and an optional count), `.disclosure` (`<details>` styled as a
   card with a chevron), `.menu` (`<details>` that opens a short list of actions), `.bar`
   (progress). Spacing scale 4/8/12/16/24. Two type sizes for body and meta plus one
-  display size for stats. Light and dark via `prefers-color-scheme` as before.
+  display size for stats. One dark scheme for every viewer, the 3D page's look (see
+  "One site" below).
 - `host/static/app.js` keeps the refresh logic; it gains one thing: open `<details>` keep
   their open state across fragment refreshes (the fragment carries `data-key`, the
   script restores `open` by key). A group the server opens for a reason (an error, the
@@ -125,7 +126,7 @@ shown as a muted line under the input rather than beside it.
 - `tests/test_dashboard.py` and `tests/e2e_*.py`: keep every behavioural assertion
   (forms, redirects, flash, auth, banners), replace markup assertions with class-prefix
   or `data-*` lookups so a restyle does not break them again.
-- `tests/hw/screenshots.py` takes every page at 390 and 1280, light and dark, and
+- `tests/hw/screenshots.py` takes every page at 390 and 1280 (dark, the one scheme), and
   asserts: no horizontal overflow, every page's first screen (390x844) contains the
   title and at least one `.stat`, no list row taller than 88 px at 390, every `.chip`
   has text and none in a row title or flag line is cut, every `<details>` has a
@@ -133,6 +134,20 @@ shown as a muted line under the input rather than beside it.
   "..." menu item is the topmost thing under its centre (also with the connection lost).
 - A row-height audit test renders Models and Trading with 20 rows each and checks the
   page height at 390 px is under 6 screens.
+
+## One site
+The dashboard and the 3D page at `/fleet` share one look: the 3D page's dark control room.
+`host/static/style.css` defines the 3D page's palette under the same names and values as
+`fleet-ui/src/index.css` (`--void`, `--panel`, `--panel-solid`, `--line`, `--line-strong`,
+`--fg`, `--dim`, `--ok`, `--hot`, `--off`, `--ink`) plus a red, `--bad` `#ff6b6b`, and
+maps the dashboard's slots onto it: ok is cyan (`--ok`), warn amber (`--hot`), bad red,
+muted `--dim`; primary actions are the 3D page's amber `.btn.go`. Dark only
+(`color-scheme: dark`, no light scheme). Chakra Petch (500/600/700) sets headings,
+buttons, chips and the uppercase tracked labels, JetBrains Mono (400/500/700) the body
+and the data, both served from `host/static/fonts/` (latin subset, SIL OFL), nothing from
+a third party. Square corners, 1px line borders, numbers in tabular figures. The 3D page's
+header carries the dashboard's nav (the wordmark is Home, the five sections with Fleet
+current, a bottom bar with icons on a phone) next to its own status and "List view".
 
 ## Out of scope for step 7
 New data, new rules, new API endpoints, charts (a later step can add sparklines once

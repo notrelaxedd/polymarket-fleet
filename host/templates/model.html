@@ -9,7 +9,7 @@
 {% block content %}
 <h1>{{ model.family }} <span class="params">{{ model.short_params }}</span></h1>
 {% if model.is_ingame %}
-{{ ui.intro('model', 'One in-game lineage: how its win probability did on held-out plays against vegas_wp, its in-game paper record, and whether it may trade in-game on paper.') }}
+{{ ui.intro('model', 'One in-game lineage: how its win probability did on held-out plays against Vegas WP, its in-game paper record, and whether it may trade in-game on paper.') }}
 {% else %}
 {{ ui.intro('model', 'One lineage: its edge over the market, its record on held-out seasons and on paper, and what it still needs before it can trade live.') }}
 {% endif %}
@@ -23,7 +23,7 @@
     <span class="verdict-text">{{ verdict.text }}</span>
   </p>
   {% if model.is_ingame %}
-  <span class="caption">Log-loss scores each predicted probability against what happened, lower is better; vegas_wp is nflverse's own in-game win probability, the baseline to beat.</span>
+  <span class="caption">Log-loss scores each predicted probability against what happened, lower is better; Vegas WP is nflverse's own in-game win probability, the baseline to beat.</span>
   {% else %}
   <span class="caption">CLV is the closing price minus the price paid: above zero means the market moved the model's way after it bought.</span>
   {% endif %}
@@ -82,8 +82,8 @@
     {% endif %}
     <dt>created</dt><dd>{{ model.created_at | ts }}{% if model.created_by_job_id %} by job <a href="/jobs/{{ model.created_by_job_id }}">{{ model.created_by_job_id | short }}</a>{% endif %}</dd>
     {% if model.is_ingame %}
-    <dt>held-out validation</dt><dd>{% if iv %}log-loss {{ iv.log_loss | fixed }} vs vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays | num }} plays{% if iv.seasons %} ({{ iv.seasons | season_span }}){% endif %} {% if iv.beats_baseline %}{{ ui.chip('ok', 'beats vegas_wp', key='beats-vegas', extra='chip-beats') }}{% else %}{{ ui.chip('warn', 'does not beat vegas_wp', key='loses-vegas') }}{% endif %}{% else %}<span class="muted">not validated</span>{% endif %}</dd>
-    <dt>status rule</dt><dd>{{ model.ingame_reason }}<span class="caption">Paper ok needs a log-loss at or below vegas_wp over at least 10,000 plays; in-game orders are paper only.</span></dd>
+    <dt>held-out validation</dt><dd>{% if iv %}log-loss {{ iv.log_loss | fixed }} vs Vegas WP {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays | num }} plays{% if iv.seasons %} ({{ iv.seasons | season_span }}){% endif %} {% if iv.beats_baseline %}{{ ui.chip('ok', 'beats Vegas WP', key='beats-vegas', extra='chip-beats') }}{% else %}{{ ui.chip('warn', 'does not beat Vegas WP', key='loses-vegas') }}{% endif %}{% else %}<span class="muted">not validated</span>{% endif %}</dd>
+    <dt>status rule</dt><dd>{{ model.ingame_reason }}<span class="caption">Paper OK needs a log-loss at or below Vegas WP over at least 10,000 plays; in-game orders are paper only.</span></dd>
     <dt>in-game paper record</dt><dd>{% if model.ingame %}{{ n(model.ingame.games, 'game') }} &middot; {{ n(model.ingame.bets, 'bet') }} &middot; {{ model.ingame.pnl_cents | pnl }}<span class="caption">CLV is a pre-game measure, so it is not defined in-game.</span>{% else %}<span class="muted">no in-game bets yet</span>{% endif %}</dd>
     {% else %}
     <dt>validation shrunk ROI</dt><dd>{% if model.validated %}{{ model.score | signed_pct(2) }}{% else %}<span class="muted">not validated</span>{% endif %}<span class="caption">ROI x bets / (bets + 100): few bets pull it toward zero. The rank key.</span></dd>
@@ -186,7 +186,7 @@
   {% for a in assignments.rows %}
   {% call ui.row('assignment', a.id, '/trading', a.game, meta=a.when ~ ' · ' ~ a.mode ~ ' · model ' ~ (a.model_id | short)) %}
     {% if a.mode == 'live' %}{{ ui.chip('bad', 'LIVE', key='live', extra='chip-live') }}{% endif %}
-    {{ ui.chip(a.state, a.status, key=a.status) }}
+    {{ ui.chip(a.state, a.status | label, key=a.status) }}
     <span class="row-value {{ a.realized_pnl_cents | tone }}">{{ a.realized_pnl_cents | pnl }}</span>
   {% endcall %}
   {% endfor %}
@@ -206,7 +206,7 @@
   {% set lm %}{% if r.trained_through %}trained through {{ r.trained_through[0] }} week {{ r.trained_through[1] }}{% else %}untrained{% endif %} · {{ r.created_at | ts }}{% endset %}
   {% call ui.row('lineage', r.id, '/models/' ~ r.id, lt, meta=lm) %}
     {% set st = 'ok' if r.status in ('paper_ok', 'live_eligible') else 'muted' %}
-    {{ ui.chip(st, r.status.replace('_', ' '), key=r.status) }}
+    {{ ui.chip(st, r.status | label('model'), key=r.status) }}
     {% if r.created_by_job_id %}<a class="row-value" href="/jobs/{{ r.created_by_job_id }}">job {{ r.created_by_job_id | short }}</a>{% endif %}
   {% endcall %}
   {% endfor %}
@@ -217,9 +217,9 @@
 {% if model.jobs %}
 <ul class="rows" data-list="jobs">
   {% for j in model.jobs %}
-  {% call ui.row('job', j.id, '/jobs/' ~ j.id, j.kind, meta=(j.created_at | ts) ~ ' · ' ~ ('created this model' if j.created_model else 'ran against it')) %}
+  {% call ui.row('job', j.id, '/jobs/' ~ j.id, j.kind | label('kind'), meta=(j.created_at | ts) ~ ' · ' ~ ('created this model' if j.created_model else 'ran against it')) %}
     {% set js = 'ok' if j.status == 'succeeded' else 'bad' if j.status == 'failed' else 'warn' if j.status in ('queued', 'leased', 'running', 'waiting') else 'muted' %}
-    {{ ui.chip(js, j.status.replace('_', ' '), key=j.status) }}
+    {{ ui.chip(js, j.status | label('status'), key=j.status) }}
   {% endcall %}
   {% endfor %}
 </ul>

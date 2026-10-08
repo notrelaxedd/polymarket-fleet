@@ -8,6 +8,7 @@ from typing import Any
 
 import psycopg
 
+from host.labels import label
 from host.leaderboard import PAPER_RANK_BETS, PAPER_RANK_GAMES
 from host.web import pvalue, signed_money, signed_pct
 
@@ -68,7 +69,8 @@ def status_state(status: Any) -> str:
 
 
 def status_word(status: Any) -> str:
-    return str(status or "unknown").replace("_", " ")
+    """"paper_ok" -> "Paper OK": the chip word of a lineage status (host.labels)."""
+    return label(status or "unknown", "model")
 
 
 def _range(pair: Any) -> str | None:
@@ -141,7 +143,7 @@ def shape_entry(entry: dict[str, Any]) -> dict[str, Any]:
         "status_state": status_state(entry.get("status")),
         "status_word": status_word(entry.get("status")),
         "basis_title": BASIS_TITLES.get(str(entry.get("rank_mode")), ""),
-        "flags": [{"name": f, "state": FLAG_STATE.get(f, "warn"), "word": f.replace("_", "-"), "title": FLAG_TITLES.get(f, f)}
+        "flags": [{"name": f, "state": FLAG_STATE.get(f, "warn"), "word": label(f, "flag"), "title": FLAG_TITLES.get(f, f)}
                   for f in entry.get("flags") or []],
     }
     return entry

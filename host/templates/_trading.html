@@ -52,7 +52,7 @@
   {% if a.settle_ready %}
   <form method="post" action="/assignments/{{ a.id }}/settle" data-action="settle"><button type="submit" class="btn small primary">Settle now</button></form>
   {% endif %}
-  {{ ui.chip(tone("assignment", a.status), a.status, key=a.status) }}
+  {{ ui.chip(tone("assignment", a.status), a.status | label, key=a.status) }}
   {% call ui.menu() %}
     {% if a.settle_ready %}
     {% elif a.status == 'active' %}
@@ -93,7 +93,7 @@
 {% set title %}{{ order_line(o) }}{{ order_chips(o) }}{% endset %}
 {% set meta %}{{ o.market_title }}{% if o.exchange_order_id %} #{{ o.exchange_order_id }}{% endif %} &middot; {% if o.assignment_id %}<a href="/trading#assignments" class="assignment-link" data-assignment="{{ o.assignment_id }}">{{ o.family or 'model' }} {{ o.model_id | short }}</a>{% else %}no assignment{% endif %} &middot; {{ worker(o) }} &middot; {{ o.created_at | ts }}{% endset %}
 {% call ui.row("order", o.id, None, title, meta=meta, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
-  {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
+  {{ ui.chip(tone("order", o.status), o.status | label, key=o.status) }}
   {% if o.status != 'cancel_requested' %}
   {% call ui.menu() %}
     <form method="post" action="/orders/{{ o.id }}/cancel" data-action="cancel"><button type="submit" class="menu-item danger">Cancel</button></form>
@@ -137,9 +137,9 @@
 {% for o in orders %}
 {% set title %}{{ order_line(o, avg=True) }}{{ order_chips(o) }}{% endset %}
 {% set meta %}{{ o.market_title }} &middot; edge {{ o.edge | signed_pct }} (my {{ o.my_p | prob }} vs {{ o.market_p | prob }}) &middot; {{ worker(o) }}{% if o.family %} {{ o.family }} {{ o.model_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
-{% set why %}{% if o.reject_reason %}<span class="reason">{{ o.reject_reason }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% elif o.last_reason %}<span class="cause">{{ o.last_reason }}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
+{% set why %}{% if o.reject_reason %}<span class="reason">{{ o.reject_reason | label }}{% if o.reason_text and o.reason_text != o.reject_reason %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% elif o.last_reason %}<span class="cause">{{ o.last_reason | label }}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
 {% call ui.row("order", o.id, None, title, meta=meta, meta2=why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-kind": o.kind}) %}
-  {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
+  {{ ui.chip(tone("order", o.status), o.status | label, key=o.status) }}
 {% endcall %}
 {% endfor %}
 </ul>
@@ -172,10 +172,10 @@
 {% if markets %}
 <ul class="rows" data-list="markets">
 {% for m in markets %}
-{% set meta %}{{ m.game_id }} &middot; {{ m.side }} wins &middot; bid / ask {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; liquidity {{ m.liquidity_usd_cents | money }}{% if m.closing_price is not none %} &middot; close {{ m.closing_price | price }}{% endif %} &middot; {{ m.platform }}{% endset %}
+{% set meta %}{{ m.game_id }} &middot; {{ m.side }} wins &middot; bid / ask {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; liquidity {{ m.liquidity_usd_cents | money }}{% if m.closing_price is not none %} &middot; close {{ m.closing_price | price }}{% endif %} &middot; {{ m.platform | label('source') }}{% endset %}
 {% call ui.row("market", m.id, None, m.title, meta=meta, attrs={"data-market": m.id}) %}
   <span class="row-value" title="snapshot age"><span class="{% if m.snapshot_age_s is none or m.snapshot_age_s > 60 %}stale-age{% endif %}">{{ m.snapshot_age_s | ago }}</span></span>
-  {{ ui.chip(tone("market", m.status), m.status ~ ((" YES" if m.resolved_yes else " NO") if m.status == 'resolved' else ""), key=m.status) }}
+  {{ ui.chip(tone("market", m.status), (m.status | label) ~ ((" YES" if m.resolved_yes else " NO") if m.status == 'resolved' else ""), key=m.status) }}
 {% endcall %}
 {% endfor %}
 </ul>
@@ -191,7 +191,7 @@
 {% if unmatched %}
 <ul class="rows" data-list="unmatched">
 {% for m in unmatched %}
-{% set meta %}guess {% if m.game_id %}{{ m.game_id }} {{ m.side }} ({{ (m.mapping_confidence or 0) | pct }}){% else %}none{% endif %} &middot; book {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; {{ m.snapshot_age_s | ago }} &middot; {{ m.platform }} {{ m.market_ref }}{% endset %}
+{% set meta %}guess {% if m.game_id %}{{ m.game_id }} {{ m.side }} ({{ (m.mapping_confidence or 0) | pct }}){% else %}none{% endif %} &middot; book {{ m.best_bid | price }} / {{ m.best_ask | price }} &middot; {{ m.snapshot_age_s | ago }} &middot; {{ m.platform | label('source') }} {{ m.market_ref }}{% endset %}
 {% call ui.row("market", m.id, None, m.title, meta=meta, attrs={"data-market": m.id}) %}
   {% call ui.menu("Link to a game") %}
     <form method="post" action="/markets/{{ m.id }}/link" class="menu-form link-form" data-form="link" data-action="link">
@@ -220,11 +220,11 @@
 
 <section class="trading-group exchange{% if exchange.down %} is-down{% endif %}" id="exchange" data-card="exchange">
 {% set auth_word = "auth ok" if exchange.auth_ok else ("auth failed" if exchange.auth_checked_at else "auth not checked") %}
-{% set summary %}{{ ui.chip("bad" if exchange.down else "ok", "DOWN" if exchange.down else "up", key="exchange-down" if exchange.down else "exchange-up") }} {{ exchange.market_source or 'no source' }} &middot; heartbeat {{ exchange.heartbeat_age_s | ago }} &middot; {{ auth_word }}{% endset %}
+{% set summary %}{{ ui.chip("bad" if exchange.down else "ok", "DOWN" if exchange.down else "up", key="exchange-down" if exchange.down else "exchange-up") }} {{ exchange.market_source | label('source') or 'no source' }} &middot; heartbeat {{ exchange.heartbeat_age_s | ago }} &middot; {{ auth_word }}{% endset %}
 {% call ui.disclosure("trading-exchange", "Exchange", summary=summary, open=exchange.down and live_orders) %}
 <dl class="props">
   <dt>heartbeat</dt><dd>{{ exchange.heartbeat_age_s | ago }}{% if exchange.heartbeat_at %} <span class="muted">{{ exchange.heartbeat_at | ts }}</span>{% endif %}</dd>
-  <dt>source</dt><dd>{{ exchange.market_source or '-' }}</dd>
+  <dt>source</dt><dd>{{ exchange.market_source | label('source') or '-' }}</dd>
   <dt>auth</dt><dd class="c-auth">{% if exchange.auth_ok %}{{ ui.chip("ok", "ok", key="auth-ok") }}{% elif exchange.auth_checked_at %}{{ ui.chip("bad", "failed", key="auth-failed") }}{% else %}<span class="muted">not checked</span>{% endif %}{% if exchange.auth_checked_at %} <span class="muted">checked {{ exchange.auth_age_s | ago }}</span>{% endif %} &middot; credentials {{ 'yes' if exchange.credentials_present else 'no' }}{% if exchange.clock_skew_ms is not none %} &middot; skew {{ exchange.clock_skew_ms }} ms{% endif %}</dd>
   <dt>balance</dt><dd class="c-balance">{% if exchange.balance_cents is not none %}{{ exchange.balance_cents | money }}{% else %}<span class="muted">-</span>{% endif %} &middot; buying power {% if exchange.buying_power_cents is not none %}{{ exchange.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}{% if exchange.balance_checked_at %} <span class="muted">{{ exchange.balance_age_s | ago }}</span>{% endif %}</dd>
   <dt>live orders</dt><dd class="c-live-orders">{{ live_open }} open{% if live_cancel_pending %}, {{ live_cancel_pending }} cancel pending{% endif %}{% if smoke_orders %} {{ ui.chip("warn", smoke_orders ~ " smoke", key="smoke", extra="chip-smoke") }}{% endif %}</dd>

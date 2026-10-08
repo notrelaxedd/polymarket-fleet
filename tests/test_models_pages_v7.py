@@ -50,7 +50,7 @@ def test_gate_misses_in_words() -> None:
     weak = {"validation_metrics": validation_metrics(n_bets=30, roi=0.01, ci_roi=(-0.02, 0.05), market_p=0.3, flags=["overfit"])}
     assert backtest_misses(weak, DEFAULT_THRESHOLDS) == [
         "50 bets (30 so far)", "an ROI of at least +2.0% (now +1.0%)", "an ROI range starting at +0.0% or more (now -2.0%)",
-        "a market test of p 0.10 or less (now p = 0.300)", "no overfit flag",
+        "a market test of p 0.10 or less (now p = 0.300)", "no Overfit flag",
     ]
 
 
@@ -80,17 +80,17 @@ def test_models_list_rows_menu_and_stats(client, conn):
         assert all(chip.text for chip in row.select(".chip")), "every chip has a word"
         assert set(row.actions()) == {"open", "train", "validate", "assign", "retire"}
     first = ranked.row("model", best["id"])
-    assert first.chip("live_eligible").text == "live eligible" and first.chip("live_eligible").has_class("chip-ok")
+    assert first.chip("live_eligible").text == "Live Eligible" and first.chip("live_eligible").has_class("chip-ok")
     assert "K 40 · HFA 70 · MOV on" in first.one(".row-title").text
     assert ranked.row("model", other["id"]).chip("candidate").has_class("chip-muted")
     unranked = p.card("unranked")
     assert unranked.tag == "details" and not unranked.is_open and unranked.one("summary .count").text == "2"
     assert unranked.one(".disclosure-title").text == "Unranked"
     old = unranked.row("model", retired["id"])
-    assert old.chip("retired").text == "retired" and old.one(".row-meta").text.startswith("retired 120 held-out bets")
+    assert old.chip("retired").text == "Retired" and old.one(".row-meta").text.startswith("Retired 120 held-out bets")
     assert old.actions() == ["open", "train"], "a retired lineage can only be trained or opened"
     new = unranked.row("model", fresh["id"])
-    assert new.one(".row-meta").text == "candidate not validated · search era 20 bets" and new.chip("unvalidated").text == "not validated"
+    assert new.one(".row-meta").text == "Candidate not validated · search era 20 bets" and new.chip("unvalidated").text == "not validated"
     assert chr(0x2014) not in html
 
 
@@ -118,7 +118,7 @@ def test_model_page_stats_verdict_and_disclosures(client, conn):
     assert p.prop("Backtest ROI") == "+4.0%" and "on 120 held-out bets" in p.stat("backtest-roi").text
     assert p.prop("Edge vs market") == "-" and p.prop("Paper") == "-" and "no paper games yet" in p.stat("paper").text
     verdict = head.one(".verdict")
-    assert verdict.chip("paper_ok").text == "paper ok" and verdict.attr("data-verdict") == "warn"
+    assert verdict.chip("paper_ok").text == "Paper OK" and verdict.attr("data-verdict") == "warn"
     assert verdict.one(".verdict-text").text == (
         "Not yet eligible for live: no paper games yet. It needs 10 paper games and 40 paper bets over 21 days, a paper "
         "profit, an average CLV of at least +0.0% and a CLV interval above zero.")
@@ -253,4 +253,4 @@ def test_counts_read_one_game_one_bet(client, conn):
     _scores(conn, root, "2026_05_KC_LV", n_bets=1, pnl=150, clv=0.02)
     p = page(client.get(f"/models/{root['id']}").text)
     assert p.stat("paper").one(".stat-note").text == "1 game · 1 bet" and "on 1 held-out bet" in p.stat("backtest-roi").text
-    assert "paper ok 1 held-out bet · range " in page(client.get("/models").text).row("model", root["id"]).one(".row-meta").text
+    assert "Paper OK 1 held-out bet · range " in page(client.get("/models").text).row("model", root["id"]).one(".row-meta").text
