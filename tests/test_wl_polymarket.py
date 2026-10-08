@@ -33,7 +33,7 @@ from host.workloads.manifest import load_manifest
 
 REPO = Path(__file__).resolve().parent.parent
 WORKLOAD = REPO / "workloads" / "polymarket"
-PINNED_CODE_VERSION = "dbf3f177ff3a"
+PINNED_CODE_VERSION = "82d9430db365"
 EM_DASH = chr(0x2014)
 REAL_RUN = subprocess.run
 

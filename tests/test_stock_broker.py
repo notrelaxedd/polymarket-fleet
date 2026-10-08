@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from host.exchange import cli, stock_broker, stock_ops, stock_tasks
+from host.exchange import cli, stock_broker, stock_marks, stock_ops, stock_tasks
 from host.exchange.alpaca_trading import AlpacaAuthError, AlpacaRateLimited, AlpacaTimeout
 from host.exchange.stock_executor import StockExecutor
 from tests.fake_alpaca import KEY, SECRET, FakeAlpaca, ny
@@ -91,6 +91,29 @@ def test_paper_reconciliation_warns_about_positions_and_foreign_orders(conn) -> 
     assert [m["symbol"] for m in result["mismatches"]] == ["MSFT"], "a symbol with an order in flight is not compared"
 
 
+def test_an_open_order_of_a_closed_row_an_old_smoke_or_the_other_mode_is_not_ours(conn) -> None:
+    s = stock_setup(conn, mode="live")
+    oid = one(conn, s, qty=2)["order_id"]
+    conn.execute("UPDATE stock_orders SET status = 'expired' WHERE id = %s", (order_row(conn, oid)["id"],))
+    fake = FakeAlpaca(now=ny(DAY, 11), environment="live")
+    fake.place_direct("AAPL", 2, client_id=str(oid))  # Alpaca shows it late: it would fill unbooked
+    result = stock_broker.Reconciler().run(conn, fake.client(), db_now(conn))
+    assert [u["client_order_id"] for u in result["unknown_orders"]] == [str(oid)]
+    assert result["auto_killed"] == "unknown_order" and killed(conn)
+    conn.execute("UPDATE settings SET value = 'false' WHERE key = 'kill_switch'")
+    paper = FakeAlpaca(now=ny(DAY, 11))
+    smoke = paper.place_direct("SPY", 1, client_id=stock_broker.SMOKE_PREFIX + "old")
+    smoke["created_at"] = (db_now(conn) - timedelta(minutes=20)).isoformat()
+    young = paper.place_direct("TSLA", 1, client_id=stock_broker.SMOKE_PREFIX + "new")
+    young["created_at"] = db_now(conn).isoformat()
+    conn.execute("UPDATE stock_orders SET status = 'open' WHERE id = %s", (order_row(conn, oid)["id"],))
+    result = stock_broker.Reconciler().run(conn, paper.client(), db_now(conn))
+    assert [u["client_order_id"] for u in result["unknown_orders"]] == [stock_broker.SMOKE_PREFIX + "old"]
+    assert result["other_mode_orders"] == 1 and not killed(conn)
+    message = next(w["message"] for w in broker(conn)["warnings"] if w["kind"] == "other_mode_orders")
+    assert "1 live order(s) are active but the keys are paper" in message
+
+
 def test_live_reconciliation_auto_kills_on_a_repeated_mismatch_and_an_unknown_order(conn) -> None:
     s = stock_setup(conn, mode="live")
     set_position(conn, s.assignment["id"], "AAPL", 4)
@@ -106,20 +129,28 @@ def test_live_reconciliation_auto_kills_on_a_repeated_mismatch_and_an_unknown_or
     assert stock_broker.Reconciler().run(conn, fake.client(), db_now(conn))["auto_killed"] == "unknown_order" and killed(conn)
 
 
-def test_marks_after_the_close_use_the_bar_or_alpacas_price_once(conn, monkeypatch) -> None:
-    calls: list[Any] = []
-    monkeypatch.setattr("host.stocks.eligibility.recompute", lambda c, model_id, *a, **k: calls.append(model_id))
+def _mark_setup(conn) -> Any:
     s = stock_setup(conn, bankroll=1_000_000)
     conn.execute("UPDATE stock_assignments SET created_at = %s WHERE id = %s", (ny(DAY, 10), s.assignment["id"]))
     set_position(conn, s.assignment["id"], "AAPL", 10, 100_000)
     set_position(conn, s.assignment["id"], "SPY", 2, 80_000)
     conn.execute("UPDATE stock_assignments SET cash_cents = 820_000 WHERE id = %s", (s.assignment["id"],))
-    add_bars(conn, "AAPL", [DAY], close=105.0)
+    return s
+
+
+def test_marks_wait_for_the_sessions_bars_and_fall_back_to_alpaca_after_the_deadline(conn, monkeypatch) -> None:
+    calls: list[Any] = []
+    monkeypatch.setattr("host.stocks.eligibility.recompute", lambda c, model_id, *a, **k: calls.append(model_id))
+    s = _mark_setup(conn)
+    add_bars(conn, "AAPL", [DAY], close=105.0, fetched_at=ny(DAY, 18))
     fake = FakeAlpaca(now=ny(DAY, 16, 20))
     fake.positions, fake.current_prices = {"AAPL": Decimal(10), "SPY": Decimal(2)}, {"SPY": Decimal("410.5")}
-    marker = stock_broker.Marker()
+    marker = stock_marks.Marker()
     assert marker.run(conn, fake.client(), fake.now)["marked"] == 0, "the previous session predates the assignment"
     fake.now = ny(DAY, 16, 31)
+    result = marker.run(conn, fake.client(), fake.now)
+    assert (result["session"], result["marked"], result["waiting_for_bars"]) == (DAY.isoformat(), 0, ["SPY"])
+    fake.now = ny(DAY, 16) + stock_marks.MARK_DEADLINE + timedelta(minutes=1)
     result = marker.run(conn, fake.client(), fake.now)
     assert result["session"] == DAY.isoformat() and result["marked"] == 1
     assert result["price_sources"] == {"AAPL": "bar", "SPY": "alpaca"} and calls == [s.model["id"]]
@@ -128,7 +159,26 @@ def test_marks_after_the_close_use_the_bar_or_alpacas_price_once(conn, monkeypat
     assert marker.run(conn, fake.client(), fake.now + timedelta(minutes=5))["marked"] == 0 and len(calls) == 1
     half = date(2027, 3, 5)
     fake.half_days, fake.now = {half}, ny(half, 13, 31)
-    assert marker.run(conn, fake.client(), fake.now)["session"] == half.isoformat()
+    assert stock_marks.Marker().run(conn, fake.client(), fake.now)["session"] == half.isoformat()
+
+
+def test_marks_use_complete_bars_only_and_wait_for_the_sessions_fills(conn, monkeypatch) -> None:
+    monkeypatch.setattr("host.stocks.eligibility.recompute", lambda *a, **k: None)
+    s = _mark_setup(conn)
+    add_bars(conn, "AAPL", [DAY], close=99.0, fetched_at=ny(DAY, 12))  # an intraday fetch: a partial bar
+    add_bars(conn, "SPY", [DAY], close=410.0, fetched_at=ny(DAY, 18))
+    oid = one(conn, s, symbol="SPY", qty=1)["order_id"]
+    conn.execute("UPDATE stock_orders SET status = 'open', session_date = %s WHERE id = %s", (DAY, order_row(conn, oid)["id"]))
+    fake = FakeAlpaca(now=ny(DAY, 16, 31))
+    result = stock_marks.mark_session(conn, fake.client(), DAY, ny(DAY, 16), fake.now)
+    assert result == {"session": DAY.isoformat(), "marked": 0}, "an order of the session is in flight"
+    conn.execute("UPDATE stock_orders SET status = 'filled' WHERE id = %s", (order_row(conn, oid)["id"],))
+    result = stock_marks.mark_session(conn, fake.client(), DAY, ny(DAY, 16), fake.now)
+    assert result["waiting_for_bars"] == ["AAPL"], "the partial bar is not the session's close"
+    add_bars(conn, "AAPL", [], fetched_at=ny(DAY, 18))
+    conn.execute("UPDATE stock_bars SET close = 105 WHERE symbol = 'AAPL'")
+    result = stock_marks.mark_session(conn, fake.client(), DAY, ny(DAY, 16), fake.now)
+    assert result["marked"] == 1 and result["price_sources"] == {"AAPL": "bar", "SPY": "bar"}
 
 
 def _cli_setup(monkeypatch, config, fake: FakeAlpaca, now: datetime) -> None:
@@ -191,3 +241,31 @@ def test_stock_cancel_all_without_direct_only_touches_the_database(conn, pool, c
     assert "cancelled=1 requested=1" in capsys.readouterr().out
     assert order_row(conn, placed)["status"] == "cancel_requested" and order_row(conn, approved)["status"] == "cancelled"
     assert assignment_row(conn, s.assignment["id"])["status"] == "active"
+
+
+def test_stock_smoke_recovers_a_timed_out_place_and_a_failed_cancel_and_always_audits(conn) -> None:
+    fake = FakeAlpaca(now=ny(DAY, 11))
+    client, phrase, naps = fake.client(), stock_ops.expected_phrase(conn, fake.now), []
+    real_cancel, failures = client.cancel, [AlpacaTimeout("DELETE timed out")]
+
+    def flaky_cancel(eid: str) -> bool:
+        if failures:
+            raise failures.pop()
+        return real_cancel(eid)
+
+    client.cancel = flaky_cancel  # type: ignore[method-assign]
+    fake.timeout_next = "after"  # the order reached Alpaca, the answer did not
+    result = stock_ops.run_stock_smoke(conn, client, phrase, 0, fake.now, sleep=naps.append)
+    (order,) = fake.orders.values()
+    assert result["status"] == "canceled" and result["exchange_order_id"] == order["id"] and order["status"] == "canceled"
+    steps = [t["step"] for t in result["timeline"]]
+    assert steps[:3] == ["place failed, looking it up", "found at Alpaca", "cancel failed"] and "cancel accepted" in steps
+    assert audit(conn, "stock_smoke_result")[-1]["after"]["status"] == "canceled"
+    fake.timeout_next = "before"  # nothing reached Alpaca: never placed again, reported unknown
+    result = stock_ops.run_stock_smoke(conn, client, phrase, 0, fake.now, sleep=naps.append)
+    assert result["status"] == "unknown" and len(fake.orders) == 1 and posts_of(fake) == 2
+    assert [a["after"]["status"] for a in audit(conn, "stock_smoke_result")] == ["canceled", "unknown"]
+
+
+def posts_of(fake: FakeAlpaca) -> int:
+    return sum(1 for m, p in fake.calls if m == "POST")

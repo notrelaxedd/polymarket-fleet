@@ -123,8 +123,11 @@ def process_result(conn: psycopg.Connection, job: dict[str, Any], result: Any) -
         added: dict[str, Any] = {"created_stock_models": ids}
     else:
         params = job.get("params") if isinstance(job.get("params"), dict) else {}
-        target = model_id_of(result.get("model_id")) or model_id_of(params.get("model_id"))
+        target = model_id_of(params.get("model_id"))  # the job's model: a result never retargets it
+        named = result.get("model_id")
         try:
+            if named is not None and model_id_of(named) != target:
+                raise BadRequest(f"the result names model {named} but the job validated model {target}")
             with conn.transaction():
                 mid = set_validation(conn, target, result.get("validation_metrics"))
             eligibility.recompute(conn, mid)

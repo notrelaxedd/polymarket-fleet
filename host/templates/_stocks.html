@@ -58,6 +58,9 @@
     {% elif a.status == 'halted' and not killed %}
     <form method="post" action="/stocks/assignments/{{ a.id }}/resume" data-action="resume"><button type="submit" class="menu-item">Resume</button></form>
     {% endif %}
+    {% if a.status == 'halted' and a.held_symbols and not killed %}
+    <form method="post" action="/stocks/assignments/{{ a.id }}/liquidate" data-action="liquidate" data-confirm="Sell all of {{ a.held_symbols | join(', ') }} at today's close? Every share this assignment holds goes, then Close it."><button type="submit" class="menu-item danger">Sell all</button></form>
+    {% endif %}
     <form method="post" action="/stocks/assignments/{{ a.id }}/close" data-action="close" data-confirm="Close this stock assignment? It needs no positions and no open orders."><button type="submit" class="menu-item danger">Close</button></form>
     <p class="muted bankroll-lines">model {{ a.model_status.replace('_', ' ') }}<br>
       job {{ a.job_status or 'none' }}{% if a.lease_worker_id %} on {{ a.lease_worker_id }}{% endif %}<br>

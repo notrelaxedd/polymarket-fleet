@@ -86,9 +86,11 @@ def bars_reach_previous_session(
     conn: psycopg.Connection, symbols: list[str], prices: dict[str, dict[str, Any]], session_date: date,
 ) -> tuple[bool, date | None]:
     """(ok, bars_through): every symbol has a reference price, all of the same day, and
-    that day is the previous session. Without a trading calendar the previous session is
-    the previous weekday, or an earlier day when every symbol's feed ran after that
-    weekday's close and found no bar there (a holiday). A stalled feed is never ok."""
+    that day is the previous session, and every symbol's feed ran after that weekday's
+    close (an intraday fetch stores a partial bar whose close is not the session's).
+    Without a trading calendar the previous session is the previous weekday, or an
+    earlier day when the feed ran after that weekday's close and found no bar there (a
+    holiday). A stalled feed is never ok."""
     if not symbols or any(s not in prices for s in symbols):
         return False, None
     days = {prices[s]["date"] for s in symbols}
@@ -96,8 +98,6 @@ def bars_reach_previous_session(
     if len(days) != 1:
         return False, through
     expected = previous_weekday(session_date)
-    if through == expected:
-        return True, through
     if through > expected:
         return False, through
     after = datetime.combine(expected, FEED_AFTER_CLOSE, tzinfo=NEW_YORK)
@@ -105,7 +105,7 @@ def bars_reach_previous_session(
         "SELECT bool_and(fetched_at IS NOT NULL AND fetched_at >= %s) AS ok FROM instruments WHERE symbol = ANY(%s)",
         (after, list(symbols)),
     ).fetchone()
-    holiday_gap = (session_date - through).days <= 5
+    holiday_gap = through == expected or (session_date - through).days <= 5
     return bool(row and row["ok"]) and holiday_gap, through
 
 

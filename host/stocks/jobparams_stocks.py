@@ -144,6 +144,7 @@ def _backtest(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
         model = _stored_model(conn, params["model_id"])
         out.update(model_id=int(model["id"]), model={"family": model["family"], "params": model["params"]})
         years = search_years(conn, params.get("years"))  # refuses an overlap with the validation era
+        out["validation_years"] = validation_years(conn)  # so the worker can double-check the eras
     elif "family" in params:
         family, spec = check_model_spec(params["family"], params.get("params", {}))
         out["model"] = {"family": family, "params": spec}
@@ -161,8 +162,11 @@ def _validate(conn: psycopg.Connection, params: dict[str, Any]) -> dict[str, Any
     searched = model_search_years(conn, model)
     if searched is not None and _overlaps(searched, era):
         raise BadRequest(f"model {model['id']} was searched on {searched}, which overlaps the validation era {era}")
-    return {"model_id": int(model["id"]), "model": {"family": model["family"], "params": model["params"]},
-            "years": era, **_copies(conn)}
+    out = {"model_id": int(model["id"]), "model": {"family": model["family"], "params": model["params"]},
+           "years": era, **_copies(conn)}
+    if searched is not None:
+        out["search_years"] = searched  # the worker double-checks the eras
+    return out
 
 
 def prepare_stock_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) -> dict[str, Any]:

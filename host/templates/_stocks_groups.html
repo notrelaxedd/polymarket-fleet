@@ -30,7 +30,7 @@
 {% if orders %}
 <ul class="rows" data-list="stock-orders">
 {% for o in orders %}
-{% set title %}<span class="c-order" data-side="{{ o.side }}">{{ o.side }} {{ o.qty }} {{ o.symbol }} @ {{ o.ref_price_cents | money }}{% if o.filled_qty %} ({{ o.filled_qty }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}</span>{{ live_chip(o.mode) }}{% endset %}
+{% set title %}<span class="c-order" data-side="{{ o.side }}">{{ o.side }} {{ o.qty }} {{ o.symbol }} @ {{ o.ref_price_cents | money }}{% if o.filled_qty %} ({{ o.filled_qty }} filled{% if o.avg_fill_price %} avg {{ (o.avg_fill_price * 100) | round | int | money }}{% endif %}){% endif %}</span>{{ live_chip(o.mode) }}{% endset %}
 {% set meta %}assignment #{{ o.assignment_id }} &middot; {{ o.value_cents | money }}{% if o.exchange_order_id %} &middot; #{{ o.exchange_order_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
 {% set why %}{% if o.reason %}<span class="reason" data-reason="{{ o.reason }}">{{ o.reason }}{% if o.reason_text %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
 {% call ui.row("stock-order", o.id, None, title, meta=meta, meta2=why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-status": o.status}) %}

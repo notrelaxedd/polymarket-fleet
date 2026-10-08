@@ -156,6 +156,14 @@ def post_close(assignment_id: str, actor: str = Depends(require_owner), conn: ps
     return jsonable(assignments.close_assignment(conn, assignment_id, actor))
 
 
+@owner_router.post("/assignments/{assignment_id}/liquidate")
+def post_liquidate(assignment_id: str, actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> dict[str, Any]:
+    """Sell all of a halted assignment (market on close), so it can be closed."""
+    from host.stocks.liquidate import liquidate_assignment
+
+    return jsonable(liquidate_assignment(conn, assignment_id, actor))
+
+
 @owner_router.post("/jobs", status_code=201)
 def post_job(body: JobBody, actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> dict[str, Any]:
     """Create a stock_search, stock_backtest or stock_validate job with host-filled params."""

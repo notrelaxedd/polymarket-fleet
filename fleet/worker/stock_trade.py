@@ -3,33 +3,31 @@
 Every stock_trade_tick_s, for each held stock_trade job: GET
 /api/v1/stock_trade/state?job_id=...; nothing happens under kill, for an assignment
 that is not active, or while decision.due is false. Otherwise the bar cache is
-refreshed (fleet.worker.stock_cache; fetched again when its newest bar is older than
-decision.bars_through, and the tick is skipped if it still is), the model decides from
-the bars dated before the session (fleet.stocks.data.history_before, the backtest's
-own cut) and plan_orders() turns its weights into whole-share market-on-close orders:
-equity E = cash + reserved + sum(qty * ref price), target = floor(w * E / ref price),
-order = target - held (held counts the open orders' remaining quantity), sells first,
-then buys. The batch goes out once per session (POST /api/v1/stock_orders/request,
+refreshed (fleet.worker.stock_cache; fetched again when its newest bar, or SPY's, the
+models' reference series, is older than decision.bars_through, and the tick is skipped
+if it still is) and fleet.worker.stock_plan turns the model's weights into whole-share
+market-on-close orders (sizing, the host's limits, the backtest's rebalance-on-change
+rule). The batch goes out once per session (POST /api/v1/stock_orders/request,
 client_request_id = sha256(job_id|session_date|symbol|side)[:24], so a retry after a
 lost answer is idempotent); an empty batch is posted too, so the host records the
-decision. release_jobs() is the POST /api/v1/stock_trade/release handshake before a
-role change away from trade (bounded to 4 s, one retry), like fleet.worker.trade.
+decision. The names an order could not finish (cut by max_order or cash, or rejected
+by the host for anything but max_position) are kept per job in memory and traded again
+at the next session even when the weights did not change. release_jobs() is the POST
+/api/v1/stock_trade/release handshake before a role change away from trade (bounded to
+4 s, one retry), like fleet.worker.trade.
 """
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import math
 import time
 from typing import Any
 from urllib.parse import urlencode
 
 from fleet.common import http
-from fleet.stocks.backtest import clean_weights
-from fleet.stocks.data import BENCHMARK, Bars, history_before, last_date
-from fleet.stocks.families import StockModel, make_model
+from fleet.stocks.data import BENCHMARK, Bars
 from fleet.worker import stock_cache
+from fleet.worker.stock_plan import client_request_id, plan, plan_orders  # noqa: F401 (re-exported)
 
 log = logging.getLogger("fleet.stock_trade")
 
@@ -37,75 +35,24 @@ STATE_PATH = "/api/v1/stock_trade/state"
 REQUEST_PATH = "/api/v1/stock_orders/request"
 RELEASE_PATH = "/api/v1/stock_trade/release"
 RELEASE_TIMEOUT = 4.0
-PENDING_STATUSES = ("approved", "submitting", "open", "partial")
 DEFAULT_SETTINGS: dict[str, Any] = {"stock_trade_tick_s": 30, "stock_decision_lead_min": 20}
 
 
-def client_request_id(job_id: Any, session_date: str, symbol: str, side: str) -> str:
-    return hashlib.sha256(f"{job_id}|{session_date}|{symbol}|{side}".encode("utf-8")).hexdigest()[:24]
+def bars_end(bars: Bars, symbols: list[str]) -> str:
+    """The newest bar date over symbols, or SPY's when that is older: SPY sets the
+    rebalance anchors and the trend filter, so a decision never runs on a stale SPY."""
+    dates = [bars[s][-1].date for s in symbols if bars.get(s)]
+    newest = max(dates) if dates else ""
+    spy = bars[BENCHMARK][-1].date if bars.get(BENCHMARK) else newest
+    return min(newest, spy)
 
 
-def _int(value: Any) -> int:
-    try:
-        return int(value) if not isinstance(value, bool) else 0
-    except (TypeError, ValueError):
-        return 0
-
-
-def open_quantities(orders: Any) -> tuple[dict[str, int], dict[str, int]]:
-    """({symbol: remaining open buy qty}, {symbol: remaining open sell qty})."""
-    buys: dict[str, int] = {}
-    sells: dict[str, int] = {}
-    for o in orders if isinstance(orders, list) else []:
-        if not isinstance(o, dict) or o.get("status") not in PENDING_STATUSES:
-            continue
-        left = max(0, _int(o.get("qty")) - _int(o.get("filled_qty")))
-        book = buys if o.get("side") == "buy" else sells
-        book[str(o.get("symbol"))] = book.get(str(o.get("symbol")), 0) + left
-    return buys, sells
-
-
-def plan_orders(state: dict[str, Any], bars: Bars, job_id: Any, model: StockModel | None = None) -> list[dict[str, Any]]:
-    """The order batch for one due decision (sells first, then buys)."""
-    a = state.get("assignment") or {}
-    decision = state.get("decision") or {}
-    session = str(decision.get("session_date") or "")
-    symbols = [s for s in a.get("symbols") or [] if isinstance(s, str)]
-    spec = state.get("model") or {}
-    if model is None:
-        model = make_model(str(spec.get("family")), dict(spec.get("params") or {}), symbols)
-    ref = {s: _int(c) for s, c in (decision.get("ref_prices_cents") or {}).items() if _int(c) > 0}
-    seen = set(symbols) | {BENCHMARK} | set(model.extra_symbols())
-    hist = history_before(bars, session, sorted(seen))
-    picked = model.decide(hist, session)
-    weights = clean_weights(picked.weights, set(symbols))
-    positions = {str(s): _int(q) for s, q in (state.get("positions") or {}).items() if _int(q) > 0}
-    open_buys, open_sells = open_quantities(state.get("open_orders"))
-    equity = _int(a.get("cash_cents")) + _int(a.get("reserved_cents"))
-    for s, q in positions.items():
-        price = ref.get(s) or (round(hist[s][-1].close * 100) if hist.get(s) else 0)
-        equity += q * price
-    sells: list[dict[str, Any]] = []
-    buys: list[dict[str, Any]] = []
-    for s in sorted(set(symbols)):
-        price = ref.get(s)
-        if not price:
-            continue
-        w = weights.get(s, 0.0)
-        target = math.floor(w * equity / price + 1e-9) if w > 0 else 0
-        held = positions.get(s, 0) + open_buys.get(s, 0) - open_sells.get(s, 0)
-        delta = target - held
-        if delta < 0:
-            delta = -min(-delta, positions.get(s, 0) - open_sells.get(s, 0))
-        if delta == 0:
-            continue
-        side = "buy" if delta > 0 else "sell"
-        note = picked.notes.get(s) or f"{model.family} not ranked"
-        order = {"client_request_id": client_request_id(job_id, session, s, side), "symbol": s, "side": side,
-                 "qty": abs(delta), "ref_price_cents": price,
-                 "rationale": f"{note}, w {w:.2f}, target {target} held {held}"}
-        (buys if side == "buy" else sells).append(order)
-    return sells + buys
+def refused(orders: list[dict[str, Any]], answer: dict[str, Any]) -> set[str]:
+    """The names whose order the host rejected for a reason a later session can clear."""
+    names = {o["client_request_id"]: o["symbol"] for o in orders}
+    return {names[r["client_request_id"]] for r in answer.get("orders") or []
+            if isinstance(r, dict) and r.get("client_request_id") in names
+            and r.get("status") == "rejected" and r.get("reason") != "max_position"}
 
 
 class StockTradeLoop:
@@ -119,6 +66,7 @@ class StockTradeLoop:
         self.last_tick: dict[str, Any] | None = None
         self.jobs_seen: dict[str, dict[str, Any]] = {}
         self.posted: set[tuple[str, str]] = set()
+        self.unfinished: dict[str, set[str]] = {}
         self._next_at = 0.0
 
     def held_jobs(self) -> list[dict[str, Any]]:
@@ -177,14 +125,16 @@ class StockTradeLoop:
         if bars is None:
             return {"action": "skip", "reason": "bars behind"}
         try:
-            orders = plan_orders(state, bars, job["id"])
+            batch = plan(state, bars, job["id"], unfinished=self.unfinished.get(str(job["id"])))
         except ValueError as exc:
             log.error("stock job %s: cannot decide (%s)", job["id"], exc)
             return {"action": "skip", "reason": str(exc)}
+        orders = batch.orders
         answer = self.post_batch(job, a, session, orders)
         if answer is None:
             return {"action": "skip", "reason": "request not answered", "orders": len(orders)}
         self.posted.add((str(job["id"]), session))
+        self.unfinished[str(job["id"])] = batch.unfinished | refused(orders, answer)
         return {"action": "posted", "session_date": session, "orders": len(orders), "answer": answer}
 
     def _get(self, path: str) -> Any:
@@ -218,7 +168,7 @@ class StockTradeLoop:
             except (stock_cache.StockCacheError, OSError, ValueError) as exc:
                 log.warning("stock bars unavailable: %s", exc)
                 return None
-            newest = last_date(bars, symbols) or ""
+            newest = bars_end(bars, symbols)
             if newest >= bars_through:
                 return bars
         log.warning("stock bars end %s, the decision needs %s; skipping this tick", newest or "nowhere", bars_through)

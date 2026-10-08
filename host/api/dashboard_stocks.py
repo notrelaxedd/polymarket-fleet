@@ -180,6 +180,23 @@ def post_close(assignment_id: str, actor: str = Depends(require_owner), conn: ps
                    "#assignments")
 
 
+def _sold(result: dict[str, Any]) -> str:
+    sells = result["orders"]
+    if not sells:
+        return f"stock assignment {result['assignment_id']}: every share is already in an open sell"
+    what = ", ".join(f"{o['qty']} {o['symbol']}" for o in sells)
+    return f"stock assignment {result['assignment_id']}: selling {what} at the close of {result['session_date']}"
+
+
+@router.post("/stocks/assignments/{assignment_id}/liquidate")
+def post_liquidate(assignment_id: str, actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> Response:
+    """Sell all of a halted assignment at the close (every approval check but halted,
+    not_live_eligible and max_order), so it can be closed once the sells fill."""
+    from host.stocks.liquidate import liquidate_assignment
+
+    return _action(conn, "sell all", lambda: _sold(liquidate_assignment(conn, assignment_id, actor)), "#assignments")
+
+
 @router.post("/stocks/models/{model_id}/retire")
 def post_retire(model_id: str, actor: str = Depends(require_owner), conn: psycopg.Connection = DB) -> Response:
     """Retire a stock model (final); its active assignments are halted."""

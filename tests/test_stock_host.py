@@ -57,7 +57,8 @@ def test_state_shape_and_decision_due(client, conn):
     d = state["decision"]
     assert d["due"] is True and d["bars_through"] == previous_weekday(s.session).isoformat()
     assert d["ref_prices_cents"] == {"SPY": 40_000, "AAPL": 10_000}
-    assert state["settings"] == {"stock_trade_tick_s": 30, "stock_decision_lead_min": 20}
+    assert state["settings"] == {"stock_trade_tick_s": 30, "stock_decision_lead_min": 20, "stock_price_band": 0.05,
+                                 "stock_max_order_cents": 100_000, "stock_max_position_cents": 250_000}
     r = client.post("/api/v1/stock_orders/request", json=s.body([order(qty=2)]), headers=s.worker.headers)
     assert r.status_code == 200 and r.json()["orders"][0]["status"] == "approved"
     state = client.get(url, headers=s.worker.headers).json()

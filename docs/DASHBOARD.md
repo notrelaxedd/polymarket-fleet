@@ -123,7 +123,8 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   halts it in the same transaction, so the grey line says "live assignment halted, model
   candidate"; a halted assignment of a retired lineage is not listed, retiring halted it
   on purpose), a model whose latest validate job failed, and exchange credentials never
-  checked or failing. Empty state: "Nothing needs you."
+  checked or failing, and (step 9) one Stocks row when a stock assignment is halted or
+  the stock broker check has warnings (to `/stocks`). Empty state: "Nothing needs you."
 - "Recent": the last 5 settled bets as rows (game, mode, contract, time, a win/loss
   chip, the P&L), each linking to its model.
 
@@ -410,6 +411,11 @@ layout or wording, `docs/UI.md` wins and this file follows it.
     0, at most 10), one checkbox per source (ESPN, Yahoo; stored as `gamestate_sources`),
     the ESPN summary URL (must contain `{event_id}`), the Yahoo play-by-play URL (empty =
     off, else must contain `{event_id}`), Yahoo poll (5..120 s).
+  - (step 9) Stocks (`_settings_stocks.html`, `#stocks`, `POST /settings/stocks`,
+    `host/settings_forms_stocks.py`, validators in `host/settings_schema_stocks.py`):
+    every `stock_*` key and the two stock threshold objects, dollars in and cents stored.
+    The save is refused when the decision window (Decision lead minus the 11 minute
+    order cutoff) holds fewer than two stock trade ticks. Details in `docs/ALPACA.md`.
 
 ## Trading `/trading` (step 4; changed: step 7)
 Every action is a form that redirects back to `/trading` with a flash, and a refused
@@ -516,6 +522,31 @@ error page.
       states (Copy) and the raw payload (Copy).
     - Ledger check (`#ledger`): "OK" with the number of bankrolls whose replay matches,
       or a red "problems" chip with one line per disagreement (the group then opens).
+
+## Stocks `/stocks` (step 9)
+
+Stocks on Alpaca; the full design is `docs/ALPACA.md` "Step 9". Reached from the NFL |
+Stocks tabs under the Trading title (it lives under Trading in the nav). Owner only,
+`#stocks-live` refreshed every 5 s from `GET /fragments/stocks` (`_stocks.html`).
+- Stats: the broker environment (PAPER, LIVE or "no keys"), account equity with buying
+  power, stocks today (P&L of the running assignments), market open or closed, open
+  orders.
+- Broker card, always open: PAPER or LIVE pill, account status (a "pattern day trader"
+  chip when Alpaca flags the account), equity, cash, buying power, market and session,
+  next close and open, last check (a "stale" chip past 4 polls), last error, warnings.
+- Assignments, one row each: mode, model, symbols, bankroll, today and total, cash,
+  reserved, open orders, last decision, equity at the side, status chip. Menu: Halt
+  (active), Resume (halted, not under kill), Sell all (halted with shares, not under
+  kill; confirm; `POST /stocks/assignments/{id}/liquidate`), Close (confirm).
+- Models, one row each (retired ones folded): family and params, validated chip, status
+  chip, Sharpe, drawdown, CAGR against SPY, and a second grey line with the gate the
+  model still fails in words ("needs 30 trades (25)", "not yet live eligible: needs 20
+  paper sessions (3 so far)"). Menu: Validate, Backtest, Assign (paper_ok and
+  live_eligible), the newest informational backtest with a link to its job, Retire.
+- Folded groups: Positions, Orders (the newest session's, reason codes in words, average
+  fill in dollars), Feed (opens by itself when a symbol's last fetch failed).
+- Forms (folded): New assignment and New search. A rejected form re-renders with the
+  error inline (400); a refused row action comes back as a flash.
 
 ## Screenshots and layout checks
 

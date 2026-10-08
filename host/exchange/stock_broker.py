@@ -1,6 +1,6 @@
 """The broker side of stocks on Alpaca (contract section 6): the account and the clock
-into stock_broker_state, the reconciliation of positions and open orders, and the
-daily marks.
+into stock_broker_state and the reconciliation of positions and open orders (the daily
+marks are host/exchange/stock_marks.py, the splits host/exchange/stock_splits.py).
 
 - `check`: account + clock -> stock_broker_state (environment from the credentials,
   cents from Alpaca's dollar strings rounded half up, session_date = the New York date
@@ -10,21 +10,19 @@ daily marks.
 - `reconcile`: for the mode equal to the environment, the sum of stock_positions over
   its assignments against Alpaca's positions, and Alpaca's open orders that are not
   ours, into `warnings`. A symbol with one of our orders in flight is not compared
-  (its fill may be booked a poll later). Live also auto-kills: `unknown_order` at once,
+  (its fill may be booked a poll later), nor one with a split not applied yet. An open
+  order is ours only while its row is in flight in the keys' mode (a row closed here
+  whose order is still open at Alpaca would fill unbooked), and a smoke order
+  (SMOKE_PREFIX) only for SMOKE_MAX_AGE. Live also auto-kills: `unknown_order` at once,
   `stock_position_mismatch` when the same mismatch is seen on two checks in a row.
-  The smoke order's client ids (SMOKE_PREFIX) are ours too.
-- `mark_session`: once per session, 30 minutes after its close (Alpaca's calendar, so
-  half days are right), every active or halted assignment created before the close
-  gets equity = cash + reserved + sum(qty * close) in stock_marks (idempotent); the
-  close is the session's daily bar, else Alpaca's current price of the position,
-  else the newest earlier bar. Then host.stocks.eligibility.recompute for the models
-  of the paper assignments marked.
+  Active rows of the other mode (another account, untracked until its keys return)
+  get a warning.
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import date, datetime, time as dtime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -38,9 +36,9 @@ log = logging.getLogger(__name__)
 
 NEW_YORK = ZoneInfo("America/New_York")
 SMOKE_PREFIX = "fleet-smoke-"
-MARK_DELAY = timedelta(minutes=30)
+SMOKE_MAX_AGE = timedelta(minutes=15)  # the smoke's hold and cancel retries, with room
 WARNING_TTL = timedelta(hours=24)
-RECONCILE_KINDS = ("position_mismatch", "unknown_order")
+RECONCILE_KINDS = ("position_mismatch", "unknown_order", "other_mode_orders")
 IN_FLIGHT = ("submitting", "open", "partial", "cancel_requested")
 
 
@@ -154,15 +152,29 @@ def ours(conn: psycopg.Connection, mode: str) -> tuple[dict[str, int], set[str]]
     return {k: int(v) for k, v in (row["held"] or {}).items()}, set(row["busy"] or [])
 
 
-def known_order_ids(conn: psycopg.Connection, client_ids: list[str]) -> set[str]:
+def known_order_ids(conn: psycopg.Connection, client_ids: list[str], mode: str) -> set[str]:
+    """The client ids that are rows of `mode` in flight here."""
     ids = []
     for cid in client_ids:
         try:
             ids.append(uuid.UUID(cid))
         except (ValueError, TypeError):
             continue
-    rows = conn.execute("SELECT id FROM stock_orders WHERE id = ANY(%s)", (ids,)).fetchall() if ids else []
+    rows = conn.execute("SELECT id FROM stock_orders WHERE id = ANY(%s) AND mode = %s AND status = ANY(%s)",
+                        (ids, mode, list(IN_FLIGHT))).fetchall() if ids else []
     return {str(r["id"]) for r in rows}
+
+
+def young_smoke(order: dict[str, Any], cid: str, now: datetime) -> bool:
+    """A stock-smoke order still inside its hold (an older one is not ours any more)."""
+    created = parse_ts(order.get("created_at")) or parse_ts(order.get("submitted_at"))
+    return cid.startswith(SMOKE_PREFIX) and created is not None and now - created < SMOKE_MAX_AGE
+
+
+def other_mode_active(conn: psycopg.Connection, mode: str) -> int:
+    row = conn.execute("SELECT count(*) AS n FROM stock_orders WHERE mode <> %s AND status = ANY(%s)",
+                       (mode, list(IN_FLIGHT))).fetchone()
+    return int(row["n"])
 
 
 class Reconciler:
@@ -171,9 +183,11 @@ class Reconciler:
     def __init__(self) -> None:
         self.previous: set[tuple[str, int, str]] = set()
 
-    def run(self, conn: psycopg.Connection, client: Any, now: datetime) -> dict[str, Any]:
+    def run(self, conn: psycopg.Connection, client: Any, now: datetime, skip: frozenset[str] = frozenset()) -> dict[str, Any]:
+        """`skip`: symbols not compared (a split not applied to our books yet)."""
         mode = client.environment
         held, busy = ours(conn, mode)
+        busy |= set(skip)
         remote = {str(p.get("symbol")): qty_of(p.get("qty")) for p in client.positions()}
         mismatches = []
         for symbol in sorted(set(held) | set(remote)):
@@ -182,15 +196,21 @@ class Reconciler:
                 mismatches.append({"symbol": symbol, "ours": mine, "alpaca": str(theirs)})
         open_orders = client.orders("open")
         ids = [str(o.get("client_order_id") or "") for o in open_orders]
-        known = known_order_ids(conn, ids)
+        known = known_order_ids(conn, ids, mode)
         unknown = [{"exchange_order_id": o.get("id"), "client_order_id": cid, "symbol": o.get("symbol"), "side": o.get("side"),
-                    "qty": o.get("qty")} for o, cid in zip(open_orders, ids) if cid not in known and not cid.startswith(SMOKE_PREFIX)]
+                    "qty": o.get("qty")} for o, cid in zip(open_orders, ids) if cid not in known and not young_smoke(o, cid, now)]
+        others = other_mode_active(conn, mode)
         stamp = now.isoformat()
         items = [w for w in _fresh(_warnings(conn), now) if w.get("kind") not in RECONCILE_KINDS]
         items += [{"kind": "position_mismatch", "ts": stamp, "detail": m,
                    "message": f"{m['symbol']}: our {mode} positions hold {m['ours']}, Alpaca holds {m['alpaca']}"} for m in mismatches]
         items += [{"kind": "unknown_order", "ts": stamp, "detail": {k: str(v) for k, v in u.items()},
                    "message": f"open order at Alpaca that is not ours: {u['side']} {u['qty']} {u['symbol']}"} for u in unknown]
+        if others:
+            other = "paper" if mode == "live" else "live"
+            items.append({"kind": "other_mode_orders", "ts": stamp, "detail": {"count": str(others)},
+                          "message": f"{others} {other} order(s) are active but the keys are {mode}: they are not tracked"
+                                     f" until {other} keys return"})
         conn.execute("UPDATE stock_broker_state SET warnings = %s WHERE id = 1", (Jsonb(items[-50:]),))
         seen = {(m["symbol"], m["ours"], m["alpaca"]) for m in mismatches}
         killed = None
@@ -201,99 +221,4 @@ class Reconciler:
             if repeated and maybe_auto_kill(conn, "stock_position_mismatch", {"mismatches": repeated[:20]}):
                 killed = killed or "stock_position_mismatch"
         self.previous = seen
-        return {"mismatches": mismatches, "unknown_orders": unknown, "auto_killed": killed}
-
-
-# ---------------------------------------------------------------------- marks
-
-def last_closed_session(calendar: list[dict[str, Any]], now: datetime) -> tuple[date, datetime] | None:
-    """(date, close) of the newest trading day whose close + 30 minutes has passed."""
-    best = None
-    for day in calendar:
-        try:
-            d = date.fromisoformat(str(day["date"]))
-            close = datetime.combine(d, dtime.fromisoformat(str(day["close"])[:5]), tzinfo=NEW_YORK)
-        except (KeyError, ValueError):
-            continue
-        if close + MARK_DELAY <= now and (best is None or d > best[0]):
-            best = (d, close)
-    return best
-
-
-def _closes(conn: psycopg.Connection, symbols: list[str], session: date) -> dict[str, dict[str, Any]]:
-    """{symbol: {"close", "day"}}: the newest daily bar dated on or before the session."""
-    rows = conn.execute(
-        """
-        SELECT DISTINCT ON (symbol) symbol, close, (ts AT TIME ZONE 'America/New_York')::date AS day
-          FROM stock_bars WHERE timeframe = '1Day' AND symbol = ANY(%s)
-           AND (ts AT TIME ZONE 'America/New_York')::date <= %s ORDER BY symbol, ts DESC
-        """,
-        (symbols, session),
-    ).fetchall()
-    return {r["symbol"]: {"close": r["close"], "day": r["day"]} for r in rows}
-
-
-def mark_session(conn: psycopg.Connection, client: Any, session: date, close: datetime) -> dict[str, Any]:
-    """Mark every active/halted assignment created before `close` for `session` (see the
-    module doc); then recompute the models of the paper assignments marked."""
-    rows = conn.execute(
-        """
-        SELECT a.* FROM stock_assignments a WHERE a.status IN ('active', 'halted') AND a.created_at <= %s
-           AND NOT EXISTS (SELECT 1 FROM stock_marks m WHERE m.assignment_id = a.id AND m.session_date = %s) ORDER BY a.id
-        """,
-        (close, session),
-    ).fetchall()
-    if not rows:
-        return {"session": session.isoformat(), "marked": 0}
-    held = conn.execute("SELECT assignment_id, symbol, qty FROM stock_positions WHERE assignment_id = ANY(%s) AND qty > 0",
-                        ([r["id"] for r in rows],)).fetchall()
-    bars = _closes(conn, sorted({h["symbol"] for h in held}), session)
-    prices = {s: Decimal(str(b["close"])) for s, b in bars.items() if b["day"] == session}
-    sources = {s: "bar" for s in prices}
-    missing = {h["symbol"] for h in held} - set(prices)
-    if missing:
-        try:
-            for p in client.positions():
-                symbol, price = str(p.get("symbol")), p.get("current_price")
-                if symbol in missing and price not in (None, ""):
-                    prices[symbol], sources[symbol] = Decimal(str(price)), "alpaca"
-        except Exception as exc:  # noqa: BLE001 - the older bar is the fallback
-            log.warning("positions for the marks failed: %s", exc)
-        for symbol in missing - set(prices):
-            if symbol in bars:
-                prices[symbol], sources[symbol] = Decimal(str(bars[symbol]["close"])), f"bar {bars[symbol]['day']}"
-    marked, models = 0, set()
-    for a in rows:
-        value = sum((Decimal(int(h["qty"])) * prices.get(h["symbol"], Decimal(0)) * 100 for h in held
-                     if h["assignment_id"] == a["id"]), Decimal(0))
-        positions = int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
-        equity = int(a["cash_cents"]) + int(a["reserved_cents"]) + positions
-        done = conn.execute("INSERT INTO stock_marks (assignment_id, session_date, equity_cents, positions_cents)"
-                            " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING 1", (a["id"], session, equity, positions)).fetchone()
-        if done:
-            marked += 1
-            if a["mode"] == "paper":
-                models.add(int(a["model_id"]))
-    from host.stocks import eligibility  # builder B's module, imported when first needed
-
-    for model_id in sorted(models):
-        eligibility.recompute(conn, model_id)
-    return {"session": session.isoformat(), "marked": marked, "models_recomputed": sorted(models), "price_sources": sources}
-
-
-class Marker:
-    """Holds the Alpaca calendar between runs (one request per New York day)."""
-
-    def __init__(self) -> None:
-        self.calendar: list[dict[str, Any]] = []
-        self.calendar_day: date | None = None
-
-    def run(self, conn: psycopg.Connection, client: Any, now: datetime) -> dict[str, Any]:
-        today = now.astimezone(NEW_YORK).date()
-        if self.calendar_day != today:
-            self.calendar = client.calendar(today - timedelta(days=10), today)
-            self.calendar_day = today
-        found = last_closed_session(self.calendar, now)
-        if found is None:
-            return {"session": None, "marked": 0}
-        return mark_session(conn, client, *found)
+        return {"mismatches": mismatches, "unknown_orders": unknown, "other_mode_orders": others, "auto_killed": killed}

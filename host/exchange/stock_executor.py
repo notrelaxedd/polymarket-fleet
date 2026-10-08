@@ -7,18 +7,29 @@ answers 5xx) stays `submitting` and is reconciled by client_order_id (the order 
 found -> open, not found after SUBMIT_GRACE -> expired with the release; it is never
 resubmitted blind. A definite refusal (4xx) -> rejected_by_exchange with the release; a
 429 puts the row back to approved for the next tick. Nothing is submitted while the
-kill switch is on (the flag is read FOR SHARE, so a kill in flight is waited for); an
-approved row found under kill, of another environment or of a past session is
-cancelled with the release.
+kill switch is on (the flag is read FOR SHARE, so a kill in flight is waited for), nor
+while the broker check is stale (the row waits for a good check). An approved row is
+cancelled with the release when it is found under kill, of another environment, of
+another session than the broker's, past Alpaca's market-on-close cutoff (next_close -
+10 minutes, by the last broker check even when it is stale: a cls order sent later
+would be refused or queued for the next session's close), or when an order of the
+opposite side in the same symbol is active on the same account (one Alpaca account is
+shared by the assignments of a mode, and Alpaca refuses it as a potential wash trade).
 
 `cancel_requested` rows are cancelled at Alpaca: accepted -> the order is read back and
 closed from what Alpaca says (fills first); refused (Alpaca's 422, a cls order after
 15:50) -> back to open (partial when it has fills) with reason "cancel refused (after
-15:50)", and it fills at the close like any open order. The poll (every
+15:50)", and it fills at the close like any open order (not while Alpaca shows the
+order pending_cancel: a second cancel of it is refused too). The poll (every
 stock_orders_poll_s) reads our open, partial and cancel_requested orders at Alpaca:
 filled_qty and filled_avg_price changes are booked through stock_fills.book_fill
 (fill id "<exchange_order_id>:<cumulative filled_qty>"), canceled / expired / rejected
 close the row as cancelled / expired / rejected_by_exchange with the release.
+
+After submit, every step touches only rows of the keys' environment (mode ==
+client.environment): rows of the other mode belong to another Alpaca account and wait,
+untouched, for its keys (the broker reconciliation warns about them). Rows are locked
+assignment first, then the order, the lock order of the approval and the kill.
 """
 from __future__ import annotations
 
@@ -28,22 +39,20 @@ from typing import Any
 
 import psycopg
 
-from host.exchange import stock_fills
 from host.exchange.alpaca_trading import AlpacaAuthError, AlpacaRateLimited, AlpacaRejected
-from host.exchange.stock_broker import parse_ts, qty_of
+from host.exchange.stock_rows import ACTIVE, ACTOR, apply_remote, close, lock_pair, set_status
+from host.stocks import market
 from host.stocks import orders as stock_orders
 
 log = logging.getLogger(__name__)
 
-ACTOR = "exchange"
 RECONCILE_AFTER = timedelta(seconds=5)
 SUBMIT_GRACE = timedelta(seconds=60)
 RESEND_AFTER = timedelta(seconds=30)
 RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
 MAX_SINGLE_LOOKUPS = 20
+PLACE_CUTOFF = timedelta(minutes=10)  # Alpaca refuses cls orders from 15:50 (close - 10 min)
 REFUSED = "cancel refused (after 15:50)"
-REMOTE_CLOSED = {"canceled": "cancelled", "expired": "expired", "done_for_day": "expired", "rejected": "rejected_by_exchange"}
-ACTIVE = ("submitting", "open", "partial", "cancel_requested")
 
 
 def _commit(conn: psycopg.Connection) -> None:
@@ -54,60 +63,6 @@ def _commit(conn: psycopg.Connection) -> None:
 def killed(conn: psycopg.Connection) -> bool:
     row = conn.execute("SELECT value FROM settings WHERE key = 'kill_switch' FOR SHARE").fetchone()
     return row is not None and row["value"] is True
-
-
-def set_status(conn: psycopg.Connection, order_id: Any, to_status: str, expected: tuple[str, ...],
-               detail: dict[str, Any] | None = None, **fields: Any) -> dict[str, Any] | None:
-    """Move one row from an expected status (None when it was elsewhere) with an event."""
-    before = conn.execute("SELECT status FROM stock_orders WHERE id = %s FOR UPDATE", (order_id,)).fetchone()
-    if before is None or before["status"] not in expected:
-        return None
-    sets = ", ".join([f"{k} = %s" for k in fields] + ["status = %s", "updated_at = now()"])
-    row = conn.execute(f"UPDATE stock_orders SET {sets} WHERE id = %s RETURNING *",
-                       [*fields.values(), to_status, order_id]).fetchone()
-    stock_orders.add_event(conn, order_id, before["status"], to_status, ACTOR, detail)
-    return dict(row)
-
-
-def close(conn: psycopg.Connection, order_id: Any, to_status: str, reason: str, detail: dict[str, Any] | None = None) -> bool:
-    """An active row -> a closed status with what it still reserves released (the
-    assignment row locked before the order, the approval's lock order)."""
-    conn.execute("SELECT 1 FROM stock_assignments WHERE id = (SELECT assignment_id FROM stock_orders WHERE id = %s) FOR UPDATE",
-                 (order_id,))
-    row = conn.execute("SELECT * FROM stock_orders WHERE id = %s FOR UPDATE", (order_id,)).fetchone()
-    if row is None or row["status"] not in ACTIVE + ("approved",):
-        return False
-    released = stock_orders.release(conn, dict(row))
-    set_status(conn, order_id, to_status, (row["status"],), {"reason": reason, "released_cents": released, **(detail or {})},
-               reason=reason[:200])
-    return True
-
-
-def apply_remote(conn: psycopg.Connection, order_id: Any, remote: dict[str, Any], now: datetime) -> str:
-    """Book what Alpaca filled beyond our filled_qty, then close the row when Alpaca
-    closed the order; the row's status afterwards."""
-    row = conn.execute("SELECT * FROM stock_orders WHERE id = %s", (order_id,)).fetchone()
-    if row is None:
-        return "unknown"
-    eid = str(remote.get("id") or row["exchange_order_id"])
-    filled = int(qty_of(remote.get("filled_qty")))
-    have = int(row["filled_qty"])
-    if filled > have:
-        avg = float(qty_of(remote.get("filled_avg_price")))
-        price = avg
-        if have and row["avg_fill_price"]:
-            price = (avg * filled - float(row["avg_fill_price"]) * have) / (filled - have)
-            price = price if price > 0 else avg
-        ts = parse_ts(remote.get("filled_at")) or now
-        if not stock_fills.book_fill(conn, row["id"], filled - have, round(price, 6), f"{eid}:{filled}", ts):
-            current = conn.execute("SELECT status, filled_qty FROM stock_orders WHERE id = %s", (order_id,)).fetchone()
-            if int(current["filled_qty"]) < filled:
-                return current["status"]  # refused: never closed over a fill the books do not show
-    to_status = REMOTE_CLOSED.get(str(remote.get("status") or ""))
-    if to_status is not None:
-        close(conn, order_id, to_status, f"{remote.get('status')} at Alpaca", {"exchange_order_id": eid})
-    status = conn.execute("SELECT status FROM stock_orders WHERE id = %s", (order_id,)).fetchone()["status"]
-    return str(status)
 
 
 class StockExecutor:
@@ -124,7 +79,7 @@ class StockExecutor:
         if killed(conn):
             counts["cancelled_under_kill"] = len(stock_orders.cancel_orders(conn, ACTOR, "kill", approved_only=True)["cancelled"])
         else:
-            counts["submitted"] = self.submit_approved(conn, client)
+            counts["submitted"] = self.submit_approved(conn, client, now)
         _commit(conn)
         for name, step in (("reconciled", self.reconcile_submitting), ("cancels", self.process_cancels)) + (
                 (("polled", self.poll),) if poll else ()):
@@ -141,29 +96,45 @@ class StockExecutor:
 
     # ------------------------------------------------------------------ submit
 
-    def _stale(self, conn: psycopg.Connection, row: dict[str, Any], client: Any) -> str | None:
+    def _stale(self, conn: psycopg.Connection, row: dict[str, Any], client: Any, broker: dict[str, Any] | None,
+               now: datetime) -> str | None:
+        """Why an approved row can never be placed (None when it can, or may later)."""
         if row["mode"] != client.environment:
             return f"the Alpaca keys are {client.environment} keys, the order is {row['mode']}"
-        broker = conn.execute("SELECT session_date FROM stock_broker_state WHERE id = 1").fetchone()
-        session = broker["session_date"] if broker else None
-        if session is not None and row["session_date"] < session:
+        if broker is None or broker.get("next_close") is None or broker.get("session_date") is None:
+            return "no broker check"
+        if broker["session_date"] != row["session_date"]:
             return "its session is over"
+        if now > broker["next_close"] - PLACE_CUTOFF:
+            return "past the market-on-close cutoff (15:50)"
+        other = conn.execute(
+            "SELECT assignment_id, side FROM stock_orders WHERE mode = %s AND symbol = %s AND side <> %s AND status = ANY(%s)"
+            " AND id <> %s ORDER BY created_at LIMIT 1",
+            (row["mode"], row["symbol"], row["side"], list(ACTIVE), row["id"])).fetchone()
+        if other is not None:
+            return (f"wash: a {other['side']} order of assignment {other['assignment_id']} in {row['symbol']} is active"
+                    " on the shared Alpaca account")
         return None
 
-    def submit_approved(self, conn: psycopg.Connection, client: Any) -> int:
+    def submit_approved(self, conn: psycopg.Connection, client: Any, now: datetime) -> int:
         submitted = 0
+        found = conn.execute("SELECT session_date, next_close, checked_at FROM stock_broker_state WHERE id = 1").fetchone()
+        broker = dict(found) if found is not None else None
+        fresh = broker is not None and not market.broker_stale(broker, now, market.max_broker_age_s(conn))
         while not killed(conn) and client.backoff_remaining() <= 0:
             row = conn.execute(
                 "SELECT * FROM stock_orders WHERE status = 'approved' ORDER BY created_at, side = 'buy', id"
                 " LIMIT 1 FOR UPDATE SKIP LOCKED").fetchone()
             if row is None:
                 break
-            why = self._stale(conn, dict(row), client)
+            why = self._stale(conn, dict(row), client, broker, now)
             if why:
                 _commit(conn)
                 close(conn, row["id"], "cancelled", why)
                 _commit(conn)
                 continue
+            if not fresh:
+                break  # a stale broker check: the row waits for a good one (the cutoff above ends the wait)
             order = set_status(conn, row["id"], "submitting", ("approved",), {"environment": client.environment})
             _commit(conn)
             if order is not None:
@@ -196,9 +167,9 @@ class StockExecutor:
             """
             SELECT o.*, (SELECT max(e.ts) FROM stock_order_events e WHERE e.order_id = o.id AND e.to_status = 'submitting') AS sent_at
               FROM stock_orders o
-             WHERE o.status = 'submitting' OR (o.status = 'cancel_requested' AND o.exchange_order_id IS NULL)
+             WHERE o.mode = %s AND (o.status = 'submitting' OR (o.status = 'cancel_requested' AND o.exchange_order_id IS NULL))
              ORDER BY o.created_at
-            """).fetchall()
+            """, (client.environment,)).fetchall()
         done = 0
         for row in rows:
             sent = row["sent_at"] or row["updated_at"]
@@ -207,6 +178,7 @@ class StockExecutor:
             remote = client.order_by_client_id(str(row["id"]))
             if remote is not None:
                 eid = str(remote.get("id"))
+                lock_pair(conn, row["id"])
                 if set_status(conn, row["id"], "open", ("submitting",), {"reconciled": True, "exchange_order_id": eid},
                               exchange_order_id=eid) is None:
                     conn.execute("UPDATE stock_orders SET exchange_order_id = %s WHERE id = %s", (eid, row["id"]))
@@ -223,7 +195,7 @@ class StockExecutor:
 
     def process_cancels(self, conn: psycopg.Connection, client: Any, now: datetime) -> int:
         rows = conn.execute("SELECT * FROM stock_orders WHERE status = 'cancel_requested' AND exchange_order_id IS NOT NULL"
-                            " ORDER BY created_at").fetchall()
+                            " AND mode = %s ORDER BY created_at", (client.environment,)).fetchall()
         done = 0
         for row in rows:
             key = str(row["id"])
@@ -241,7 +213,7 @@ class StockExecutor:
             self.retries.pop(key, None)
             self.sent[key] = now
             status = apply_remote(conn, row["id"], remote, now) if remote is not None else row["status"]
-            if not accepted and status == "cancel_requested":
+            if not accepted and status == "cancel_requested" and (remote or {}).get("status") != "pending_cancel":
                 current = conn.execute("SELECT filled_qty FROM stock_orders WHERE id = %s", (row["id"],)).fetchone()
                 set_status(conn, row["id"], "partial" if current["filled_qty"] else "open", ("cancel_requested",),
                            {"reason": REFUSED}, reason=REFUSED)
@@ -257,7 +229,8 @@ class StockExecutor:
     def poll(self, conn: psycopg.Connection, client: Any, now: datetime) -> int:
         """Our orders at Alpaca: fills booked, closed orders closed."""
         rows = conn.execute("SELECT * FROM stock_orders WHERE status IN ('open', 'partial', 'cancel_requested')"
-                            " AND exchange_order_id IS NOT NULL ORDER BY created_at").fetchall()
+                            " AND exchange_order_id IS NOT NULL AND mode = %s ORDER BY created_at",
+                            (client.environment,)).fetchall()
         if not rows:
             return 0
         listed = client.orders("all", min(r["created_at"] for r in rows) - timedelta(seconds=60))

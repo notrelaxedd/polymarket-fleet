@@ -64,7 +64,10 @@ def trade_state(conn: psycopg.Connection, worker: dict[str, Any], job_id: Any, l
         "broker": {k: broker.get(k) for k in ("environment", "market_open", "session_date", "next_close", "checked_at")},
         "decision": _decision(conn, a, broker, now),
         "settings": {"stock_trade_tick_s": get_int_setting(conn, "stock_trade_tick_s", 30),
-                     "stock_decision_lead_min": get_int_setting(conn, "stock_decision_lead_min", 20)},
+                     "stock_decision_lead_min": get_int_setting(conn, "stock_decision_lead_min", 20),
+                     "stock_price_band": get_setting(conn, "stock_price_band", 0.05),
+                     "stock_max_order_cents": get_int_setting(conn, "stock_max_order_cents", 100_000),
+                     "stock_max_position_cents": get_int_setting(conn, "stock_max_position_cents", 250_000)},
     }
 
 

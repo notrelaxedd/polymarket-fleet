@@ -6,9 +6,16 @@ live_eligible (live: live_eligible); the mode equals the broker's environment, t
 exchange process has keys and checked the broker within 4 * stock_broker_poll_s; live
 needs settings.live_enabled; the symbols are a non-empty subset of the tradable
 instruments with bars; at most stock_max_assignments active or halted; the bankroll
-fits in the broker's cash minus the bankrolls of the other active assignments of that
-mode (one Alpaca account is shared). Every change runs under the mode's approval lock
-(the one the approval, the kill and live off take) and writes an audit row.
+fits in the broker's free cash (one Alpaca account is shared). Every change runs under
+the mode's approval lock (the one the approval, the kill and live off take) and writes
+an audit row.
+
+Free cash (`_room`) is the broker's cash_cents minus what the other active or halted
+assignments of the mode still claim, their cash + reserved: a halted assignment keeps
+its money, and an assignment that grew claims its gains (shares bought are already out
+of the broker's cash). Resume repeats this gate with the assignment's own cash +
+reserved, so a halt, a new assignment and a resume can never claim more than the
+account holds (Alpaca would fill the excess on margin).
 """
 from __future__ import annotations
 
@@ -67,6 +74,17 @@ def _gates(conn: psycopg.Connection, model: dict[str, Any], mode: str) -> dict[s
     return broker
 
 
+def _room(conn: psycopg.Connection, broker: dict[str, Any], mode: str, exclude_id: int | None = None) -> int:
+    """The broker's cash minus the claim (cash + reserved) of the other active or halted
+    assignments of `mode`."""
+    claimed = conn.execute(
+        "SELECT COALESCE(SUM(cash_cents + reserved_cents), 0) AS s FROM stock_assignments"
+        " WHERE mode = %s AND status IN ('active', 'halted') AND (%s::bigint IS NULL OR id <> %s)",
+        (mode, exclude_id, exclude_id),
+    ).fetchone()["s"]
+    return int(broker.get("cash_cents") or 0) - int(claimed)
+
+
 def _insert_job(conn: psycopg.Connection, assignment_id: int, key: str | None) -> dict[str, Any]:
     row = conn.execute(
         """
@@ -97,10 +115,7 @@ def create_assignment(
     n = conn.execute("SELECT count(*) AS n FROM stock_assignments WHERE status IN ('active', 'halted')").fetchone()["n"]
     if int(n) >= cap:
         raise Conflict(f"there are already {n} stock assignments (stock_max_assignments is {cap})")
-    others = conn.execute(
-        "SELECT COALESCE(SUM(bankroll_cents), 0) AS s FROM stock_assignments WHERE mode = %s AND status = 'active'", (mode,)
-    ).fetchone()["s"]
-    room = int(broker.get("cash_cents") or 0) - int(others)
+    room = _room(conn, broker, mode)
     if bankroll_cents > room:
         raise Conflict(f"bankroll {bankroll_cents} cents is more than the broker cash left for {mode} ({max(room, 0)} cents)")
     try:
@@ -162,9 +177,10 @@ def _killed_locked(conn: psycopg.Connection) -> bool:
 
 
 def resume_assignment(conn: psycopg.Connection, assignment_id: Any, actor: str) -> dict[str, Any]:
-    """halted -> active under the model, broker, live and symbol gates of create (the
-    count and bankroll gates are not repeated: the assignment already holds its slot and
-    its cash). Refused under kill. A stock_trade job that ended is replaced."""
+    """halted -> active under the model, broker, live, symbol and cash gates of create
+    (the count gate is not repeated: the assignment already holds its slot); the cash
+    gate compares its cash + reserved with the broker cash the others leave free.
+    Refused under kill. A stock_trade job that ended is replaced."""
     killed = _killed_locked(conn)
     approval_lock(conn, get_assignment(conn, assignment_id)["mode"])
     row = get_assignment(conn, assignment_id, for_update=True)
@@ -174,8 +190,13 @@ def resume_assignment(conn: psycopg.Connection, assignment_id: Any, actor: str) 
         raise Conflict(f"stock assignment is {row['status']}")
     if killed:
         raise Conflict("the kill switch is on; reset it first")
-    _gates(conn, get_model(conn, row["model_id"]), row["mode"])
+    broker = _gates(conn, get_model(conn, row["model_id"]), row["mode"])
     check_symbols(conn, list(row["symbols"]))
+    claim = int(row["cash_cents"]) + int(row["reserved_cents"])
+    room = _room(conn, broker, row["mode"], exclude_id=int(row["id"]))
+    if claim > room:
+        raise Conflict(f"stock assignment {row['id']} needs {claim} cents but only {max(room, 0)} cents of"
+                       f" {row['mode']} broker cash is free")
     if not _job_alive(conn, row["job_id"]):
         _insert_job(conn, int(row["id"]), None)
     after = _set_status(conn, row["id"], "active", None)

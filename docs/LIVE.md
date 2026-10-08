@@ -110,6 +110,11 @@ live stays off until re-enabled. The Settings page shows a one-line recovery per
 - `POST /live/off` (owner; the Settings "Disable live" button posts to
   `POST /settings/live/off`): immediate; `live_enabled=false`, live assignments halted,
   live orders cancelled through the exchange, audit `live_off`.
+- Stocks (step 9, `docs/ALPACA.md`): live off also cancels the live stock orders
+  (approved ones at once with their release, the others `cancel_requested` for the
+  exchange process) and halts the live stock assignments; the kill does the same for
+  every stock order and assignment of both modes. Positions stay; after 15:50 New York
+  Alpaca refuses to cancel a market-on-close order, which then fills at the close.
 - `live_enabled` can no longer be written through `/api/settings` (400: use /live). The
   kill switch and the live daily-loss trip also turn it off. Default at install: off.
 - Top bar: `LIVE` pill green only while on; `PAPER` otherwise.
@@ -203,6 +208,11 @@ process to confirm at its next start (its place may be in flight). When the fill
 fails nothing is closed, the rows stay `cancel_requested` and the command exits 1. The
 manual fallback for "exchange process down with live orders resting". Without `--direct`
 it is the step 4 database cancel-all.
+
+For stocks the same fallback is `python -m host.exchange.cli stock-cancel-all --direct`
+(`host/exchange/stock_ops.py`): the live gate first, then every open order on the
+Alpaca account cancelled and our stock rows closed from what Alpaca says. Without
+`--direct` it is the database cancel of the stock orders. See `docs/ALPACA.md` 9.4.
 
 ## Dashboard additions
 

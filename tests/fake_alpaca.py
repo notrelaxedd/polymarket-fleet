@@ -5,7 +5,9 @@ AlpacaTrading client is exercised.
 It keeps orders (market-on-close only, filled by `run_close()` at the settable
 `close_prices`, or partly by `fill()`), positions, the account's cash, a clock and a
 calendar derived from `now` (weekdays 9:30 to 16:00 New York, `half_days` close at
-13:00, `holidays` closed, `extra_days` open), refuses a cls order and its cancel from 15:50 to the close,
+13:00, `holidays` closed, `extra_days` open), refuses a cls order and its cancel from 15:50 to the close
+(and a second cancel of an order pending_cancel), refuses an order when an opposite-side order in the same symbol is open (Alpaca's
+wash-trade protection, 403), serves `splits` on the data host's corporate actions,
 and can time out (`timeout_next` "before" or "after" the order is created) or answer
 a forced status (`force[path_prefix] = status`).
 """
@@ -47,6 +49,7 @@ class FakeAlpaca:
         self.timeout_next: str | None = None
         self.force: dict[str, int] = {}
         self.calls: list[tuple[str, str]] = []
+        self.splits: list[dict[str, Any]] = []  # corporate actions: {symbol, old_rate, new_rate, ex_date}
 
     # ------------------------------------------------------------------ helpers
 
@@ -150,6 +153,12 @@ class FakeAlpaca:
                                         "buying_power": str(self.cash * 2), "pattern_day_trader": False, "daytrade_count": 0})
         if path == "/v2/clock":
             return 200, {}, json.dumps(self.clock())
+        if path == "/v1/corporate-actions":
+            symbols = set(query.get("symbols", "").split(","))
+            items = [x for x in self.splits if x["symbol"] in symbols]
+            return 200, {}, json.dumps({"corporate_actions": {
+                "forward_splits": [x for x in items if float(x["new_rate"]) > float(x["old_rate"])],
+                "reverse_splits": [x for x in items if float(x["new_rate"]) < float(x["old_rate"])]}, "next_page_token": None})
         if path == "/v2/calendar":
             return 200, {}, json.dumps(self._calendar(date.fromisoformat(query["start"]), date.fromisoformat(query["end"])))
         return 404, {}, '{"message": "not found"}'
@@ -163,6 +172,9 @@ class FakeAlpaca:
             return 422, {}, '{"message": "cls orders are not accepted after 15:50"}'
         if self.by_client(body["client_order_id"]):
             return 422, {}, '{"message": "client_order_id must be unique"}'
+        if any(o["symbol"] == body["symbol"] and o["side"] != body["side"] and o["status"] in OPEN_STATES
+               for o in self.orders.values()):
+            return 403, {}, '{"message": "potential wash trade detected. use complex orders"}'
         if body["side"] == "buy" and Decimal(body["qty"]) * self.close_prices.get(body["symbol"], Decimal(0)) > self.cash * 2:
             return 403, {}, '{"message": "insufficient buying power"}'
         order = self._create(body)
@@ -175,7 +187,7 @@ class FakeAlpaca:
         o = self.orders.get(order_id)
         if o is None:
             return 404, {}, '{"message": "order not found"}'
-        if o["status"] not in OPEN_STATES or (o["time_in_force"] == "cls" and self.after_cutoff()):
+        if o["status"] not in OPEN_STATES or o["status"] == "pending_cancel" or (o["time_in_force"] == "cls" and self.after_cutoff()):
             return 422, {}, '{"message": "order cannot be cancelled"}'
         o["status"] = "canceled"
         return 204, {}, ""

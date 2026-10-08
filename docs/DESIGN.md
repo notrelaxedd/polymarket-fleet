@@ -42,19 +42,21 @@ Dockerfile, docker-compose.yml, .env.example
 fleet/common/{http,sysinfo}.py
 fleet/models/{base,registry,elo,blend_fit,elo_blend,epa_features,epa_blend,ingame_wp,newton,search_space,summary_text}.py
 fleet/sim/{data,odds,signals,fills,book,prices,metrics,records,stats,robust,stress,backtest,validate,search,parallel,train,ingame,ingame_eval,control}.py
-fleet/worker/{__main__,agent,runner,launch,jobs,context,config,posts,update,watchdog,trade,sell,trade_ingame,pbp_cache}.py
-host/{main,config,db,auth,errors,events,leases,queue,loop,scheduling,heartbeat,recovery,bundle,kill,settings,settings_schema,settings_schema_ingame,settings_forms,settings_forms_replay,settings_forms_ingame,web,views}.py
+fleet/stocks/{data,families,backtest,metrics,search}.py   step 9: stock models, daily backtest, search (docs/ALPACA.md)
+fleet/worker/{__main__,agent,runner,launch,jobs,context,config,posts,update,watchdog,trade,sell,trade_ingame,pbp_cache,stock_cache,stock_jobs,stock_trade}.py
+host/{main,config,db,auth,errors,events,leases,queue,loop,scheduling,heartbeat,recovery,bundle,kill,settings,settings_schema,settings_schema_ingame,settings_forms,settings_forms_replay,settings_forms_ingame,settings_schema_stocks,settings_forms_stocks,web,views}.py
 host/{nflverse,data_refresh,ingest_injuries,ingest_pbp,pbp_rows,pbp_refresh,signals,games_feed,prices_feed}.py          data and feeds
 host/{models,model_owner,model_validation,jobparams,ingame_jobparams,snapshot_store,leaderboard,leaderboard_snapshot,leaderboard_ingame,eligibility,ingame_eligibility,paper_gate,stats,pnl,money}.py
 host/trading/{assignments,assignments_ingame,ledger,limits,sells,ingame,orders,positions,state,live,views,views_positions,views_ingame}.py
-host/migrations/0001_init.sql .. 0009_ingame.sql
-host/api/{app,deps,workers,jobs,data,data_pbp,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,dashboard_ingame,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
-host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,gamestate_rate,feedlag,alpaca_credentials,alpaca_probe}.py   fleet-exchange
+host/stocks/{models,eligibility,assignments,approve,orders,market,jobparams_stocks,views_api,views,cli}.py   step 9: stock models, gates, assignments, approval
+host/migrations/0001_init.sql .. 0013_stock_trading.sql
+host/api/{app,deps,workers,jobs,data,data_pbp,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,dashboard_ingame,dashboard_stocks,stocks,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
+host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,gamestate_rate,feedlag,alpaca_credentials,alpaca_probe,alpaca_data,alpaca_trading,stock_bars,stock_broker,stock_executor,stock_fills,stock_tasks,stock_ops}.py   fleet-exchange
 host/exchange/adapters/{base,sim,polymarket_us,polymarket_us_live,polymarket_clob,live_http,live_parse,live_policy,signing,teams}.py
-host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | ingest-pbp-rows | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
-host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U] | probe-alpaca [--asset-class N] [--get PATH] [--raw]
+host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | ingest-pbp-rows | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final | stock-models | stock-assign | stock-assignments | stock-orders
+host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U] | probe-alpaca [--asset-class N] [--get PATH] [--raw] | ingest-stock-bars | stock-bars-status | stock-smoke --confirm P | stock-cancel-all [--direct]
 deploy/{install_worker.sh,fleet-worker.service}
-tests/test_*.py + hw/{roletest.sh,screenshots.py,ui_checks.py,test_ui.py,test_row_audit.py,seed_*.py}
+tests/test_*.py + e2e_*.py (phases run by test_e2e.py) + fake_*.py + hw/{roletest.sh,screenshots.py,ui_checks.py,test_ui.py,test_row_audit.py,seed_*.py}
 tools/workflows/                     the build orchestration scripts
 ```
 

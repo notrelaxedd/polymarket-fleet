@@ -91,8 +91,10 @@ class ExchangeLoop:
 
     @property
     def last_error(self) -> str | None:
-        """The most recent failure of a task that has not succeeded since."""
-        return next(reversed(self.errors.values())) if self.errors else None
+        """The most recent failure of a task (the stock thread's included, read from a
+        copy since that thread writes it) that has not succeeded since."""
+        errors = list(self.errors.values()) + list(dict(self.stock_tasks.errors).values())
+        return errors[-1] if errors else None
 
     # ------------------------------------------------------------- credentials
 

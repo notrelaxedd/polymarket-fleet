@@ -4,7 +4,11 @@ exchange_fill_id, ts) -> bool`, one savepoint.
 - buy: cost_cents = round half up(qty * price * 100). The order's reservation drops by
   its share for this fill (all that is left on the fill that completes the order), the
   assignment's reserved drops by the same, its cash takes back that share minus the
-  cost (the unused part of the band). The position gains qty and cost.
+  cost (the unused part of the band). The position gains qty and cost. A cls buy fills
+  at today's close, which the band over the previous close does not bound: a cost
+  above the reservation share is still booked as it is (cash may go below zero, the
+  books stay true to the account), with a warning on the broker row, an audit row
+  `stock_fill_over_reservation` and the excess in the order event.
 - sell: the proceeds go to cash; realized += proceeds - the average cost of the qty
   sold; the position loses qty and that cost.
 - Idempotent on exchange_fill_id ("<exchange_order_id>:<cumulative filled_qty>"): a
@@ -89,6 +93,19 @@ def refuse(conn: psycopg.Connection, o: dict[str, Any], why: str, detail: dict[s
         stock_broker.add_warning(conn, "fill_refused", f"{o['symbol']} {o['side']} fill not booked: {why}", detail)
 
 
+def over_reservation(conn: psycopg.Connection, a: dict[str, Any], o: dict[str, Any], qty: int, price: Any,
+                     fill_id: str, part: int, cost: int) -> dict[str, Any]:
+    """A buy fill that cost more than its share of the reservation (the close moved
+    beyond the band): booked as it is, made visible (see the module doc)."""
+    over = {"order_id": str(o["id"]), "assignment_id": a["id"], "symbol": o["symbol"], "fill_id": fill_id, "qty": qty,
+            "price": float(price), "reserved_part_cents": part, "cost_cents": cost, "over_cents": cost - part}
+    log.warning("stock buy fill above its reservation (%s): %s", o["mode"], over)
+    add_audit(conn, "stock_fill_over_reservation", f"stock_order:{o['id']}", ACTOR, None, over)
+    stock_broker.add_warning(conn, "fill_over_reservation",
+                             f"{o['symbol']} buy filled {cost - part} cents above its reservation", over)
+    return over
+
+
 def book_fill(conn: psycopg.Connection, order_id: Any, qty: int, price: float, exchange_fill_id: str,
               ts: datetime) -> bool:
     """Book one fill (see the module doc); True when it was booked."""
@@ -109,11 +126,14 @@ def book_fill(conn: psycopg.Connection, order_id: Any, qty: int, price: float, e
     with conn.transaction():
         conn.execute("INSERT INTO stock_fills (order_id, exchange_fill_id, qty, price, cost_cents, ts) VALUES (%s, %s, %s, %s, %s, %s)",
                      (o["id"], exchange_fill_id, qty, float(price), cost, ts))
+        over: dict[str, Any] = {}
         if o["side"] == "buy":
             part = share(int(o["reserved_cents"]), qty, int(o["qty"]) - int(o["filled_qty"]))
             conn.execute("UPDATE stock_orders SET reserved_cents = reserved_cents - %s WHERE id = %s", (part, o["id"]))
             conn.execute("UPDATE stock_assignments SET reserved_cents = reserved_cents - %s, cash_cents = cash_cents + %s,"
                          " updated_at = now() WHERE id = %s", (part, part - cost, a["id"]))
+            if cost > part:
+                over = over_reservation(conn, a, o, qty, price, exchange_fill_id, part, cost)
             conn.execute(
                 "INSERT INTO stock_positions (assignment_id, symbol, qty, cost_cents) VALUES (%s, %s, %s, %s)"
                 " ON CONFLICT (assignment_id, symbol) DO UPDATE SET qty = stock_positions.qty + EXCLUDED.qty,"
@@ -131,5 +151,6 @@ def book_fill(conn: psycopg.Connection, order_id: Any, qty: int, price: float, e
         conn.execute("UPDATE stock_orders SET filled_qty = %s, avg_fill_price = %s, status = %s, updated_at = now() WHERE id = %s",
                      (filled, avg, status, o["id"]))
         stock_orders.add_event(conn, o["id"], o["status"], status, ACTOR,
-                               {"fill_id": exchange_fill_id, "qty": qty, "price": float(price), "cost_cents": cost})
+                               {"fill_id": exchange_fill_id, "qty": qty, "price": float(price), "cost_cents": cost,
+                                **({"over_reservation_cents": over["over_cents"]} if over else {})})
     return True

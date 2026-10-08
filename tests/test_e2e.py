@@ -31,6 +31,12 @@ model, filled partially and then fully, settled into a sold row and pro-rata buy
 Last runs the paper CLV interval gate (tests/e2e_paper_gate.py: settled paper bets whose
 CLV interval excludes or straddles zero, live_eligible or not). Heartbeat 0.3 s, host
 loop 0.5 s, every wait bounded.
+
+test_stocks_end_to_end is the step 9 phase on a host of its own (tests/e2e_stocks.py:
+bars, a stock search and validate run by fake workers with the worker's job functions,
+a paper assignment decided by StockTradeLoop, cls orders placed, filled and marked by
+the exchange's stock tasks against the fake Alpaca, and the kill cancelling an open
+order).
 """
 from __future__ import annotations
 
@@ -59,6 +65,7 @@ from tests.e2e_live import phase_live
 from tests.e2e_models import CountingRunner, phase_models
 from tests.e2e_paper_gate import phase_paper_gate
 from tests.e2e_signals import phase_signals
+from tests.e2e_stocks import phase_stocks
 from tests.e2e_trading import phase_trading
 from tests.e2e_validation import phase_validation
 from tests.pagecheck import Node, page, topbar
@@ -561,3 +568,9 @@ def test_fleet_end_to_end(live_host: LiveHost, tmp_path, monkeypatch, agents: li
     assert [j["status"] for j in jobs if j["id"] == refused] == ["failed"], "the sim-refused replay failed on purpose"
     statuses = {j["status"] for j in jobs if j["id"] != refused}
     assert statuses == {"succeeded", "cancelled"}
+
+
+def test_stocks_end_to_end(live_host: LiveHost, tmp_path) -> None:
+    started = time.monotonic()
+    phase_stocks(live_host, tmp_path, wait_for)
+    assert time.monotonic() - started < 60.0

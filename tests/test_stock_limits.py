@@ -7,6 +7,7 @@ from datetime import timedelta
 import pytest
 
 from host.stocks import approve
+from host.stocks.market import previous_weekday
 from tests.stock_host_helpers import (
     add_bars, assignment_row, db_now, events, one, order, order_row, request, set_broker,
     set_order_status, set_position, set_setting, stock_setup,
@@ -167,11 +168,17 @@ def test_reject_cash(conn):
     assert got["status"] == "approved" and order_row(conn, got["order_id"])["reserved_cents"] == 31_500
 
 
+def _mark(conn, s, day, equity: int) -> None:
+    conn.execute("INSERT INTO stock_marks (assignment_id, session_date, equity_cents, positions_cents) VALUES (%s, %s, %s, 0)",
+                 (s.assignment["id"], day, equity))
+
+
 def test_reject_daily_loss_buys_only(conn):
     s = stock_setup(conn)
-    conn.execute("INSERT INTO stock_marks (assignment_id, session_date, equity_cents, positions_cents) VALUES (%s, %s, %s, 0)",
-                 (s.assignment["id"], s.session - timedelta(days=1), 1_100_001))
-    # previous mark 1,100,001 vs now 1,000,000 cash: a loss of 100,001 > paper limit 100,000
+    prev = previous_weekday(s.session)
+    _mark(conn, s, previous_weekday(prev), 1_100_001)
+    _mark(conn, s, prev, 1_000_000)
+    # the mark before the reference day 1,100,001 vs now 1,000,000 cash: a loss of 100,001 > paper limit 100,000
     assert one(conn, s, qty=1)["reason"] == "daily_loss"
     set_position(conn, s.assignment["id"], "AAPL", 1)
     assert one(conn, s, side="sell", qty=1)["status"] == "approved", "a sell reduces risk and is never held back"
@@ -179,11 +186,42 @@ def test_reject_daily_loss_buys_only(conn):
 
 def test_daily_loss_counts_positions_at_reference_prices(conn):
     s = stock_setup(conn)
-    conn.execute("INSERT INTO stock_marks (assignment_id, session_date, equity_cents, positions_cents) VALUES (%s, %s, %s, 0)",
-                 (s.assignment["id"], s.session - timedelta(days=1), 1_150_000))
+    _mark(conn, s, previous_weekday(previous_weekday(s.session)), 1_150_000)
     set_position(conn, s.assignment["id"], "AAPL", 10)  # 10 * $100 = 100,000 cents of stock
     assert approve.mode_loss_cents(conn, "paper", s.session) == 50_000
     assert one(conn, s, qty=1)["status"] == "approved"
+
+
+def test_daily_loss_sees_the_last_sessions_crash(conn):
+    """The mark of the reference day values positions at the reference closes, so the
+    loss is measured from the mark before it: a crash on the previous session counts."""
+    s = stock_setup(conn)
+    prev = previous_weekday(s.session)
+    set_position(conn, s.assignment["id"], "AAPL", 100)
+    conn.execute("UPDATE stock_bars SET close = 70 WHERE symbol = 'AAPL' AND (ts AT TIME ZONE 'America/New_York')::date = %s",
+                 (prev,))
+    _mark(conn, s, previous_weekday(prev), 2_000_000)  # 1,000,000 cash + 100 * $100
+    _mark(conn, s, prev, 1_700_000)  # 1,000,000 cash + 100 * $70 at the reference close
+    assert approve.mode_loss_cents(conn, "paper", s.session) == 300_000
+    assert one(conn, s, symbol="SPY", qty=1, ref=40_000)["reason"] == "daily_loss", "300,000 > paper limit 100,000"
+    set_setting(conn, "stock_max_daily_loss_cents", {"paper": 400_000, "live": 20_000})
+    assert one(conn, s, symbol="SPY", qty=1, ref=40_000)["status"] == "approved"
+
+
+def test_daily_loss_skips_a_missing_reference_day_mark(conn):
+    s = stock_setup(conn)
+    prev = previous_weekday(s.session)
+    _mark(conn, s, previous_weekday(prev), 1_200_000)  # the reference day's mark was never written
+    assert approve.mode_loss_cents(conn, "paper", s.session) == 200_000
+
+
+def test_reject_stale_bars_as_symbol(conn):
+    """Approval prices limits only on bars that reach the previous session."""
+    s = stock_setup(conn)
+    conn.execute("DELETE FROM stock_bars WHERE symbol = 'AAPL' AND (ts AT TIME ZONE 'America/New_York')::date = %s",
+                 (previous_weekday(s.session),))
+    assert one(conn, s, qty=1)["reason"] == "symbol", "AAPL's newest bar is a week old"
+    assert one(conn, s, symbol="SPY", qty=1, ref=40_000)["status"] == "approved"
 
 
 def test_order_of_checks_first_failure_wins(conn):

@@ -148,7 +148,11 @@ def test_train_rejects_missing_model_or_bad_through(games: list[dict]) -> None:
 
 
 def test_registry_has_the_five_kinds() -> None:
-    assert set(JOBS) == {"sleep", "backtest", "model_search", "train", "validate"}
+    # The five NFL kinds plus the three stock batch kinds of step 9.
+    assert set(JOBS) == {
+        "sleep", "backtest", "model_search", "train", "validate",
+        "stock_search", "stock_backtest", "stock_validate",
+    }
     assert jobs.JobStopped is JobStopped
 
 

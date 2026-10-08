@@ -127,3 +127,21 @@ def test_a_fill_on_a_closed_or_overfilled_order_is_refused(conn) -> None:
     assert book_fill(conn, o2["id"], 3, 100.0, "ex-2:3", NOW) is False
     assert book_fill(conn, uuid.uuid4(), 1, 100.0, "ex-3:1", NOW) is False
     assert len(audit(conn, "stock_fill_refused")) == 2
+
+
+def test_a_buy_filled_above_its_reservation_is_booked_as_it_is_and_flagged(conn) -> None:
+    s = stock_setup(conn, bankroll=105_000)
+    o = insert_order(conn, s.assignment, qty=10, ref=10_000)  # reserves 105_000: all the cash
+    assert book_fill(conn, o["id"], 10, 108.0, "ex-1:10", NOW) is True  # the close 8% above the previous one
+    a, pos = assignment_row(conn, s.assignment["id"]), position(conn, s.assignment["id"], "AAPL")
+    assert (a["cash_cents"], a["reserved_cents"], pos["qty"], pos["cost_cents"]) == (-3_000, 0, 10, 108_000)
+    (row,) = audit(conn, "stock_fill_over_reservation")
+    assert (row["after"]["over_cents"], row["after"]["reserved_part_cents"], row["after"]["cost_cents"]) == (3_000, 105_000, 108_000)
+    warnings = conn.execute("SELECT warnings FROM stock_broker_state").fetchone()["warnings"]
+    assert warnings[-1]["kind"] == "fill_over_reservation" and "3000 cents above" in warnings[-1]["message"]
+    detail = conn.execute("SELECT detail FROM stock_order_events WHERE order_id = %s ORDER BY id DESC LIMIT 1",
+                          (o["id"],)).fetchone()["detail"]
+    assert detail["over_reservation_cents"] == 3_000
+    o2 = insert_order(conn, s.assignment, qty=1, ref=10_000)
+    assert book_fill(conn, o2["id"], 1, 100.0, "ex-2:1", NOW) is True
+    assert len(audit(conn, "stock_fill_over_reservation")) == 1, "a fill inside the band is not flagged"

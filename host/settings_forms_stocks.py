@@ -56,6 +56,8 @@ PAPER = {"stock_paper_min_days": "min_days", "stock_paper_min_return": "min_retu
          "stock_paper_max_drawdown": "max_drawdown"}
 WHOLE = ("min_trades", "min_days")  # thresholds keys stored as integers
 FEEDS = ("sip", "iex")
+LEAD_RANGE, TICK_RANGE = (12, 120), (5, 300)  # host/settings_schema_stocks.py
+CUTOFF_MIN = 11  # host.stocks.market.MOC_CUTOFF: no decision in the last 11 minutes
 SPLIT = re.compile(r"[\s,]+")
 
 
@@ -97,9 +99,23 @@ def _symbols(form: dict[str, str]) -> list[str]:
     return [s.upper() for s in SPLIT.split(_text(form, "stock_symbols")) if s]
 
 
+def _check_window(lead_min: int, tick_s: int) -> None:
+    """A decision is due only from close - lead until the order cutoff (close - 11
+    minutes, host.stocks.market.MOC_CUTOFF), and the worker looks once per tick: a
+    window shorter than two ticks would skip sessions without a word. Out-of-range values
+    are left to the validators."""
+    if not (LEAD_RANGE[0] <= lead_min <= LEAD_RANGE[1] and TICK_RANGE[0] <= tick_s <= TICK_RANGE[1]):
+        return
+    if (lead_min - CUTOFF_MIN) * 60 < 2 * tick_s:
+        raise BadRequest(f"the decision window (Decision lead minus {CUTOFF_MIN} minutes, here"
+                         f" {(lead_min - CUTOFF_MIN) * 60} s) must cover at least two stock trade ticks"
+                         f" ({2 * tick_s} s): raise the lead or shorten the tick")
+
+
 def parse_stocks(form: dict[str, str]) -> dict[str, Any]:
     """The settings update of the Stocks group."""
     updates: dict[str, Any] = {name: _int(form, name) for name in INTS}
+    _check_window(updates["stock_decision_lead_min"], updates["stock_trade_tick_s"])
     updates.update({name: _number(form, name) for name in NUMBERS})
     updates.update({key: dollars_to_cents(_text(form, name), LABELS[name]) for name, key in MONEY.items()})
     updates["stock_max_daily_loss_cents"] = {

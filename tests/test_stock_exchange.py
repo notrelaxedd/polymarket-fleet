@@ -220,11 +220,11 @@ def test_the_tasks_with_keys_check_the_broker_and_run_the_outbox(conn, pool, fak
     s = stock_setup(conn)
     oid = one(conn, s, qty=1)["order_id"]
     fake.now, fake.extra_days = ny(s.session, 11), {s.session}
-    tasks = StockTasks(pool, clock=lambda: db_now(conn), client_factory=fake.client)
+    tasks = StockTasks(pool, clock=lambda: fake.now, client_factory=fake.client)
     results = tasks.run_due(force=True)
     assert results["stock_broker"]["market_open"] is True and results["stock_broker"]["mismatches"] == []
     assert results["stock_executor"]["submitted"] == 1 and order_row(conn, oid)["status"] == "open"
     broker = conn.execute("SELECT * FROM stock_broker_state").fetchone()
     assert broker["keys_present"] and broker["environment"] == "paper" and broker["session_date"] == s.session
-    assert tasks.due("stock_executor", db_now(conn) + timedelta(seconds=1.1))
-    assert not tasks.due("stock_broker", db_now(conn) + timedelta(seconds=5))
+    assert tasks.due("stock_executor", fake.now + timedelta(seconds=1.1))
+    assert not tasks.due("stock_broker", fake.now + timedelta(seconds=5))

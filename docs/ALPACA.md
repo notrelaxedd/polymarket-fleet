@@ -1,32 +1,35 @@
 # Alpaca (steps 8 and 9)
 
-Alpaca becomes a second trading venue for the fleet. This file is the plan and the
-contract for that work. Only the probe (step 8.0) is built so far; everything after it
-is the plan, built in order with a stop after each part for the owner to test, like
-steps 1 to 7. Where this file and `docs/TRADING.md` or `docs/LIVE.md` differ, those
-files win until the part in question is built.
+Alpaca is a second trading venue for the fleet, beside Polymarket US. The probe (step
+8.0) and step 9, stocks on Alpaca (parts 9.1 to 9.5), are built. Step 8, NFL event
+contracts on Alpaca, is planned and on hold. Where this file and `docs/TRADING.md` or
+`docs/LIVE.md` differ for the NFL side, those files win; for stocks this file is the
+reference (the build contract was `tools/workflows/step9-contract.txt`).
 
 ## Owner decisions
 
-- Both tracks: NFL event contracts on Alpaca (step 8) and stocks and crypto (step 9).
-- Side by side: Polymarket US and Alpaca run at the same time, not one or the other.
-- Free data first: stocks use Alpaca's free IEX feed. The full consolidated feed (SIP,
-  paid, about $99 a month) is a later owner decision, behind a `feed` setting, so the
-  upgrade is a settings change and not a rebuild.
-- Every existing rule stays: paper by default, host-enforced limits, the typed live
-  switch, `live_eligible` lineages only (no override), kill cancels open orders only,
-  keys only in `exchange.env`, `fleet/` standard-library only.
+- Stocks only for now: Alpaca trades US stocks and ETFs, long only. No crypto, no
+  options, no event contracts. Step 8 (NFL event contracts on Alpaca) stays planned and
+  on hold until the owner says otherwise.
+- Side by side: Polymarket US (NFL) and Alpaca (stocks) run at the same time, in the
+  same exchange process, each with its own tables, limits and pages.
+- Free data: daily bars from Alpaca's free market data plan (the consolidated SIP
+  history, which the free plan serves when the request ends at least 15 minutes back;
+  `stock_history_feed` can be set to `iex`). No intraday data is used.
+- Every existing rule stays: paper first, the host approves every order against limits,
+  live needs the typed live switch and a `live_eligible` model (no override), the kill
+  cancels open orders only (positions stay), keys only in `exchange.env` read only by the
+  exchange process, workers never see keys and never talk to Alpaca, `fleet/` is
+  standard-library only.
 
 ## Why two steps
 
-Everything the fleet does today assumes a binary NFL contract: a price in (0, 1), whole
-contract sizes, one assignment per game, settlement at the final score, CLV against the
-closing price. Kalshi event contracts offered through Alpaca (Alpaca registered as an
-FCM in August 2026 and partnered with Kalshi; availability depends on the account type,
-Kalshi's listings and geography) are the same kind of contract, so step 8 reuses the
-models, limits, eligibility and settlement. Stocks and crypto are a different domain
-(continuous prices, fractional sizes, no final score, market hours, the pattern day
-trader rule), so step 9 is a separate track inside the fleet.
+Everything the NFL side does assumes a binary contract: a price in (0, 1), one
+assignment per game, settlement at the final score, CLV against the closing price.
+Kalshi event contracts offered through Alpaca would be the same kind of contract, so
+step 8 would reuse the NFL models, limits, eligibility and settlement. Stocks are a
+different domain (continuous prices, no final score, market hours, daily marks instead
+of settlement), so step 9 is a separate track with its own models, tables and pages.
 
 ## Credentials
 
@@ -81,7 +84,10 @@ Options: `--asset-class NAME` (repeatable) tries another class name, `--get PATH
 Exit 0 when the account call answers 200, else 1 (also without keys or with a bad
 `ALPACA_BASE_URL`).
 
-## Step 8: NFL event contracts on Alpaca (plan)
+## Step 8: NFL event contracts on Alpaca (plan, on hold)
+
+Not built; kept as the plan for when the owner turns it back on.
+
 
 - **8.1 Read-only market source.** `host/exchange/adapters/alpaca.py` implements
   `MarketSource`: `list_markets` finds NFL moneyline contracts and maps them to games
@@ -108,20 +114,219 @@ Exit 0 when the account call answers 200, else 1 (also without keys or with a ba
 - **8.6 Tests and docs.** A fake Alpaca gateway, limit, kill switch and auto-kill tests on
   the Alpaca path, an e2e from proposal to settlement, README walkthrough.
 
-## Step 9: stocks and crypto (plan)
+## Step 9: stocks on Alpaca (built)
 
-- Data: an `instruments` table and minute bars from the Alpaca data API, IEX feed for
-  stocks (backtests also on IEX history, so models train and trade on the same feed),
-  crypto from Alpaca's crypto feed. `feed` setting `iex` or `sip`.
-- Models: a time-series model interface beside the game-based `Model`; hourly or daily
-  horizons first.
-- Trading unit: an instrument plus a session instead of a game; fractional sizes;
-  positions marked to market daily instead of settled at a final.
-- Limits: notional per position, gross exposure, market hours, a pattern day trader guard
-  (accounts under $25,000: at most 3 day trades in 5 trading days; crypto is exempt),
-  shorting off by default.
-- Gates: walk-forward backtest, then paper on the Alpaca paper account, then
-  `live_eligible`, like NFL lineages.
+Stocks trade once a day, market on close, from daily bars only. A model's live decision
+uses exactly the bars its backtest used for the same day (every bar dated before the
+session), and its orders fill at the session's closing price, which is what the
+backtest assumes. The tables are in migrations `0012_stocks.sql` and
+`0013_stock_trading.sql`.
+
+### A trading day (New York time, a normal session)
+
+| When | What happens | Where |
+|---|---|---|
+| every 30 s | broker check: account (cash, equity, buying power) and clock (open, next close, next open) into `stock_broker_state`, then the reconciliation | exchange, `stock_broker` |
+| 15:40 (close minus `stock_decision_lead_min`, 20) | the decision is due: each stock_trade worker builds its orders from the bars through the previous session and posts them once | worker, `fleet/worker/stock_trade.py` |
+| at once | the host approves or rejects each order with a reason code; approved buys reserve cash | host, `host/stocks/approve.py` |
+| within 1 s | the executor places each approved order at Alpaca: market, whole shares, time in force `cls` (sells first) | exchange, `stock_executor` |
+| 15:49 | the host stops approving (`moc_cutoff`, 11 minutes before the close) | host |
+| 15:50 | Alpaca stops taking or cancelling cls orders | Alpaca |
+| 16:00 | the closing auction fills the orders; the executor's poll (every `stock_orders_poll_s`) books the fills | exchange |
+| 16:30 | the daily mark: every assignment's equity at the session's close, then the eligibility recompute | exchange, `stock_marks` |
+| after `stock_bars_hour` (18:00) | the bar feed fetches every symbol's history again, so tomorrow's decision has today's bar | exchange, `stock_bars` |
+
+Half days follow Alpaca's clock and calendar (the decision is 20 minutes before the
+early close, the mark 30 minutes after it). Weekends and holidays have no session.
+The decision window runs from the close minus `stock_decision_lead_min` to 15:49 (the
+`moc_cutoff`), and the worker looks once per `stock_trade_tick_s`, so the Stocks settings
+group refuses a lead and tick whose window holds fewer than two ticks ((lead - 11) x 60 s
+< 2 x tick): such a window would skip sessions without a word.
+
+### 9.1 Daily bar feed (exchange)
+
+`host/exchange/stock_bars.py` with the data client `host/exchange/alpaca_data.py`.
+For every symbol of the `stock_symbols` setting (20 large US stocks and ETFs by
+default, SPY always useful as the benchmark) it stores the instrument (tradable or not)
+and its split- and dividend-adjusted daily bars since `stock_history_start` in
+`instruments` and `stock_bars`. A new symbol is fetched at once; every symbol is fetched
+again in full once a day after `stock_bars_hour` (settings `tz`), because a split or a
+dividend changes the old adjusted bars. A failed symbol is retried after 30 minutes and
+its error shows on `/stocks`. Without keys nothing runs. CLI: `ingest-stock-bars
+[--symbol S]` and `stock-bars-status` (exchange CLI). Workers get the bars from the host
+(`GET /api/v1/data/stock_bars`, ETag and 304 like the games feed) into
+`<state>/cache/stock_bars.json` (`fleet/worker/stock_cache.py`).
+
+### 9.2 Models, backtest and search (worker)
+
+`fleet/stocks/` (standard library only). A model turns the bars before a day into
+weights per symbol (long only, each at most 1, the sum at most 1, deterministic):
+
+- `momentum`: the `top_k` names with the best `lookback`-day return skipping the last
+  `skip` days, rebalanced every `rebalance_days`; all cash while SPY is below its
+  `trend_sma`-day average (0 turns the filter off).
+- `meanrev`: the `top_k` names that fell most over `lookback` days, held `hold_days`;
+  optionally only names above their `long_sma`-day average.
+- `trend`: equal weight among up to `max_names` names whose `fast` average is above
+  their `slow` average.
+- `buyhold`: one symbol (SPY), the benchmark; it can be assigned too.
+
+The backtest (`fleet/stocks/backtest.py`) walks the trading days: it marks the book at
+the day's close, asks the model with the bars dated before the day only, and trades at
+that close with `stock_cost_bps` per side (5 by default) on the traded value, starting
+from equity 1.0 with fractional shares. Metrics (`metrics.py`): CAGR, annual volatility,
+Sharpe (no risk-free rate, 252 days), max drawdown, annual turnover, trades, exposure,
+per-year rows and the same numbers for SPY bought and held. Lookahead is tested three
+ways in `tests/test_stock_backtest.py`.
+
+Jobs (`fleet/worker/stock_jobs.py`): `stock_search` (role model_search) samples `n`
+candidates of the chosen families with a seed, backtests each on the search years
+(`stock_backtest_years`) and returns the `top_k` by Sharpe with at least 10 trades, each
+with a two-sentence summary; `stock_backtest` (role backtest) is informational;
+`stock_validate` (role backtest) backtests a stored model on the held-out validation
+years (`stock_validation_years`). All three checkpoint every model-year, so a role
+change resumes where it stopped. The host fills in the symbols, the cost and the
+resolved years, and refuses any search or backtest that reaches into the validation
+era and any validate of a model searched on it.
+
+### 9.3 Host: models, gates, assignments, approval
+
+`host/stocks/`. A search result becomes `stock_models` rows (one per family and params;
+a repeat keeps the existing row). Status (`eligibility.py`), recomputed after every
+result, every thresholds save, every paper mark and at host start:
+
+- `candidate` to `paper_ok`: backtest Sharpe at least `min_sharpe` (0.5), max drawdown
+  at most `max_drawdown` (30%), at least `min_trades` (30), and a validation result with
+  Sharpe at least `min_validation_sharpe` (0.0) (`thresholds_stock_backtest`).
+- `paper_ok` to `live_eligible`: the model's paper assignments have at least `min_days`
+  (20) marked sessions, a total paper return at least `min_return` (-2%) and a paper max
+  drawdown at most `max_drawdown` (15%) (`thresholds_stock_paper`).
+- A model that stops meeting a gate is demoted the same way; leaving `live_eligible`
+  halts its live assignments. `retired` is the owner's, and final.
+
+An assignment (`assignments.py`) is a model trading a list of symbols with its own cash
+(the bankroll), in one mode. The mode is the broker environment: paper keys trade the
+Alpaca paper account, live keys the real account, and the host refuses an assignment
+(or an order) whose mode differs from the keys. One Alpaca account is shared, so a new
+bankroll must fit in the broker's cash minus the other active bankrolls of that mode; at
+most `stock_max_assignments` (3) exist at once; live also needs the live switch and a
+`live_eligible` model. Creating one queues its `stock_trade` job (role trade, one trade
+slot). Halt cancels its open orders (positions stay), Resume re-checks the gates, Close
+needs no positions and no open orders.
+
+Sell all (`host/stocks/liquidate.py`, owner `POST /api/stocks/assignments/{id}/liquidate`
+and the row menu on `/stocks`) is the way out of an assignment that can never trade
+again: its model was retired (final) or dropped out of `live_eligible`, so Resume is
+refused, and Close is refused while it holds shares. On a halted assignment it stores
+one approved market-on-close sell per held symbol (the shares held minus those already
+in open sells; `client_request_id` `liquidate:<session_date>:<symbol>`, rationale "owner
+liquidation", event actor `owner:<login>`, audit `stock_assignment_liquidate`). Each
+sell runs every approval check except `halted`, `not_live_eligible` and `max_order` (a
+whole position must be sellable in one order), so it is still refused under kill, with
+live off, on a stale broker check, outside a session and after `moc_cutoff`; when one
+sell fails, nothing is stored and the refusal names the check. The executor places the
+sells like any other, the fills are booked, and once the positions reach zero Close
+works. Selling by hand at Alpaca instead leaves the host counting the shares: a
+permanent `position_mismatch` (on live, the `stock_position_mismatch` auto-kill).
+
+Approval (`approve.py`), per order, the first failing check names the reason: `kill`,
+`halted`, `environment`, `broker_stale` (no broker check for 4 x
+`stock_broker_poll_s`), `live_disabled`, `not_live_eligible`, `market_closed`,
+`moc_cutoff`, `session`, `symbol`, `short` (selling more than is held, long only),
+`max_order` (`stock_max_order_cents`, $1,000), `max_position`
+(`stock_max_position_cents`, $2,500), `cash` (the buy plus `stock_price_band` (5%) must
+fit in the assignment's cash), `daily_loss` (buys only; `stock_max_daily_loss_cents`
+per mode). The reference price is the previous session's adjusted close. An approved
+buy reserves its price plus the band; the fill gives back what it did not use. Every
+status change writes a `stock_order_events` row. Routes: the worker's
+`/api/v1/stock_trade/state`, `/api/v1/stock_orders/request`, `/api/v1/stock_trade/release`
+and the owner's `/api/stocks/...` (`host/api/stocks.py`). Host CLI: `stock-models`,
+`stock-assign MODEL_ID [--mode] [--bankroll DOLLARS] [--symbols A,B]`,
+`stock-assignments`, `stock-orders [--status active]`.
+
+The worker side (`fleet/worker/stock_trade.py`, `StockTradeLoop`) runs in the trade role
+every `stock_trade_tick_s`: it skips under kill, for a halted assignment and until the
+host says the decision is due (inside the window, bars through the previous session,
+not decided yet this session); then it refreshes the bar cache, asks the model, and
+turns the weights into whole-share orders: equity = cash + reserved + positions at the
+reference prices, target = floor(weight x equity / price), order = target minus held
+(open orders count as held), sells first, then the buys, each buy cut to the cash left
+at the host's reservation so none is refused with `cash`. Each order carries a one-line
+rationale ("momentum rank 2/20, w 0.25, target 12 held 8"). The batch, empty or not, is
+posted once per session, with idempotent ids, so a retry never doubles an order.
+
+### 9.4 Exchange: orders at Alpaca, fills, broker, marks
+
+`host/exchange/alpaca_trading.py` is the trading client (place, cancel, order by client
+id, orders, positions, account, clock, calendar); every error text is redacted, 401 or
+403 is an auth error, 429 backs off, and a timeout is never resubmitted blind. The
+stock tasks run on a thread of their own in the exchange process
+(`host/exchange/stock_tasks.py`), so Alpaca can never slow the NFL loop; without keys
+they do nothing.
+
+- `stock_broker` (`stock_broker.py`): the broker check, then the reconciliation. Our
+  positions per symbol (over the assignments of the keys' mode) are compared with
+  Alpaca's, and Alpaca's open orders that are not ours are listed. Differences go into
+  the warnings on `/stocks`; live also pulls the kill switch (`unknown_order` at once,
+  `stock_position_mismatch` when seen on two checks in a row).
+- `stock_executor` (`stock_executor.py`): approved, then submitting, then open with
+  Alpaca's id. A timeout stays submitting and is looked up by client id (found: open; not
+  found after 60 s: expired, cash released). A refusal is `rejected_by_exchange`. A
+  cancel request (halt, kill) is cancelled at Alpaca; after 15:50 Alpaca refuses and the
+  order stays open with reason "cancel refused (after 15:50)" and fills at the close.
+  The poll books fills through `stock_fills.book_fill` (once per fill, positions, cost,
+  cash and realized P&L kept exact) and closes orders Alpaca cancelled or expired.
+- `stock_marks`: once per session, 30 minutes after the close, every active or halted
+  assignment's equity (cash + reserved + shares at the session's close) into
+  `stock_marks`; these marks are the paper record the `live_eligible` gate reads.
+
+Exchange CLI: `stock-smoke --confirm "STOCK SMOKE YYYY-MM-DD"` (one 1-share SPY cls buy
+on the keys' account, cancelled after 10 s; refused under kill, on live keys while live
+is off, and from 15:45) and `stock-cancel-all [--direct]` (without `--direct`: every
+active stock order is cancelled in the database, the ones already at Alpaca by the
+exchange process; with `--direct`, for when the exchange process is down: live keys
+turn live off first, paper keys halt the paper assignments, then every open order on
+the Alpaca account is cancelled and our rows are closed from what Alpaca reports).
+
+### 9.5 Dashboard, settings, tests
+
+`/stocks` (owner only, refreshed every 5 s, reached from the NFL | Stocks tabs under the
+Trading title): the broker card (PAPER or LIVE, account status, equity, cash, buying
+power, market open or closed, next close, last check, warnings), the assignments (mode,
+symbols, bankroll, equity, today's P&L, total return, status; Halt, Resume, Sell all
+(halted with shares), Close), the models (family and params, Sharpe, max drawdown, CAGR
+against SPY, validated, status, the gate it still fails in words; Validate, Backtest
+with the newest informational backtest and a link to its job, Assign, Retire), positions, the newest session's orders with their
+reason codes and rationales, the per-symbol feed, and the New assignment and New
+search forms. Home's "Needs attention" shows a Stocks row when an assignment is halted
+or the broker has warnings. Settings has a Stocks group for every `stock_*` key and the
+two threshold objects (dollars in, cents stored).
+
+Tests: `tests/test_stock_models.py`, `test_stock_backtest.py`, `test_stock_worker.py`
+(worker), `test_stock_host.py`, `test_stock_limits.py`, `test_stock_kill.py` (host),
+`test_stock_exchange.py`, `test_stock_fills.py`, `test_stock_broker.py` (exchange, on the
+in-memory Alpaca of `tests/fake_alpaca.py`), `test_stocks_page.py` (dashboard), and the
+end to end `tests/e2e_stocks.py` (run by `tests/test_e2e.py::test_stocks_end_to_end`):
+bars, a search and a validate run by the worker job functions, paper_ok, a paper
+assignment decided by the worker 20 minutes before the close, approval, cls orders
+placed and filled at the fake close, fills, positions and cash checked, the mark, and
+the kill cancelling an open order.
+
+### Known gaps (read before trusting the numbers)
+
+- Survivorship: the default symbols are today's large companies, so a backtest from 2017
+  holds names known to have done well since. Backtest returns are flattering; compare
+  every model with SPY bought and held over the same years.
+- Selection: a search keeps the best of many candidates by Sharpe, so its backtest
+  Sharpe is biased up. The validation years are the honest number, and they are few.
+- Live versus backtest: the backtest uses fractional shares and full investment; live
+  uses whole shares and keeps the price band (5%) of the buys in cash. Sells free no
+  cash until they fill at the close, so when a model rotates out of one name into
+  another the buy is cut that day and completed the next session.
+- Twenty paper days is a small sample: it proves the plumbing and the costs, not the
+  edge. Alpaca's paper fills are simulated by Alpaca.
+- The broker's cash is shared: the host keeps each assignment's own cash, but a manual
+  trade on the same Alpaca account shows up only as a reconciliation warning.
 
 ## Assumptions to verify
 
@@ -132,3 +337,6 @@ Exit 0 when the account call answers 200, else 1 (also without keys or with a ba
 | L3 | The paper environment supports event contracts | Probe on paper keys |
 | L4 | Free plan: IEX real-time stocks, full-market history older than about 15 minutes, about 30 streaming symbols, about 200 requests a minute | Alpaca docs, owner |
 | L5 | Kalshi fee formula and tick size for NFL contracts | Alpaca docs, probe |
+| S1 | Alpaca refuses market-on-close orders and their cancels from 15:50 New York; the paper account fills cls orders at the official close | Alpaca docs; `stock-smoke` and the first paper session |
+| S2 | A buy beyond buying power answers 403 (not 422) | First paper sessions; the order's reason on `/stocks` |
+| S3 | The free plan serves SIP daily bars when the request ends 15 minutes or more back | `stock-bars-status` after the first fetch |

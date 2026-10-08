@@ -17,6 +17,7 @@ import psycopg
 
 from host.settings import get_setting
 from host.stocks.market import NEW_YORK, broker_problem, broker_state, max_broker_age_s, ref_prices, server_now
+from host.stocks.views_models import last_backtests, metric as _number, thresholds, verdict
 
 ACTIVE_ORDERS = ("approved", "submitting", "open", "partial", "cancel_requested")
 MAX_ORDERS = 200
@@ -43,13 +44,6 @@ def tone(kind: str, status: Any) -> str:
     return TONES.get(kind, {}).get(str(status), "muted")
 
 
-def _number(metrics: Any, key: str) -> float | None:
-    value = metrics.get(key) if isinstance(metrics, dict) else None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value:
-        return None
-    return float(value)
-
-
 def short_params(params: Any) -> str:
     """{"lookback": 126, "top_k": 3} -> "lookback 126 top_k 3", in stored order."""
     if not isinstance(params, dict):
@@ -66,6 +60,8 @@ def broker(conn: psycopg.Connection) -> dict[str, Any]:
     """The broker row plus its age, whether it is stale, why the current environment
     could not trade now (None when it can) and the warnings as {kind, message, ts}."""
     row = broker_state(conn)
+    flags = conn.execute("SELECT pattern_day_trader, daytrade_count FROM stock_broker_state WHERE id = 1").fetchone()
+    row.update(dict(flags) if flags else {"pattern_day_trader": None, "daytrade_count": None})
     now = server_now(conn)
     checked = row.get("checked_at")
     age = None if checked is None else max(0, int((now - checked).total_seconds()))
@@ -107,6 +103,8 @@ def models(conn: psycopg.Connection) -> list[dict[str, Any]]:
          ORDER BY status = 'retired', (backtest_metrics ->> 'sharpe')::double precision DESC NULLS LAST, id
         """
     ).fetchall()
+    limits = thresholds(conn)
+    backtests = last_backtests(conn)
     out = []
     for r in rows:
         bt, val = r["backtest_metrics"], r["validation_metrics"]
@@ -114,7 +112,8 @@ def models(conn: psycopg.Connection) -> list[dict[str, Any]]:
         out.append({**dict(r), "short_params": short_params(r["params"]), "sharpe": _number(bt, "sharpe"),
                     "max_drawdown": _number(bt, "max_drawdown"), "cagr": _number(bt, "cagr"),
                     "spy_cagr": _number(bench, "cagr"), "trades": _number(bt, "trades"),
-                    "validated": isinstance(val, dict), "validation_sharpe": _number(val, "sharpe")})
+                    "validated": isinstance(val, dict), "validation_sharpe": _number(val, "sharpe"),
+                    "verdict": verdict(conn, dict(r), limits), "last_backtest": backtests.get(int(r["id"]))})
     return out
 
 
@@ -219,6 +218,6 @@ def attention_items(conn: psycopg.Connection) -> list[dict[str, str]]:
     if warnings:
         parts.append(f"{len(warnings)} broker warning{'' if len(warnings) == 1 else 's'}")
     last = warnings[-1] if warnings else None
-    meta = (last.get("message") if isinstance(last, dict) else str(last)) if last else "Resume or close them on Stocks"
+    meta = (last.get("message") if isinstance(last, dict) else str(last)) if last else "Resume, sell out or close them on Stocks"
     return [{"key": "stocks", "state": "warn", "word": "stocks", "title": "Stocks: " + ", ".join(parts),
              "meta": str(meta or "see Stocks")[:120], "href": "/stocks"}]

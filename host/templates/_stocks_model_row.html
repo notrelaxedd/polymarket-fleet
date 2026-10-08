@@ -1,13 +1,16 @@
 {# One stock model row (_stocks.html): `m` from host.stocks.views.models. Id, family and
    key params on the title line; the validated chip under it; the grey line led by the
-   status chip with Sharpe, max drawdown and CAGR against SPY buy and hold; the Sharpe
-   at the side; the "..." menu with Validate, Backtest, Assign and Retire (forms, so
-   they work with JavaScript off). The two-sentence summary is the row's tooltip. #}
+   status chip with Sharpe, max drawdown and CAGR against SPY buy and hold; a second grey
+   line with the gate it still fails, in words (views_models.verdict); the Sharpe at the
+   side; the "..." menu with Validate, Backtest, Assign and Retire (forms, so they work
+   with JavaScript off) and the newest informational backtest with a link to its job.
+   The two-sentence summary is the row's tooltip. #}
 {% import "_ui.html" as ui %}
 {% set title %}<span class="rank">#{{ m.id }}</span> {{ m.family }} <span class="params">{{ m.short_params }}</span>{% endset %}
 {% set flags %}{% if m.validated %}{{ ui.chip("ok", "validated", key="validated", title="held-out Sharpe " ~ (m.validation_sharpe | fixed(2))) }}{% else %}{{ ui.chip("muted", "not validated", key="unvalidated", title="no held-out metrics yet: Validate it") }}{% endif %}{% endset %}
 {% set meta %}{{ ui.chip(tone("model", m.status), m.status.replace('_', ' '), key=m.status) }} Sharpe {{ m.sharpe | fixed(2) }} &middot; drawdown {{ m.max_drawdown | pct1 }} &middot; CAGR {{ m.cagr | signed_pct }} vs SPY {{ m.spy_cagr | signed_pct }}{% endset %}
-{% call ui.row("stock-model", m.id, None, title, meta=meta, flags=flags, cls="lines-full", attrs={"data-status": m.status, "title": m.summary or ""}) %}
+{% set meta2 %}<span class="verdict" data-verdict>{{ m.verdict }}</span>{% endset %}
+{% call ui.row("stock-model", m.id, None, title, meta=meta, meta2=meta2 if m.verdict else None, flags=flags, cls="lines-full", attrs={"data-status": m.status, "title": m.summary or ""}) %}
   <span class="row-value" title="backtest Sharpe, search years">{{ m.sharpe | fixed(2) }}</span>
   {% if m.status != 'retired' %}
   {% call ui.menu() %}
@@ -15,6 +18,9 @@
     <form method="post" action="/stocks/jobs" data-action="backtest"><input type="hidden" name="kind" value="stock_backtest"><input type="hidden" name="model_id" value="{{ m.id }}"><button type="submit" class="menu-item">Backtest</button></form>
     {% if m.status in ('paper_ok', 'live_eligible') %}
     <a class="menu-item" href="/stocks?model={{ m.id }}#assign" data-action="assign">Assign</a>
+    {% endif %}
+    {% if m.last_backtest %}{% set lb = m.last_backtest %}
+    <p class="muted bankroll-lines" data-last-backtest>last backtest: {% if lb.sharpe is not none %}Sharpe {{ lb.sharpe | fixed(2) }}{% if lb.cagr is not none %}, CAGR {{ lb.cagr | signed_pct }}{% endif %}{% else %}{{ lb.status }}{% endif %}<br><a href="/jobs/{{ lb.job_id }}">job {{ lb.job_id | short }}</a></p>
     {% endif %}
     <form method="post" action="/stocks/models/{{ m.id }}/retire" data-action="retire" data-confirm="Retire this stock model? Its active assignments halt and it cannot be un-retired."><button type="submit" class="menu-item danger">Retire</button></form>
   {% endcall %}

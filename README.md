@@ -405,9 +405,9 @@ The UI overhaul changes only the pages (`docs/UI.md`, `docs/DASHBOARD.md`); ever
 5. With JavaScript off everything still works: the sections and "..." menus open on tap, every action is a form, and Jobs shows all five New job forms under their headings.
 6. Developers: `tests/hw/screenshots.py` captures every page at 390 and 1280 px in light and dark and checks the layout rules; `tests/hw/test_row_audit.py` checks Models and Trading stay under six phone screens with 20 rows each.
 
-## Alpaca (step 8, in progress)
+## Alpaca (steps 8 and 9)
 
-Alpaca is being added as a second venue, beside Polymarket US: NFL event contracts first (Kalshi contracts offered through Alpaca), stocks and crypto after that. The plan and the contract are in `docs/ALPACA.md`. Only the read-only probe is built so far; nothing trades on Alpaca yet.
+Alpaca is a second venue beside Polymarket US. For now it trades stocks only (step 9, built: daily market-on-close trading of US stocks and ETFs, paper first). NFL event contracts on Alpaca (step 8) are planned and on hold; no crypto. The design is in `docs/ALPACA.md`. The keys:
 
 1. Create a paper account at Alpaca and generate a paper key pair (dashboard, Paper account, API Keys). The secret is shown once.
 2. Add the keys to `exchange.env` in the folder `docker compose` runs from (with the update timer, `/root/polymarket-fleet`), next to any Polymarket keys, and keep the file private with `chmod 600 exchange.env`:
@@ -424,7 +424,33 @@ ALPACA_BASE_URL=https://paper-api.alpaca.markets
 docker compose run --rm --build exchange python -m host.exchange.cli probe-alpaca
 ```
 
-   `verdict.keys` says whether the keys work; `verdict.event_contracts` says whether Kalshi event contracts are visible to the account. The output is safe to paste back (the key and the secret are redacted). If event contracts are "not found", ask Alpaca support which asset class or endpoint serves them, then rerun with `--asset-class NAME` or `--get PATH`.
+   `verdict.keys` says whether the keys work; `verdict.event_contracts` (step 8, on hold) says whether Kalshi event contracts are visible to the account. The output is safe to paste back (the key and the secret are redacted). If event contracts are "not found", ask Alpaca support which asset class or endpoint serves them, then rerun with `--asset-class NAME` or `--get PATH`.
+
+## How to test step 9
+
+Step 9 trades stocks on Alpaca's paper account: models are searched and validated on daily bars by the workers, the host approves every order, and the exchange process places market-on-close orders at Alpaca. Everything below is paper; nothing touches real money unless you later put live keys in `exchange.env` and turn the live switch on. The design and every rule are in `docs/ALPACA.md` "Step 9". Commands run on the Debian host, in the checkout (`/root/polymarket-fleet`).
+
+1. Keys and restart. Put the Alpaca paper keys in `exchange.env` as in "Alpaca (steps 8 and 9)" above (`ALPACA_BASE_URL=https://paper-api.alpaca.markets`), then restart the exchange so it reads them: `docker compose up -d --force-recreate exchange`. Check the account with `docker compose run --rm exchange python -m host.exchange.cli probe-alpaca`.
+2. Bars. The exchange fetches the daily bars of every symbol in Settings, Stocks group ("Symbols", 20 large stocks and ETFs by default, SPY included) within a minute of starting. Fetch them now and check:
+
+```bash
+docker compose exec exchange python -m host.exchange.cli ingest-stock-bars
+docker compose exec exchange python -m host.exchange.cli stock-bars-status
+```
+
+   Each symbol shows its bar count (about 2,700 since 2016) and the newest bar, which should be the last trading day. The same list is the "Feed" group on `/stocks`. After that the feed refreshes every symbol once a day after 18:00 (Settings, "Bars refresh hour"); nothing else needs running.
+3. Open `/stocks` (Trading, then the "Stocks" tab under the title). The broker card should say PAPER, the account status ACTIVE, your paper equity and cash, market open or closed with the next close, and a last check a few seconds old. If it says "no keys" or shows a last error, go back to step 1.
+4. Search. Put a worker in the model_search role (Fleet page), then use "New search" on `/stocks` (for example n 200, seed 0, all four families). The worker downloads the bars once, backtests every candidate on the search years (Settings, Stocks group, "Search first year" and "Search last year": 2017 up to the year before the validation years by default) and the best five by Sharpe appear under Models as `candidate`, each with a two-sentence summary, its Sharpe, max drawdown and CAGR against SPY over the same years. A role change mid-search resumes where it stopped.
+5. Validate. Put a worker in the backtest role and press "..." then Validate on a model. When the job ends the model shows "validated"; if its backtest and validation numbers pass the thresholds (Settings, Stocks group: Sharpe 0.5, drawdown 30%, 30 trades, validation Sharpe 0 by default) it becomes `paper_ok`. A model that fails says why on its row, in a grey second line ("needs 30 trades (25)", "not validated: press Validate"); a `paper_ok` model says what the paper gate still needs ("not yet live eligible: needs 20 paper sessions (3 so far)"). Backtest in the same menu runs an informational backtest; its Sharpe and a link to the job show in that menu when it ends.
+6. Assign on paper. On a `paper_ok` model press "..." then Assign (or the New assignment form): mode paper, a bankroll (default $10,000; it must fit in the paper account's cash) and the symbols it may trade. Then put a worker in the trade role; it holds the assignment's stock trade job (one trade slot). The assignment row shows active.
+7. The first session. Nothing happens until the decision window: at 15:40 New York (20 minutes before the close; 12:40 on a half day) the worker asks the model for its weights from the bars through yesterday and posts one batch. Within a few seconds `/stocks` shows the orders with a one-line rationale ("momentum rank 2/20, w 0.25, target 12 held 8") and approved, or rejected with a reason code in words. Approved orders are at Alpaca within a second as market-on-close orders (you can see them in Alpaca's paper dashboard). They fill at the 16:00 closing price; a few seconds after the close the fills are booked and Positions shows the shares, the assignment's cash drops by what they cost. At 16:30 the day is marked: the assignment's equity, today's P&L and total return update. One decision per assignment per session: nothing else is sent that day.
+8. Every day after that the same happens once: the model may sell, buy or do nothing. Check the Home page: "Needs attention" shows a Stocks row if an assignment is halted or the broker check found a problem (a position that differs from Alpaca's, an order at Alpaca that is not ours). Do not trade by hand on the same Alpaca account; it shows up as a warning.
+9. Kill. Before 15:50 on a day with orders, press KILL: every stock order still open is cancelled at Alpaca within a few seconds, the cash comes back, every stock assignment shows halted, and positions stay. After 15:50 Alpaca refuses to cancel market-on-close orders: the order stays open with "cancel refused (after 15:50)" and fills at the close. Reset with RESUME as usual, then press Resume on each stock assignment.
+   Getting out of a model. Retiring a model (its row's "..." menu) halts its assignments for good, and a live assignment whose model drops out of `live_eligible` halts too; neither can be resumed, and Close needs an assignment that holds no shares. Press "..." then "Sell all" on the halted assignment (shown only while it holds shares) and confirm: one market-on-close sell per symbol it holds, approved by the host with every check except "assignment not active", "model not live_eligible" and max order (so it is still refused under kill, with live off, after 15:49 and on a stale broker check). The sells fill at the close; once the fills are booked the shares are gone and Close works. Never sell them by hand at Alpaca: the host still counts them, which shows as a position mismatch (and on live, kills trading).
+10. Optional checks: `docker compose exec exchange python -m host.exchange.cli stock-smoke --confirm "STOCK SMOKE <today's date>"` places one 1-share SPY order and cancels it after 10 seconds (refused from 15:45). `docker compose exec host python -m host.cli stock-orders --status active` and `stock-assignments` list the same as the page.
+11. Live, later. A model becomes `live_eligible` after at least 20 marked paper sessions with a total return of at least -2% and a max drawdown under 15% (Settings). Live trades the real account: it needs live keys in `exchange.env` (which also stops paper orders, since the mode must match the keys), the typed live switch, and a live assignment created by you. Wait for the paper record first.
+
+**Reading the numbers honestly.** The backtest buys at each day's close with 5 bps of cost per side and fractional shares, using only bars from before the day (tested). That does not make it a forecast: (1) the default symbols are today's large companies, so any backtest since 2016 knows they survived and grew (survivorship bias); always compare a model's CAGR with SPY's on the same row; (2) a search keeps the best 5 of 200 by Sharpe, so the search-years Sharpe is flattering; the validation-years numbers (years the search never saw) are the ones to trust, and they cover only a couple of years; (3) live uses whole shares and keeps about 5% of each buy in cash for the price band, and a switch from one name to another completes over two sessions, so paper returns trail the backtest a little; (4) 20 paper days mostly proves the plumbing, not the edge: a model that beats SPY over 20 days may be lucky. A model that does not beat SPY bought and held after costs is not worth live money.
 
 ## Workloads
 
@@ -545,5 +571,7 @@ Any local Postgres 16 works instead of the compose `db` service; point `FLEET_TE
    - [x] 6B: snapshot replay backtests, quarterback, injury and play-by-play signals, the `epa_blend` family, selling a held position
    - [x] 6C: in-game trading on paper (`docs/INGAME.md`): ESPN game-state feed, feed-lag measurement, the `ingame_wp` family on nflverse play-by-play, in-game trade rules and settlement
 7. [x] Step 7: UI overhaul (`docs/UI.md`): Home at `/`, Fleet at `/fleet`, one-line rows with action menus, disclosures, a bottom nav on phones
+8. [ ] Step 8: NFL event contracts on Alpaca (`docs/ALPACA.md`): the read-only probe is built; the rest is planned and on hold
+9. [x] Step 9: stocks on Alpaca (`docs/ALPACA.md`): daily bar feed, stock models with backtest, search and validation, paper and live market-on-close trading with host approval, the `/stocks` page
 
 Data is free-only for now; paid sources are considered once profit comes in.

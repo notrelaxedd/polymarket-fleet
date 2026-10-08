@@ -6,7 +6,11 @@ stock-smoke --confirm "STOCK SMOKE YYYY-MM-DD" [--hold S]
     --hold seconds (10). It proves the keys, placement and cancellation without any
     assignment or bankroll. Refused under kill, on live keys while live trading is off,
     and from 15:45 New York (a cls order cannot be cancelled after 15:50). Its
-    client_order_id starts with "fleet-smoke-", which the reconciliation knows as ours.
+    client_order_id starts with "fleet-smoke-", which the reconciliation knows as ours
+    for 15 minutes (older, it is an unknown order: live auto-kills). A place that times
+    out or fails is looked up by client_order_id (never placed again); a cancel that
+    fails is retried (1, 2, 4, 8 s); the result is audited on every path, and anything
+    but "canceled" at Alpaca exits 1 with "check the account now".
 stock-cancel-all [--direct]
     without --direct: the database cancel (approved rows cancelled with the release,
     the rest cancel_requested for the exchange process). With --direct, the fallback
@@ -37,8 +41,10 @@ from host.errors import BadRequest, Conflict
 from host.events import add_audit
 from host.exchange import alpaca_credentials, stock_tasks
 from host.exchange.adapters.base import utcnow
+from host.exchange.alpaca_trading import AlpacaRejected
 from host.exchange.stock_broker import NEW_YORK, SMOKE_PREFIX, parse_ts
-from host.exchange.stock_executor import ACTIVE, REFUSED, apply_remote, set_status
+from host.exchange.stock_executor import REFUSED
+from host.exchange.stock_rows import ACTIVE, apply_remote, set_status
 from host.settings import get_setting
 from host.stocks import orders as stock_orders
 from host.trading.positions import owner_tz
@@ -79,22 +85,68 @@ def run_stock_smoke(conn: psycopg.Connection, client: Any, confirm: str, hold_s:
               confirmation_text=confirm)
     conn.commit()
     timeline: list[dict[str, Any]] = []
-    eid = client.place({"id": client_id, "symbol": SMOKE_SYMBOL, "qty": 1, "side": "buy"})
-    timeline.append({"ts": utcnow(), "step": "placed", "detail": eid})
-    sleep(hold_s)
-    accepted = client.cancel(eid)
-    timeline.append({"ts": utcnow(), "step": "cancel accepted" if accepted else "cancel refused", "detail": eid})
-    status = None
-    for delay in (0.0, 0.5, 1.0, 2.0):
+    eid: str | None = None
+    status: str | None = "unknown"
+    try:
+        eid = _smoke_place(client, client_id, timeline, sleep)
+        if eid is None:
+            status = "rejected" if timeline[-1]["step"] == "rejected" else "unknown"
+            return {"client_order_id": client_id, "exchange_order_id": None, "status": status, "timeline": timeline}
+        sleep(hold_s)
+        _smoke_cancel(client, eid, timeline, sleep)
+        for delay in (0.0, 0.5, 1.0, 2.0):
+            sleep(delay)
+            try:
+                status = (client.order(eid) or {}).get("status")
+            except Exception as exc:  # noqa: BLE001 - asked again, reported
+                status = "unknown"
+                timeline.append({"ts": utcnow(), "step": "status read failed", "detail": str(exc)[:200]})
+            if status in ("canceled", "filled", "expired", "rejected"):
+                break
+        timeline.append({"ts": utcnow(), "step": f"status at Alpaca: {status}", "detail": eid})
+        return {"client_order_id": client_id, "exchange_order_id": eid, "status": status, "timeline": timeline}
+    finally:
+        add_audit(conn, "stock_smoke_result", client_id, "cli", None, {"status": status, "exchange_order_id": eid})
+        conn.commit()
+
+
+def _smoke_place(client: Any, client_id: str, timeline: list[dict[str, Any]], sleep: Callable[[float], None]) -> str | None:
+    """Place the smoke order; on a timeout or failure look it up by client_order_id
+    (never placed again). The exchange order id, None when it does not exist."""
+    try:
+        eid = client.place({"id": client_id, "symbol": SMOKE_SYMBOL, "qty": 1, "side": "buy"})
+        timeline.append({"ts": utcnow(), "step": "placed", "detail": eid})
+        return eid
+    except AlpacaRejected as exc:
+        timeline.append({"ts": utcnow(), "step": "rejected", "detail": str(exc)[:200]})
+        return None
+    except Exception as exc:  # noqa: BLE001 - the order may exist: looked up below
+        timeline.append({"ts": utcnow(), "step": "place failed, looking it up", "detail": str(exc)[:200]})
+    for delay in (0.0,) + DIRECT_RETRIES:
         sleep(delay)
-        remote = client.order(eid) or {}
-        status = remote.get("status")
-        if status in ("canceled", "filled", "expired", "rejected"):
-            break
-    timeline.append({"ts": utcnow(), "step": f"status at Alpaca: {status}", "detail": eid})
-    result = {"client_order_id": client_id, "exchange_order_id": eid, "status": status, "timeline": timeline}
-    add_audit(conn, "stock_smoke_result", client_id, "cli", None, {"status": status, "exchange_order_id": eid})
-    return result
+        try:
+            remote = client.order_by_client_id(client_id)
+        except Exception as exc:  # noqa: BLE001 - asked again
+            timeline.append({"ts": utcnow(), "step": "lookup failed", "detail": str(exc)[:200]})
+            continue
+        if remote is not None:
+            timeline.append({"ts": utcnow(), "step": "found at Alpaca", "detail": remote.get("id")})
+            return str(remote.get("id"))
+    timeline.append({"ts": utcnow(), "step": "not found at Alpaca after the place failed", "detail": client_id})
+    return None
+
+
+def _smoke_cancel(client: Any, eid: str, timeline: list[dict[str, Any]], sleep: Callable[[float], None]) -> None:
+    for delay in (0.0,) + DIRECT_RETRIES:
+        if delay:
+            sleep(delay)
+        try:
+            accepted = client.cancel(eid)
+        except Exception as exc:  # noqa: BLE001 - retried
+            timeline.append({"ts": utcnow(), "step": "cancel failed", "detail": str(exc)[:200]})
+            continue
+        timeline.append({"ts": utcnow(), "step": "cancel accepted" if accepted else "cancel refused", "detail": eid})
+        return
 
 
 def cancel_all_direct(conn: psycopg.Connection, client: Any, now: datetime, sleep: Callable[[float], None],

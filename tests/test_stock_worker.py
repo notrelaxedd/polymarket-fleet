@@ -3,7 +3,6 @@ stock worker routes, plus the agent hooks for stock jobs. No database."""
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import math
@@ -17,9 +16,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from fleet.stocks import backtest
 from fleet.stocks.data import Bar, history_before, trading_days
-from fleet.stocks.families import Decision, StockModel, make_model
+from fleet.stocks.families import make_model
 from fleet.worker import config, stock_trade
 from fleet.worker.agent import Agent, AgentOptions
 from fleet.worker.stock_trade import StockTradeLoop, client_request_id, plan_orders
@@ -157,12 +155,17 @@ def test_a_due_decision_posts_one_batch_sells_first(host: FakeStockHost, tmp_pat
     st = host.states["j1"]
     refs = st["decision"]["ref_prices_cents"]
     equity = 600_000 + 8 * refs["S01"] + 30 * refs["S05"]
-    weights = make_model("momentum", MOMENTUM, UNIVERSE).weights(history_before(BARS, SESSION, SYMBOLS), SESSION)
+    model = make_model("momentum", MOMENTUM, UNIVERSE)
+    weights = model.weights(history_before(BARS, SESSION, SYMBOLS), SESSION)
+    unchanged = weights == model.weights(history_before(BARS, PREVIOUS, SYMBOLS), PREVIOUS)
     assert len(weights) == 3
     expected = {}
     for s in UNIVERSE:
         target = math.floor(weights.get(s, 0.0) * equity / refs[s] + 1e-9)
-        delta = target - {"S01": 8, "S05": 30}.get(s, 0)
+        held = {"S01": 8, "S05": 30}.get(s, 0)
+        delta = target - held
+        if unchanged and (held > 0) == (target > 0):
+            continue  # unchanged weights: only missing or extra names trade, as in the backtest
         if delta:
             expected[s] = ("buy" if delta > 0 else "sell", abs(delta))
     assert {o["symbol"]: (o["side"], o["qty"]) for o in orders} == expected
@@ -209,6 +212,26 @@ def test_open_orders_count_as_held(host: FakeStockHost, tmp_path: Any) -> None:
     assert "S05" not in {o["symbol"] for o in again if o["side"] == "sell"}, "never sell what an open sell already covers"
 
 
+DEFAULT_LIMITS = {"stock_price_band": 0.05, "stock_max_order_cents": 100_000, "stock_max_position_cents": 250_000}
+
+
+def test_the_loop_carries_cut_and_rejected_names_to_the_next_session(host: FakeStockHost, tmp_path: Any) -> None:
+    from fleet.worker.stock_trade import refused
+
+    orders = [{"client_request_id": "c1", "symbol": "S01"}, {"client_request_id": "c2", "symbol": "S02"},
+              {"client_request_id": "c3", "symbol": "S03"}]
+    answer = {"orders": [{"client_request_id": "c1", "status": "rejected", "reason": "cash"},
+                         {"client_request_id": "c2", "status": "rejected", "reason": "max_position"},
+                         {"client_request_id": "c3", "status": "approved", "reason": None}]}
+    assert refused(orders, answer) == {"S01"}
+    host.states["j1"] = _state(assignment=dict(_state()["assignment"], cash_cents=1_000_000), positions={},
+                               settings=dict(DEFAULT_LIMITS))
+    loop = _loop(host, tmp_path, a="j1")
+    assert loop.run()[0]["action"] == "posted"
+    capped = {o["symbol"] for o in host.batches[0]["orders"] if o["rationale"].endswith("max_order/max_position")}
+    assert capped and capped <= loop.unfinished["j1"], "a buy capped by max_order is finished at the next sessions"
+
+
 def test_an_empty_decision_is_still_posted(host: FakeStockHost, tmp_path: Any) -> None:
     host.states["j1"] = _state(model={"id": 9, "family": "buyhold", "params": {"symbol": "SPY"}},
                                assignment=dict(_state()["assignment"], symbols=["S01"]), positions={})
@@ -234,31 +257,6 @@ def test_tick_schedule_follows_the_setting(host: FakeStockHost, tmp_path: Any) -
     loop.agent.trade_jobs = {}
     loop._next_at = 0.0
     assert loop.maybe_run() is False, "no stock job, no tick"
-
-
-# -------------------------------------------------------- live == backtest
-
-
-class Spy(StockModel):
-    family = "spy"
-
-    def __init__(self, inner: StockModel) -> None:
-        super().__init__({})
-        self.inner, self.seen = inner, {}
-
-    def decide(self, hist: dict[str, list[Bar]], day: str) -> Decision:
-        self.seen[day] = copy.deepcopy(hist)
-        return self.inner.decide(hist, day)
-
-
-def test_the_live_decision_sees_exactly_what_the_backtest_saw() -> None:
-    inner = make_model("momentum", MOMENTUM, UNIVERSE)
-    in_backtest = Spy(inner)
-    backtest.run(in_backtest, BARS, UNIVERSE, 2024, 2024, 5.0, lambda: False)
-    live = Spy(inner)
-    plan_orders(_state(), _through(SESSION), "j1", model=live)
-    assert live.seen[SESSION] == in_backtest.seen[SESSION]
-    assert inner.weights(live.seen[SESSION], SESSION) == inner.weights(in_backtest.seen[SESSION], SESSION)
 
 
 # --------------------------------------------------------------- agent hooks

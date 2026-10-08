@@ -13,11 +13,17 @@ per (assignment_id, client_request_id) and marks last_decision_date = session_da
 when every order is rejected (one decision per session).
 
 The reference price is the host's: the close of the newest bar before the session
-(host.stocks.market.ref_prices). The worker's ref_price_cents is kept in the event
-detail only, so a wrong worker price can never loosen a limit. daily_loss is judged
-over the whole mode (the limit is per mode): the sum over its active and halted
-assignments of the previous mark's equity (the bankroll before the first mark) minus
-cash + reserved + positions at reference prices.
+(host.stocks.market.ref_prices), and only when the symbol's bars reach the previous
+session (else the order is rejected with `symbol`, so a stalled feed never prices a
+limit). The worker's ref_price_cents is kept in the event detail only, so a wrong worker
+price can never loosen a limit.
+
+daily_loss is judged over the whole mode (the limit is per mode) and measures the last
+completed session: the sum over its active and halted assignments of the newest mark
+dated before the reference bars' day (the bankroll when there is none) minus cash +
+reserved + positions at reference prices. The mark of the reference day itself values
+the positions at the same closes as the reference prices, so comparing with it would
+always read about 0.
 """
 from __future__ import annotations
 
@@ -67,23 +73,26 @@ def _held(conn: psycopg.Connection, assignment_id: int, symbol: str) -> int:
 
 
 def mode_loss_cents(conn: psycopg.Connection, mode: str, session_date: date) -> int:
-    """Today's loss of the mode: previous equity minus equity at reference prices."""
+    """The mode's loss over the last completed session: the mark before the reference
+    bars' day (the bankroll when there is none) minus equity at reference prices."""
     rows = conn.execute(
-        """
-        SELECT a.id, a.bankroll_cents, a.cash_cents, a.reserved_cents,
-               (SELECT m.equity_cents FROM stock_marks m WHERE m.assignment_id = a.id AND m.session_date < %s
-                 ORDER BY m.session_date DESC LIMIT 1) AS prev
-          FROM stock_assignments a WHERE a.mode = %s AND a.status IN ('active', 'halted')
-        """,
-        (session_date, mode),
+        "SELECT id, bankroll_cents, cash_cents, reserved_cents, symbols FROM stock_assignments"
+        " WHERE mode = %s AND status IN ('active', 'halted')",
+        (mode,),
     ).fetchall()
     loss = 0
     for r in rows:
         held = conn.execute("SELECT symbol, qty FROM stock_positions WHERE assignment_id = %s AND qty > 0", (r["id"],)).fetchall()
-        prices = market.ref_prices(conn, [h["symbol"] for h in held], session_date)
+        prices = market.ref_prices(conn, sorted({h["symbol"] for h in held} | set(r["symbols"] or [])), session_date)
         value = sum(int(h["qty"]) * prices.get(h["symbol"], {}).get("cents", 0) for h in held)
         now_equity = int(r["cash_cents"]) + int(r["reserved_cents"]) + value
-        before = int(r["prev"]) if r["prev"] is not None else int(r["bankroll_cents"])
+        through = max((p["date"] for p in prices.values()), default=session_date)
+        prev = conn.execute(
+            "SELECT equity_cents FROM stock_marks WHERE assignment_id = %s AND session_date < %s"
+            " ORDER BY session_date DESC LIMIT 1",
+            (r["id"], through),
+        ).fetchone()
+        before = int(prev["equity_cents"]) if prev is not None else int(r["bankroll_cents"])
         loss += before - now_equity
     return loss
 
@@ -235,6 +244,7 @@ def request_orders(conn: psycopg.Connection, worker: dict[str, Any], body: dict[
     now = market.server_now(conn)
     band = get_settings(conn).get("stock_price_band")
     prices = market.ref_prices(conn, sorted({o["symbol"] for o in parsed}), session)
+    fresh = {sym for sym, p in prices.items() if market.bars_reach_previous_session(conn, [sym], {sym: p}, session)[0]}
     out = []
     for o in parsed:
         stored = _stored(conn, a["id"], o["client_request_id"])
@@ -242,7 +252,7 @@ def request_orders(conn: psycopg.Connection, worker: dict[str, Any], body: dict[
             out.append(stored)
             continue
         host_ref = prices.get(o["symbol"], {}).get("cents")
-        o.update(session_date=session, ref_ok=host_ref is not None,
+        o.update(session_date=session, ref_ok=host_ref is not None and o["symbol"] in fresh,
                  ref_price_cents=host_ref if host_ref is not None else o["worker_ref_price_cents"])
         status, reason = approve(conn, a, o, now)
         out.append(_store(conn, a, o, status, reason, worker["id"], band))

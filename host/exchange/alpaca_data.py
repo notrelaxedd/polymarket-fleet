@@ -2,6 +2,9 @@
 `data.alpaca.markets` and one asset's details from the trading host. GETs only, with the
 key headers of host.exchange.alpaca_credentials; every error text is redacted.
 
+`splits` reads the forward and reverse splits of some symbols (GET /v1/corporate-actions,
+host/exchange/stock_splits.py applies them to the books).
+
 `daily_bars` asks for many symbols per request and follows `next_page_token`. When a
 batch is refused (one bad symbol makes Alpaca refuse the whole request) it asks again
 one symbol at a time, so a typo in the settings costs that symbol only. Requests are
@@ -11,7 +14,7 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable
 from urllib.parse import quote, urlencode
 
@@ -24,6 +27,7 @@ PAGE_LIMIT = 10_000
 MAX_PAGES = 500
 BATCH = 50
 MIN_GAP_S = 0.4
+SPLIT_KINDS = ("forward_splits", "reverse_splits")
 
 
 class AlpacaDataError(SourceError):
@@ -110,3 +114,24 @@ class AlpacaData:
                 except SourceError as exc:
                     errors[symbol] = str(exc)
         return bars, errors
+
+    def splits(self, symbols: list[str], start: date, end: date) -> list[dict[str, Any]]:
+        """The forward and reverse splits of `symbols` between `start` and `end` (raw
+        items: symbol, old_rate, new_rate, ex_date, ...), every page."""
+        out: list[dict[str, Any]] = []
+        token: str | None = None
+        for _ in range(MAX_PAGES):
+            query = {"symbols": ",".join(symbols), "types": "forward_split,reverse_split", "start": start.isoformat(),
+                     "end": end.isoformat(), "limit": 1000}
+            if token:
+                query["page_token"] = token
+            data = self._get(f"{DATA_URL}/v1/corporate-actions?{urlencode(query)}")
+            actions = data.get("corporate_actions") if isinstance(data, dict) else None
+            if not isinstance(actions, dict):
+                raise AlpacaDataError("corporate actions: unexpected answer")
+            for kind in SPLIT_KINDS:
+                out.extend(item for item in actions.get(kind) or [] if isinstance(item, dict))
+            token = data.get("next_page_token")
+            if not token:
+                return out
+        raise AlpacaDataError(f"corporate actions: more than {MAX_PAGES} pages, stopped")

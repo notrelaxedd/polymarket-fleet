@@ -26,8 +26,8 @@
   </div>
   <h3>Decisions and polling</h3>
   <div class="fields">
-    {{ field('stock_decision_lead_min', 'Decision lead (min)', '12..120 minutes before the close; 20 decides at 15:40 New York', 'numeric') }}
-    {{ field('stock_trade_tick_s', 'Stock trade tick (s)', '5..300; how often a trade worker looks again', 'numeric') }}
+    {{ field('stock_decision_lead_min', 'Decision lead (min)', '12..120 minutes before the close; 20 decides from 15:40 New York. A decision is made only from the close minus this lead until 15:49 (the order cutoff, 11 minutes before the close), so the window must hold at least two stock trade ticks', 'numeric') }}
+    {{ field('stock_trade_tick_s', 'Stock trade tick (s)', '5..300; how often a trade worker looks again; at most half of (lead minus 11 minutes)', 'numeric') }}
     {{ field('stock_broker_poll_s', 'Broker poll (s)', '5..3600; a check older than 4 polls is stale', 'numeric') }}
     {{ field('stock_orders_poll_s', 'Orders poll (s)', '1..300', 'numeric') }}
     {{ field('stock_max_assignments', 'Max stock assignments', '0..50 active or halted', 'numeric') }}

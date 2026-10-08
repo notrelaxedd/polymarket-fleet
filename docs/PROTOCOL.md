@@ -1324,3 +1324,24 @@ Agent side (fleet/worker/agent.py, deploy/install_worker.sh):
   `<kind>` reads test (sleep), backtest, validation, model search, training or trading.
   Job events count only when they name a worker. Online/offline and temperature
   crossings are not stored; the page derives them by comparing polls.
+
+## Step 9 additions (stocks on Alpaca, docs/ALPACA.md "Step 9")
+
+Worker routes (worker bearer; the stock_trade ones also take the job's lease token,
+like `/api/v1/trade/state`), in `host/api/stocks.py`:
+- `GET /api/v1/data/stock_bars`: every instrument's daily bars, New York dates, oldest
+  first (`{"generated_at", "symbols": {"SPY": [["2016-01-04", o, h, l, c, v], ...]}}`),
+  with an ETag and 304 on `If-None-Match` like `/api/v1/data/games`.
+- `GET /api/v1/stock_trade/state?job_id=...`: one held stock_trade job's tick: kill, the
+  assignment, the model, positions, open orders, the broker clock, the decision (due,
+  session date, reference prices, bars through) and the two cadence settings.
+- `POST /api/v1/stock_orders/request`: one session's batch; each order approved or
+  rejected with a reason code (200 either way), idempotent per (assignment,
+  client_request_id), and the session marked decided even when every order is rejected.
+- `POST /api/v1/stock_trade/release` `{"job_ids"}`: before a role change, the approved
+  orders of those jobs' assignments are cancelled and the jobs handed back.
+
+Owner routes under `/api/stocks` (owner login, Origin check): `summary`, `models`,
+`models/{id}/retire`, `assignments` (GET, POST), `assignments/{id}/halt`, `/resume`,
+`/liquidate` (sell all of a halted assignment at the close), `/close`, and `jobs`
+(stock_search, stock_backtest, stock_validate with host-filled params).
