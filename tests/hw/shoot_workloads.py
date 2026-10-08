@@ -33,7 +33,7 @@ VIEWPORTS = {"390": (390, 844), "1280": (1280, 800)}
 
 def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
     return [
-        ("fleet", "/fleet"), ("machines", "/machines"), ("workloads", "/workloads"), ("workload-hello", "/workloads/hello"),
+        ("fleet", "/fleet/list"), ("machines", "/machines"), ("workloads", "/workloads"), ("workload-hello", "/workloads/hello"),
         ("workload-demo", "/workloads/demo-site"), ("workload-polymarket", "/workloads/polymarket"), ("outbound", "/outbound"),
         ("machine-logs", f"/machines/{ids['pi1']}/logs"), ("unpin", f"/machines/{ids['pi2']}/unpin"),
     ]

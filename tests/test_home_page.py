@@ -1,5 +1,5 @@
 """The Home page at / (docs/UI.md "Home"): four stats, "Needs attention" and the last
-settled bets. Fleet moved to /fleet (its form posts land there)."""
+settled bets. Fleet moved to /fleet (the 3D page); the cards and their form posts live at /fleet/list."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -38,10 +38,10 @@ def test_home_is_the_landing_page_and_fleet_moved(client, conn, make_worker):
     assert p.prop("Best model") == "-" and "none ranked yet" in p.stat("best-model").text
     assert p.card("attention").text.endswith("Nothing needs you.") and not p.has('[data-list="attention"]')
     assert "No settled bets yet." in p.card("recent").text
-    assert not p.has('[data-row="worker"]'), "the worker rows live on /fleet"
-    assert page(client.get("/fleet").text).has(f'[data-row="worker"][data-id="{w.id}"]')
+    assert not p.has('[data-row="worker"]'), "the worker rows live on /fleet/list"
+    assert page(client.get("/fleet/list").text).has(f'[data-row="worker"][data-id="{w.id}"]')
     r = client.post(f"/workers/{w.id}/enabled", data={"enabled": "false"}, follow_redirects=False)
-    assert r.status_code == 303 and r.headers["location"] == "/fleet" and flash_cookie(r) == "box1 disabled"
+    assert r.status_code == 303 and r.headers["location"] == "/fleet/list" and flash_cookie(r) == "box1 disabled"
     r = client.post("/kill", data={}, follow_redirects=False)
     assert r.status_code == 303 and r.headers["location"] == "/" and flash_cookie(r).startswith("Trading killed")
     assert _home(client).flash.startswith("Trading killed")
@@ -71,7 +71,7 @@ def test_needs_attention_lists_each_signal(client, conn, make_worker):
     assert keys == [f"worker-{gone.id}", f"assignment-{assignment['id']}", f"validate-{failed['id']}"], keys
     row = p.row("attention", f"worker-{gone.id}")
     assert row.one(".row-title").text == "gone is offline" and row.one(".row-meta").text == "last seen 10 min ago"
-    assert row.chip("offline").text == "offline" and row.one("a.row-main").target == "/fleet"
+    assert row.chip("offline").text == "offline" and row.one("a.row-main").target == "/fleet/list"
     row = p.row("attention", f"assignment-{assignment['id']}")
     assert row.one(".row-title").text == "KC @ LV: no eligible model" and row.chip("no-model").has_class("chip-bad")
     assert row.one(".row-meta").text == "paper assignment active, model retired"

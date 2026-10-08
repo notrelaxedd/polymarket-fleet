@@ -6,7 +6,7 @@ A small fleet of machines that builds, tests and (much later) runs NFL predictio
 
 The host is a Windows 11 machine running a Docker Compose stack: `db` (postgres:16), `host` (the FastAPI app that serves the worker API, the owner API and the dashboard) and `exchange` (`fleet-exchange`, the second process: market snapshots, the order executor, the paper fill simulator, the in-game state feed from ESPN (step 6C), settlement and scoring; it is the only process that ever talks to a market or exchange). `db` and `host` publish ports on `127.0.0.1` only; `exchange` publishes none. `tailscale serve` on the host OS puts HTTPS in front of port 8080 for your tailnet and injects a `Tailscale-User-Login` header, which the app compares with `FLEET_OWNER_LOGIN` to identify you. Workers are Debian 13 boxes: each runs the `fleet-worker` systemd service, which registers with an enroll token, sends a heartbeat every 5 seconds, claims leased jobs for its current role, checkpoints as it goes, and updates its own code from the host. The wire contract is in `docs/PROTOCOL.md`; the full design is in `docs/DESIGN.md`.
 
-The dashboard is server-rendered HTML (Jinja2, one stylesheet, a little vanilla JS) served by the same `host` container, so there is no separate frontend to build. Owner pages and routes authenticate through the `Tailscale-User-Login` header; a request with a different login gets a 401 page. A worker machine's IP is refused on owner routes even if it sends the header, so a compromised worker cannot act as you. The spec is in `docs/DASHBOARD.md`.
+The dashboard is server-rendered HTML (Jinja2, one stylesheet, a little vanilla JS) served by the same `host` container. The one exception is the 3D fleet control page at `/fleet`, a React + three.js page built from `fleet-ui/`; the Docker image builds it (a Node stage in the `Dockerfile`), so you still run only `docker compose`, never npm. The fleet cards are at `/fleet/list`. Owner pages and routes authenticate through the `Tailscale-User-Login` header; a request with a different login gets a 401 page. A worker machine's IP is refused on owner routes even if it sends the header, so a compromised worker cannot act as you. The spec is in `docs/DASHBOARD.md`.
 
 ## Host setup (Windows 11)
 
@@ -77,7 +77,15 @@ systemctl status fleet-worker
 journalctl -u fleet-worker -f
 ```
 
-Re-running the installer upgrades the worker and keeps its identity. To keep the token out of the sudo log and the process list, pass it through the environment instead: `curl -fsSL https://<host>/install.sh | sudo FLEET_ENROLL_TOKEN=<token> bash -s -- https://<host>` (or `--token-file PATH`).
+Re-running the installer upgrades the worker and keeps its identity. Workers installed before the 3D fleet page must re-run the install line once to get the reboot and disk-wear units; self-update only replaces the code. To keep the token out of the sudo log and the process list, pass it through the environment instead: `curl -fsSL https://<host>/install.sh | sudo FLEET_ENROLL_TOKEN=<token> bash -s -- https://<host>` (or `--token-file PATH`).
+
+## Fleet 3D page
+
+`/fleet` is the 3D control page: every worker as a tower in a 3D "Data city", a machine list, an inspector with the role buttons and Reboot, a command bar (`reboot box3 box4`, `stop train`, `backtest on idle`, `search box1 box2`; moving a box into or out of trading asks first) and an event feed. It polls the host every 3 s and shows "Live" or "Disconnected". The phone-friendly cards are at `/fleet/list` (the 3D page links there, and they link back). The spec is in `docs/DASHBOARD.md`.
+
+- Rebuild after pulling changes to `fleet-ui/`: `docker compose build host` then `docker compose up -d`. If `/fleet` says the 3D page has not been built, the image was built without it; rebuild it the same way.
+- Local development: start the host on `127.0.0.1:8080` with `FLEET_DEV=1` (see Development below), then `cd fleet-ui && npm ci && npm run dev`. Vite serves the page with live reload and passes `/api` to the host. Role and reboot buttons post from Vite's own origin, so start the host with that origin allowed too, for example `FLEET_ALLOWED_ORIGINS=http://127.0.0.1:8080,http://localhost:5173`. `npm run build` writes `fleet-ui/dist`, which a host started from the checkout serves at `/fleet`.
+- Workers: each existing worker needs the one-line install command run once more to get the reboot and wear units (`curl -fsSL https://<host>/install.sh | sudo bash -s -- https://<host>`; an installed box keeps its identity and needs no new token). Self-update only replaces the code, so until then the page says it cannot reboot that box. Heartbeats now come every 3 s and a box counts as offline after 30 s without one (Settings > Fleet).
 
 ## Automatic updates from GitHub (Debian host)
 
@@ -494,7 +502,7 @@ To try all of this on one computer without touching a real machine, run `tools/w
 
 Do this before moving anything that trades. The host pins any machine whose worker holds a live trade or open live order, and refuses to assign a workload to a pinned machine; still, pick the machine yourself.
 
-1. On `/fleet` choose a worker that is idle and has no live assignment. Set it to idle and disable it, then stop the native worker: `sudo systemctl stop fleet-worker`. (Assignment is refused with a 409 while the native worker is active.)
+1. On `/fleet/list` choose a worker that is idle and has no live assignment. Set it to idle and disable it, then stop the native worker: `sudo systemctl stop fleet-worker`. (Assignment is refused with a 409 while the native worker is active.)
 2. Install the agent as in step 7. On `/machines` check the machine is online, has no active native worker, shows a plausible disk type (set it by hand under Details if it was detected wrongly; an SD card must read `flash`) and that Docker is reported working.
 3. Assign `hello`, send the job from step 9, approve the log action, then assign `none`. On the machine confirm the cleanup:
 
@@ -506,7 +514,7 @@ ls -A /var/lib/fleet-workloads/hello/scratch
 
    No `fleet.workload` container, no `fleet/hello` image and an empty scratch folder are what you want to see.
 4. Reboot the machine once with `hello` assigned. The agent starts at boot, adopts or restarts the container and the machine returns to `running` without you touching it.
-5. Re-enable the native worker: `sudo systemctl start fleet-worker`, then enable it on `/fleet`. Check `systemctl status fleet-worker`; its identity and code version are unchanged.
+5. Re-enable the native worker: `sudo systemctl start fleet-worker`, then enable it on `/fleet/list`. Check `systemctl status fleet-worker`; its identity and code version are unchanged.
 6. Only then consider moving Polymarket itself into a container, one non-trading machine at a time, with the steps and the paper parity check in `docs/workloads-design.md` section 7 (`tools/workloads/paper_parity.py`). A machine that trades live stays native until you decide otherwise.
 
 ## Data

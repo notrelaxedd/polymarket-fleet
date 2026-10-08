@@ -36,8 +36,8 @@ def _card(page: Any, worker_id: str) -> str:
 
 
 def _fleet(page: Any, server: Server, **kwargs: Any) -> str:
-    """Open the Fleet page: /fleet once Home takes over /, else / (steps 1 to 6)."""
-    for path in ("/fleet", "/"):
+    """Open the Fleet card page: /fleet/list since the 3D page took /fleet, else / (steps 1 to 6)."""
+    for path in ("/fleet/list", "/"):
         response = page.goto(server.url + path, **kwargs)
         if response is not None and response.status == 200:
             return server.url + path

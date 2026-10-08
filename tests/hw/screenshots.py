@@ -13,7 +13,7 @@ sold position with a filled and an open sell, a second position) and, once
 check_step6b has passed, seed_step6c.py (two ingame_wp lineages, a third-quarter game
 with a fresh game state, an in-game assignment holding a partly filled in-game buy,
 ESPN feed lag rows, yesterday's game settled with in-game bets; check_step6c). It
-serves the app with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet),
+serves the app with FLEET_DEV=1 on a free port and captures home (/), fleet (/fleet/list),
 jobs and its Done tab, job detail (sleep, search, backtest, validate, snapshot replay),
 models (with the In-game models group), model detail (the flagged, the
 snapshot-ranked and the ingame_wp ones too), trading (the in-game line, the in-game
@@ -96,7 +96,7 @@ def open_page(page: Any, server_url: str, path: str) -> None:
 
 def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
     return [
-        ("home", "/"), ("fleet", "/fleet"), ("jobs", "/jobs"), ("jobs-done", "/jobs?tab=done"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
+        ("home", "/"), ("fleet", "/fleet/list"), ("jobs", "/jobs"), ("jobs-done", "/jobs?tab=done"), ("job-detail", f"/jobs/{ids['running']}"), ("settings", "/settings"),
         ("models", "/models"), ("model-detail", f"/models/{ids['model']}"), ("model-overfit", f"/models/{ids['overfit_model']}"),
         ("job-search", f"/jobs/{ids['search_job']}"), ("job-backtest", f"/jobs/{ids['backtest_job']}"),
         ("job-validate", f"/jobs/{ids['validate_job']}"), ("model-snapshot", f"/models/{ids['epa_model']}"),
@@ -212,12 +212,12 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             settings = parse(client.get("/settings").text)
             assert settings.one("[data-live-state]").attr("data-live-state") == "on" and mode_pill(settings) == "LIVE", "live is on"
             assert parse(client.get("/trading").text).has('[data-chip="smoke"]'), "the smoke order is flagged"
-        shoot_all([("settings-live", "/settings"), ("trading-live", "/trading"), ("fleet-live", "/fleet"), ("home-live", "/")])
+        shoot_all([("settings-live", "/settings"), ("trading-live", "/trading"), ("fleet-live", "/fleet/list"), ("home-live", "/")])
         auto_kill(database_url)
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             reason = topbar(parse(client.get("/").text)).one("[data-auto-kill]")
             assert reason.attr("data-auto-kill") == "clock_skew", "the bar names the auto-kill reason"
-        shoot_all([("fleet-autokill", "/fleet"), ("home-autokill", "/"), ("settings-autokill", "/settings"), ("trading-autokill", "/trading")])
+        shoot_all([("fleet-autokill", "/fleet/list"), ("home-autokill", "/"), ("settings-autokill", "/settings"), ("trading-autokill", "/trading")])
         with httpx.Client(base_url=server_url, trust_env=False) as client:
             resp = client.post("/kill/reset", data={"confirm": "RESUME"}, headers={"Origin": server_url}, follow_redirects=False)
             assert resp.status_code == 303, resp.text
@@ -229,7 +229,7 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
             assert resp.status_code == 303, resp.text
             assert "TRADING KILLED" in topbar(parse(client.get("/").text)).text
         for scheme in SCHEMES:
-            shoot("/fleet", "fleet-killed", "390", scheme)
+            shoot("/fleet/list", "fleet-killed", "390", scheme)
             shoot("/", "home-killed", "390", scheme)
             shoot("/trading", "trading-killed", "390", scheme)
         with httpx.Client(base_url=server_url, trust_env=False) as client:

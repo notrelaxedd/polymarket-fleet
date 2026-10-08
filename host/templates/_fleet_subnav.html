@@ -1,11 +1,11 @@
 {#- Fleet sub-nav: Workers | Machines | Workloads | Approvals (N pending). Included by
-    /fleet and the workloads pages; the current link comes from the request path, and the
-    pending count from the page context or, on /fleet, the `pending_approvals` global
+    /fleet/list (the worker cards; /fleet is the 3D page) and the workloads pages; the current link comes from the request path, and the
+    pending count from the page context or, on /fleet/list, the `pending_approvals` global
     (host.workloads.dashboard). The main nav's Fleet item stays current on all of them. #}
 {% set sub_path = path | default('') %}
 {% set pending_n = approvals_pending if approvals_pending is defined else (pending_approvals(request) if pending_approvals is defined and request is defined else none) %}
 {% set subs = [
-  ("workers", "/fleet", "Workers", sub_path == "/fleet"),
+  ("workers", "/fleet/list", "Workers", sub_path == "/fleet/list"),
   ("machines", "/machines", "Machines", sub_path.startswith("/machines") or sub_path == "/machine-enroll-token"),
   ("workloads", "/workloads", "Workloads", sub_path.startswith("/workloads")),
   ("approvals", "/outbound", "Approvals", sub_path.startswith("/outbound")),

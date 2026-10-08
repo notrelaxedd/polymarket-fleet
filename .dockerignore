@@ -13,3 +13,6 @@ __pycache__
 exchange.env
 tests
 docs
+fleet-ui/node_modules
+fleet-ui/dist
+host/fleet_ui

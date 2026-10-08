@@ -38,7 +38,7 @@ def test_register_reply_fields_and_enroll_token_is_single_use(client, conn):
     from host.workloads import agent_bundle
 
     expected = agent_bundle.current_version()
-    assert reply["heartbeat_seconds"] == 5 and reply["agent_version"] == expected, "the host offers its fleetagent version"
+    assert reply["heartbeat_seconds"] == 3 and reply["agent_version"] == expected, "the host offers its fleetagent version"
     assert client.post("/api/v1/machines/register", json=body).status_code == 401
     assert client.post("/api/v1/machines/register", json={"enroll_token": "nope", "name": "x"}).status_code == 401
     assert client.post("/api/v1/machines/register", json={"name": "x"}).status_code == 401
@@ -88,7 +88,7 @@ def test_heartbeat_stores_specs_and_returns_the_empty_run_block(client, conn):
     assert r.status_code == 200
     reply = r.json()
     assert reply["epoch"] == 1 and reply["workload"] is None and reply["run"] is None
-    assert reply["secrets_version"] is None and reply["keep_images"] == [] and reply["heartbeat_seconds"] == 5
+    assert reply["secrets_version"] is None and reply["keep_images"] == [] and reply["heartbeat_seconds"] == 3
     m = conn.execute("SELECT * FROM machines WHERE id = %s", (mid,)).fetchone()
     assert (m["ram_total_mb"], m["disk_type_detected"], m["cpu_pct"], m["docker_ok"]) == (7800, "flash", 12.5, False)
     assert m["native_polymarket"] == "inactive" and m["low_disk"] is True and m["last_heartbeat_at"] is not None

@@ -454,6 +454,13 @@ class FakeHost:
                 if job["lease_worker_id"] == worker_id and job["status"] == "leased" and job["role"] != role:
                     job["preempt_requested"] = True
 
+    def request_reboot(self, worker_id: str, reboot_id: str | None = None) -> str:
+        """Make the next heartbeat replies carry `reboot: <id>` (docs/PROTOCOL.md "Fleet UI additions")."""
+        with self.lock:
+            rid = reboot_id or "rb_" + secrets.token_hex(4)
+            self.workers[worker_id]["reboot_id"] = rid
+            return rid
+
     def set_enabled(self, worker_id: str, enabled: bool) -> None:
         with self.lock:
             self.workers[worker_id]["enabled"] = enabled
@@ -831,6 +838,9 @@ class FakeHost:
             w["token"] = secrets.token_urlsafe(32)
             for key in ("hostname", "python_version", "code_version", "boot_id"):
                 w[key] = body.get(key)
+            for key in ("can_reboot", "boot_media"):
+                if key in body:
+                    w[key] = body[key]
             held = []
             now = time.time()
             for job in self.jobs.values():
@@ -849,7 +859,8 @@ class FakeHost:
             wid = w["id"]
             w["last_heartbeat_at"] = now
             w["prev_token"] = None
-            for key in ("cpu_pct", "ram_used_mb", "ram_total_mb", "reported_role", "acked_epoch", "code_version", "skew_ms"):
+            for key in ("cpu_pct", "ram_used_mb", "ram_total_mb", "reported_role", "acked_epoch", "code_version", "skew_ms",
+                        "temp_c", "boot_media", "wear_pct", "disk_gb_written"):
                 if key in body:
                     w[key] = body[key]
             lost: list[str] = []
@@ -885,7 +896,8 @@ class FakeHost:
                     w["auto_role"] = False
                     in_sync = False
             claimed: list[dict[str, Any]] = []
-            slots = self._claim_slots(w, body, in_sync)
+            reboot = w.get("reboot_id")
+            slots = 0 if reboot else self._claim_slots(w, body, in_sync)  # a pending reboot claims nothing
             if slots > 0:
                 orphans = [
                     j for j in self.jobs.values()
@@ -904,7 +916,7 @@ class FakeHost:
                     job.update(status="leased", lease_worker_id=wid, lease_token=str(uuid.uuid4()), lease_expires_at=now + self.lease_seconds, preempt_requested=False)
                     self._event(job["id"], "claimed", wid)
                     claimed.append(self._job_payload(job))
-            resp = {"preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed}
+            resp = {"preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed, "reboot": reboot}
             resp.update(self._worker_fields(w))
             self.heartbeats.append({"t": time.monotonic(), "worker_id": wid, "request": body, "response": resp})
             return resp

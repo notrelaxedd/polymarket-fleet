@@ -9,6 +9,8 @@ User=fleet
 Group=fleet
 Environment=PYTHONPATH=/var/lib/fleet/app/current
 Environment=FLEET_STATE_DIR=/var/lib/fleet
+Environment=FLEET_RUN_DIR=/run/fleet
+Environment=FLEET_REBOOT_TRIGGER=/run/fleet/reboot
 ExecStart=/usr/bin/python3 -m fleet.worker run
 Restart=always
 RestartSec=3
@@ -18,6 +20,13 @@ Nice=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet
+# /run/fleet (tmpfs) holds status.json, rewritten every heartbeat, and the reboot
+# trigger. systemd creates it owned by fleet and exempts it from ProtectSystem=strict.
+# 0750 like the state dir: status.json carries the last heartbeat reply (lease tokens).
+# Preserve=yes keeps it across restarts, self-update exits and crashes until reboot.
+RuntimeDirectory=fleet
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 PrivateTmp=yes
 MemoryMax=85%
 

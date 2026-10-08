@@ -10,6 +10,7 @@ from host import auth
 from host.errors import Unauthorized
 from host.events import add_audit
 from host.leases import claim_many, job_payload, lease_seconds, release, renew
+from host.reboot import PENDING_SQL, finish_reboot
 from host.recovery import held_jobs, orphan_jobs
 from host.scheduling import auto_return_to_idle
 from host.settings import BATCH_ROLES, get_int_setting, get_setting
@@ -32,7 +33,7 @@ def _common_reply(conn: psycopg.Connection, worker: dict[str, Any]) -> dict[str,
         "role_epoch": worker["role_epoch"],
         "kill": kill_switch(conn),
         "server_time": server_time(conn),
-        "heartbeat_seconds": get_int_setting(conn, "heartbeat_seconds", 5),
+        "heartbeat_seconds": get_int_setting(conn, "heartbeat_seconds", 3),
     }
 
 
@@ -57,10 +58,11 @@ def _enroll(conn: psycopg.Connection, body: dict[str, Any], remote_ip: str | Non
     worker = conn.execute(
         """
         INSERT INTO workers (id, name, token_hash, hostname, python_version, code_version,
-                             boot_id, remote_ip)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING *
+                             boot_id, remote_ip, can_reboot, boot_media)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, COALESCE(%s, false), %s) RETURNING *
         """,
-        (worker_id, name, auth.hash_token(plain)) + _machine_fields(body, remote_ip),
+        (worker_id, name, auth.hash_token(plain)) + _machine_fields(body, remote_ip)
+        + (body.get("can_reboot"), body.get("boot_media")),
     ).fetchone()
     auth.mark_enroll_token_used(conn, token_row["token_hash"], worker_id)
     add_audit(
@@ -72,17 +74,23 @@ def _enroll(conn: psycopg.Connection, body: dict[str, Any], remote_ip: str | Non
 
 
 def _reregister(conn: psycopg.Connection, body: dict[str, Any], remote_ip: str | None) -> dict[str, Any]:
-    """Re-registration: verify the current (or previous) token under the row lock, then rotate it."""
+    """Re-registration: verify the current (or previous) token under the row lock, then rotate it.
+
+    A pending (or expired) reboot request is finished when the boot_id changed.
+    `can_reboot` and `boot_media` are stored when the agent sends them.
+    """
     worker_id = str(body.get("worker_id", ""))
-    _, presented = auth.verify_register_token(conn, worker_id, str(body.get("worker_token", "")))
+    before, presented = auth.verify_register_token(conn, worker_id, str(body.get("worker_token", "")))
     plain = auth.rotate_worker_token(conn, worker_id, presented)
+    finish_reboot(conn, before, body.get("boot_id"), remote_ip)
     worker = conn.execute(
         """
         UPDATE workers SET hostname = COALESCE(%s, hostname), python_version = %s,
-               code_version = %s, boot_id = %s, remote_ip = %s
+               code_version = %s, boot_id = %s, remote_ip = %s,
+               can_reboot = COALESCE(%s, can_reboot), boot_media = COALESCE(%s, boot_media)
          WHERE id = %s RETURNING *
         """,
-        _machine_fields(body, remote_ip) + (worker_id,),
+        _machine_fields(body, remote_ip) + (body.get("can_reboot"), body.get("boot_media"), worker_id),
     ).fetchone()
     worker["_plain_token"] = plain
     return worker
@@ -118,18 +126,27 @@ def _update_worker(
     register cannot act after the rotation committed. The first heartbeat with the
     current token clears prev_token_hash (a zombie copy is locked out from then on).
     acked_epoch never moves backwards, so a stale heartbeat cannot undo an ack.
+    The machine health fields are stored as reported (null when the agent does not
+    know them); boot_media keeps its last value when absent. The returned row carries
+    `reboot_pending` (host.reboot.PENDING_SQL).
     """
     return conn.execute(
-        """
+        f"""
         UPDATE workers SET last_heartbeat_at = now(), cpu_pct = %(cpu)s, ram_used_mb = %(ram_used)s,
                ram_total_mb = %(ram_total)s, reported_role = COALESCE(%(role)s, reported_role),
                acked_epoch = GREATEST(acked_epoch, COALESCE(%(ack)s, acked_epoch)),
                code_version = COALESCE(%(code)s, code_version), skew_ms = %(skew)s,
+               temp_c = %(temp)s, boot_media = COALESCE(%(media)s, boot_media),
+               wear_pct = %(wear)s, disk_gb_written = %(written)s,
                prev_token_hash = NULL
          WHERE id = %(wid)s AND (%(hash)s::text IS NULL OR token_hash = %(hash)s)
-         RETURNING *
+         RETURNING *, {PENDING_SQL} AS reboot_pending
         """,
         {
+            "temp": body.get("temp_c"),
+            "media": body.get("boot_media"),
+            "wear": body.get("wear_pct"),
+            "written": body.get("disk_gb_written"),
             "cpu": body.get("cpu_pct"),
             "ram_used": body.get("ram_used_mb"),
             "ram_total": body.get("ram_total_mb"),
@@ -220,10 +237,13 @@ def process_heartbeat(
 
     `token_hash` is the sha256 of the bearer token; when given it is verified under
     the worker row lock (the API always passes it, direct callers may skip it).
+    While an owner reboot request is pending the reply names it in `reboot` and
+    nothing new is claimed (host/reboot.py).
     """
     worker = _update_worker(conn, worker_id, body, token_hash)
     if worker is None:
         raise Unauthorized("invalid worker token")
+    reboot = worker["reboot_id"] if worker["reboot_pending"] else None
     lease = lease_seconds(conn)
     lost: list[str] = []
     for entry in body.get("jobs") or []:
@@ -238,7 +258,7 @@ def process_heartbeat(
     worker = auto_return_to_idle(conn, worker_id) or worker
     kill = kill_switch(conn)
     claimed: list[dict[str, Any]] = []
-    slots = _claim_slots(worker, body, kill)
+    slots = 0 if reboot else _claim_slots(worker, body, kill)  # a worker about to reboot takes nothing new
     if slots > 0 and worker["desired_role"] == "trade":
         slots = min(slots, _trade_slots_left(conn, worker_id))
     if slots > 0:
@@ -251,5 +271,7 @@ def process_heartbeat(
             rows = claim_many(conn, worker_id, worker["desired_role"], lease, slots)
             claimed = [job_payload(row, lease) for row in rows]
     reply = _common_reply(conn, worker)
-    reply.update({"kill": kill, "preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed})
+    reply.update(
+        {"kill": kill, "preempt": preempt, "cancel": cancel, "lost": lost, "claimed": claimed, "reboot": reboot}
+    )
     return reply

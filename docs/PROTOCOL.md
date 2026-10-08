@@ -18,7 +18,8 @@ agent, stdlib only). Both sides are built against it. Change it deliberately.
 - **Epoch**: `workers.role_epoch` increments on every desired-role change. The worker
   echoes `acked_epoch`; the host only lets it claim jobs when `acked_epoch == role_epoch`
   and `reported_role == desired_role`.
-- **Online**: `last_heartbeat_at > now() - online_after_seconds` (settings, default 15).
+- **Online**: `last_heartbeat_at > now() - online_after_seconds` (settings, default 30;
+  15 before the fleet UI, see "Fleet UI additions").
 
 ## Authentication
 
@@ -77,7 +78,7 @@ Response 200:
  "held_jobs": [{"id": "...", "kind": "sleep", "params": {...}, "checkpoint": {...},
                 "progress": 0.4, "lease_token": "<new uuid>", "lease_seconds": 30}],
  "code_version": "a1b2c3d4e5f6", "server_time": "2026-10-02T20:00:00Z",
- "heartbeat_seconds": 5}
+ "heartbeat_seconds": 3}
 ```
 Semantics:
 - `enroll_token` path: token must exist, be unused and unexpired -> create worker
@@ -100,7 +101,7 @@ Semantics:
 
 ### `POST /api/v1/workers/{worker_id}/heartbeat`
 
-Sent every `heartbeat_seconds` (5) on a fixed monotonic schedule, plus one immediate
+Sent every `heartbeat_seconds` (default 3; 5 before the fleet UI) on a fixed monotonic schedule, plus one immediate
 out-of-cycle heartbeat after a role switch completes.
 
 Request:
@@ -122,7 +123,7 @@ Response:
  "preempt": ["<job id>"], "cancel": ["<job id>"], "lost": ["<job id>"],
  "claimed": [{"id": "...", "kind": "sleep", "params": {...}, "checkpoint": null,
               "progress": 0.0, "lease_token": "...", "lease_seconds": 30}],
- "code_version": "a1b2c3d4e5f6", "server_time": "...", "heartbeat_seconds": 5}
+ "code_version": "a1b2c3d4e5f6", "server_time": "...", "heartbeat_seconds": 3}
 ```
 Host-side processing, in ONE transaction, in this order:
 1. Update the worker row: `last_heartbeat_at=now()`, cpu, ram, `reported_role`,
@@ -1221,3 +1222,105 @@ is `validation_seasons`.
 - `python -m host.exchange.cli probe-gamestate --event <espn id> [--yahoo] [--url
   <template>]`: one game-state request, printing the status, the first 64 KiB of the
   payload and what the parser extracted; it never raises.
+
+## Fleet UI additions (the 3D fleet page, `fleet-ui/` served at `/fleet`)
+
+### Settings: faster heartbeats, a longer online window
+`heartbeat_seconds` defaults to 3 (was 5) and `online_after_seconds` to 30 (was 15), so
+the page sees changes within a few seconds and a slow beat does not flicker a machine
+offline. Migration `0011_fleet_ui.sql` moves the stored values only where they still
+equal the old defaults; a value the owner changed is left alone. The code fallbacks for a
+missing row are 3 and 30 as well. The cross-field rules (`lease_seconds >= 2 *
+heartbeat_seconds + 5`, `online_after_seconds > heartbeat_seconds`) are unchanged.
+
+### Register and heartbeat fields (worker -> host)
+- `POST /api/v1/workers/register` takes two optional fields: `can_reboot` (bool: this
+  install has the reboot unit, see below) and `boot_media` (`"flash" | "ssd" | "hdd" |
+  "unknown"`). Both are stored when given and keep their stored value when absent
+  (`can_reboot` defaults to false for a new worker). A wrong type or value is 400.
+- The heartbeat takes four optional fields, each null when the agent does not know it:
+  `temp_c` (float, hottest CPU sensor, -50..150), `boot_media` (as above),
+  `wear_pct` (float 0..100, percent of the boot disk's rated life used) and
+  `disk_gb_written` (float >= 0, GB written to the boot disk since boot). Floats must be
+  finite; anything out of range or of the wrong type is 400. `temp_c`, `wear_pct` and
+  `disk_gb_written` are stored as reported on every heartbeat (null clears them);
+  `boot_media` keeps its stored value when absent.
+
+### Reboot (owner -> host -> agent)
+Host side:
+- `workers.reboot_id` / `workers.reboot_requested_at` hold the owner's request. A
+  request is **pending** while `reboot_id` is set and `reboot_requested_at > now() - 5
+  minutes` (database clock).
+- The heartbeat reply carries `"reboot": "<request id>"` while one is pending, else
+  `"reboot": null`, and the heartbeat claims nothing new (no claims, no orphan
+  re-offers) while one is pending. Renewals, releases, preempt and cancel work as usual.
+- Register finishes a request: when `reboot_id` is set (pending or lapsed) and the
+  presented `boot_id` differs from the stored one, the machine has rebooted, so
+  `reboot_id` and `reboot_requested_at` are cleared and `audit_log` gets `reboot_done`
+  (entity and actor = worker id, before `{reboot_id, boot_id}`, after `{boot_id}`).
+- A request that lapses (5 minutes without the machine coming back with a new boot id)
+  is no longer sent and no longer blocks claims; a new request replaces it.
+
+Agent side (fleet/worker/agent.py, deploy/install_worker.sh):
+- The worker unit sets `FLEET_REBOOT_TRIGGER=/run/fleet/reboot`; an agent with it
+  registers `can_reboot: true`. On a reply with a new `reboot` id the agent stops the
+  way it does on SIGTERM (runners drained and released, trade jobs handed back through
+  the release handshake that cancels their orders, unsent posts flushed), then writes the
+  request id to `$FLEET_REBOOT_TRIGGER`. A root `fleet-reboot.path` unit watches that
+  path and runs `systemctl reboot`. `/run` is tmpfs, so the file never outlives the
+  reboot; a trigger found at agent start means the reboot never happened: it is moved
+  aside (`reboot.done`), its id is ignored and `can_reboot` stays false until a clean
+  restart. Without `FLEET_REBOOT_TRIGGER` (an install older than the reboot unit) the
+  request is logged once and ignored, and the owner route answers 409 until install.sh is
+  re-run.
+- `status.json` now lives in the runtime directory `/run/fleet` (`FLEET_RUN_DIR`;
+  tmpfs, so the per-heartbeat rewrite causes no flash wear); outside systemd it falls back
+  to the state directory as before. `python3 -m fleet.worker status` finds it in either.
+- Telemetry is read from /proc and /sys each heartbeat (`fleet.common.hwinfo`, no
+  writes); SMART wear comes from a root `fleet-wear.timer` writing
+  `/run/fleet-wear/wear.json` hourly.
+
+### Owner routes (same owner auth as every `/api` route)
+- `GET /api/fleet` adds top-level `roles` (`[{"id", "name", "short"}]` in display
+  order: idle Idle/Idle, backtest Backtest/Backtest, model_search Model search/Search,
+  train Training/Train, trade Trading/Trade) and `online_after_seconds` (int). Each
+  worker adds `ram_pct` (used/total * 100, one decimal, null when unknown), `temp_c`,
+  `boot_media`, `wear_pct`, `disk_gb_written` (as last reported, null when never),
+  `seconds_since_heartbeat` (int by the database clock, null before the first
+  heartbeat), `can_reboot` (bool) and `rebooting` (bool: a request is pending).
+- `POST /api/workers/{id}/reboot` (no body) -> 200 `{"worker_id", "reboot_id",
+  "requested_at"}`. Idempotent: a pending request returns the same id (even once the
+  worker went offline for the reboot). 404 unknown worker; 409 `worker is offline` (no
+  heartbeat within `online_after_seconds`); 409 `this worker cannot reboot yet: re-run
+  install.sh on it` when `can_reboot` is false. Writes `audit_log` `reboot_requested`
+  (entity = worker id, actor = owner login, after `{reboot_id}`).
+- `GET /api/fleet/events?since=<ISO-8601>&limit=<1..200>` -> `{"events": [...],
+  "server_time"}`, newest first. Without `since`: the newest `limit` (default 20). With
+  `since`: every event with `ts >= since` (inclusive; the client dedupes by `key`),
+  capped at `limit`. A bad `limit` or `since` is 400. Each event: `key` (`a:<audit_log
+  id>` or `j:<job_events id>`), `ts`, `worker_id` (null for fleet-wide rows), `who` (the
+  worker's name, or `fleet`), `tone` (`ok` normal, `hot` warning, `off` machine going
+  down, `fg` neutral) and `text`, a short plain-English line:
+
+  | source | text | tone |
+  |---|---|---|
+  | audit `set_role` | Moved to <role name> by <owner> | ok |
+  | audit `auto_role` | Moved to <role name> for a job | ok |
+  | audit `auto_idle` | Back to Idle, no work left | ok |
+  | audit `set_enabled` | Enabled by <owner> / Disabled by <owner> | ok / fg |
+  | audit `worker_enrolled` | Enrolled | ok |
+  | audit `reboot_requested` | Reboot requested by <owner> | off |
+  | audit `reboot_done` | Back up after a reboot | ok |
+  | audit `kill` | Kill switch on by <owner> (not written for auto kills) | hot |
+  | audit `auto_kill` | Kill switch on automatically: <reason> | hot |
+  | audit `kill_reset` | Kill switch off by <owner> | ok |
+  | job `claimed` | Took a <kind> job | ok |
+  | job `succeeded` | Finished a <kind> job | ok |
+  | job `failed` | A <kind> job failed | hot |
+  | job `released` | Handed back a <kind> job; Stopped a cancelled <kind> job; Ran out of memory on a <kind> job (`oom`) | fg; fg; hot |
+  | job `lease_expired` | Lost a <kind> job (no heartbeat) | hot |
+  | job `cancelled` | Cancelled a <kind> job | fg |
+
+  `<kind>` reads test (sleep), backtest, validation, model search, training or trading.
+  Job events count only when they name a worker. Online/offline and temperature
+  crossings are not stored; the page derives them by comparing polls.

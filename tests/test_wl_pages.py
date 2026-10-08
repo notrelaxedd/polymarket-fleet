@@ -19,7 +19,7 @@ from tests.hw import seed_workloads as sw
 from tests.pagecheck import page
 
 EM_DASH = chr(0x2014)
-PAGES = ["/machines", "/workloads", "/outbound", "/fleet", "/workloads/hello", "/workloads/demo-site"]
+PAGES = ["/machines", "/workloads", "/outbound", "/fleet/list", "/workloads/hello", "/workloads/demo-site"]
 
 
 @pytest.fixture(autouse=True)
@@ -84,14 +84,14 @@ def test_pages_render_seeded_without_em_dash(client, seeded):
 
 def test_subnav_on_fleet_and_every_new_page(client, conn, seeded):
     sw.add_outbound(conn, "hello", "log", {"message": "again"})
-    expected = {"/fleet": "workers", "/machines": "machines", "/workloads": "workloads", "/workloads/hello": "workloads",
+    expected = {"/fleet/list": "workers", "/machines": "machines", "/workloads": "workloads", "/workloads/hello": "workloads",
                 "/outbound": "approvals", f"/machines/{seeded['pi1']}/logs": "machines"}
     for path, current in expected.items():
         doc = get(client, path)
         links = subnav(doc)
         assert list(links) == ["workers", "machines", "workloads", "approvals"], path
         assert [k for k, a in links.items() if a.is_current] == [current], path
-        assert [a.target for a in links.values()] == ["/fleet", "/machines", "/workloads", "/outbound"]
+        assert [a.target for a in links.values()] == ["/fleet/list", "/machines", "/workloads", "/outbound"]
         assert links["approvals"].one(".count").attr("data-count") == "3" and "pending" in links["approvals"].text, path
         assert doc.nav("fleet").is_current and len(doc.select("[data-nav]")) == 6, "five sections plus the wordmark"
 

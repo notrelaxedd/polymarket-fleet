@@ -291,8 +291,8 @@ def page(html: str) -> Node:
 
 
 def fleet_html(client) -> str:  # noqa: ANN001 - a TestClient or an httpx.Client
-    """The Fleet page: /fleet once Home takes over /, else / (steps 1 to 6)."""
-    r = client.get("/fleet")
+    """The Fleet card page: /fleet/list since the 3D page took /fleet, else / (steps 1 to 6)."""
+    r = client.get("/fleet/list")
     return r.text if r.status_code == 200 else client.get("/").text
 
 
