@@ -162,9 +162,9 @@ def test_fleet_new_fields_and_roles(client, conn, heartbeat, make_worker):
     assert body["roles"] == [
         {"id": "idle", "name": "Idle", "short": "Idle"},
         {"id": "backtest", "name": "Backtest", "short": "Backtest"},
-        {"id": "model_search", "name": "Model Search", "short": "Search"},
-        {"id": "train", "name": "Training", "short": "Train"},
-        {"id": "trade", "name": "Trading", "short": "Trade"},
+        {"id": "model_search", "name": "Model Search", "short": "Model Search"},
+        {"id": "train", "name": "Training", "short": "Training"},
+        {"id": "trade", "name": "Trading", "short": "Trading"},
     ]
     assert body["settings"]["heartbeat_seconds"] == 3 and body["settings"]["online_after_seconds"] == 30
     workers = {x["name"]: x for x in body["workers"]}

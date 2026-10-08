@@ -25,7 +25,7 @@ ROLE_LABELS = {
     "trade": "Trading",
 }
 # The short names on the 3D page's buttons and machine list.
-ROLE_SHORT = {"idle": "Idle", "backtest": "Backtest", "model_search": "Search", "train": "Train", "trade": "Trade"}
+ROLE_SHORT = {"idle": "Idle", "backtest": "Backtest", "model_search": "Model Search", "train": "Training", "trade": "Trading"}
 
 KIND_LABELS = {
     "sleep": "Test Sleep",
