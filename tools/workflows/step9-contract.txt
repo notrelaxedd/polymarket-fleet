@@ -1,0 +1,272 @@
+STEP 9 CONTRACT: STOCKS ON ALPACA (models search, backtest, paper and live trading)
+
+Owner decisions (fixed): Alpaca trades stocks only for now (no crypto, no event
+contracts). Long only. Free data. Every existing rule holds: paper first, the host
+approves every order against limits, live needs the typed live switch AND a
+live_eligible lineage (no override), kill = cancel open orders (positions stay), keys
+only in exchange.env read only by the exchange process, workers never see keys and
+never talk to Alpaca, fleet/ is standard library only, Python 3.11+, type hints,
+modules under about 300 lines, no em-dashes or en-dashes in any file.
+
+Already built (do not rebuild, read them): migration 0012_stocks.sql (instruments,
+stock_bars: adjusted daily bars), host/exchange/stock_bars.py (the daily feed),
+host/exchange/alpaca_credentials.py (keys, base URL, environment "paper"/"live",
+headers(), redact()), host/exchange/alpaca_data.py (data client; copy its GET, error
+and redaction style for the trading client), migration 0013_stock_trading.sql (EVERY
+table and setting of this step: read it first, do not add columns without saying so
+in your report), host/settings_schema_stocks.py (validators), host/settings.py
+KIND_TO_ROLE (stock_search, stock_backtest, stock_validate, stock_trade), empty
+routers host/api/stocks.py (worker_router /api/v1, owner_router /api/stocks) and
+host/api/dashboard_stocks.py (router), already registered in host/api/app.py.
+
+=====================================================================================
+1. HOW TRADING WORKS (daily, market-on-close)
+
+- One decision per assignment per trading session. A decision is due when the broker
+  clock says the market is open today and now >= next_close - stock_decision_lead_min
+  minutes (default 20, so 15:40 New York on a normal day; half days follow next_close)
+  and assignment.last_decision_date != session_date.
+- Signals use ONLY daily bars dated strictly before session_date (bars through the
+  previous session). No intraday data. This makes the live decision identical to the
+  backtest decision.
+- Orders are whole shares, type market, time_in_force "cls" (market on close), so they
+  fill at today's closing price, exactly what the backtest assumes. Alpaca refuses cls
+  orders after 15:50 New York, and a cls order cannot be cancelled after that either.
+- Target: weights w[symbol] in [0,1], sum <= 1, from the model. Equity E = cash +
+  reserved + sum(qty * ref_price). target_qty = floor(w * E / ref_price). ref_price =
+  the previous session's adjusted close (cents). Orders = target_qty - held qty: sells
+  first in the batch, then buys. Rationale one line: "momentum rank 2/20, w 0.25, target 12 held 8".
+- Mode of a stock assignment = the broker environment (alpaca_credentials environment:
+  paper keys on paper-api, live keys on api). paper assignments trade Alpaca's paper
+  account; live assignments the real account. There is no host-simulated stock fill.
+
+=====================================================================================
+2. BUILDERS AND THEIR PATHS (work only in your paths; anything else: say it in your report)
+
+A. MODELS (worker side, fleet/ only, standard library only):
+   fleet/stocks/__init__.py, data.py, families.py, backtest.py, metrics.py, search.py,
+   fleet/worker/stock_jobs.py, fleet/worker/stock_trade.py, fleet/worker/stock_cache.py,
+   and the smallest possible hooks in fleet/worker/jobs.py (register the three batch
+   kinds in JOBS) and fleet/worker/agent.py (route held stock_trade jobs to
+   StockTradeLoop). Tests: tests/test_stock_models.py, tests/test_stock_backtest.py,
+   tests/test_stock_worker.py.
+B. HOST (host trading logic): host/stocks/models.py, eligibility.py, assignments.py,
+   approve.py, views_api.py, jobparams_stocks.py, the worker and owner routes in
+   host/api/stocks.py, the hook in host/jobparams.py (delegate the four stock kinds to
+   jobparams_stocks.py), the hook where job results are processed (stock_search and
+   stock_validate results -> stock_models), the hooks in host/kill.py (kill and
+   live_off also cancel stock orders and halt live stock assignments), host/cli.py
+   commands (stock-models, stock-assign, stock-assignments, stock-orders). Tests:
+   tests/test_stock_host.py, tests/test_stock_limits.py, tests/test_stock_kill.py.
+C. EXCHANGE (orders at Alpaca): host/exchange/alpaca_trading.py (trading client),
+   host/exchange/stock_executor.py, host/exchange/stock_fills.py (booking),
+   host/exchange/stock_broker.py (account, clock, positions reconciliation, marks),
+   the task wiring in host/exchange/main.py (tasks stock_broker, stock_executor,
+   stock_marks) and host/exchange/cli.py (stock-smoke, stock-cancel-all --direct).
+   Tests: tests/test_stock_exchange.py, tests/test_stock_fills.py, tests/fake_alpaca.py.
+D. DASHBOARD: host/api/dashboard_stocks.py, host/stocks/views.py (read-only queries for
+   pages), host/templates/stocks.html (+ partials _stocks_*.html), host/settings_forms_stocks.py
+   and a "Stocks" settings group (follow how settings_forms_ingame.py plugs in), a link
+   to /stocks from the Trading page header and a Stocks row in Home "Needs attention"
+   when a stock assignment is halted or the broker state has warnings. Follow docs/UI.md
+   (step 7 component contract) exactly. Tests: tests/test_stocks_page.py.
+
+Shared files have exactly one owner (above). Do not edit migrations 0012/0013, the
+settings validators or app.py; if you need a change there, put it in your report.
+
+=====================================================================================
+3. DATA TO WORKERS (B serves, A reads)
+
+GET /api/v1/data/stock_bars (worker auth, like GET /api/v1/data/games: ETag +
+If-None-Match -> 304). Body: {"generated_at", "symbols": {"SPY": [["2016-01-04",
+o, h, l, c, v], ...]}} with every instrument's 1Day bars, dates in New York, oldest
+first. A caches it under its cache dir (fleet/worker/stock_cache.py, like pbp_cache).
+
+=====================================================================================
+4. MODELS, BACKTEST, SEARCH (A)
+
+fleet/stocks/families.py: class StockModel with family, PARAM_KEYS, __init__(params),
+weights(hist: dict[str, list[Bar]], day: str) -> dict[str, float], where hist holds only
+bars dated < day (the backtester slices; the model never sees day itself).
+Families and search space (search.py samples them with random.Random(seed)):
+- momentum: lookback 21..252, skip 0..21, top_k 1..10, rebalance_days 1..21,
+  trend_sma 0 or 50..250 (SPY close below its SMA -> all cash; needs SPY in the data).
+- meanrev: lookback 2..10, hold_days 1..10, top_k 1..10, long_sma 0 or 100..250
+  (only names above their SMA).
+- trend: fast 5..50, slow 50..250 (fast < slow), max_names 1..20, equal weight among
+  names with SMA(fast) > SMA(slow).
+- buyhold: symbol "SPY" (the benchmark; also assignable).
+Weights are long only, each <= 1, sum <= 1, deterministic for the same input.
+
+backtest.py: run(model, bars, symbols, first_year, last_year, cost_bps, should_stop, on_unit)
+daily loop over the trading days of the years (dates of SPY or the union): decide at
+day d from bars < d, trade at d's close with cost_bps per side on the traded value,
+whole-share-free (fractional) in the backtest, start equity 1.0. Returns metrics
+(metrics.py): cagr, ann_vol, sharpe (rf 0, 252 days), max_drawdown (positive
+fraction), turnover (annual), trades (count of position changes), exposure (mean
+invested fraction), days, per_year [{year, return, sharpe, max_drawdown}], benchmark
+{same keys for SPY buy and hold}, first_day, last_day. Units for emit(): one per
+model-year, each well under 3 s.
+
+Job kinds (fleet/worker/stock_jobs.py, registered in fleet/worker/jobs.py JOBS):
+- stock_search params {n, seed, families (list, default all four), symbols, years
+  [first,last], cost_bps, top_k (default 5)}: samples n candidates, backtests each on
+  the search years, result {"create_stock_models": [{family, params, params_hash
+  (fleet.models.base.params_hash), summary (two sentences, plain words), backtest_metrics}]}
+  for the top_k by sharpe with trades >= 10. Checkpoint every candidate-year.
+- stock_backtest params {model: {family, params}, symbols, years, cost_bps, model_id}:
+  result {"model_id", "backtest_metrics"} (informational; never overwrites the
+  search-era metrics of a stored model with years inside the validation era: host
+  refuses such a job, and the worker refuses it too).
+- stock_validate params {model_id, model: {family, params}, symbols, years
+  (= stock_validation_years resolved by the host), cost_bps}: result {"model_id",
+  "validation_metrics"}. Refused when the search years overlap the validation years.
+The host resolves [first, null] to the last complete calendar year and copies symbols
+(the stock_symbols setting at creation) and cost_bps into params. Bars come from the
+worker's stock bar cache; the runner context gives its path as params["_context"]
+["stock_bars_path"] (B adds it to the job context the same way games_path is added).
+
+=====================================================================================
+5. HOST: MODELS, GATES, ASSIGNMENTS, APPROVAL (B)
+
+stock_models rows come from stock_search results (UNIQUE family+params_hash: an
+existing row is kept, its id returned). lineage_id = own id. validation_metrics from
+stock_validate. Status (host/stocks/eligibility.py recompute(conn, model_id), called
+after every new result, thresholds change, paper mark, and at host start):
+- candidate -> paper_ok when backtest sharpe >= min_sharpe, max_drawdown <= max_drawdown,
+  trades >= min_trades, validation_metrics present with sharpe >= min_validation_sharpe.
+- paper_ok -> live_eligible when its paper assignments have >= min_days marks, total
+  paper return >= min_return and paper max drawdown <= max_drawdown (from stock_marks).
+- demotion recomputes the same way; retired is set only by the owner and is final.
+  A demotion out of live_eligible halts the model's live assignments (their open
+  orders become cancel_requested).
+
+Assignments (host/stocks/assignments.py):
+  create_assignment(conn, model_id, mode, bankroll_cents, symbols, actor) -> dict
+  halt_assignment(conn, assignment_id, reason, actor) -> dict   (open orders -> cancel_requested)
+  resume_assignment(conn, assignment_id, actor) -> dict          (same gates as create)
+  close_assignment(conn, assignment_id, actor) -> dict           (only with no positions and no open orders)
+Create rules: model status paper_ok or live_eligible (live: live_eligible only);
+mode must equal stock_broker_state.environment with keys_present and a broker check
+within stock_broker_poll_s * 4 (else 400 naming why); live also needs
+settings.live_enabled; symbols a non-empty subset of instruments with tradable true
+and bars; at most stock_max_assignments active+halted; bankroll_cents <= the broker's
+cash_cents minus the bankrolls of the other active assignments of that mode (one
+Alpaca account is shared). cash_cents = bankroll_cents. It creates the stock_trade job
+(kind stock_trade, role trade, params {"assignment_id"}, max_expiries NULL like trade
+jobs) and stores job_id. Audit rows for every owner action.
+
+Worker routes (host/api/stocks.py worker_router; lease token auth like /trade/state):
+- GET /api/v1/stock_trade/state?job_id=... -> {"kill", "assignment" {id, mode, status,
+  symbols, cash_cents, reserved_cents, last_decision_date}, "model" {id, family, params},
+  "positions" {symbol: qty}, "open_orders" [...], "broker" {environment, market_open,
+  session_date, next_close, checked_at}, "decision" {"due": bool, "session_date",
+  "ref_prices_cents" {symbol: cents}, "bars_through" date}, "settings" {stock_trade_tick_s,
+  stock_decision_lead_min}}. ref prices = the last stock_bars close dated before
+  session_date; decision.due false when bars_through is not the previous session.
+- POST /api/v1/stock_orders/request {"job_id", "assignment_id", "session_date",
+  "orders": [{"client_request_id", "symbol", "side", "qty", "ref_price_cents", "rationale"}]}
+  -> {"orders": [{"client_request_id", "order_id", "status", "reason"}]}. Idempotent per
+  (assignment_id, client_request_id). Marks assignment.last_decision_date = session_date
+  even when every order is rejected (one decision per session).
+- POST /api/v1/stock_trade/release {"job_ids"}: cancels the approved (not yet submitted)
+  orders of those jobs' assignments, bounded and idempotent.
+Owner JSON routes (owner_router, owner auth and Origin check like owner_trading):
+POST /api/stocks/assignments, /api/stocks/assignments/{id}/halt, /resume, /close,
+POST /api/stocks/models/{id}/retire, POST /api/stocks/jobs (create stock_search,
+stock_backtest, stock_validate with host-filled params), GET /api/stocks/summary.
+
+Approval (host/stocks/approve.py approve(conn, assignment, order, now) -> (status, reason)),
+under SELECT ... FOR UPDATE of the assignment, in this order, first failing code wins:
+  kill (kill_switch on) | halted (assignment not active) | environment (mode !=
+  broker environment or keys absent) | broker_stale (checked_at older than 4 *
+  stock_broker_poll_s) | live_disabled | not_live_eligible (live) | market_closed
+  (broker says not a trading session) | moc_cutoff (now later than next_close - 11
+  minutes) | session (session_date != broker session_date) | symbol (not in the
+  assignment's symbols or instrument not tradable) | short (sell qty > held qty minus
+  qty already in open sells) | max_order (qty * ref_price > stock_max_order_cents) |
+  max_position (held + open buys + qty, times ref_price, > stock_max_position_cents) |
+  cash (buy: qty * ref_price * (1 + stock_price_band) > cash_cents) | daily_loss
+  (buys only: today's loss from the previous mark, cash + reserved + positions at ref
+  prices, beyond stock_max_daily_loss_cents[mode]).
+Approved buy: reserved = ceil(qty * ref_price * (1 + band)) moves cash -> reserved on
+the order and the assignment. Sells reserve nothing. Every status change writes a
+stock_order_events row (actor "host", "worker:<id>", "exchange", "owner:<login>").
+
+=====================================================================================
+6. EXCHANGE (C)
+
+alpaca_trading.py AlpacaTrading(creds, http=None): place(order_row) -> exchange_order_id
+(POST /v2/orders {symbol, qty: str, side, type "market", time_in_force "cls",
+client_order_id: order id}), cancel(exchange_order_id) -> bool (DELETE /v2/orders/{id};
+422 "cannot be cancelled" -> False), order_by_client_id(client_id) (GET
+/v2/orders:by_client_order_id?client_order_id=), orders(status, after) (GET /v2/orders),
+positions() (GET /v2/positions), account() (GET /v2/account), clock() (GET /v2/clock).
+All errors redacted; 401/403 -> auth error; 429 -> backoff; timeouts never resubmit blind.
+
+Tasks in host/exchange/main.py (all no-ops without Alpaca keys):
+- stock_broker every stock_broker_poll_s: account + clock -> stock_broker_state
+  (environment from the credentials, cents from dollar strings rounded half up,
+  session_date = the New York date of next_close when market_open, else of next_open;
+  last_error on failure). Then reconciliation: per mode == environment, the sum of
+  stock_positions over assignments vs Alpaca positions; differences and Alpaca open
+  orders that are not ours go into warnings (live: also host/kill.auto_kill with
+  reasons stock_position_mismatch / unknown_order; paper: warnings only).
+- stock_executor every stock_orders_poll_s (and right after a decision): approved ->
+  submitting -> place -> open with exchange_order_id; a timeout stays submitting and is
+  reconciled by order_by_client_id (found -> open; not found after 60 s -> expired with
+  release); cancel_requested -> cancel at Alpaca -> cancelled (release) or, when Alpaca
+  says it cannot be cancelled, stays open with reason "cancel refused (after 15:50)".
+  Poll open/partial orders: filled_qty and filled_avg_price changes -> fills booked by
+  stock_fills.book_fill; canceled/expired/rejected at Alpaca -> cancelled/expired/
+  rejected_by_exchange with the reservation released. exchange_fill_id =
+  "<exchange_order_id>:<cumulative filled_qty>".
+- stock_fills.book_fill(conn, order_id, qty, price, exchange_fill_id, ts) -> bool, one
+  savepoint: buy: cost_cents = round half up(qty * price * 100); reserved of the order
+  and the assignment drop by the proportional reservation, cash takes back the
+  unused part; position qty += qty, cost_cents += cost. sell: cash += proceeds,
+  realized += proceeds - average cost of the qty sold, position qty -= qty, cost
+  reduced proportionally. Idempotent on exchange_fill_id. A sell larger than the
+  position or a fill on a closed order -> no booking, return False, auto-kill
+  late_fill for live, warning for paper.
+- stock_marks once per session after next_close + 30 min (New York): for every
+  active/halted assignment equity = cash + reserved + sum(qty * that session's close
+  from stock_bars, or Alpaca's position current price when the bar is missing) ->
+  stock_marks (idempotent), then eligibility.recompute for the models with paper marks
+  (B's function).
+CLI: stock-smoke --confirm "STOCK SMOKE YYYY-MM-DD" (one 1-share SPY cls buy on the
+current environment, cancelled after 10 s, refused after 15:45 New York),
+stock-cancel-all --direct (cancel every open order on the Alpaca account and close
+our rows), both with the kill and live gates of docs/LIVE.md.
+
+=====================================================================================
+7. WORKER TRADE TICK (A)
+
+fleet/worker/stock_trade.py StockTradeLoop: every stock_trade_tick_s per held
+stock_trade job: GET state; nothing under kill, when the assignment is not active, or
+when decision.due is false; else build the batch from the model's weights on the
+cached bars (refresh the cache first; if the cache's last date is older than
+decision.bars_through, fetch again and skip this tick if still older), POST it once
+(client_request_id = sha256(job_id, session_date, symbol, side)[:24]), log the
+answer. Release on role change via /api/v1/stock_trade/release. A stock_trade job
+counts as one trade slot.
+
+=====================================================================================
+8. DASHBOARD (D)
+
+/stocks page (owner auth, 5 s refresh like Trading): broker card (environment PAPER or
+LIVE pill, account status, equity, buying power, market open or closed, next close,
+last check, warnings), feed card (per symbol: bars, newest bar, last error),
+models table (family, sharpe, max drawdown, CAGR vs SPY, validated, status chip;
+row menu: Validate, Backtest, Assign, Retire), assignments (mode, symbols, bankroll,
+equity, today's P&L, total return, status; menu: Halt, Resume, Close), positions,
+today's orders with reason codes, "New search" form (n, seed, families). Plain-words
+"What this page is" line. Settings group "Stocks" for every stock_* key and the two
+threshold objects (dollars in, cents out, like the trading group).
+
+=====================================================================================
+9. DONE MEANS
+
+Your tests pass, the full suite still passes (python -m pytest), no file of yours over
+about 300 lines, no em-dash or en-dash, fleet/ stdlib only. Report: what you built,
+every deviation from this contract and why, anything another builder must know.

@@ -28,6 +28,11 @@ KIND_TO_ROLE = {
     "model_search": "model_search",
     "train": "train",
     "trade": "trade",
+    # step 9: stocks on Alpaca (docs/ALPACA.md)
+    "stock_search": "model_search",
+    "stock_backtest": "backtest",
+    "stock_validate": "backtest",
+    "stock_trade": "trade",
 }
 PUBLIC_SETTINGS = (
     "live_enabled",

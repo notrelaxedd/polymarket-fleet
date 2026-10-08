@@ -14,6 +14,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from host import db, web
 from host.api import dashboard, dashboard_forms, dashboard_models, data, data_pbp, dl, jobs, models, owner, owner_live, owner_trading, trade, workers
 from host.api import owner_fleet
+from host.api import dashboard_stocks, stocks
 from host.bundle import build_bundle
 from host.config import Config
 from host.errors import QueueError
@@ -176,6 +177,9 @@ def create_app(config: Config) -> FastAPI:
     app.include_router(wl_api_owner.router)
     app.include_router(wl_api_dl.router)
     app.include_router(wl_dashboard.router)
+    app.include_router(stocks.worker_router)
+    app.include_router(stocks.owner_router)
+    app.include_router(dashboard_stocks.router)
     # The stylesheet and script need no owner login; every other dashboard path does.
     app.mount("/static", StaticFiles(directory=str(web.STATIC_DIR)), name="static")
     app.add_middleware(BodySizeLimit)
