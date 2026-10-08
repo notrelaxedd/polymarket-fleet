@@ -248,7 +248,7 @@ def test_search_keeps_the_top_k_by_sharpe_with_enough_trades() -> None:
         assert c["params_hash"] == params_hash(c["params"]) and c["family"] in ("momentum", "meanrev", "trend")
         assert c["backtest_metrics"]["trades"] >= search.MIN_TRADES
         assert c["summary"].count(". ") == 1 and c["summary"].endswith(".") and "Backtest 2017-2018" in c["summary"]
-        assert "—" not in c["summary"] and "–" not in c["summary"]
+        assert chr(0x2014) not in c["summary"] and chr(0x2013) not in c["summary"]
     progress = [p for _, p in emits]
     assert progress == sorted(progress) and progress[-1] == pytest.approx(1.0)
     assert out == _search(), "same seed, same result"

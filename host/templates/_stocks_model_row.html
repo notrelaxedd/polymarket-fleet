@@ -1,0 +1,22 @@
+{# One stock model row (_stocks.html): `m` from host.stocks.views.models. Id, family and
+   key params on the title line; the validated chip under it; the grey line led by the
+   status chip with Sharpe, max drawdown and CAGR against SPY buy and hold; the Sharpe
+   at the side; the "..." menu with Validate, Backtest, Assign and Retire (forms, so
+   they work with JavaScript off). The two-sentence summary is the row's tooltip. #}
+{% import "_ui.html" as ui %}
+{% set title %}<span class="rank">#{{ m.id }}</span> {{ m.family }} <span class="params">{{ m.short_params }}</span>{% endset %}
+{% set flags %}{% if m.validated %}{{ ui.chip("ok", "validated", key="validated", title="held-out Sharpe " ~ (m.validation_sharpe | fixed(2))) }}{% else %}{{ ui.chip("muted", "not validated", key="unvalidated", title="no held-out metrics yet: Validate it") }}{% endif %}{% endset %}
+{% set meta %}{{ ui.chip(tone("model", m.status), m.status.replace('_', ' '), key=m.status) }} Sharpe {{ m.sharpe | fixed(2) }} &middot; drawdown {{ m.max_drawdown | pct1 }} &middot; CAGR {{ m.cagr | signed_pct }} vs SPY {{ m.spy_cagr | signed_pct }}{% endset %}
+{% call ui.row("stock-model", m.id, None, title, meta=meta, flags=flags, cls="lines-full", attrs={"data-status": m.status, "title": m.summary or ""}) %}
+  <span class="row-value" title="backtest Sharpe, search years">{{ m.sharpe | fixed(2) }}</span>
+  {% if m.status != 'retired' %}
+  {% call ui.menu() %}
+    <form method="post" action="/stocks/jobs" data-action="validate"><input type="hidden" name="kind" value="stock_validate"><input type="hidden" name="model_id" value="{{ m.id }}"><button type="submit" class="menu-item">Validate</button></form>
+    <form method="post" action="/stocks/jobs" data-action="backtest"><input type="hidden" name="kind" value="stock_backtest"><input type="hidden" name="model_id" value="{{ m.id }}"><button type="submit" class="menu-item">Backtest</button></form>
+    {% if m.status in ('paper_ok', 'live_eligible') %}
+    <a class="menu-item" href="/stocks?model={{ m.id }}#assign" data-action="assign">Assign</a>
+    {% endif %}
+    <form method="post" action="/stocks/models/{{ m.id }}/retire" data-action="retire" data-confirm="Retire this stock model? Its active assignments halt and it cannot be un-retired."><button type="submit" class="menu-item danger">Retire</button></form>
+  {% endcall %}
+  {% endif %}
+{% endcall %}

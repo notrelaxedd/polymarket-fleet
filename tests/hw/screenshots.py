@@ -105,6 +105,7 @@ def pages(ids: dict[str, str]) -> list[tuple[str, str]]:
         ("trading", "/trading"), ("trading-assign", f"/trading?model={ids['model']}"), ("probe", PROBE),
         ("model-ingame", f"/models/{ids['ingame_model']}"),
         ("trading-assign-ingame", f"/trading?ingame_model={ids['ingame_model']}"), ("probe-gamestate", PROBE_GAMESTATE),
+        ("stocks", "/stocks"),  # step 9: renders with or without stock rows
     ]
 
 

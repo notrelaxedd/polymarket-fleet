@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% import "_ui.html" as ui %}
+{% block title %}Stocks{% endblock %}
+{% block page %}stocks{% endblock %}
+{# Step 9 (contract section 8; docs/UI.md "Trading" for the layout). The two forms are
+   closed disclosures at the top, above and outside the live region, so the 5 s refresh
+   of #stocks-live never wipes a half-typed bankroll or seed. New assignment opens when
+   it was just rejected or reached from a model's Assign item (?model=); New search
+   opens when it was just rejected. Everything else is #stocks-live (_stocks.html). #}
+{% block content %}
+<h1>Stocks</h1>
+{% include "_stocks_subnav.html" %}
+{{ ui.intro("stocks", intro) }}
+<section class="trading-assign" id="assign" data-card="stock-assign">
+{% call ui.disclosure("stocks-assign", "New assignment", summary="a stock model on a set of symbols, with a bankroll", open=assign_open) %}
+  <form method="post" action="/stocks/assignments" data-form="stock-assign">
+  {% if error %}<p class="error inline-error">{{ error }}</p>{% endif %}
+  <div class="fields">
+    <label data-field="model_id">Model
+      <select name="model_id">
+        {% for m in assignable %}
+        <option value="{{ m.id }}"{% if values.model_id == m.id | string %} selected{% endif %}>#{{ m.id }} {{ m.family }} {{ m.short_params }} &middot; {{ m.status.replace('_', ' ') }}</option>
+        {% endfor %}
+      </select>
+      <span class="help">paper_ok or live_eligible models; live needs live_eligible.</span>
+    </label>
+    <label data-field="mode">Mode
+      <select name="mode">
+        <option value="paper"{% if values.mode == 'paper' %} selected{% endif %}>paper</option>
+        {% if live_mode %}<option value="live"{% if values.mode == 'live' %} selected{% endif %}>live</option>{% endif %}
+      </select>
+      <span class="help">Must match the Alpaca keys ({{ broker.environment or 'none yet' }}); live shows only while live trading is on.</span>
+    </label>
+    <label data-field="bankroll">Bankroll ($)<input type="text" name="bankroll" value="{{ values.bankroll }}" inputmode="decimal" autocomplete="off">
+      <span class="help">Its own cash; at most the broker cash not given to other assignments.</span>
+    </label>
+    <label class="span-all" data-field="symbols">Symbols<input type="text" name="symbols" value="{{ values.symbols }}" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <span class="help">Commas or spaces; tradable symbols with daily bars.</span>
+    </label>
+  </div>
+  {% if not assignable %}<p class="muted">No model is paper_ok yet: run a search, then validate the best ones.</p>{% endif %}
+  <button type="submit" class="btn primary"{% if not assignable %} disabled{% endif %}>Create assignment</button>
+  </form>
+{% endcall %}
+</section>
+<section class="trading-assign" id="search" data-card="stock-search">
+{% call ui.disclosure("stocks-search", "New search", summary="sample and backtest candidate models", open=search_error is not none) %}
+  <form method="post" action="/stocks/jobs" data-form="stock-search">
+  <input type="hidden" name="kind" value="stock_search">
+  {% if search_error %}<p class="error inline-error">{{ search_error }}</p>{% endif %}
+  <div class="fields">
+    <label data-field="n">Candidates<input type="text" name="n" value="{{ search.n }}" inputmode="numeric" autocomplete="off">
+      <span class="help">1..5000 sampled models, each backtested on the search years.</span>
+    </label>
+    <label data-field="seed">Seed<input type="text" name="seed" value="{{ search.seed }}" inputmode="numeric" autocomplete="off">
+      <span class="help">The same seed samples the same candidates.</span>
+    </label>
+    {% for f in families %}
+    <label class="check" data-field="family_{{ f }}"><input type="checkbox" name="family_{{ f }}" value="true"{% if search['family_' ~ f] %} checked{% endif %}> <span>{{ f }}</span></label>
+    {% endfor %}
+  </div>
+  <p class="help">Years, symbols and cost come from the Stocks group in <a href="/settings#stocks">Settings</a>; the best five by Sharpe become candidate models.</p>
+  <button type="submit" class="btn primary">Start search</button>
+  </form>
+{% endcall %}
+</section>
+<div id="stocks-live">
+{% include "_stocks.html" %}
+</div>
+{% endblock %}

@@ -341,14 +341,20 @@ def test_settings_inputs_open_the_number_keyboard(client):
                "max_exposure_paper", "max_exposure_live", "paper_min_clv", "paper_min_pnl", "orders_per_s", "cancels_per_s",
                "market_data_per_s", "account_per_s",
                "ingame_dead_zone", "ingame_min_edge", "ingame_max_bet", "ingame_max_lag_s", "gamestate_poll_s",
-               "gamestate_max_rps")
+               "gamestate_max_rps",
+               "stock_cost_bps", "stock_price_band", "stock_max_order", "stock_max_position", "stock_default_bankroll",
+               "stock_max_daily_loss_paper", "stock_max_daily_loss_live", "stock_bt_min_sharpe", "stock_bt_max_drawdown",
+               "stock_bt_min_validation_sharpe", "stock_paper_min_return", "stock_paper_max_drawdown")
     numeric = ("trade_max_games", "lease_seconds", "heartbeat_seconds", "online_after_seconds", "max_expiries",
                "min_bets", "seasons_first", "seasons_last", "validation_first", "validation_last", "nflverse_refresh_hours",
                "book_max_age_s", "gtd_seconds", "orphan_cancel_after_s", "trade_tick_s", "max_paper_models_per_game",
                "market_lookahead_days", "snapshot_active_s", "snapshot_idle_s", "snapshot_retention_days", "paper_min_games",
                "paper_min_bets", "paper_min_days", "decision_minutes_before_kickoff", "signals_refresh_hours",
                "ingame_tick_s", "ingame_max_state_age_s", "ingame_quiet_seconds", "ingame_cutoff_seconds",
-               "ingame_gtd_seconds", "ingame_lag_min_events", "yahoo_poll_s")
+               "ingame_gtd_seconds", "ingame_lag_min_events", "yahoo_poll_s",
+               "stock_bars_hour", "stock_decision_lead_min", "stock_trade_tick_s", "stock_broker_poll_s",
+               "stock_orders_poll_s", "stock_max_assignments", "stock_backtest_first", "stock_backtest_last",
+               "stock_validation_first", "stock_validation_last", "stock_bt_min_trades", "stock_paper_min_days")
     def field_input(name):
         box = p.field(name).one(f'input[name="{name}"]')
         assert box.attr("type") == "text", name

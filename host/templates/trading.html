@@ -11,6 +11,7 @@
    (stats, assignment rows, the disclosures) is #trading-live. #}
 {% block content %}
 <h1>Trading</h1>
+{% include "_stocks_subnav.html" %}
 {{ ui.intro("trading", "Which model trades which game, and what it has made today; actions sit in each row's menu.") }}
 <section class="trading-assign" id="assign" data-card="assign">
 {% call ui.disclosure("trading-assign", "New assignment", summary="a model on a game, with a bankroll", open=assign_open) %}

@@ -1,0 +1,65 @@
+{# The folded part of #stocks-live (_stocks.html): Positions, Orders (the newest
+   session's, with the reject code and its words) and Feed (the daily bars per symbol).
+   Closed by default; Feed opens by itself when a symbol's last fetch failed. #}
+{% import "_ui.html" as ui %}
+{% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{{ cents | pnl }}</span>{% endmacro %}
+{% macro live_chip(mode) %}{% if mode == 'live' %} {{ ui.chip("bad", "live", key="live", extra="chip-live") }}{% endif %}{% endmacro %}
+
+<section class="trading-group" id="positions" data-card="stock-positions">
+{% set unrealized = positions | selectattr("unrealized_cents", "ne", none) | sum(attribute="unrealized_cents") %}
+{% call ui.disclosure("stocks-positions", "Positions", count=positions | length, summary=("unrealized " ~ (unrealized | pnl) ~ " at the last close") if positions else "nothing held") %}
+{% if positions %}
+<ul class="rows" data-list="stock-positions">
+{% for p in positions %}
+{% set title %}<span>{{ p.qty }} {{ p.symbol }}</span>{{ live_chip(p.mode) }}{% endset %}
+{% set meta %}assignment #{{ p.assignment_id }} &middot; avg cost {{ p.avg_cost_cents | money }} &middot; close {{ p.close_cents | money if p.close_cents is not none else '-' }} &middot; value {{ p.value_cents | money if p.value_cents is not none else '-' }}{% endset %}
+{% call ui.row("stock-position", p.assignment_id ~ "-" ~ p.symbol, None, title, meta=meta, cls="position-row" ~ (" is-live" if p.mode == 'live' else ""), attrs={"data-assignment": p.assignment_id, "data-symbol": p.symbol}) %}
+  <span class="row-value" title="unrealized at the last close">{% if p.unrealized_cents is not none %}{{ pnl(p.unrealized_cents) }}{% else %}<span class="muted">no close</span>{% endif %}</span>
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No shares held. Positions show here once a market-on-close buy fills.</p>
+{% endif %}
+{% endcall %}
+</section>
+
+<section class="trading-group" id="orders" data-card="stock-orders">
+{% set rejected = orders | selectattr("status", "equalto", "rejected") | list | length %}
+{% call ui.disclosure("stocks-orders", "Orders", count=orders | length, summary=(("session " ~ orders_session) ~ ((", " ~ rejected ~ " rejected") if rejected else "")) if orders_session else "none yet") %}
+{% if orders %}
+<ul class="rows" data-list="stock-orders">
+{% for o in orders %}
+{% set title %}<span class="c-order" data-side="{{ o.side }}">{{ o.side }} {{ o.qty }} {{ o.symbol }} @ {{ o.ref_price_cents | money }}{% if o.filled_qty %} ({{ o.filled_qty }} filled{% if o.avg_fill_price %} avg {{ o.avg_fill_price | price }}{% endif %}){% endif %}</span>{{ live_chip(o.mode) }}{% endset %}
+{% set meta %}assignment #{{ o.assignment_id }} &middot; {{ o.value_cents | money }}{% if o.exchange_order_id %} &middot; #{{ o.exchange_order_id | short }}{% endif %} &middot; {{ o.created_at | ts }}{% endset %}
+{% set why %}{% if o.reason %}<span class="reason" data-reason="{{ o.reason }}">{{ o.reason }}{% if o.reason_text %}: {{ o.reason_text }}{% endif %}</span>{% if o.rationale %} &middot; {% endif %}{% endif %}<span class="rationale" title="{{ o.rationale or '' }}">{{ o.rationale or '' }}</span>{% endset %}
+{% call ui.row("stock-order", o.id, None, title, meta=meta, meta2=why, cls="is-live" if o.mode == 'live' else "", attrs={"data-order": o.id, "data-status": o.status}) %}
+  {{ ui.chip(tone("order", o.status), o.status.replace('_', ' '), key=o.status) }}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No stock orders yet. A decision runs once per session, about 20 minutes before the close.</p>
+{% endif %}
+{% endcall %}
+</section>
+
+<section class="trading-group" id="feed" data-card="stock-feed">
+{% set failing = feed | selectattr("last_error") | list | length %}
+{% set newest = feed | selectattr("newest") | map(attribute="newest") | list %}
+{% set fsummary %}{{ feed | length }} symbol{{ '' if feed | length == 1 else 's' }}{% if newest %} &middot; newest bar {{ newest | max }}{% endif %}{% if failing %} &middot; {{ failing }} failing{% endif %}{% endset %}
+{% call ui.disclosure("stocks-feed", "Feed", count=feed | length, summary=fsummary, open=failing > 0) %}
+{% if feed %}
+<ul class="rows" data-list="stock-feed">
+{% for f in feed %}
+{% set meta %}{{ f.bars_count | num }} bars &middot; newest {{ f.newest or '-' }} &middot; fetched {{ f.fetched_at | ts if f.fetched_at else 'never' }}{% if not f.followed %} &middot; not in the symbols setting{% endif %}{% endset %}
+{% call ui.row("stock-feed", f.symbol, None, f.symbol, meta=meta, meta2=f.last_error or None, attrs={"data-symbol": f.symbol}) %}
+  {% if f.last_error %}{{ ui.chip("bad", "error", key="feed-error") }}{% elif not f.bars_count %}{{ ui.chip("muted", "no bars", key="feed-empty") }}{% elif f.tradable is false %}{{ ui.chip("warn", "not tradable", key="feed-untradable") }}{% else %}{{ ui.chip("ok", "ok", key="feed-ok") }}{% endif %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No symbols followed. Add some in the Stocks group of <a href="/settings#stocks">Settings</a>.</p>
+{% endif %}
+{% endcall %}
+</section>

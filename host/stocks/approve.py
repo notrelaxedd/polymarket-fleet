@@ -228,7 +228,10 @@ def request_orders(conn: psycopg.Connection, worker: dict[str, Any], body: dict[
     if first is None:
         raise NotFound("stock assignment not found")
     kill.approval_lock(conn, first["mode"])
+    job = held_job(conn, worker["id"], body.get("job_id"), body.get("lease_token"))  # a release that committed meanwhile
     a = dict(conn.execute("SELECT * FROM stock_assignments WHERE id = %s FOR UPDATE", (aid,)).fetchone())
+    if a["job_id"] != job["id"]:
+        raise Conflict("the job is no longer this assignment's stock_trade job")
     now = market.server_now(conn)
     band = get_settings(conn).get("stock_price_band")
     prices = market.ref_prices(conn, sorted({o["symbol"] for o in parsed}), session)

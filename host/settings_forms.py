@@ -15,9 +15,10 @@ from host.money import cents_to_dollars, dollars_to_cents
 from host.settings import FLAG_NAMES
 from host.settings_forms_ingame import PARSERS as INGAME_PARSERS, form_values as ingame_values
 from host.settings_forms_replay import PARSERS as REPLAY_PARSERS, form_values as replay_values
+from host.settings_forms_stocks import PARSERS as STOCKS_PARSERS, form_values as stocks_values
 from host.settings_summary import summaries
 
-GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse", "trade", "replay", "signals", "ingame")
+GROUPS = ("trading", "fleet", "tz", "fees", "thresholds", "seasons", "nflverse", "trade", "replay", "signals", "ingame", "stocks")
 # Keys no settings group may write: the kill switch moves through /kill and RESUME, the
 # live switch through the typed phrase of the "Live trading" group (step 5).
 GUARDED_KEYS = ("kill_switch", "live_enabled")
@@ -234,6 +235,7 @@ PARSERS: dict[str, Callable[[dict[str, str]], dict[str, Any]]] = {
     "trade": _parse_trade,
     **REPLAY_PARSERS,  # step 6 Part B: snapshot replay and nflverse signals
     **INGAME_PARSERS,  # step 6 Part C: in-game trade rules and the game-state feed
+    **STOCKS_PARSERS,  # step 9: stocks on Alpaca
 }
 
 
@@ -291,6 +293,7 @@ def form_values(settings: dict[str, Any]) -> dict[str, str]:
         **trade,
         **replay_values(settings),
         **ingame_values(settings),
+        **stocks_values(settings),
         "max_bet": cents_to_dollars(settings.get("max_bet_cents")),
         "max_daily_loss_paper": cents_to_dollars(loss.get("paper")),
         "max_daily_loss_live": cents_to_dollars(loss.get("live")),

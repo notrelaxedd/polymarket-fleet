@@ -14,7 +14,7 @@ from host.money import format_cents
 from host.settings import FLAG_NAMES
 
 SEP = " · "  # a middle dot between the parts of a summary
-GROUPS = ("limits", "trading", "ingame", "robustness", "replay", "fleet", "data")
+GROUPS = ("limits", "trading", "ingame", "stocks", "robustness", "replay", "fleet", "data")
 
 
 def _dict(settings: dict[str, Any], key: str) -> dict[str, Any]:
@@ -109,6 +109,22 @@ def ingame(settings: dict[str, Any]) -> str:
     )
 
 
+def stocks(settings: dict[str, Any]) -> str:
+    """Stocks on Alpaca (step 9): the feed, the order cap, the daily stop per mode and
+    the eras a stock model is searched and validated on."""
+    symbols = settings.get("stock_symbols") if isinstance(settings.get("stock_symbols"), list) else []
+    loss = _dict(settings, "stock_max_daily_loss_cents")
+    return SEP.join(
+        [
+            f"feed {'on' if settings.get('stocks_enabled') is True else 'off'}, {len(symbols)} symbols",
+            f"max order {_money(settings.get('stock_max_order_cents'))}",
+            f"daily loss {_money(loss.get('paper'))} paper, {_money(loss.get('live'))} live",
+            f"search {_era(settings.get('stock_backtest_years'))}",
+            f"held out {_era(settings.get('stock_validation_years'))}",
+        ]
+    )
+
+
 def robustness(settings: dict[str, Any]) -> str:
     """The backtest gate and the two eras it is judged on."""
     gate = _dict(settings, "thresholds_backtest")
@@ -156,8 +172,8 @@ def data(settings: dict[str, Any]) -> str:
 
 
 READERS = {
-    "limits": limits, "trading": trading, "ingame": ingame, "robustness": robustness, "replay": replay, "fleet": fleet,
-    "data": data,
+    "limits": limits, "trading": trading, "ingame": ingame, "stocks": stocks, "robustness": robustness, "replay": replay,
+    "fleet": fleet, "data": data,
 }
 
 

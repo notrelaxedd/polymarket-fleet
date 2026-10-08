@@ -249,9 +249,10 @@
     }
     var el = document.getElementById("updated");
     if (!el) { return; }
-    var down = !!(lost["fleet-grid"] || lost["trading-live"] || lost["home-live"] || lost["topbar-status"]);
+    var down = !!(lost["fleet-grid"] || lost["trading-live"] || lost["stocks-live"] || lost["home-live"] || lost["topbar-status"]);
     // Freshness is the page's own region (fleet grid, trading region or Home): a held region must not read as fresh.
-    var own = document.getElementById("fleet-grid") ? "fleet-grid" : document.getElementById("trading-live") ? "trading-live" : home ? "home-live" : "topbar-status";
+    var own = document.getElementById("fleet-grid") ? "fleet-grid" : document.getElementById("trading-live") ? "trading-live" :
+      document.getElementById("stocks-live") ? "stocks-live" : home ? "home-live" : "topbar-status";
     var since = ok[own] || loaded;
     el.textContent = down ? "connection lost" : "updated " + Math.max(0, Math.round((Date.now() - since) / 1000)) + " s ago";
     el.classList.toggle("lost", down);
@@ -261,6 +262,7 @@
   function refreshAll() {
     refresh("fleet-grid", "/fragments/fleet");
     refresh("trading-live", "/fragments/trading");
+    refresh("stocks-live", "/fragments/stocks");
     refresh("topbar-status", "/fragments/topbar");
   }
 
@@ -279,6 +281,9 @@
   }
   if (document.getElementById("trading-live")) {
     setInterval(function () { refresh("trading-live", "/fragments/trading"); }, FLEET_MS);
+  }
+  if (document.getElementById("stocks-live")) {
+    setInterval(function () { refresh("stocks-live", "/fragments/stocks"); }, FLEET_MS);
   }
   if (document.getElementById("topbar-status")) {
     setInterval(function () { refresh("topbar-status", "/fragments/topbar"); }, TOPBAR_MS);

@@ -220,3 +220,12 @@ def test_wrong_job_or_token_is_refused(conn):
     with pytest.raises(Conflict):
         with conn.transaction():
             approve.request_orders(conn, worker, body)
+
+
+def test_a_replaced_job_cannot_order(conn):
+    from host.errors import Conflict
+
+    s = stock_setup(conn)
+    conn.execute("UPDATE stock_assignments SET job_id = NULL WHERE id = %s", (s.assignment["id"],))
+    with pytest.raises(Conflict, match="no longer"):
+        request(conn, s, [order()])

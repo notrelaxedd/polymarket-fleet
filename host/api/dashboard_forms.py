@@ -147,6 +147,10 @@ def post_settings(
     if "thresholds_paper" in updates:
         for row in conn.execute("SELECT DISTINCT lineage_id FROM model_scores WHERE mode = 'paper'").fetchall():
             recompute_paper(conn, row["lineage_id"], actor)
+    if "thresholds_stock_backtest" in updates or "thresholds_stock_paper" in updates:  # step 9
+        from host.stocks.eligibility import recompute_all as recompute_stocks
+
+        recompute_stocks(conn, actor)
     return web.redirect("/settings", f"{group} settings saved")
 
 

@@ -11,7 +11,9 @@ and rate cap inside: host/exchange/gamestate.py), the scores poll (60 s, through
 feed's ESPN window and backoff; deferred, it asks again a second later), settlement
 (30 s), retention (nightly) and the daily stock bars (checked every minute,
 host/exchange/stock_bars.py: new symbols at once, the rest once a day after
-`stock_bars_hour`). Every task runs in its own transaction and an
+`stock_bars_hour`). The stock trading tasks (stock_broker, stock_executor,
+stock_marks: host/exchange/stock_tasks.py) run on a thread of their own, so Alpaca
+never slows the NFL tasks; without the Alpaca keys they do nothing. Every task runs in its own transaction and an
 exception, or a soft error a task reports, is logged and remembered as `last_error`
 without stopping the loop. With credentials the loop runs
 the auth probe, the reconciliation of `submitting` rows and the open-order audit
@@ -42,6 +44,7 @@ from host.exchange.adapters.sim import SimSource
 from host.exchange.credentials import CredentialsError
 from host.exchange.executor import Executor
 from host.exchange.ratelimit import RateLimiter
+from host.exchange.stock_tasks import StockTasks
 from host.settings import get_int_setting, get_setting
 
 log = logging.getLogger(__name__)
@@ -84,6 +87,7 @@ class ExchangeLoop:
         self.retention_day: Any = None
         self.gamestate_poller = gamestate.PollerState(clock=lambda: self.clock().timestamp())
         self.stock_feed = stock_bars.StockFeed()
+        self.stock_tasks = StockTasks(pool, clock)
 
     @property
     def last_error(self) -> str | None:
@@ -284,6 +288,7 @@ class ExchangeLoop:
         return results
 
     def run_forever(self, stop: threading.Event, sleep: Callable[[float], None] = time.sleep) -> None:
+        self.stock_tasks.start_thread(stop)
         while not stop.is_set():
             started = time.monotonic()
             self.run_due()
@@ -298,6 +303,7 @@ def run_once(pool: ConnectionPool, now: datetime | None = None, loop: ExchangeLo
     with pool.connection() as conn:
         loop.refresh_source(conn, now)
     results = loop.run_due(now, force=True)
+    results.update(loop.stock_tasks.run_due(now, force=True))
     results["last_error"] = loop.last_error
     return results
 

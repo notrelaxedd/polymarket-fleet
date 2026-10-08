@@ -16,6 +16,7 @@ GROUPS = {
     "settings-limits": ("Limits", ["trading"]),
     "settings-trading": ("Trading", ["trade"]),
     "settings-ingame": ("In-game", ["ingame"]),
+    "settings-stocks": ("Stocks", ["stocks"]),  # step 9
     "settings-robustness": ("Robustness gates", ["thresholds", "seasons", "fees"]),
     "settings-replay": ("Snapshot replay and signals", ["replay", "signals"]),
     "settings-fleet": ("Fleet", ["fleet", "tz", "enroll"]),

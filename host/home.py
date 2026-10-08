@@ -7,9 +7,10 @@ Read-only. The attention list is built from the same signals as the top bar bann
 plus: an enabled worker offline for more than five minutes, an assignment of an
 unfinished game whose model is no longer eligible for its mode (an active one on a
 retired lineage, or a live one, active or halted, whose lineage left live_eligible), a
-validate job that failed (the model's latest validate job), and exchange credentials
-that were never checked or failed their last check. Each item is a dict the template
-renders as one row.
+validate job that failed (the model's latest validate job), exchange credentials
+that were never checked or failed their last check, and (step 9) one Stocks row when a
+stock assignment is halted or the stock broker has warnings. Each item is a dict the
+template renders as one row.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from host import pnl, views
 from host.api.models_view import headline
 from host.leaderboard import leaderboard
 from host.settings import get_settings
+from host.stocks.views import attention_items as stock_attention
 
 OFFLINE_AFTER_S = 300
 RECENT_BETS = 5
@@ -161,7 +163,7 @@ def home_context(conn: psycopg.Connection) -> dict[str, Any]:
     totals = pnl.pnl(conn)["by_mode"][mode]
     attention = (
         banner_items(conn, settings) + worker_items(workers, now) + assignment_items(conn)
-        + validation_items(conn) + exchange_items(conn)
+        + validation_items(conn) + exchange_items(conn) + stock_attention(conn)
     )
     return {
         "online": sum(1 for w in workers if w["online"]),

@@ -12,6 +12,8 @@ probe-gamestate --event ID [--yahoo]         one game-state request: status, pay
 probe-alpaca [--asset-class N] [--get PATH]  read-only Alpaca checks: keys, account, assets, quotes ([--raw])
 ingest-stock-bars [--symbol S]               fetch the daily stock bars now (all stock_symbols, or the ones named)
 stock-bars-status                            one line per symbol: bars stored, newest bar, last fetch, last error
+stock-smoke --confirm "STOCK SMOKE YYYY-MM-DD"  one 1-share SPY cls buy at Alpaca, cancelled ([--hold S])
+stock-cancel-all [--direct]                  cancel the stock orders (database), or --direct every open order at Alpaca
 
 The live commands load the credentials from the environment (exchange.env) the way
 the exchange process does; the key and secret are never printed. A malformed secret
@@ -262,6 +264,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbol", action="append", default=[], help="only this symbol (repeatable); default every stock_symbols entry")
     p.set_defaults(func=cmd_ingest_stock_bars)
     sub.add_parser("stock-bars-status", help="the daily bar feed per symbol").set_defaults(func=cmd_stock_bars_status)
+    from host.exchange import stock_ops
+
+    stock_ops.add_commands(sub)
     return parser
 
 

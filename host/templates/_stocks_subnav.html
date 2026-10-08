@@ -1,0 +1,8 @@
+{#- Trading sub-nav: NFL | Stocks (step 9). Included under the title of /trading and of
+    /stocks; the current link comes from the request path. The main nav's Trading item
+    stays current on both. #}
+{% set sub_path = path | default('') %}
+<nav class="tabs subnav" aria-label="Trading sections" data-subnav-list>
+  <a href="/trading" data-subnav="nfl"{% if sub_path.startswith('/trading') %} aria-current="page"{% endif %}>NFL</a>
+  <a href="/stocks" data-subnav="stocks"{% if sub_path.startswith('/stocks') %} aria-current="page"{% endif %}>Stocks</a>
+</nav>

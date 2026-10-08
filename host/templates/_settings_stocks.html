@@ -1,0 +1,67 @@
+{# The "Stocks" group of /settings (step 9, docs/ALPACA.md; host/settings_forms_stocks.py
+   parses it, host/settings_schema_stocks.py validates it): the daily bar feed, the
+   decision cadence, the money limits of stock orders, the search and validation years
+   and the two stock thresholds, one form posting to /settings/stocks. Money in dollars.
+   Included by settings.html, so the field, check and form_error macros and `values`
+   are the page's. #}
+{% call ui.disclosure('settings-stocks', 'Stocks', summary=values.summary_stocks, open=errors.stocks) %}
+<form class="group" method="post" action="/settings/stocks" id="stocks" data-card="stocks" data-form="stocks">
+  <p class="help">Stocks trade on Alpaca, long only, one market-on-close decision per assignment and session. Paper or live follows the Alpaca keys in exchange.env; live also needs the live switch and a live_eligible model. See <a href="/stocks">Stocks</a>.</p>
+  {{ form_error('stocks') }}
+  <h3>Daily bar feed</h3>
+  <div class="fields">
+    {{ check('stocks_enabled', 'Fetch daily bars', 'the exchange process refreshes the bars once a day; it also needs the Alpaca keys') }}
+    <label class="span-all" data-field="stock_symbols"><span>Symbols</span>
+      <input type="text" name="stock_symbols" value="{{ values.stock_symbols }}" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <span class="help">1 to 200 tickers, separated by commas or spaces, such as SPY, QQQ, BRK.B; SPY is the benchmark</span>
+    </label>
+    {{ field('stock_history_start', 'History start', 'YYYY-MM-DD, 2016-01-01 or later') }}
+    <label data-field="stock_history_feed"><span>History feed</span>
+      <select name="stock_history_feed">
+        {% for feed in ('sip', 'iex') %}<option value="{{ feed }}"{% if values.stock_history_feed == feed %} selected{% endif %}>{{ feed }}</option>{% endfor %}
+      </select>
+      <span class="help">sip = every US exchange (free for bars older than 15 minutes), iex = one exchange</span>
+    </label>
+    {{ field('stock_bars_hour', 'Bars refresh hour', '16..23, in the time zone of the Fleet group', 'numeric') }}
+  </div>
+  <h3>Decisions and polling</h3>
+  <div class="fields">
+    {{ field('stock_decision_lead_min', 'Decision lead (min)', '12..120 minutes before the close; 20 decides at 15:40 New York', 'numeric') }}
+    {{ field('stock_trade_tick_s', 'Stock trade tick (s)', '5..300; how often a trade worker looks again', 'numeric') }}
+    {{ field('stock_broker_poll_s', 'Broker poll (s)', '5..3600; a check older than 4 polls is stale', 'numeric') }}
+    {{ field('stock_orders_poll_s', 'Orders poll (s)', '1..300', 'numeric') }}
+    {{ field('stock_max_assignments', 'Max stock assignments', '0..50 active or halted', 'numeric') }}
+  </div>
+  <h3>Money limits</h3>
+  <div class="fields">
+    {{ field('stock_max_order', 'Max order', 'dollars; shares times the reference price', 'decimal') }}
+    {{ field('stock_max_position', 'Max position', 'dollars per symbol and assignment, open buys included', 'decimal') }}
+    {{ field('stock_default_bankroll', 'Default bankroll', "dollars; a new stock assignment's bankroll", 'decimal') }}
+    {{ field('stock_max_daily_loss_paper', 'Max daily loss, paper', 'dollars; buys stop for the day beyond it', 'decimal') }}
+    {{ field('stock_max_daily_loss_live', 'Max daily loss, live', 'dollars; buys stop for the day beyond it', 'decimal') }}
+    {{ field('stock_price_band', 'Price band', '0.005..0.25; a buy reserves this much above the reference price', 'decimal') }}
+    {{ field('stock_cost_bps', 'Backtest cost (bps)', '0..100 per side on the traded value', 'decimal') }}
+  </div>
+  <h3>Search and validation years</h3>
+  <div class="fields">
+    {{ field('stock_backtest_first', 'Search first year', '2016..', 'numeric') }}
+    {{ field('stock_backtest_last', 'Search last year', 'blank = the year before the validation era', 'numeric') }}
+    {{ field('stock_validation_first', 'Validation first year', 'held out from every search', 'numeric') }}
+    {{ field('stock_validation_last', 'Validation last year', 'blank = last complete year', 'numeric') }}
+  </div>
+  <h3>Backtest thresholds: candidate to paper_ok</h3>
+  <div class="fields">
+    {{ field('stock_bt_min_sharpe', 'Min Sharpe', '-5..10, search years', 'decimal') }}
+    {{ field('stock_bt_max_drawdown', 'Max drawdown', '0..1, search years', 'decimal') }}
+    {{ field('stock_bt_min_trades', 'Min trades', 'position changes in the search years', 'numeric') }}
+    {{ field('stock_bt_min_validation_sharpe', 'Min validation Sharpe', '-5..10, held-out years', 'decimal') }}
+  </div>
+  <h3>Paper thresholds: paper_ok to live_eligible</h3>
+  <div class="fields">
+    {{ field('stock_paper_min_days', 'Min days', 'marked paper sessions', 'numeric') }}
+    {{ field('stock_paper_min_return', 'Min return', '-1..10; 0.01 = 1%', 'decimal') }}
+    {{ field('stock_paper_max_drawdown', 'Max drawdown', '0..1', 'decimal') }}
+  </div>
+  <button type="submit" class="btn primary">Save stocks</button>
+</form>
+{% endcall %}

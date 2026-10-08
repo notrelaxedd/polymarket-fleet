@@ -391,7 +391,7 @@ fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-weight: 600; font-s
 .jobrow { display: flex; align-items: center; gap: 0.5rem; flex-wrap: nowrap; min-width: 0; }
 p.stats, .pnl-line { margin: 0.25rem 0 0; }
 /* stale data is dimmed: each block of a refresh region (so a test or a reader can see it on the list itself) */
-.conn-lost #fleet-grid > *, .conn-lost #trading-live > *, .conn-lost #home-live > * { opacity: 0.55; }
+.conn-lost #fleet-grid > *, .conn-lost #trading-live > *, .conn-lost #stocks-live > *, .conn-lost #home-live > * { opacity: 0.55; }
 .conn-lost .dot { background: var(--grey); }
 
 /* tables */

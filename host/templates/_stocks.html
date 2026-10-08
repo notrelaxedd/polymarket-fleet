@@ -1,0 +1,94 @@
+{# Inner HTML of #stocks-live (contract section 8, docs/UI.md "Trading"), refreshed every
+   5 s from GET /fragments/stocks: the stats, the broker card, the assignment and model
+   rows, then the closed disclosures (_stocks_groups.html: positions, orders, feed).
+   Every list is .rows of one-line .row items (two lines at most): facts in .row-title
+   and .row-meta, the status chip, the money in .row-value, actions in the "..." menu. #}
+{% import "_ui.html" as ui %}
+{% macro pnl(cents) %}<span class="pnl{% if cents < 0 %} pnl-neg{% elif cents > 0 %} pnl-pos{% endif %}">{{ cents | pnl }}</span>{% endmacro %}
+{% macro mode_chip(mode) %}{% if mode == 'live' %}{{ ui.chip("bad", "live", key="live", extra="chip-live") }}{% else %}{{ ui.chip("muted", "paper", key="paper", extra="mode-paper") }}{% endif %}{% endmacro %}
+{% set env = broker.environment %}
+{% set env_word = (env | upper) if env and broker.keys_present else "no keys" %}
+
+{# ---- first screen: the answer in large type #}
+<div class="stats">
+{{ ui.stat("broker", env_word, "Broker", href="#broker", note=(broker.account_status or "not checked") ~ " · " ~ (broker.age_s | ago)) }}
+{{ ui.stat("equity", broker.equity_cents | money if broker.equity_cents is not none else "-", "Account equity", href="#broker", note="buying power " ~ (broker.buying_power_cents | money if broker.buying_power_cents is not none else "-")) }}
+{{ ui.stat("stocks-today", today_cents | pnl, "Stocks today", href="#assignments", note=running ~ " assignment" ~ ("" if running == 1 else "s") ~ " running") }}
+{{ ui.stat("market", ("open" if broker.market_open else "closed") if broker.market_open is not none else "-", "Market", href="#broker", note=("closes " ~ (broker.next_close | ts)) if broker.market_open and broker.next_close else (("opens " ~ (broker.next_open | ts)) if broker.next_open else "no clock yet")) }}
+{{ ui.stat("open-orders", open_orders, "Open orders", href="#orders", note="market on close") }}
+</div>
+
+{# ---- the broker, always open #}
+<section class="card" id="broker" data-card="broker">
+<header class="card-head"><h2>Broker</h2><span class="pill {{ env or 'none' }}" data-env="{{ env or 'none' }}">{{ (env | upper) if env else "NONE" }}</span></header>
+{% if broker.problem %}<p class="error" data-broker-problem>{{ broker.problem }}</p>{% endif %}
+<dl class="props">
+  <dt>account</dt><dd>{{ broker.account_status or '-' }}{% if broker.pattern_day_trader %} {{ ui.chip("warn", "pattern day trader", key="pdt") }}{% endif %}</dd>
+  <dt>equity</dt><dd>{{ broker.equity_cents | money if broker.equity_cents is not none else '-' }} &middot; cash {{ broker.cash_cents | money if broker.cash_cents is not none else '-' }} &middot; buying power {{ broker.buying_power_cents | money if broker.buying_power_cents is not none else '-' }}</dd>
+  <dt>market</dt><dd>{% if broker.market_open is none %}<span class="muted">no clock yet</span>{% elif broker.market_open %}{{ ui.chip("ok", "open", key="market-open") }}{% else %}{{ ui.chip("muted", "closed", key="market-closed") }}{% endif %}{% if broker.session_date %} &middot; session {{ broker.session_date }}{% endif %}</dd>
+  <dt>next close</dt><dd>{{ broker.next_close | ts if broker.next_close else '-' }}{% if broker.next_open %} <span class="muted">next open {{ broker.next_open | ts }}</span>{% endif %}</dd>
+  <dt>last check</dt><dd>{{ broker.age_s | ago }}{% if broker.stale %} {{ ui.chip("warn", "stale", key="broker-stale") }}{% endif %}{% if broker.checked_at %} <span class="muted">{{ broker.checked_at | ts }}</span>{% endif %}</dd>
+  <dt>last error</dt><dd>{% if broker.last_error %}<span class="error">{{ broker.last_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
+  <dt>warnings</dt><dd data-warnings="{{ broker.warnings | length }}">{% if broker.warnings %}{{ ui.chip("warn", broker.warnings | length ~ " warning" ~ ("" if broker.warnings | length == 1 else "s"), key="broker-warnings") }}{% else %}<span class="muted">none</span>{% endif %}</dd>
+</dl>
+{% if broker.warnings %}
+<ul class="problems" data-list="broker-warnings">
+{% for w in broker.warnings %}<li data-warning="{{ w.kind or 'note' }}">{{ w.kind or 'note' }}: {{ w.message or '' }}{% if w.ts %} <span class="muted">{{ w.ts }}</span>{% endif %}</li>{% endfor %}
+</ul>
+{% endif %}
+</section>
+
+{# ---- assignments: one row each, always open #}
+<section class="card" id="assignments" data-card="stock-assignments">
+<header class="card-head"><h2>Assignments</h2><span class="count">{{ assignments | length }}</span></header>
+{% if killed %}<p class="error">Trading is killed: stock assignments stay halted until the switch is reset in <a href="/settings#kill">Settings</a>.</p>{% endif %}
+{% if assignments %}
+<ul class="rows" data-list="stock-assignments">
+{% for a in assignments %}
+{% set title %}{{ mode_chip(a.mode) }} <span>#{{ a.id }} {{ a.family }} {{ a.short_params }}</span>{% endset %}
+{% set meta %}{{ a.symbols | join(', ') }} &middot; bankroll {{ a.bankroll_cents | money }} &middot; today {{ pnl(a.today_cents) }} &middot; total {{ a.total_return | signed_pct }}{% endset %}
+{% set meta2 %}cash {{ a.cash_cents | money }} &middot; reserved {{ a.reserved_cents | money }} &middot; {{ a.open_orders }} open order{{ '' if a.open_orders == 1 else 's' }}{% if a.last_decision_date %} &middot; decided {{ a.last_decision_date }}{% endif %}{% if a.halt_reason and a.status == 'halted' %} &middot; {{ a.halt_reason }}{% endif %}{% endset %}
+{% call ui.row("stock-assignment", a.id, None, title, meta=meta, meta2=meta2, cls="assignment-row" ~ (" is-live" if a.mode == 'live' else ""), attrs={"data-assignment": a.id, "data-mode": a.mode}) %}
+  <span class="row-value" title="equity: cash + reserved + positions at the last close">{{ a.equity_cents | money }}</span>
+  {{ ui.chip(tone("assignment", a.status), a.status, key=a.status) }}
+  {% if a.status != 'closed' %}
+  {% call ui.menu() %}
+    {% if a.status == 'active' %}
+    <form method="post" action="/stocks/assignments/{{ a.id }}/halt" data-action="halt"><button type="submit" class="menu-item">Halt</button></form>
+    {% elif a.status == 'halted' and not killed %}
+    <form method="post" action="/stocks/assignments/{{ a.id }}/resume" data-action="resume"><button type="submit" class="menu-item">Resume</button></form>
+    {% endif %}
+    <form method="post" action="/stocks/assignments/{{ a.id }}/close" data-action="close" data-confirm="Close this stock assignment? It needs no positions and no open orders."><button type="submit" class="menu-item danger">Close</button></form>
+    <p class="muted bankroll-lines">model {{ a.model_status.replace('_', ' ') }}<br>
+      job {{ a.job_status or 'none' }}{% if a.lease_worker_id %} on {{ a.lease_worker_id }}{% endif %}<br>
+      realized {{ a.realized_cents | pnl }}</p>
+  {% endcall %}
+  {% endif %}
+{% endcall %}
+{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No stock assignments yet. Open New assignment above or press Assign on a paper_ok model.</p>
+{% endif %}
+</section>
+
+{# ---- models: one row each, always open; retired ones folded #}
+<section class="card" id="models" data-card="stock-models">
+<header class="card-head"><h2>Models</h2><span class="count">{{ models | length }}</span></header>
+{% if models %}
+<ul class="rows" data-list="stock-models">
+{% for m in models %}{% include "_stocks_model_row.html" %}{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No stock models yet. Open New search above.</p>
+{% endif %}
+{% if retired %}
+{% call ui.disclosure("stocks-retired", "Retired", count=retired | length, summary="never trade again") %}
+<ul class="rows" data-list="stock-retired">
+{% for m in retired %}{% include "_stocks_model_row.html" %}{% endfor %}
+</ul>
+{% endcall %}
+{% endif %}
+</section>
+
+{% include "_stocks_groups.html" %}
