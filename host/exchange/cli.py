@@ -9,6 +9,7 @@ cancel-all --direct                          live off, then list and cancel the 
 probe-account                                the balance call's status and raw payload (key redacted)
 auth-check                                   one auth probe written to exchange_state
 probe-gamestate --event ID [--yahoo]         one game-state request: status, payload, parsed ([--url U])
+probe-alpaca [--asset-class N] [--get PATH]  read-only Alpaca checks: keys, account, assets, quotes ([--raw])
 
 The live commands load the credentials from the environment (exchange.env) the way
 the exchange process does; the key and secret are never printed. A malformed secret
@@ -167,6 +168,31 @@ def cmd_probe_gamestate(config: Config, args: argparse.Namespace) -> None:
     print_probe_gamestate(result)
 
 
+def cmd_probe_alpaca(_: Config, args: argparse.Namespace) -> None:
+    """Needs no database: reads ALPACA_* from the environment (exchange.env). Exits 1
+    when the keys are missing, ALPACA_BASE_URL is not an Alpaca host, or the account
+    call does not answer 200."""
+    from host.exchange import alpaca_credentials, alpaca_probe
+
+    try:
+        creds = alpaca_credentials.load()
+    except alpaca_credentials.AlpacaConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    if creds is None:
+        print(f"error: no Alpaca keys in the environment ({alpaca_credentials.KEY_VAR} / "
+              f"{alpaca_credentials.SECRET_VAR} in exchange.env)", file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        result = alpaca_probe.run(creds, args.asset_class, args.get, args.raw)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    _print(result)
+    if result["account"]["status"] != 200:
+        raise SystemExit(1)
+
+
 def print_probe_gamestate(result: dict[str, Any]) -> None:
     for key in ("source", "event_id", "game_id", "url", "status", "error", "database"):
         if key in result:
@@ -206,6 +232,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--yahoo", action="store_true", help="probe yahoo_pbp_url instead of the ESPN summary")
     p.add_argument("--url", default=None, help="a URL template to probe instead of the setting ({event_id} is filled in)")
     p.set_defaults(func=cmd_probe_gamestate)
+    p = sub.add_parser("probe-alpaca", help="read-only Alpaca checks: keys, account, assets, event contracts, quotes")
+    p.add_argument("--asset-class", action="append", default=[], help="another asset class name to try for event contracts")
+    p.add_argument("--get", action="append", default=[], help="another GET path (/v2/... trading, data:/v2/... market data)")
+    p.add_argument("--raw", action="store_true", help="print up to 64 KiB of each answer instead of 2 KiB")
+    p.set_defaults(func=cmd_probe_alpaca)
     return parser
 
 

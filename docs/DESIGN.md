@@ -1,6 +1,6 @@
 # Design
 
-Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`, robustness (step 6A and 6B) in `docs/ROBUSTNESS.md`, in-game trading (step 6C) in `docs/INGAME.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
+Multi-machine fleet for NFL prediction-market models. Step 1 (fleet core) is specified exactly in `docs/PROTOCOL.md`, models in `docs/MODELS.md`, the dashboard in `docs/DASHBOARD.md` and trading (step 4 paper) in `docs/TRADING.md`, live trading (step 5) in `docs/LIVE.md`, robustness (step 6A and 6B) in `docs/ROBUSTNESS.md`, in-game trading (step 6C) in `docs/INGAME.md`, Alpaca as a second venue (steps 8 and 9, the probe built, the rest planned) in `docs/ALPACA.md`; this file is the overall design and does not repeat them. Where the Trading sections below differ from `docs/TRADING.md` or `docs/LIVE.md`, those files win.
 
 ## Summary
 
@@ -49,10 +49,10 @@ host/{models,model_owner,model_validation,jobparams,ingame_jobparams,snapshot_st
 host/trading/{assignments,assignments_ingame,ledger,limits,sells,ingame,orders,positions,state,live,views,views_positions,views_ingame}.py
 host/migrations/0001_init.sql .. 0009_ingame.sql
 host/api/{app,deps,workers,jobs,data,data_pbp,dl,models,owner,owner_live,owner_trading,trade,limits,robustness,serialize,dashboard,dashboard_forms,dashboard_models,dashboard_trading,dashboard_ingame,job_forms}.py + templates/ + static/style.css   fleet-host (FastAPI)
-host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,gamestate_rate,feedlag}.py   fleet-exchange
+host/exchange/{main,executor,live_sync,mapping,paper,probe,ratelimit,retention,scores,settle,settle_sells,smoke,snapshots,state,credentials,gamestate,gamestate_parse,gamestate_rate,feedlag,alpaca_credentials,alpaca_probe}.py   fleet-exchange
 host/exchange/adapters/{base,sim,polymarket_us,polymarket_us_live,polymarket_clob,live_http,live_parse,live_policy,signing,teams}.py
 host/cli.py                          migrate | enroll-token | workers | jobs | role | send-job | cancel | run-loop | ingest-games | ingest-injuries | ingest-pbp | ingest-pbp-rows | models | kill | kill-reset | roletest | assign | assignments | orders | cancel-all | ledger-check | exchange-state | simulate-final
-host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U]
+host/exchange/cli.py                 simulate-final | probe | run-once | exchange-state | exchange-smoke | cancel-all [--direct] | probe-account | auth-check | probe-gamestate --event ID [--yahoo] [--url U] | probe-alpaca [--asset-class N] [--get PATH] [--raw]
 deploy/{install_worker.sh,fleet-worker.service}
 tests/test_*.py + hw/{roletest.sh,screenshots.py,ui_checks.py,test_ui.py,test_row_audit.py,seed_*.py}
 tools/workflows/                     the build orchestration scripts

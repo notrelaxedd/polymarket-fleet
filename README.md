@@ -397,6 +397,27 @@ The UI overhaul changes only the pages (`docs/UI.md`, `docs/DASHBOARD.md`); ever
 5. With JavaScript off everything still works: the sections and "..." menus open on tap, every action is a form, and Jobs shows all five New job forms under their headings.
 6. Developers: `tests/hw/screenshots.py` captures every page at 390 and 1280 px in light and dark and checks the layout rules; `tests/hw/test_row_audit.py` checks Models and Trading stay under six phone screens with 20 rows each.
 
+## Alpaca (step 8, in progress)
+
+Alpaca is being added as a second venue, beside Polymarket US: NFL event contracts first (Kalshi contracts offered through Alpaca), stocks and crypto after that. The plan and the contract are in `docs/ALPACA.md`. Only the read-only probe is built so far; nothing trades on Alpaca yet.
+
+1. Create a paper account at Alpaca and generate a paper key pair (dashboard, Paper account, API Keys). The secret is shown once.
+2. Add the keys to `exchange.env` in the folder `docker compose` runs from (with the update timer, `/root/polymarket-fleet`), next to any Polymarket keys, and keep the file private with `chmod 600 exchange.env`:
+
+```
+ALPACA_API_KEY_ID=<key id>
+ALPACA_API_SECRET_KEY=<secret>
+ALPACA_BASE_URL=https://paper-api.alpaca.markets
+```
+
+3. Run the probe on the host (it builds the exchange image if needed, reads `exchange.env` fresh and leaves the running services alone):
+
+```bash
+docker compose run --rm --build exchange python -m host.exchange.cli probe-alpaca
+```
+
+   `verdict.keys` says whether the keys work; `verdict.event_contracts` says whether Kalshi event contracts are visible to the account. The output is safe to paste back (the key and the secret are redacted). If event contracts are "not found", ask Alpaca support which asset class or endpoint serves them, then rerun with `--asset-class NAME` or `--get PATH`.
+
 ## Workloads
 
 Machines can run more than the Polymarket worker. A workload is a folder under `workloads/` (a manifest, a Dockerfile, code); you publish its image to a registry on the host and assign it to a machine, and a small agent on the machine (`fleetagent/`, separate from the worker, standard library only) pulls the image by digest and runs the container. Everything about the contract is in `docs/workloads-design.md`; how to write a workload is in `workloads/README.md` and `workloads/_template/`. Polymarket's own orders keep their existing automatic approval, kill switch and live switch; these steps change none of that.
