@@ -250,6 +250,19 @@ def test_no_em_dashes_in_templates_css_or_js() -> None:
         assert chr(0x2014) not in path.read_text(), path
 
 
+FLEET_UI = ROOT / "fleet-ui"
+
+
+@pytest.mark.skipif(not FLEET_UI.is_dir(), reason="no fleet-ui/ folder in this checkout")
+def test_no_em_dashes_in_the_fleet_ui_source() -> None:
+    """The 3D page's source follows the same rule: fleet-ui/src (TypeScript, TSX, CSS,
+    any depth) and its index.html."""
+    paths = [p for pattern in ("*.ts", "*.tsx", "*.css") for p in (FLEET_UI / "src").rglob(pattern)]
+    paths += [FLEET_UI / "index.html"] if (FLEET_UI / "index.html").is_file() else []
+    for path in paths:
+        assert chr(0x2014) not in path.read_text(encoding="utf-8"), path
+
+
 # ------------------------------------------------------------------ the step 7 component contract
 
 # The contract's components land with the step 7 shell stylesheet; until its spacing

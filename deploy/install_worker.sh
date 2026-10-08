@@ -256,6 +256,8 @@ User=fleet
 Group=fleet
 Environment=PYTHONPATH=/var/lib/fleet/app/current
 Environment=FLEET_STATE_DIR=/var/lib/fleet
+Environment=FLEET_RUN_DIR=/run/fleet
+Environment=FLEET_REBOOT_TRIGGER=/run/fleet/reboot
 ExecStart=/usr/bin/python3 -m fleet.worker run
 Restart=always
 RestartSec=3
@@ -265,6 +267,13 @@ Nice=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/var/lib/fleet
+# /run/fleet (tmpfs) holds status.json, rewritten every heartbeat, and the reboot
+# trigger. systemd creates it owned by fleet and exempts it from ProtectSystem=strict.
+# 0750 like the state dir: status.json carries the last heartbeat reply (lease tokens).
+# Preserve=yes keeps it across restarts, self-update exits and crashes until reboot.
+RuntimeDirectory=fleet
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 PrivateTmp=yes
 MemoryMax=85%
 
@@ -272,7 +281,149 @@ MemoryMax=85%
 WantedBy=multi-user.target
 UNITEOF
 
+# Reboot from the dashboard: the agent (user fleet, no privileges) writes the request
+# id to /run/fleet/reboot after handing its jobs back; this root path unit reboots.
+# Only fleet (the owner of /run/fleet, mode 0750) and root can create that file.
+cat > /etc/systemd/system/fleet-reboot.path <<'UNITEOF'
+[Unit]
+Description=Reboot when the fleet worker asks for it (polymarket-fleet)
+
+[Path]
+# The agent creates the file by rename, which the watch on /run/fleet sees. /run is a
+# tmpfs, so the file never outlives the reboot it asked for; the agent moves a leftover
+# (a reboot that did not happen) to reboot.done when it starts again.
+PathExists=/run/fleet/reboot
+Unit=fleet-reboot.service
+
+[Install]
+WantedBy=multi-user.target
+UNITEOF
+cat > /etc/systemd/system/fleet-reboot.service <<'UNITEOF'
+[Unit]
+Description=Reboot requested from the fleet dashboard (polymarket-fleet)
+
+[Service]
+Type=oneshot
+# A path unit starts its unit again whenever that goes inactive while the file still
+# exists. RemainAfterExit keeps this one active once systemctl has queued the reboot, so
+# it runs once. If systemctl fails the unit fails and the path unit retries, bounded by
+# the default start limit (5 in 10 s). No delay is needed: the agent writes the trigger
+# only after its own shutdown (runners stopped, jobs released, posts flushed) and the
+# reboot is an orderly systemd shutdown. The wall message stays on so anyone logged in
+# sees why the machine goes down.
+RemainAfterExit=yes
+ExecStart=/bin/systemctl reboot
+UNITEOF
+
+# Disk wear: SMART needs root, so a root-owned script (never the fleet-owned app code)
+# writes /run/fleet-wear/wear.json once an hour. tmpfs only: nothing touches the disk.
+if ! command -v smartctl >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends smartmontools >/dev/null 2>&1 \
+      || echo "warning: could not install smartmontools; disk wear will show as not reported" >&2
+  fi
+fi
+mkdir -p /usr/local/lib/fleet
+cat > /usr/local/lib/fleet/wear.py <<'PY'
+# BEGIN fleet-wear
+"""Write SMART wear (percent of rated life used) per disk to /run/fleet-wear/wear.json."""
+import json, os, subprocess, sys, tempfile, time
+
+SKIP = ("loop", "ram", "zram", "sr", "dm-", "md", "fd", "nbd")
+# ATA attributes whose normalised value is the percent of life left (SSDs only: on
+# hard disks some of these ids mean something else).
+LIFE_LEFT_IDS = (231, 233, 177, 202, 169)
+
+
+def wear_from(data):
+    """Percent of rated life used from `smartctl -j -a` output, or None."""
+    if not isinstance(data, dict):
+        return None
+    nvme = (data.get("nvme_smart_health_information_log") or {}).get("percentage_used")
+    if isinstance(nvme, (int, float)) and not isinstance(nvme, bool):
+        return float(nvme)
+    for page in (data.get("ata_device_statistics") or {}).get("pages") or []:
+        for row in page.get("table") or []:
+            value = row.get("value")
+            if row.get("name") == "Percentage Used Endurance Indicator" and isinstance(value, (int, float)):
+                return float(value)
+    rotation = data.get("rotation_rate")
+    if isinstance(rotation, int) and rotation > 0:
+        return None
+    rows = {row.get("id"): row for row in (data.get("ata_smart_attributes") or {}).get("table") or []}
+    for attr in LIFE_LEFT_IDS:
+        value = (rows.get(attr) or {}).get("value")
+        if isinstance(value, (int, float)) and 0 <= value <= 100:
+            return float(100 - value)
+    return None
+
+
+def main(out_path="/run/fleet-wear/wear.json", sys_block="/sys/block"):
+    devices = {}
+    for dev in sorted(os.listdir(sys_block)):
+        if dev.startswith(SKIP):
+            continue
+        # -n standby: never spin up a sleeping hard disk just to read its wear.
+        cmd = ["smartctl", "-j", "-a", "-n", "standby", "/dev/" + dev]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            pct = wear_from(json.loads(proc.stdout))
+        except (OSError, ValueError, AttributeError, TypeError, subprocess.TimeoutExpired):
+            continue
+        if pct is not None:
+            devices[dev] = {"wear_pct": round(pct, 1)}
+    os.makedirs(os.path.dirname(out_path), mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(out_path))
+    with os.fdopen(fd, "w") as fh:
+        json.dump({"at": int(time.time()), "devices": devices}, fh)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, out_path)
+
+
+if __name__ == "__main__":
+    main(*sys.argv[1:])
+# END fleet-wear
+PY
+chmod 755 /usr/local/lib/fleet
+chmod 644 /usr/local/lib/fleet/wear.py
+cat > /etc/systemd/system/fleet-wear.service <<'UNITEOF'
+[Unit]
+Description=Read disk wear for the fleet dashboard (polymarket-fleet)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /usr/local/lib/fleet/wear.py
+RuntimeDirectory=fleet-wear
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+Nice=10
+IOSchedulingClass=idle
+UNITEOF
+cat > /etc/systemd/system/fleet-wear.timer <<'UNITEOF'
+[Unit]
+Description=Hourly disk wear reading (polymarket-fleet)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1h
+
+[Install]
+WantedBy=timers.target
+UNITEOF
+
+# A trigger left by a reboot that never happened must not fire when the path unit
+# starts below: move it aside the way the agent does (rename, never follows links).
+if [ -e /run/fleet/reboot ] || [ -L /run/fleet/reboot ]; then
+  mv -fT /run/fleet/reboot /run/fleet/reboot.done || rm -f /run/fleet/reboot
+fi
 systemctl daemon-reload
+systemctl reset-failed fleet-reboot.path fleet-reboot.service >/dev/null 2>&1 || true
+systemctl stop fleet-reboot.service >/dev/null 2>&1 || true
+systemctl enable --now fleet-reboot.path >/dev/null 2>&1 || echo "warning: could not enable fleet-reboot.path" >&2
+systemctl enable --now fleet-wear.timer >/dev/null 2>&1 || echo "warning: could not enable fleet-wear.timer" >&2
 systemctl enable fleet-worker.service >/dev/null 2>&1 || true
 systemctl restart fleet-worker.service
 sleep 1

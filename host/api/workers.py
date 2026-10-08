@@ -1,7 +1,7 @@
 """Worker routes: register and heartbeat."""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import psycopg
 from fastapi import APIRouter, Depends, Request
@@ -16,6 +16,7 @@ router = APIRouter(prefix="/api/v1/workers", tags=["workers"])
 
 NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 SHORT_RE = r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"
+BootMedia = Literal["flash", "ssd", "hdd", "unknown"]
 
 
 class RegisterBody(BaseModel):
@@ -30,6 +31,8 @@ class RegisterBody(BaseModel):
     python_version: str | None = Field(default=None, pattern=SHORT_RE)
     code_version: str | None = Field(default=None, pattern=SHORT_RE)
     boot_id: str | None = Field(default=None, pattern=SHORT_RE)
+    can_reboot: bool | None = None
+    boot_media: BootMedia | None = None
 
 
 class JobEntry(BaseModel):
@@ -63,6 +66,10 @@ class HeartbeatBody(BaseModel):
     want_jobs: int = Field(default=0, ge=0, le=100)
     code_version: str | None = Field(default=None, pattern=SHORT_RE)
     skew_ms: int | None = None
+    temp_c: float | None = Field(default=None, ge=-50, le=150, allow_inf_nan=False)
+    boot_media: BootMedia | None = None
+    wear_pct: float | None = Field(default=None, ge=0, le=100, allow_inf_nan=False)
+    disk_gb_written: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 @router.post("/register")

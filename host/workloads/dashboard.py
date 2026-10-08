@@ -27,7 +27,7 @@ router = APIRouter(tags=["workloads-dashboard"], dependencies=[Depends(require_o
 
 
 def _pending_for_request(request: Any) -> int | None:
-    """The pending approvals count for a page that did not pass one (/fleet): one short
+    """The pending approvals count for a page that did not pass one (/fleet/list): one short
     pooled query; None (no count shown) when there is no pool, e.g. in a template test."""
     try:
         with request.app.state.pool.connection() as conn:

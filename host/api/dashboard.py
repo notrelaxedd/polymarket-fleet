@@ -137,9 +137,10 @@ def home_fragment(request: Request, conn: psycopg.Connection = DB) -> HTMLRespon
     return web.render(request, "_home.html", tz=get_settings(conn).get("tz"), **home_context(conn))
 
 
-@router.get("/fleet", response_class=HTMLResponse)
+@router.get("/fleet/list", response_class=HTMLResponse)
 def fleet_page(request: Request, conn: psycopg.Connection = DB) -> HTMLResponse:
-    """The fleet: one card per worker."""
+    """The fleet as cards, one per worker (the phone-friendly view; /fleet is the 3D
+    page from dashboard_fleet3d)."""
     return page(request, conn, "fleet.html", **fleet_context(conn))
 
 
@@ -249,7 +250,10 @@ def kill_confirm(request: Request, conn: psycopg.Connection = DB) -> HTMLRespons
 
 # The trading router imports `page` and `FORM` from this module, so it is included
 # here, after they exist, rather than registered in host/api/app.py.
-from host.api import dashboard_ingame, dashboard_trading  # noqa: E402
+from host.api import dashboard_fleet3d, dashboard_ingame, dashboard_trading  # noqa: E402
 
 router.include_router(dashboard_trading.router)
 router.include_router(dashboard_ingame.router)
+# The 3D page owns /fleet, /fleet/ and /fleet/assets/...; /fleet/list above is a fixed
+# path that none of those patterns match, so the card view is never shadowed.
+router.include_router(dashboard_fleet3d.router)

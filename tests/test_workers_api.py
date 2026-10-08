@@ -31,7 +31,7 @@ def test_enroll_token_is_single_use(client, conn):
     body = r.json()
     assert body["worker_id"].startswith("w_") and len(body["worker_id"]) == 8
     assert body["desired_role"] == "idle" and body["held_jobs"] == []
-    assert body["kill"] is False and body["heartbeat_seconds"] == 5
+    assert body["kill"] is False and body["heartbeat_seconds"] == 3
     assert body["code_version"] == client.app.state.bundle.code_version
     row = conn.execute("SELECT * FROM workers WHERE id = %s", (body["worker_id"],)).fetchone()
     assert row["name"] == "box1" and row["hostname"] == "box1" and row["remote_ip"]

@@ -492,7 +492,7 @@ OWNER_GETS = [
     "/api/workload-jobs", "/api/settings",
 ]
 PAGES = [
-    "/", "/fleet", "/jobs", "/models", "/trading", "/settings", "/machines", "/workloads", "/workloads/alpha",
+    "/", "/fleet/list", "/jobs", "/models", "/trading", "/settings", "/machines", "/workloads", "/workloads/alpha",
     "/workloads/bravo", "/outbound", "/fragments/home", "/fragments/fleet", "/fragments/topbar", "/fragments/trading",
 ]
 

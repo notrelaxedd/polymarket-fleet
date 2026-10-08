@@ -11,7 +11,8 @@
 {#- The shell (docs/UI.md "Shell"): the wordmark is Home, five sections in the nav (a
     bottom bar with icons under 700 px), the status (mode pill, current-mode P&L, KILL,
     banners) refreshed from /fragments/topbar. A section is current on its own pages
-    (by data-page) or under its path. #}
+    (by data-page) or under its path: Fleet links to the 3D page at /fleet (a Vite
+    build, not rendered here) and is current on the card view at /fleet/list too. #}
 {% set page_name = self.page() | trim %}
 {% set sections = [
   ("fleet", "/fleet", "Fleet", ["fleet"],
