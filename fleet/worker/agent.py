@@ -44,6 +44,11 @@ request is logged once and ignored. Telemetry (temperature, wear, GB written sin
 boot) is read from /proc and /sys each heartbeat (fleet.common.hwinfo, no writes); the
 boot disk is found once at start.
 
+Step 9 (stocks): held stock_trade jobs sit in trade_jobs with kind "stock_trade" (one
+trade slot each) and are served by fleet.worker.stock_trade.StockTradeLoop every
+stock_trade_tick_s; the release handshake sends them to POST /api/v1/stock_trade/release.
+The batch stock kinds get {"stock_bars_path"} from fleet.worker.stock_cache as context.
+
 Step 3: before a backtest, model_search, train or validate runner starts,
 fleet.worker.context refreshes the games cache and fetches the job's model into
 job["context"] (a failure fails the job); a result with create_models becomes a post
@@ -63,9 +68,10 @@ from typing import Any, Callable
 
 import fleet
 from fleet.common import http, hwinfo, sysinfo
-from fleet.worker import config, context, launch, posts, update
+from fleet.worker import config, context, launch, posts, stock_cache, update
 from fleet.worker.posts import PendingPost
 from fleet.worker.runner import Runner
+from fleet.worker.stock_trade import StockTradeLoop
 from fleet.worker.trade import TradeLoop
 from fleet.worker.watchdog import MemoryWatchdog
 
@@ -170,6 +176,7 @@ class Agent:
         self.running: dict[str, RunningJob] = {}
         self.trade_jobs: dict[str, dict[str, Any]] = {}
         self.trade = TradeLoop(self)
+        self.stock_trade = StockTradeLoop(self)
         self._next_trade_at = 0.0
         self.pending_releases: list[dict[str, Any]] = []
         self.pending_posts: list[PendingPost] = []
@@ -470,6 +477,8 @@ class Agent:
         """Run the trade tick every trade_tick_s while in the trade role."""
         if self.role != "trade" or self.stopping or self.conf is None:
             return
+        if self.stock_trade.maybe_run():
+            self._write_status()
         now = self._clock()
         if now < self._next_trade_at:
             return
@@ -680,8 +689,12 @@ class Agent:
         or all of them when it never answered, ride the next heartbeat's released[]
         (reason `cancel` for the ids in cancelled, else `reason`)."""
         jobs = list(self.trade_jobs.values())
-        answer = self.trade.release_jobs(jobs)
-        confirmed = {str(j) for j in (answer or {}).get("released") or []}
+        confirmed: set[str] = set()
+        stock = [j for j in jobs if j.get("kind") == "stock_trade"]
+        for loop, group in ((self.trade, [j for j in jobs if j not in stock]), (self.stock_trade, stock)):
+            if group:
+                answer = loop.release_jobs(group)
+                confirmed |= {str(j) for j in (answer or {}).get("released") or []}
         for job in jobs:
             if job["id"] in confirmed:
                 self.trade_jobs.pop(job["id"], None)
@@ -726,13 +739,14 @@ class Agent:
         lease = job.get("lease_seconds")
         if isinstance(lease, (int, float)) and lease > 0:
             self.lease_seconds = float(lease)
-        if job.get("kind") == "trade":
+        if job.get("kind") in ("trade", "stock_trade"):
             # No runner: the trade tick serves every held assignment from the host's state.
             held = job_id in self.trade_jobs
-            self.trade_jobs[job_id] = {"id": job_id, "lease_token": token, "params": job.get("params") or {}}
-            log.info("%s trade job %s (%d held)", "re-keyed" if held else "holding", job_id, len(self.trade_jobs))
+            self.trade_jobs[job_id] = {"id": job_id, "lease_token": token, "params": job.get("params") or {},
+                                       "kind": job["kind"]}
+            log.info("%s %s job %s (%d held)", "re-keyed" if held else "holding", job["kind"], job_id, len(self.trade_jobs))
             return
-        if context.needs_context(job.get("kind")):
+        if context.needs_context(job.get("kind")) or stock_cache.needs_context(job.get("kind")):
             try:
                 job = dict(job, context=self._build_context(job))
             except context.ContextError as exc:
@@ -752,6 +766,11 @@ class Agent:
     def _build_context(self, job: dict[str, Any]) -> dict[str, Any]:
         """Games cache path and model for a batch job (fleet.worker.context)."""
         assert self.conf is not None
+        if stock_cache.needs_context(job.get("kind")):
+            return stock_cache.build_context(
+                self.conf["host_url"], self.conf["worker_token"], self.state_dir, job,
+                timeout=self.options.http_timeout, data_timeout=max(self.options.http_timeout, self.options.data_timeout),
+            )
         return context.build_context(
             self.conf["host_url"], self.conf["worker_token"], self.state_dir, job,
             timeout=self.options.http_timeout, data_timeout=max(self.options.http_timeout, self.options.data_timeout),
@@ -921,6 +940,7 @@ class Agent:
                 "heartbeat_seconds": self.heartbeat_seconds,
                 "running": sorted(self.running),
                 "trade": self.trade.status(),
+                "stock_trade": self.stock_trade.status(),
                 "kill": self.kill,
                 "watchdog_trips": self.watchdog.trips,
                 "pending_posts": [p.job_id for p in self.pending_posts],

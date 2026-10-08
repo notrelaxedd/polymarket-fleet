@@ -9,6 +9,12 @@ order is cancelled (paper and never-submitted orders at once with the ledger rel
 live orders on the exchange become `cancel_requested`), live trading is disabled and
 every active assignment is halted. It works with every worker offline and, for paper,
 with the exchange down.
+
+Step 9 (stocks on Alpaca): the kill and live off cover the stock tables too
+(`stock_effects`): an approved stock order (never submitted) is cancelled with its
+reservation released, one that may be at Alpaca becomes `cancel_requested` for the
+exchange process; the kill halts every active stock assignment, live off the live ones.
+Positions stay. The stock counts are added to the audit rows only when something changed.
 """
 from __future__ import annotations
 
@@ -86,8 +92,25 @@ def live_off(conn: psycopg.Connection, actor: str, reason: str) -> dict[str, Any
         "live_enabled": False, "was_on": was_on, "reason": reason, "assignments_halted": halted,
         "orders_cancelled": rest["cancelled"], "orders_cancel_requested": len(rest["requested"]),
     }
+    stock = stock_effects(conn, actor, reason, "live")
+    if stock:
+        result["stock"] = stock
     add_audit(conn, "live_off", "live_enabled", actor, {"live_enabled": was_on}, result)
     return result
+
+
+def stock_effects(conn: psycopg.Connection, actor: str | None, reason: str, mode: str | None) -> dict[str, Any]:
+    """Cancel the active stock orders of `mode` (every mode for None, the kill) and halt
+    its active stock assignments; the counts, {} when nothing changed.
+    The caller holds the approval lock(s)."""
+    from host.stocks import assignments as stock_assignments, orders as stock_orders
+
+    rest = stock_orders.cancel_orders(conn, actor, reason, mode=mode)  # first, so the counts name every order
+    halted = stock_assignments.halt_mode(conn, mode, reason, actor or "host")
+    if not halted and not rest["cancelled"] and not rest["requested"]:
+        return {}
+    return {"stock_assignments_halted": halted, "stock_orders_cancelled": [str(i) for i in rest["cancelled"]],
+            "stock_orders_cancel_requested": [str(i) for i in rest["requested"]]}
 
 
 def auto_kill(conn: psycopg.Connection, reason: str, detail: dict[str, Any]) -> bool:
@@ -156,7 +179,8 @@ def set_kill(conn: psycopg.Connection, actor: str | None) -> bool:
     live_was_on = disable_live(conn)
     cancelled, requested = _kill_orders(conn, actor)
     halted = _halt_assignments(conn)
-    if live_was_on or cancelled or requested or halted:
+    stock = stock_effects(conn, actor, "kill", None)
+    if live_was_on or cancelled or requested or halted or stock:
         add_audit(
             conn, "kill_cancel_all", "orders", actor,
             {"live_enabled": live_was_on},
@@ -165,6 +189,7 @@ def set_kill(conn: psycopg.Connection, actor: str | None) -> bool:
                 "orders_cancelled": [str(i) for i in cancelled],
                 "orders_cancel_requested": [str(i) for i in requested],
                 "assignments_halted": [str(i) for i in halted],
+                **stock,
             },
         )
     return not before

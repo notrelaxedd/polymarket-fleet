@@ -267,6 +267,11 @@ def complete(
         (Jsonb(result) if result is not None else None, job["id"]),
     ).fetchone()
     add_job_event(conn, job["id"], "succeeded", job["lease_worker_id"])
+    if job["kind"] in ("stock_search", "stock_validate"):  # step 9: results -> stock_models
+        from host.stocks.models import process_result
+
+        if process_result(conn, dict(row), result) is not None:
+            row = conn.execute("SELECT * FROM jobs WHERE id = %s", (job["id"],)).fetchone()
     return row
 
 

@@ -212,6 +212,14 @@ def _halt_for_cancelled_trade_job(conn: psycopg.Connection, job: dict[str, Any],
 
     params = job["params"] if isinstance(job["params"], dict) else {}
     aid = params.get("assignment_id")
+    if job["kind"] == "stock_trade" and aid is not None:  # step 9: the stock assignment halts the same way
+        from host.stocks.assignments import halt_assignment as halt_stock
+
+        try:
+            halt_stock(conn, aid, "job cancelled", actor or "host")
+        except (NotFound, Conflict):
+            pass
+        return
     if job["kind"] != "trade" or aid is None:
         return
     try:

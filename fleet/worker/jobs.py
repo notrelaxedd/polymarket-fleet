@@ -18,6 +18,8 @@ Step 6C: a model_search with params.family "ingame_wp" runs the in-game search
 context's pbp_path, with params train_seasons, validation_seasons, n, seed, top_k and
 train_fraction; its result carries create_models like every search. The pre-game
 backtest, validate and train kinds refuse the ingame_wp family.
+Step 9: the stock kinds stock_search, stock_backtest and stock_validate live in
+fleet.worker.stock_jobs (daily bars from params["_context"]["stock_bars_path"]).
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ import time
 from typing import Any, Callable
 
 from fleet.sim.control import JobStopped  # noqa: F401  (re-exported for the runner)
+from fleet.worker.stock_jobs import STOCK_JOBS
 
 Emit = Callable[[dict[str, Any], float], None]
 ShouldStop = Callable[[], bool]
@@ -268,4 +271,5 @@ JOBS: dict[str, JobFunc] = {
     "model_search": run_model_search_job,
     "train": run_train_job,
     "validate": run_validate_job,
+    **STOCK_JOBS,
 }

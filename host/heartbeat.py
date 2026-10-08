@@ -211,10 +211,12 @@ def _claim_slots(worker: dict[str, Any], body: dict[str, Any], kill: bool) -> in
 
 def _trade_slots_left(conn: psycopg.Connection, worker_id: str) -> int:
     """The host-side cap on trade claims: `trade_max_games` minus the trade jobs this
-    worker already holds, so a worker's `want_jobs` can never exceed the setting."""
+    worker already holds, so a worker's `want_jobs` can never exceed the setting. A
+    stock_trade job (step 9) counts as one trade slot."""
     cap = get_int_setting(conn, "trade_max_games", 6)
     held = conn.execute(
-        "SELECT count(*) AS n FROM jobs WHERE lease_worker_id = %s AND kind = 'trade' AND status IN ('leased', 'cancel_requested')",
+        "SELECT count(*) AS n FROM jobs WHERE lease_worker_id = %s AND kind IN ('trade', 'stock_trade')"
+        " AND status IN ('leased', 'cancel_requested')",
         (worker_id,),
     ).fetchone()["n"]
     return max(0, cap - int(held))

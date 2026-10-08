@@ -19,6 +19,7 @@ import psycopg
 
 from host import db
 from host.eligibility import recompute_all, recompute_paper
+from host.stocks import eligibility as stock_eligibility
 
 log = logging.getLogger("host.startup")
 ACTOR = "startup"
@@ -33,7 +34,8 @@ def recompute_statuses(conn: psycopg.Connection) -> dict[str, Any]:
         recompute_paper(conn, row["lineage_id"], ACTOR)
     after = {r["lineage_id"]: r["status"] for r in conn.execute("SELECT lineage_id, status FROM models WHERE id = lineage_id")}
     changed = sorted(str(lid) for lid, status in after.items() if before.get(lid) != status)
-    return {"lineages": lineages, "paper": len(paper), "changed": changed}
+    stocks = stock_eligibility.recompute_all(conn, ACTOR)  # step 9: the stock models' gates
+    return {"lineages": lineages, "paper": len(paper), "changed": changed, "stock_models": stocks}
 
 
 def run(database_url: str) -> dict[str, Any]:

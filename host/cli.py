@@ -13,6 +13,7 @@ from host.api.serialize import jsonable
 from host.config import Config
 from host.errors import QueueError
 from host.money import cents_to_dollars, dollars_to_cents
+from host.stocks import cli as stocks_cli
 from host.settings import get_int_setting, get_setting
 from host.trading import assignments, ledger
 from host.trading import views as trading_views
@@ -341,6 +342,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--away", type=int, required=True)
     p.set_defaults(func=cmd_simulate_final)
     cli_ingame.add_parsers(sub)
+    stocks_cli.add_parsers(sub)  # step 9: stock-models, stock-assign, stock-assignments, stock-orders
     return parser
 
 

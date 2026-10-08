@@ -21,6 +21,8 @@ a validate of a model whose own search reached into it are refused.
 Step 6 Part C: a model search of family `ingame_wp` takes its own params and eras
 (host/ingame_jobparams.py) and copies no settings; the pre-game jobs refuse ingame_wp
 models.
+
+Step 9: the four stock kinds take their own params (host/stocks/jobparams_stocks.py).
 """
 from __future__ import annotations
 
@@ -38,6 +40,7 @@ from host.models import known_family
 from host.nflverse import last_complete_season
 from host.settings import FIRST_SEASON, LAST_SEASON, get_setting
 from host.snapshot_store import PRICE_SOURCES, SNAPSHOTS, latest_season, snapshot_settings
+from host.stocks.jobparams_stocks import STOCK_KINDS, prepare_stock_params
 
 COPIED_SETTINGS = ("fee_model", "default_bankroll_cents", "max_bet_cents", "trade_max_games")
 SEARCH_DEFAULTS = {"n": 200, "seed": 0, "top_k": 5}
@@ -252,6 +255,8 @@ def _snapshot_copies(conn: psycopg.Connection, kind: str, out: dict[str, Any]) -
 
 def prepare_params(conn: psycopg.Connection, kind: str, params: dict[str, Any]) -> dict[str, Any]:
     """Validated params for `kind`, with the settings copied in for the batch kinds."""
+    if kind in STOCK_KINDS:  # step 9: stocks on Alpaca
+        return prepare_stock_params(conn, kind, params)
     if kind == "sleep":
         return _sleep(params)
     if is_ingame_search(kind, params):

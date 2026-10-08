@@ -151,6 +151,10 @@ def post_settings(
     if "thresholds_paper" in body:  # as the Settings form does: every lineage with a paper record
         for row in conn.execute("SELECT DISTINCT lineage_id FROM model_scores WHERE mode = 'paper'").fetchall():
             recompute_paper(conn, row["lineage_id"], actor)
+    if "thresholds_stock_backtest" in body or "thresholds_stock_paper" in body:  # step 9
+        from host.stocks.eligibility import recompute_all as recompute_stocks
+
+        recompute_stocks(conn, actor)
     return stored
 
 
