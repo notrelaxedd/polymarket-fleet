@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from host.labels import label
 from host.money import format_cents
 from host.settings import FLAG_NAMES
 
@@ -83,7 +84,7 @@ def trading(settings: dict[str, Any]) -> str:
     pregame = settings.get("trade_pregame_only") is True
     return SEP.join(
         [
-            str(settings.get("market_source") or "-"),
+            label(settings.get("market_source"), "source") or "-",
             f"participation {_pct(settings.get('participation'))}",
             "pregame only" if pregame else "orders after kickoff allowed",
             _exposure(settings),
@@ -103,7 +104,7 @@ def ingame(settings: dict[str, Any]) -> str:
             f"max bet {_money(settings.get('ingame_max_bet_cents'))}",
             f"min edge {_pct(settings.get('ingame_min_edge'))}",
             f"lag limit {lag} s" if lag != "-" else "lag limit -",
-            "feed " + (", ".join(str(s) for s in sources) if sources else "off"),
+            "feed " + (", ".join(label(s, "source") for s in sources) if sources else "off"),
             "paper only",
         ]
     )
@@ -113,7 +114,7 @@ def robustness(settings: dict[str, Any]) -> str:
     """The backtest gate and the two eras it is judged on."""
     gate = _dict(settings, "thresholds_backtest")
     flags = gate.get("forbid_flags") if isinstance(gate.get("forbid_flags"), list) else []
-    forbidden = [flag.replace("_", "-") for flag in FLAG_NAMES if flag in flags]
+    forbidden = [label(flag, "flag") for flag in FLAG_NAMES if flag in flags]
     return SEP.join(
         [
             f"{_plain(gate.get('min_bets'))} bets, ROI {_pct(gate.get('min_roi'))}+",

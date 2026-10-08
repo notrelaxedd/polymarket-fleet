@@ -8,7 +8,7 @@
 {% macro groups(rows, name, label) -%}
 <div class="table-wrap">
 <table class="metrics ingame-by-{{ name }}" data-list="ingame-by-{{ name }}">
-  <thead><tr><th>{{ label }}</th><th>plays</th><th>log-loss</th><th>vegas_wp</th><th>gain</th></tr></thead>
+  <thead><tr><th>{{ label }}</th><th>plays</th><th>log-loss</th><th>Vegas WP</th><th>gain</th></tr></thead>
   <tbody>
   {% for g in rows %}<tr><td>{{ g.label }}</td><td>{{ g.n_plays | num }}</td><td>{{ g.log_loss | fixed }}</td><td>{{ g.vegas_log_loss | fixed }}</td><td>{{ g.ll_gain | fixed }}</td></tr>{% endfor %}
   </tbody>
@@ -17,26 +17,26 @@
 {%- endmacro %}
 <section class="ingame-validation" id="ingame-validation" data-card="ingame-validation">
 {% if iv %}
-{% set overall %}log-loss {{ iv.log_loss | fixed }} vs vegas_wp {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays | num }} plays{% endset %}
+{% set overall %}log-loss {{ iv.log_loss | fixed }} vs Vegas WP {{ iv.vegas_log_loss | fixed }} over {{ iv.n_plays | num }} plays{% endset %}
 {% call ui.disclosure('model-ingame-validation', 'In-game validation', summary=overall) %}
-<p class="reading">Held-out play-by-play seasons {{ iv.seasons | season_span }} against vegas_wp: log-loss {{ iv.log_loss | fixed }} against {{ iv.vegas_log_loss | fixed }}{% if iv.ll_gain is not none %} (gain {{ iv.ll_gain | fixed }} per play){% endif %}; Brier {{ iv.brier | fixed }} against {{ iv.vegas_brier | fixed }}.</p>
-{% if iv.n_skipped_no_vegas %}<span class="caption">{{ iv.n_skipped_no_vegas | num }} plays without a vegas_wp were left out.</span>{% endif %}
-<span class="caption">A gain above zero means the model's probabilities were closer to what happened than vegas_wp's.</span>
+<p class="reading">Held-out play-by-play seasons {{ iv.seasons | season_span }} against Vegas WP: log-loss {{ iv.log_loss | fixed }} against {{ iv.vegas_log_loss | fixed }}{% if iv.ll_gain is not none %} (gain {{ iv.ll_gain | fixed }} per play){% endif %}; Brier {{ iv.brier | fixed }} against {{ iv.vegas_brier | fixed }}.</p>
+{% if iv.n_skipped_no_vegas %}<span class="caption">{{ iv.n_skipped_no_vegas | num }} plays without a Vegas WP were left out.</span>{% endif %}
+<span class="caption">A gain above zero means the model's probabilities were closer to what happened than Vegas WP's.</span>
 {% endcall %}
-{% call ui.disclosure('model-ingame-period', 'By period', summary='log-loss against vegas_wp per quarter and overtime') %}
-<p class="reading">Each row is the plays of one period; a positive gain beats vegas_wp there.</p>
+{% call ui.disclosure('model-ingame-period', 'By period', summary='log-loss against Vegas WP per quarter and overtime') %}
+<p class="reading">Each row is the plays of one period; a positive gain beats Vegas WP there.</p>
 {{ groups(iv.by_period, 'period', 'period') }}
 {% endcall %}
-{% call ui.disclosure('model-ingame-score', 'By score', summary='log-loss against vegas_wp by the score margin') %}
+{% call ui.disclosure('model-ingame-score', 'By score', summary='log-loss against Vegas WP by the score margin') %}
 <p class="reading">The home score minus the away score before the play, in five buckets.</p>
 {{ groups(iv.by_score_bucket, 'score', 'score') }}
 {% endcall %}
-{% call ui.disclosure('model-ingame-calibration', 'Calibration', summary=(iv.calibration | length) ~ ' probability bands, with the vegas_wp mean') %}
+{% call ui.disclosure('model-ingame-calibration', 'Calibration', summary=(iv.calibration | length) ~ ' probability bands, with the Vegas WP mean') %}
 {% if iv.calibration %}
-<p class="reading">Each row is a band of predicted probabilities: the mean model probability, how often the home team actually won, and vegas_wp's mean; a calibrated model's home team wins about as often as it says.</p>
+<p class="reading">Each row is a band of predicted probabilities: the mean model probability, how often the home team actually won, and Vegas WP's mean; a calibrated model's home team wins about as often as it says.</p>
 <div class="table-wrap">
 <table class="metrics calibration ingame-calibration" data-list="ingame-calibration">
-  <thead><tr><th title="predicted probability band">p</th><th>plays</th><th title="mean model probability">model</th><th title="mean outcome: how often the home team won">actual</th><th title="mean vegas_wp probability">vegas_wp</th></tr></thead>
+  <thead><tr><th title="predicted probability band">p</th><th>plays</th><th title="mean model probability">model</th><th title="mean outcome: how often the home team won">actual</th><th title="mean Vegas WP probability">Vegas WP</th></tr></thead>
   <tbody>
   {% for b in iv.calibration %}<tr><td>{{ b.bucket }}</td><td>{{ b.count | num }}</td><td>{{ b.mean_p | fixed }}</td><td>{{ b.mean_outcome | fixed }}</td><td>{{ b.vegas_mean_p | fixed }}</td></tr>{% endfor %}
   </tbody>

@@ -35,7 +35,7 @@
     <dt>buying power</dt><dd>{% if live.buying_power_cents is not none %}{{ live.buying_power_cents | money }}{% else %}<span class="muted">-</span>{% endif %}</dd>
     <dt>clock skew</dt><dd>{% if live.clock_skew_ms is not none %}{{ live.clock_skew_ms }} ms{% else %}<span class="muted">-</span>{% endif %}</dd>
     <dt>last auth error</dt><dd>{% if live.last_auth_error %}<span class="error">{{ live.last_auth_error }}</span>{% else %}<span class="muted">none</span>{% endif %}</dd>
-    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}{{ ui.chip('bad', reason, key='auto-kill', extra='auto-kill-reason') }} {% endfor %}<span class="muted small">since the last reset</span>{% for reason in live.auto_kill_reasons %}{% if live.remedies and live.remedies[reason] %}<br><span class="small remedy" data-remedy="{{ reason }}"><strong>{{ reason }}</strong>: {{ live.remedies[reason] }}</span>{% endif %}{% endfor %}{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
+    <dt>auto-kill reasons</dt><dd>{% if live.auto_kill_reasons %}{% for reason in live.auto_kill_reasons %}{{ ui.chip('bad', reason | label, key='auto-kill', extra='auto-kill-reason') }} {% endfor %}<span class="muted small">since the last reset</span>{% for reason in live.auto_kill_reasons %}{% if live.remedies and live.remedies[reason] %}<br><span class="small remedy" data-remedy="{{ reason }}"><strong>{{ reason | label }}</strong>: {{ live.remedies[reason] }}</span>{% endif %}{% endfor %}{% else %}<span class="muted">none since the last reset</span>{% endif %}</dd>
   </dl>
 </section>
 
@@ -44,7 +44,7 @@
   {% if killed %}
   <p class="error">Trading is killed. Trade workers do not claim, no order is approved and every assignment stays halted until you activate it again on the <a href="/trading">Trading</a> page.</p>
   {% if auto_kill %}
-  <p class="error auto-kill">Killed automatically by the exchange process: <strong>{{ auto_kill.reason }}</strong> at {{ auto_kill.ts | ts }}{% if auto_kill.detail %} <span class="muted small">{{ auto_kill.detail | compact_json }}</span>{% endif %}. Live trading stays off after the reset until you enable it again.{% if auto_kill.remedy %} <span class="remedy" data-remedy="{{ auto_kill.reason }}">Recovery: {{ auto_kill.remedy }}.</span>{% endif %}</p>
+  <p class="error auto-kill">Killed automatically by the exchange process: <strong>{{ auto_kill.reason | label }}</strong> at {{ auto_kill.ts | ts }}{% if auto_kill.detail %} <span class="muted small">{{ auto_kill.detail | compact_json }}</span>{% endif %}. Live trading stays off after the reset until you enable it again.{% if auto_kill.remedy %} <span class="remedy" data-remedy="{{ auto_kill.reason }}">Recovery: {{ auto_kill.remedy }}.</span>{% endif %}</p>
   {% endif %}
   {% if errors.kill %}<p class="error inline-error">{{ errors.kill }}</p>{% endif %}
   <form method="post" action="/kill/reset" class="reset" data-form="kill-reset">

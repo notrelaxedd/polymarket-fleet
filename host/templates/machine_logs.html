@@ -9,7 +9,7 @@
 <div class="stats" data-view="machine-logs">
   {{ ui.stat("lines", lines | length, "Lines shown") }}
   {{ ui.stat("workload", m.workload or "none", "Workload") }}
-  {{ ui.stat("state", m.state_word, "State") }}
+  {{ ui.stat("state", m.state_word | label, "State") }}
 </div>
 <p class="help"><a href="/machines">&larr; Machines</a></p>
 {% if lines %}

@@ -184,7 +184,7 @@ def _run(host: Any, state_dir: str, worker_id: str, agent: Any, model_id: str, g
     bar = page(host.client.get("/fragments/topbar").text)
     assert bar.one("[data-auto-kill]").attr("data-auto-kill") == "unknown_order" and "TRADING KILLED automatically: " in bar.text
     assert topbar(page(host.client.get("/").text)).one("[data-auto-kill]").attr("data-auto-kill") == "unknown_order"
-    assert page(host.client.get("/settings").text).card("live").texts('[data-chip="auto-kill"]') == ["unknown_order"]
+    assert page(host.client.get("/settings").text).card("live").texts('[data-chip="auto-kill"]') == ["Unknown Order"]
     audit = host.get("/api/audit?limit=5")
     assert audit[0]["action"] == "auto_kill" and audit[0]["actor"] == "auto:unknown_order"
     assert audit[0]["after"]["orders"][0]["exchange_order_id"] == stranger["exchange_order_id"]

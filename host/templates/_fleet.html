@@ -19,14 +19,14 @@
     <span class="dot {{ w.dot }}" role="img" aria-label="{{ w.dot }}"></span>
     {% set lead = w.current_jobs | first if w.current_jobs else none %}
     <{{ 'a' if lead else 'div' }} class="row-main"{% if lead %} href="/jobs/{{ lead.id }}"{% endif %}>
-      <span class="row-title">{{ w.name }}{% if w.dot != 'online' %} {{ ui.chip("warn" if w.dot == "stale" or (w.dot == "offline" and w.enabled) else "muted", w.dot, key=w.dot, extra="st-" ~ w.dot) }}{% endif %}{% if not w.enabled %} {{ ui.chip("muted", "disabled", key="disabled") }}{% endif %}</span>
-      <span class="row-meta">{% if w.dot != 'online' %}{{ w.dot }}{% if w.dot == 'offline' %} {{ w.age | ago }}{% endif %} &middot; {% endif %}{% if not w.enabled %}disabled &middot; {% endif %}{% if w.switching %}<span class="switching">switching to {{ w.desired_role }} (epoch {{ w.role_epoch }})&hellip;</span>{% if w.current_jobs %} &middot; {% endif %}{% endif %}{% if w.current_jobs %}job: {% for j in w.current_jobs %}<span data-job="{{ j.id }}">{% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind }}{% endif %}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}{% if j.kind == 'trade' %} held{% else %} {{ j.progress | pct }}{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% elif not w.switching %}no job{% endif %}</span>
+      <span class="row-title">{{ w.name }}{% if w.dot != 'online' %} {{ ui.chip("warn" if w.dot == "stale" or (w.dot == "offline" and w.enabled) else "muted", w.dot | label, key=w.dot, extra="st-" ~ w.dot) }}{% endif %}{% if not w.enabled %} {{ ui.chip("muted", "Disabled", key="disabled") }}{% endif %}</span>
+      <span class="row-meta">{% if w.dot != 'online' %}{{ w.dot }}{% if w.dot == 'offline' %} {{ w.age | ago }}{% endif %} &middot; {% endif %}{% if not w.enabled %}disabled &middot; {% endif %}{% if w.switching %}<span class="switching">switching to {{ w.desired_role | label('role') }} (epoch {{ w.role_epoch }})&hellip;</span>{% if w.current_jobs %} &middot; {% endif %}{% endif %}{% if w.current_jobs %}job: {% for j in w.current_jobs %}<span data-job="{{ j.id }}">{% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind | label('kind') }}{% endif %}{% if j.status == 'cancel_requested' %} (cancelling){% endif %}{% if j.kind == 'trade' %} held{% else %} {{ j.progress | pct }}{% endif %}</span>{% if not loop.last %}, {% endif %}{% endfor %}{% elif not w.switching %}no job{% endif %}</span>
     </{{ 'a' if lead else 'div' }}>
     <form class="role" data-form="role" method="post" action="/workers/{{ w.id }}/role">
       <label class="visually-hidden" for="role-{{ w.id }}">Role</label>
       <select id="role-{{ w.id }}" name="role" data-autosubmit="1"{% if locked %} disabled{% endif %}>
         {% for r in roles %}
-        <option value="{{ r }}"{% if r == w.desired_role %} selected{% endif %}>{{ r }}</option>
+        <option value="{{ r }}"{% if r == w.desired_role %} selected{% endif %}>{{ r | label('role') }}</option>
         {% endfor %}
       </select>
       <button type="submit" class="btn js-hide"{% if locked %} disabled{% endif %}>Set</button>
@@ -34,7 +34,7 @@
     {% call ui.menu() %}
     {# every current job has its own link (the row link opens only the first; a trade worker holds one job per game) #}
     {% for j in w.current_jobs or [] %}
-    <a class="menu-item" href="/jobs/{{ j.id }}" data-action="open-job" data-job-link="{{ j.id }}">Open job: {% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind }}{% endif %}</a>
+    <a class="menu-item" href="/jobs/{{ j.id }}" data-action="open-job" data-job-link="{{ j.id }}">Open job: {% if j.kind == 'trade' and j.game %}{{ j.game }}{% else %}{{ j.kind | label('kind') }}{% endif %}</a>
     {% endfor %}
     <form method="post" action="/workers/{{ w.id }}/enabled" data-action="{{ 'disable' if w.enabled else 'enable' }}">
       <input type="hidden" name="enabled" value="{{ 'false' if w.enabled else 'true' }}">

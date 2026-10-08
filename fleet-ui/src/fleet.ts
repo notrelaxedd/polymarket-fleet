@@ -46,7 +46,7 @@ export const HIST_LEN = 48;
 export const DEFAULT_ROLES: Role[] = [
   { id: 'idle', name: 'Idle', short: 'Idle' },
   { id: 'backtest', name: 'Backtest', short: 'Backtest' },
-  { id: 'model_search', name: 'Model search', short: 'Search' },
+  { id: 'model_search', name: 'Model Search', short: 'Search' },
   { id: 'train', name: 'Training', short: 'Train' },
   { id: 'trade', name: 'Trading', short: 'Trade' },
 ];

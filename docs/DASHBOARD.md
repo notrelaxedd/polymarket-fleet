@@ -277,7 +277,7 @@ layout or wording, `docs/UI.md` wins and this file follows it.
   ingame_wp lineages, never ranked with the pre-game ones (in `GET /api/models` they are
   in `unranked` with the reason "in-game model", after the others), the ones beating
   vegas_wp first, then by the log-loss gain over it. One row each (`data-row="ingame-model"`):
-  "ingame_wp L2 1.00 · time 1.00 · field 1.00" with a green "beats vegas_wp" chip (or a
+  "ingame_wp L2 1.00 · time 1.00 · field 1.00" with a green "beats Vegas WP" chip (or a
   dashed "not validated" chip); the grey line has the status chip (its reason as the
   title) and "41,812 plays 2022-2024 · log-loss 0.447 vs 0.452"; the second grey line is
   the status reason ("its validation log-loss is worse than the vegas_wp baseline",
@@ -325,15 +325,15 @@ layout or wording, `docs/UI.md` wins and this file follows it.
 - (step 6C) An ingame_wp model page (judged on held-out play-by-play against nflverse's
   vegas_wp, never backtested for edge): the stats are the log-loss (vegas_wp's and the
   gain as its note), the held-out plays (seasons, 10,000 needed) and the in-game paper
-  record; the verdict reads "Cleared for in-game paper trading: it beats vegas_wp over
+  record; the verdict reads "Cleared for in-game paper trading: it beats Vegas WP over
   41,812 held-out plays. In-game orders never go live in this step." or "Not cleared for
-  in-game paper trading: <reason>. Paper ok needs ..."; one caption explains log-loss and
+  in-game paper trading: <reason>. Paper OK needs ..."; one caption explains log-loss and
   vegas_wp; the actions are "Assign in-game" and "Retire lineage" in the menu (no Train,
   Validate, Assign or snapshot replay). The Summary disclosure shows "fitted on" ("train
   seasons 2012-2021", from its search-era metrics, with a caption: the model search fits
   it once and an in-game model is not trained week by week) instead of the
-  trained-through point, then "held-out validation" (with a "beats vegas_wp" or amber
-  "does not beat vegas_wp" chip), "status rule" and "in-game paper record" ("1 game · 2
+  trained-through point, then "held-out validation" (with a "beats Vegas WP" or amber
+  "does not beat Vegas WP" chip), "status rule" and "in-game paper record" ("1 game · 2
   bets · +$4.80") instead of the shrunk ROIs. In place of Robustness,
   Backtest metrics, Snapshot replay and Paper results it has (`_model_ingame.html`,
   `#ingame-validation`) the closed disclosures In-game validation (log-loss and Brier

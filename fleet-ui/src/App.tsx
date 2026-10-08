@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, FormEvent } from 'react';
+import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import Scene, { layoutKeyOf } from './Scene';
 import { DEFAULT_ROLES, HOT_AT, jobName, jobShort, setJobs, toNodes } from './fleet';
 import type { FleetNode, Job, Role } from './fleet';
@@ -13,6 +13,15 @@ const POLL_MS = 3000;
 const LIVE_MS = 10000;
 const SHOW_EVENTS = 5;
 const EV_TONE: Record<string, string> = { ok: 'var(--ok)', hot: 'var(--hot)', off: 'var(--off)', fg: 'var(--fg)' };
+
+/** The dashboard's sections (host/templates/base.html): link, label, icon paths. */
+const SECTIONS: [string, string, ReactNode][] = [
+  ['/fleet', 'Fleet', <><rect x="3" y="4" width="18" height="7" rx="2" /><rect x="3" y="13" width="18" height="7" rx="2" /><path d="M7 7.5h.01M7 16.5h.01" /></>],
+  ['/jobs', 'Jobs', <><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></>],
+  ['/models', 'Models', <><path d="M3 3v18h18" /><path d="M7 15l4-4 3 3 5-6" /></>],
+  ['/trading', 'Trading', <><path d="M17 3l4 4-4 4" /><path d="M21 7H9" /><path d="M7 21l-4-4 4-4" /><path d="M3 17h12" /></>],
+  ['/settings', 'Settings', <><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" /><circle cx="15" cy="6" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="17" cy="18" r="2" /></>],
+];
 
 /** A feed line; `ts` is milliseconds on the server's clock. */
 interface Ev { key: string; ts: number; who: string; text: string; tone: string }
@@ -196,20 +205,30 @@ export default function App() {
 
   return (
     <div className="app">
+      {/* The dashboard's shell (host/templates/base.html): the wordmark is Home, the same five
+          sections with Fleet current (a bottom bar with icons on a phone), then this page's
+          own status and the link to the card view. */}
       <header className="top">
         <div className="brand">
-          <h1>polymarket-fleet</h1>
+          <h1><a className="wordmark" href="/" title="Home">polymarket-fleet</a></h1>
           <span className={'conn' + (live ? ' is-live' : '')} role="status">{live ? 'Live' : tried ? 'Disconnected' : 'Connecting'}</span>
         </div>
+        <nav className="nav" aria-label="Sections">
+          {SECTIONS.map(([href, label, icon]) => (
+            <a key={href} href={href} aria-current={href === '/fleet' ? 'page' : undefined}>
+              <svg className="nav-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24">{icon}</svg>
+              <span className="nav-label">{label}</span>
+            </a>
+          ))}
+        </nav>
         {!signedOut && <dl className="stats">
           <div><dt>Online</dt><dd>{online.length}/{nodes.length}</dd></div>
           <div><dt>Working</dt><dd>{online.filter((n) => n.job !== 'idle').length}</dd></div>
           <div><dt>Hot</dt><dd className={hot ? 'warn' : ''}>{hot}</dd></div>
           <div><dt>Avg temp</dt><dd>{avg === null ? 'n/a' : `${avg.toFixed(0)}°C`}</dd></div>
         </dl>}
-        <nav className="links" aria-label="Other pages">
+        <nav className="links" aria-label="Other views">
           <a href="/fleet/list">List view</a>
-          <a href="/">Dashboard</a>
         </nav>
       </header>
 

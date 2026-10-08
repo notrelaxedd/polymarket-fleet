@@ -18,6 +18,7 @@ from fastapi import Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from jinja2 import Environment, FileSystemLoader, pass_context
 
+from host.labels import label
 from host.money import cents_to_dollars, format_cents
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -233,7 +234,7 @@ def make_env() -> Environment:
          "ts": ts, "pretty_json": pretty_json, "compact_json": compact_json, "short": short,
          "fixed": fixed, "signed_pct": signed_pct, "season_span": season_span, "price": price,
          "pvalue": pvalue, "pnl": signed_money, "signed_money": signed_money, "prob": prob, "num": num,
-         "bar_pct": bar_pct, "tone": tone}
+         "bar_pct": bar_pct, "tone": tone, "label": label}
     )
     return env
 

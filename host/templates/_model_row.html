@@ -15,7 +15,7 @@
 {%- if not m.validated %}{{ ui.chip('muted', 'not validated', key='unvalidated', extra='chip-unvalidated', title='no validation-era metrics yet: send a validate job') }} {% endif %}
 {%- if m.unranked_reason and m.unranked_reason not in ('retired', 'not validated') %}{{ ui.chip('warn', m.unranked_reason, key='unranked') }} {% endif %}
 {%- if m.members > 1 %}{{ ui.chip('muted', m.members ~ ' rows', key='members') }}{% endif %}{% endset %}
-{% set meta %}{{ ui.chip(m.view.status_state, m.view.status_word, key=m.status) }} {% if m.rank and m.view.basis_title %}{{ ui.chip('muted', m.rank_mode, key='rank-' ~ m.rank_mode, title=m.view.basis_title) }} {% endif %}{{ m.view.meta }}{% endset %}
+{% set meta %}{{ ui.chip(m.view.status_state, m.view.status_word, key=m.status) }} {% if m.rank and m.view.basis_title %}{{ ui.chip('muted', m.rank_mode | label, key='rank-' ~ m.rank_mode, title=m.view.basis_title) }} {% endif %}{{ m.view.meta }}{% endset %}
 {% call ui.row('model', m.id, '/models/' ~ m.id, title, meta=meta, flags=flags, cls='lines-full') %}
   <span class="row-value" title="{{ m.view.headline.title }}">{{ m.view.headline.text }}</span>
   {% call ui.menu() %}

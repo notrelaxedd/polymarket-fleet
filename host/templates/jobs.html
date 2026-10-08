@@ -49,7 +49,7 @@
 </section>
 {%- endmacro %}
 {% block content %}
-{% set kinds = [("backtest", "Backtest"), ("model_search", "Model search"), ("train", "Train"), ("validate", "Validate"), ("sleep", "Sleep (test)")] %}
+{% set kinds = ["backtest", "model_search", "train", "validate", "sleep"] %}
 <h1>Jobs</h1>
 {{ ui.intro("jobs", "Work sent to the workers: searches, backtests, training and validation. Start one under New job.") }}
 <div class="stats">
@@ -61,7 +61,7 @@
 {% call ui.disclosure("jobs-new", "New job", summary="backtest, model search, train or validate", open=new_open) %}
 <label class="js-only">Kind
   <select data-switch="job-kind" aria-label="Job kind">
-    {% for kind, title in kinds %}<option value="{{ kind }}"{% if kind == active %} selected{% endif %}>{{ title }}</option>{% endfor %}
+    {% for kind in kinds %}<option value="{{ kind }}"{% if kind == active %} selected{% endif %}>{{ kind | label('kind') }}</option>{% endfor %}
   </select>
 </label>
 {% call send("backtest", "Backtest") %}
@@ -80,12 +80,12 @@
     </label>
     {{ target_select() }}
   </div>
-  <p class="help replay-hint">Snapshots replay the prices the host recorded on <strong>{{ replay.price_platform }}</strong>, {{ replay.decision_minutes_before_kickoff }} minutes before kickoff, taking at most {{ replay.participation }} of the book; games without recorded prices are skipped. The result is stored apart from the closing-line numbers and never changes a model's status. Change these in <a href="/settings#replay">Settings</a>.</p>
+  <p class="help replay-hint">Snapshots replay the prices the host recorded on <strong>{{ replay.price_platform | label('source') }}</strong>, {{ replay.decision_minutes_before_kickoff }} minutes before kickoff, taking at most {{ replay.participation }} of the book; games without recorded prices are skipped. The result is stored apart from the closing-line numbers and never changes a model's status. Change these in <a href="/settings#replay">Settings</a>.</p>
   {% if replay.sim_refused %}<p class="error small replay-sim">The market source is sim and sim prices are not allowed, so a snapshot backtest will fail on the worker. Allow sim prices in <a href="/settings#replay">Settings</a> (testing only) or switch the market source.</p>{% endif %}
   <div class="form-actions"><button type="submit" class="btn primary">Send backtest</button></div>
   </form>
 {% endcall %}
-{% call send("model_search", "Model search") %}
+{% call send("model_search", "model_search" | label('kind')) %}
   <form method="post" action="/jobs" data-form="model_search">
   {{ form_error('model_search') }}
   <input type="hidden" name="kind" value="model_search">
@@ -110,7 +110,7 @@
   <div class="form-actions"><button type="submit" class="btn primary">Send search</button></div>
   </form>
 {% endcall %}
-{% call send("train", "Train") %}
+{% call send("train", "train" | label('kind')) %}
   <form method="post" action="/jobs" data-form="train">
   {{ form_error('train') }}
   <input type="hidden" name="kind" value="train">
@@ -124,7 +124,7 @@
   <div class="form-actions"><button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send train</button></div>
   </form>
 {% endcall %}
-{% call send("validate", "Validate") %}
+{% call send("validate", "validate" | label('kind')) %}
   <form method="post" action="/jobs" data-form="validate">
   {{ form_error('validate') }}
   <input type="hidden" name="kind" value="validate">
@@ -138,7 +138,7 @@
   <div class="form-actions"><button type="submit" class="btn primary"{% if not models %} disabled{% endif %}>Send validate</button></div>
   </form>
 {% endcall %}
-{% call send("sleep", "Sleep (test)") %}
+{% call send("sleep", "sleep" | label('kind')) %}
   <form method="post" action="/jobs" data-form="sleep">
     {{ form_error('sleep') }}
     <input type="hidden" name="kind" value="sleep">
@@ -161,11 +161,11 @@
   {% set waiting = j.status == 'queued' and not j.target_worker_id %}
   <li class="row" data-row="job" data-id="{{ j.id }}">
     <a class="row-main" href="/jobs/{{ j.id }}">
-      <span class="row-title">{{ j.kind }}{% if j.target %} <span class="muted">{{ j.target }}</span>{% endif %}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} {{ ui.chip("muted", "snapshots", key="snapshots", extra="chip-snapshot") }}{% endif %}</span>
+      <span class="row-title">{{ j.kind | label('kind') }}{% if j.target %} <span class="muted">{{ j.target }}</span>{% endif %}{% if j.kind == 'backtest' and j.params.price_source == 'snapshots' %} {{ ui.chip("muted", "Snapshots", key="snapshots", extra="chip-snapshot") }}{% endif %}</span>
       <span class="row-meta">{% if waiting %}waiting for an idle worker{% elif worker %}{{ names.get(worker, worker) }}{% else %}no worker{% endif %} &middot; {% if tab == 'done' %}finished {{ j.finished_at | ts or '-' }}{% else %}created {{ j.created_at | ts }}{% endif %}</span>
     </a>
     {% if tab == 'running' and j.status != 'queued' and j.kind != 'trade' %}{{ ui.bar(j.progress | bar_pct) }}<span class="row-value">{{ j.progress | pct }}</span>{% endif %}
-    {% if waiting %}{{ ui.chip("warn", "waiting", key="waiting") }}{% else %}{{ ui.chip(j.state, "held" if j.kind == 'trade' and j.status == 'leased' else j.status.replace('_', ' '), key=j.status, extra="st-" ~ j.status) }}{% endif %}
+    {% if waiting %}{{ ui.chip("warn", "Waiting", key="waiting") }}{% else %}{{ ui.chip(j.state, "Held" if j.kind == 'trade' and j.status == 'leased' else j.status | label('status'), key=j.status, extra="st-" ~ j.status) }}{% endif %}
     {% if j.status in ('queued', 'leased') %}
     {% call ui.menu() %}
     <form method="post" action="/jobs/{{ j.id }}/cancel" data-action="cancel"><button type="submit" class="menu-item danger">Cancel</button></form>

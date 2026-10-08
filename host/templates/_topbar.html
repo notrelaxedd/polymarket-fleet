@@ -8,7 +8,7 @@
 {% if topbar.killed %}
 <span class="chip chip-bad chip-killed" data-chip="killed" data-killed="1">KILLED</span>
 {% if topbar.auto_kill %}
-<a class="killed-text" href="/settings#kill" data-auto-kill="{{ topbar.auto_kill.reason }}">TRADING KILLED automatically: <span class="auto-reason">{{ topbar.auto_kill.reason }}</span>. Reset in Settings.</a>
+<a class="killed-text" href="/settings#kill" data-auto-kill="{{ topbar.auto_kill.reason }}">TRADING KILLED automatically: <span class="auto-reason">{{ topbar.auto_kill.reason | label }}</span>. Reset in Settings.</a>
 {% else %}
 <a class="killed-text" href="/settings#kill">TRADING KILLED. Reset in Settings.</a>
 {% endif %}

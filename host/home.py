@@ -20,6 +20,7 @@ import psycopg
 
 from host import pnl, views
 from host.api.models_view import headline
+from host.labels import label
 from host.leaderboard import leaderboard
 from host.settings import get_settings
 
@@ -80,7 +81,7 @@ def assignment_items(conn: psycopg.Connection) -> list[dict[str, str]]:
     return [
         _item(f"assignment-{r['id']}", "warn" if r["assignment_status"] == "halted" else "bad", "no model",
               f"{r['game'] or 'A game'}: no eligible model",
-              f"{r['mode']} assignment {r['assignment_status']}, model {r['status'].replace('_', ' ')}", "/trading#assignments")
+              f"{r['mode']} assignment {r['assignment_status']}, model {label(r['status'], 'model')}", "/trading#assignments")
         for r in rows
     ]
 
@@ -121,7 +122,7 @@ def banner_items(conn: psycopg.Connection, settings: dict[str, Any]) -> list[dic
     out = []
     if settings.get("kill_switch") is True:
         auto = views.latest_auto_kill(conn)
-        meta = f"pulled automatically: {auto['reason']}" if auto else "Reset in Settings when ready"
+        meta = f"pulled automatically: {label(auto['reason'])}" if auto else "Reset in Settings when ready"
         out.append(_item("kill", "bad", "killed", "Trading is killed", meta, "/settings#kill"))
     if views.exchange_down(conn):
         out.append(_item("exchange-down", "bad", "down", "Exchange process down", "No heartbeat from the exchange process",

@@ -22,6 +22,7 @@ from host.api.dashboard import FORM, page
 from host.api.deps import DB, get_config, remote_ip, require_owner
 from host.config import Config
 from host.errors import BadRequest, NotFound, QueueError
+from host.labels import label
 from host.workloads import views
 from host.workloads.dashboard import (
     machines_response, outbound_response, unpin_response, workload_response, workloads_dir,
@@ -270,7 +271,7 @@ def post_workload_job(request: Request, name: str, form: Form = FORM, actor: str
         conn.rollback()
         return workload_response(request, conn, name, status=exc.status, error=exc.message, open_section="send",
                                  submitted={"kind": kind, "target": target or "", "params": form.get("params") or ""})
-    return web.redirect(f"/workloads/{name}", f"{kind} job {str(job['id'])[:8]} queued")
+    return web.redirect(f"/workloads/{name}", f"{label(kind, 'kind')} job {str(job['id'])[:8]} queued")
 
 
 @router.post("/workloads/{name}/jobs/{job_id}/cancel")
@@ -279,7 +280,7 @@ def post_workload_job_cancel(name: str, job_id: str, actor: str = Depends(requir
     from host.workloads import queue as wl_queue
 
     job = wl_queue.cancel(conn, job_id, actor)
-    return web.redirect(f"/workloads/{name}", f"job {str(job['id'])[:8]} {str(job['status']).replace('_', ' ')}")
+    return web.redirect(f"/workloads/{name}", f"job {str(job['id'])[:8]}: {label(job['status'], 'status')}")
 
 
 @router.post("/outbound/{action_id}/approve")

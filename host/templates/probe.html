@@ -25,8 +25,8 @@
 <section class="card" data-card="probe">
   <dl class="props">
     {% if gamestate %}
-    <dt>event_id</dt><dd class="c-event"><code>{{ probe.event_id or '-' }}</code></dd>
-    <dt>game_id</dt><dd class="c-game">{% if probe.game_id %}{{ probe.game_id }}{% else %}<span class="muted">no game has this ESPN event id</span>{% endif %}</dd>
+    <dt>ESPN event id</dt><dd class="c-event"><code>{{ probe.event_id or '-' }}</code></dd>
+    <dt>game id</dt><dd class="c-game">{% if probe.game_id %}{{ probe.game_id }}{% else %}<span class="muted">no game has this ESPN event id</span>{% endif %}</dd>
     {% endif %}
     <dt>url</dt><dd><code class="token">{{ probe.url or '-' }}</code></dd>
     <dt>status</dt><dd>{{ probe.status if probe.status is not none else '-' }}</dd>
