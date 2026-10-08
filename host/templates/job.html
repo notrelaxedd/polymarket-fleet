@@ -7,17 +7,17 @@
 {% block content %}
 {% set worker = job.lease_worker_id or job.target_worker_id %}
 {% set chip_state = {'leased': 'ok', 'succeeded': 'ok', 'failed': 'bad', 'cancel_requested': 'warn'}.get(job.status, 'muted') %}
-<h1>{{ job.kind }}{% if target %} {{ target }}{% endif %} <span class="muted small">{{ job.id | short }}</span></h1>
+<h1>{{ job.kind | label('kind') }}{% if target %} {{ target }}{% endif %} <span class="muted small">{{ job.id | short }}</span></h1>
 {{ ui.intro("job", "One job: where it stands, what it found, and below that what it was asked to do and its log.") }}
 <p class="small"><a href="/jobs">&larr; All jobs</a>{% if job.params.model_id %} &middot; model <a href="/models/{{ job.params.model_id }}" data-action="model">{{ job.params.model_id | short }}</a>{% endif %}</p>
 <div class="stats" data-card="job">
-  <div class="stat" data-stat="progress"><span class="stat-value">{{ job.progress | pct }}</span><span class="stat-label">Progress</span>{{ ui.chip(chip_state, job.status.replace('_', ' '), key=job.status, extra="st-" ~ job.status) }}</div>
+  <div class="stat" data-stat="progress"><span class="stat-value">{{ job.progress | pct }}</span><span class="stat-label">Progress</span>{{ ui.chip(chip_state, job.status | label('status'), key=job.status, extra="st-" ~ job.status) }}</div>
   {{ ui.stat("worker", names.get(worker, worker) if worker else "none", "Worker", note=worker if worker else none) }}
   {{ ui.stat("duration", duration, "Ran for" if job.finished_at else "Running for" if job.started_at else "Not started") }}
   {{ ui.stat("expiries", job.expiries ~ (" / " ~ job.max_expiries if job.max_expiries is not none else ""), "Lease expiries") }}
 </div>
 <dl class="kv" data-list="timing">
-  <div><dt>role</dt><dd>{{ job.role }}</dd></div>
+  <div><dt>role</dt><dd>{{ job.role | label('role') }}</dd></div>
   <div><dt>created</dt><dd>{{ job.created_at | ts }}</dd></div>
   <div><dt>started</dt><dd>{{ job.started_at | ts or '-' }}</dd></div>
   <div><dt>finished</dt><dd>{{ job.finished_at | ts or '-' }}</dd></div>
@@ -79,7 +79,7 @@
 {% endif %}
 {% call ui.disclosure("job-params", "Parameters", summary=target or (job.params | length ~ " keys")) %}
   {% if job.params.model_id %}<p>model <a href="/models/{{ job.params.model_id }}">{{ job.params.model_id | short }}</a></p>{% endif %}
-  {% if job.kind == 'backtest' and job.params.price_source == 'snapshots' %}<p class="price-source">price source <strong>snapshots</strong>: recorded {{ job.params.price_platform }} prices {{ job.params.decision_minutes_before_kickoff }} minutes before kickoff, participation {{ job.params.participation }}{% if job.params.allow_sim_prices %}, sim prices allowed (testing){% endif %}</p>{% endif %}
+  {% if job.kind == 'backtest' and job.params.price_source == 'snapshots' %}<p class="price-source">price source <strong>snapshots</strong>: recorded {{ job.params.price_platform | label('source') }} prices {{ job.params.decision_minutes_before_kickoff }} minutes before kickoff, participation {{ job.params.participation }}{% if job.params.allow_sim_prices %}, sim prices allowed (testing){% endif %}</p>{% endif %}
   <pre>{{ job.params | pretty_json }}</pre>
 {% endcall %}
 {% call ui.disclosure("job-checkpoints", "Checkpoints", summary=checkpoint_digest) %}
@@ -94,7 +94,7 @@
     {% for e in job.events %}
     <tr data-row="event" data-id="{{ loop.index }}">
       <td class="nowrap lead">{{ e.ts | ts }}</td>
-      <td>{{ e.event }}</td>
+      <td>{{ e.event | label('event') }}</td>
       <td>{% if e.worker_id %}{{ names.get(e.worker_id, e.worker_id) }}{% else %}<span class="muted">-</span>{% endif %}</td>
       <td class="wide"><code>{{ e.detail | compact_json }}</code></td>
     </tr>

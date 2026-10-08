@@ -199,8 +199,8 @@ def test_ingame_rejection_reasons_read_in_words(client, conn):
     set_setting(conn, "ingame_max_bet_cents", 300)
     big = _order(conn, setup, True, status="rejected", reject_reason="max_bet")
     recent = _live(client).card("orders")
-    assert "ingame_stale: game state too old" in recent.row("order", stale["id"]).one(".reason").text
-    assert "ingame_lag_suspended: feed lag suspends in-game buys" in recent.row("order", lag["id"]).one(".reason").text
+    assert "In-Game Stale: game state too old" in recent.row("order", stale["id"]).one(".reason").text
+    assert "In-Game Lag Suspended: feed lag suspends in-game buys" in recent.row("order", lag["id"]).one(".reason").text
     assert "over max bet $5.00 > $3.00" in recent.row("order", big["id"]).one(".reason").text, \
         "an in-game order's cap is ingame_max_bet_cents"
 

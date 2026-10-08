@@ -13,7 +13,7 @@ from host.api.models_view import counted, status_state, status_word
 from host.ingame_eligibility import MIN_PLAYS
 from host.web import fixed, num, season_span, signed_money
 
-LL_TITLE = "log-loss gain over vegas_wp per held-out play: above zero beats nflverse's own in-game win probability"
+LL_TITLE = "log-loss gain over Vegas WP per held-out play: above zero beats nflverse's own in-game win probability"
 
 
 def record_line(record: dict[str, Any] | None, lead: str = "in-game") -> str | None:
@@ -62,7 +62,7 @@ def ingame_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
     iv = model.get("ingame_validation")
     record = model.get("ingame") or {}
     if iv:
-        loss = {"value": fixed(iv.get("log_loss")), "note": f"vegas_wp {fixed(iv.get('vegas_log_loss'))} · gain {gain_text(iv)}"}
+        loss = {"value": fixed(iv.get("log_loss")), "note": f"Vegas WP {fixed(iv.get('vegas_log_loss'))} · gain {gain_text(iv)}"}
         plays = {"value": num(iv.get("n_plays")), "note": f"seasons {season_span(iv.get('seasons'))} · {num(MIN_PLAYS)} needed"}
     else:
         loss = {"value": "-", "note": "no held-out validation stored"}
@@ -71,7 +71,7 @@ def ingame_stats(model: dict[str, Any]) -> list[dict[str, Any]]:
     paper = {"value": signed_money(record.get("pnl_cents")) if bets else "-",
              "note": f"{counted(record.get('games'), 'game')} · {counted(bets, 'bet')}" if bets else "no in-game bets yet"}
     return [
-        {"name": "log-loss", "label": "Log-loss vs vegas_wp", **loss},
+        {"name": "log-loss", "label": "Log-loss vs Vegas WP", **loss},
         {"name": "plays", "label": "Held-out plays", **plays},
         {"name": "ingame-paper", "label": "In-game paper", **paper},
     ]
@@ -84,9 +84,9 @@ def ingame_verdict(model: dict[str, Any]) -> dict[str, str]:
     if status == "retired":
         return {"state": "muted", "text": "Retired: it no longer trades in-game, and a retired lineage cannot come back."}
     if status == "paper_ok":
-        return {"state": "ok", "text": f"Cleared for in-game paper trading: it beats vegas_wp over {num(iv.get('n_plays'))} "
+        return {"state": "ok", "text": f"Cleared for in-game paper trading: it beats Vegas WP over {num(iv.get('n_plays'))} "
                                        "held-out plays. In-game orders never go live in this step."}
     reason = str(model.get("ingame_reason") or "not validated")
     return {"state": "warn" if iv else "muted",
-            "text": f"Not cleared for in-game paper trading: {reason}. Paper ok needs a log-loss at or below vegas_wp "
+            "text": f"Not cleared for in-game paper trading: {reason}. Paper OK needs a log-loss at or below Vegas WP "
                     f"over at least {num(MIN_PLAYS)} plays."}

@@ -18,6 +18,7 @@ from host.api.owner import install_command
 from host.config import Config
 from host.eligibility import recompute_all, recompute_paper
 from host.errors import BadRequest, Conflict, QueueError
+from host.labels import label
 from host.settings import set_settings
 from host.settings_forms import GROUPS, parse_group
 
@@ -36,7 +37,7 @@ def post_role(
 ) -> Response:
     """Set a worker's desired role (the role select)."""
     worker = queue.set_role(conn, worker_id, (form.get("role") or "").strip(), actor)
-    return web.redirect("/fleet/list", f"{worker['name']}: switching to {worker['desired_role']} (epoch {worker['role_epoch']})")
+    return web.redirect("/fleet/list", f"{worker['name']}: switching to {label(worker['desired_role'], 'role')} (epoch {worker['role_epoch']})")
 
 
 @router.post("/workers/{worker_id}/enabled")
@@ -66,7 +67,7 @@ def post_job(
         note = "waiting for an idle worker"
     else:
         note = f"sent to {job['target_worker_id']}" if job["target_worker_id"] else "queued"
-    return web.redirect("/jobs", f"{kind} job {str(job['id'])[:8]} created, {note}")
+    return web.redirect("/jobs", f"{label(kind, 'kind')} job {str(job['id'])[:8]} created, {note}")
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -76,7 +77,7 @@ def post_cancel(
     """Cancel a queued job or request cancellation of a leased one."""
     job = queue.cancel_job(conn, job_id, actor)
     back = web.safe_next(form.get("next"), "/jobs")
-    return web.redirect(back, f"job {str(job['id'])[:8]} {job['status'].replace('_', ' ')}")
+    return web.redirect(back, f"job {str(job['id'])[:8]}: {label(job['status'], 'status')}")
 
 
 # The live routes are declared before /settings/{group} so "live" is never read as a

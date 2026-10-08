@@ -5,7 +5,7 @@
 It seeds a throwaway database with tests/hw/seed_workloads.py (four workloads, five
 machines in every state, jobs, logs, secrets, pending and done approvals), serves the app
 with FLEET_DEV=1 and captures /fleet, /machines, /workloads, three workload pages,
-/outbound, a machine's logs and the unpin page at 390x844 and 1280x800, light and dark,
+/outbound, a machine's logs and the unpin page at 390x844 and 1280x800 (dark, the one scheme),
 running the docs/UI.md assertions of tests/hw/ui_checks.py on each (no horizontal scroll,
 h1 and a stat in the first screen, rows at most 88 px, 44 px targets, whole chips, every
 "..." menu item on top). It also posts the enroll token form once. Exits 1 on any problem.
@@ -53,7 +53,7 @@ def capture_all(server_url: str, database_url: str, ids: dict[str, str], out: Pa
         browser = pw.chromium.launch()
         for name, path in pages(ids):
             for width, (w, h) in VIEWPORTS.items():
-                for scheme in ("light", "dark"):
+                for scheme in ("dark",):  # one scheme: the site is dark only
                     context = browser.new_context(viewport={"width": w, "height": h}, color_scheme=scheme)
                     page = context.new_page()
                     seed_workloads.touch(database_url)

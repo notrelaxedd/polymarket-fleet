@@ -20,6 +20,7 @@ from host.api.dashboard import FORM, _age_seconds, _now, page
 from host.api.dashboard_ingame import create_args, form_context
 from host.api.deps import DB, require_owner
 from host.errors import BadRequest, Conflict
+from host.labels import label
 from host.leaderboard import short_params
 from host.money import cents_to_dollars, dollars_to_cents
 from host.settings import get_int_setting, get_setting, get_settings
@@ -266,7 +267,7 @@ def post_cancel_order(order_id: str, actor: str = Depends(require_owner), conn: 
     oid = trading_views.parse_uuid(order_id, "order")
     orders.get_order(conn, oid)
     status = orders.cancel_order(conn, oid, actor, "owner cancel")
-    return web.redirect("/trading", f"order {str(oid)[:8]} {status.replace('_', ' ')}")
+    return web.redirect("/trading", f"order {str(oid)[:8]}: {label(status)}")
 
 
 @router.post("/cancel-all")

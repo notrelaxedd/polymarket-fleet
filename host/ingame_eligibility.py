@@ -57,7 +57,7 @@ def ingame_reason(metrics: dict[str, Any] | None) -> str:
         return "not validated: run an ingame_wp model search"
     plays = n_plays(metrics) or 0
     if metrics.get("beats_baseline") is not True:
-        return "its validation log-loss is worse than the vegas_wp baseline"
+        return "its validation log-loss is worse than the Vegas WP baseline"
     if plays < MIN_PLAYS:
         return f"validated on {plays} plays, fewer than {MIN_PLAYS}"
-    return f"beats vegas_wp over {plays} held-out plays; paper only"
+    return f"beats Vegas WP over {plays} held-out plays; paper only"

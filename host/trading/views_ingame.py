@@ -17,6 +17,7 @@ from fleet.models.ingame_wp import IngameWP
 from fleet.sim.odds import devig
 from host.exchange.feedlag import lag_status
 from host.exchange.gamestate import latest_state
+from host.labels import label
 from host.leaderboard import short_params
 from host.settings import get_setting
 from host.trading.ingame import model_retired
@@ -84,7 +85,7 @@ def ingame_models(conn: psycopg.Connection) -> list[dict[str, Any]]:
         (INGAME_FAMILY,),
     ).fetchall()
     return [
-        {"id": str(r["id"]), "label": f"{INGAME_FAMILY} · {short_params(r['family'], r['params'])} · {r['status']}"
+        {"id": str(r["id"]), "label": f"{INGAME_FAMILY} · {short_params(r['family'], r['params'])} · {label(r['status'], 'model')}"
                                      f"{'' if r['trained'] else ' · untrained'} · {str(r['id'])[:8]}"}
         for r in rows
     ]

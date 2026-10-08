@@ -7,7 +7,7 @@
 {% if pair and pair[0] is not none and pair[1] is not none %}{% if filter == 'pct1' %}{{ pair[0] | pct1 }} to {{ pair[1] | pct1 }}{% elif filter == 'fixed' %}{{ pair[0] | fixed }} to {{ pair[1] | fixed }}{% else %}{{ pair[0] | signed_pct }} to {{ pair[1] | signed_pct }}{% endif %}{% else %}-{% endif %}
 {%- endmacro %}
 {% macro flag_chips(flags) -%}
-{% for f in flags %}{{ ui.chip('bad' if f.name == 'overfit' else 'warn', f.name.replace('_', '-'), key=f.name, extra='chip-flag chip-' ~ f.name, title=f.meaning) }} {% endfor %}
+{% for f in flags %}{{ ui.chip('bad' if f.name == 'overfit' else 'warn', f.name | label('flag'), key=f.name, extra='chip-flag chip-' ~ f.name, title=f.meaning) }} {% endfor %}
 {%- endmacro %}
 {% macro body(r) -%}
 {% set m = r.metrics %}
@@ -18,7 +18,7 @@
 </p>
 {% if r.flags %}
 <ul class="flag-meanings">
-  {% for f in r.flags %}<li><strong>{{ f.name.replace('_', '-') }}</strong>: {{ f.meaning }}.</li>{% endfor %}
+  {% for f in r.flags %}<li><strong>{{ f.name | label('flag') }}</strong>: {{ f.meaning }}.</li>{% endfor %}
 </ul>
 {% endif %}
 <p class="ci-line">Validation ROI <strong>{{ m.roi | signed_pct if bets else '-' }}</strong>{% if bets %} <span class="range">(90% range {{ range(r.ci.roi) }})</span>{% endif %} over {{ bets }} bets, shrunk {{ r.summary.shrunk_roi | signed_pct(2) }}.

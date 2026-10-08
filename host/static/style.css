@@ -1,36 +1,71 @@
-/* Fleet dashboard (step 7). System fonts, CSS variables, light and dark, phone first.
-   Text colours and badge fills are chosen for 4.5:1 against the surface they sit on
-   (tests/test_style.py checks the pairs). Colour means state, never decoration:
-   ok = green, warn = amber, bad = red, muted = grey, and each always comes with a word.
+/* Fleet dashboard. The whole site shares the 3D fleet page's look (fleet-ui/src/index.css):
+   a dark control room, one scheme for every viewer. Square corners, 1px line borders,
+   glass panels, Chakra Petch for headings, buttons and uppercase tracked labels, JetBrains
+   Mono for body text and data, tabular numbers. Both fonts are served from /static/fonts
+   (nothing loads from a third party).
 
-   Sections: tokens, base, shell (top bar, nav, bottom nav), page frame, components
+   Text colours and fills are chosen for 4.5:1 against the surface they sit on
+   (tests/test_style.py checks the pairs). Colour means state, never decoration:
+   ok = cyan, warn = amber, bad = red, muted = grey, and each always comes with a word.
+
+   Sections: fonts, tokens, base, shell (top bar, nav, bottom nav), page frame, components
    (stats, rows, chips, cards, disclosures, menus, bars, captions, tabs), buttons and
    forms, phone rules, then the legacy rules the pre-step-7 markup still uses. */
+
+/* ---------------------------------------------------------------- fonts (latin subset, SIL OFL, licences beside them) */
+@font-face { font-family: "Chakra Petch"; font-style: normal; font-weight: 500; font-display: swap; src: url(/static/fonts/chakra-petch-latin-500-normal.woff2) format("woff2"); }
+@font-face { font-family: "Chakra Petch"; font-style: normal; font-weight: 600; font-display: swap; src: url(/static/fonts/chakra-petch-latin-600-normal.woff2) format("woff2"); }
+@font-face { font-family: "Chakra Petch"; font-style: normal; font-weight: 700; font-display: swap; src: url(/static/fonts/chakra-petch-latin-700-normal.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url(/static/fonts/jetbrains-mono-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url(/static/fonts/jetbrains-mono-latin-500-normal.woff2) format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 700; font-display: swap; src: url(/static/fonts/jetbrains-mono-latin-700-normal.woff2) format("woff2"); }
+
+/* ---------------------------------------------------------------- tokens */
 :root {
-  --bg: #f6f7f9;
-  --card: #ffffff;
-  --text: #16181d;
-  --muted: #6b7280;
-  --chip-text: #4b5563;
-  --line: #d9dde3;
-  --accent: #2563eb;
-  --accent-fill: #2563eb;
-  --accent-text: #ffffff;
-  --green: #16a34a;
-  --amber: #d97706;
-  --grey: #9ca3af;
-  --red: #b91c1c;
-  --red-text: #ffffff;
-  --amber-text: #b45309;
-  --red-fg: #b91c1c;
-  --green-fill: #15803d;
-  --green-text: #15803d;
-  --amber-fill: #b45309;
-  --leased-fill: #2563eb;
-  --badge: #e5e7eb;
-  --live-bg: #ecfdf5;
-  --bad-bg: #fef2f2;
-  --radius: 10px;
+  color-scheme: dark;
+  /* the 3D page's palette, same names and values as fleet-ui/src/index.css, plus a red */
+  --void: #04070b;
+  --panel: rgba(7, 13, 18, 0.9);
+  --panel-solid: #0a1218;
+  --line: #1c3140;
+  --line-strong: #2f5468;
+  --fg: #dfeaf0;
+  --dim: #93a8b4;
+  --ok: #45c4f5;
+  --hot: #ffa733;
+  --off: #73858f;
+  --ink: #04121a;
+  --bad: #ff6b6b;
+  --font-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --font-data: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  /* the dashboard's slots, named for their job (the names predate the palette: green is
+     the ok slot, cyan here; amber the warn slot; red the stop or loss slot) */
+  --bg: var(--void);
+  --card: var(--panel-solid);
+  --raised: #12202a;
+  --text: var(--fg);
+  --muted: var(--dim);
+  --chip-text: var(--dim);
+  --accent: var(--ok);
+  --green: var(--ok);
+  --green-fill: var(--ok);
+  --green-text: var(--ok);
+  --amber: var(--hot);
+  --amber-fill: var(--hot);
+  --amber-text: var(--hot);
+  --red: var(--bad);
+  --red-fg: var(--bad);
+  --red-text: var(--ink);
+  --grey: var(--off);
+  --badge: var(--raised);
+  --live-bg: #0b1b24;
+  --bad-bg: #1f0f12;
+  /* state tints: a chip's own colour at 10% on the surface under it */
+  --tint-ok: rgba(69, 196, 245, 0.1);
+  --tint-hot: rgba(255, 167, 51, 0.1);
+  --tint-bad: rgba(255, 107, 107, 0.1);
+  --hover: rgba(69, 196, 245, 0.07);
+  --radius: 0;
   --tap: 44px;
   /* spacing scale, type scale and shell sizes */
   --s1: 4px;
@@ -43,43 +78,33 @@
   --fs-display: 1.75rem;
   --nav-h: 58px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --shadow: 0 6px 24px rgba(15, 17, 21, 0.14);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1115;
-    --card: #181b21;
-    --text: #e7e9ee;
-    --muted: #9aa3b2;
-    --chip-text: #9aa3b2;
-    --line: #2a2f38;
-    --accent: #3b82f6;
-    --amber-text: #f59e0b;
-    --red-fg: #f87171;
-    --green-text: #4ade80;
-    --badge: #2a2f38;
-    --grey: #6b7280;
-    --live-bg: #0f1f17;
-    --bad-bg: #2a1414;
-    --shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
-  }
-}
+
+/* ---------------------------------------------------------------- base */
 * { box-sizing: border-box; }
 /* a link to #anchor (or a focused field) lands below the sticky top bar: app.js keeps
-   --topbar-h at the bar's height (a banner or the killed line makes it taller) */
-html { -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--topbar-h, 6.5rem) + var(--s2)); }
+   --topbar-h at the bar's height (a banner or the killed line makes it taller).
+   93.75% keeps the user's own size setting and makes the monospace body 15 px by default. */
+html { font-size: 93.75%; -webkit-text-size-adjust: 100%; scroll-padding-top: calc(var(--topbar-h, 6.5rem) + var(--s2)); background: var(--bg); }
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--font-data);
+  font-size: var(--fs-body);
+  line-height: 1.5;
 }
-a { color: var(--accent); }
-h1 { font-size: var(--fs-display); font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; margin: var(--s2) 0 var(--s1); }
-h2 { font-size: var(--fs-body); margin: var(--s4) 0 var(--s2); }
-code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-meta); }
-pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0.6rem; overflow-x: auto; margin: 0.25rem 0 0.75rem; white-space: pre-wrap; word-break: break-all; }
-:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+a { color: var(--accent); text-underline-offset: 3px; }
+a:hover { color: var(--text); }
+h1, h2, h3 { font-family: var(--font-display); }
+h1 { font-size: var(--fs-display); font-weight: 700; line-height: 1.15; letter-spacing: 0.03em; margin: var(--s2) 0 var(--s1); }
+h2 { font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase; margin: var(--s4) 0 var(--s2); }
+h3 { font-weight: 600; letter-spacing: 0.04em; }
+code, pre { font-family: var(--font-data); font-size: var(--fs-meta); }
+pre { background: var(--bg); border: 1px solid var(--line); padding: 0.6rem; overflow-x: auto; margin: 0.25rem 0 0.75rem; white-space: pre-wrap; word-break: break-all; }
+:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+::selection { background: var(--ok); color: var(--ink); }
 .muted { color: var(--muted); }
 .small { font-size: var(--fs-meta); }
 .nowrap { white-space: nowrap; }
@@ -91,102 +116,110 @@ html:not(.js) .js-only { display: none; }
 .js .js-hide { display: none; }
 [hidden] { display: none !important; }
 
-/* ---------------------------------------------------------------- shell: top bar */
-.topbar { position: sticky; top: 0; z-index: 10; background: var(--card); border-bottom: 1px solid var(--line); }
-.topbar-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s4); padding: var(--s1) var(--s4); max-width: 1200px; margin: 0 auto; }
-.wordmark { font-weight: 700; text-decoration: none; color: var(--text); font-size: var(--fs-body); min-height: var(--tap); display: inline-flex; align-items: center; }
-.wordmark-icon { width: 20px; height: 20px; margin-right: 6px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+/* ---------------------------------------------------------------- shell: top bar (the 3D page's header) */
+.topbar { position: sticky; top: 0; z-index: 10; background: var(--panel-solid); border-bottom: 1px solid var(--line); }
+/* full width, like the 3D page's header: the wordmark sits at the same place on every page */
+.topbar-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s5); padding: var(--s1) var(--s4); }
+.wordmark { display: inline-flex; align-items: center; min-height: var(--tap); color: var(--text); font-family: var(--font-display); font-size: 1.3rem; font-weight: 700; letter-spacing: 0.04em; text-decoration: none; white-space: nowrap; }
+.wordmark:hover { color: var(--text); }
 /* the status (refreshed from /fragments/topbar) lays out in the bar's own row, so a banner can take a full line under it */
 .status { display: contents; }
 .status > .pill { margin-left: auto; }
-.pill { font-size: var(--fs-meta); font-weight: 700; letter-spacing: 0.04em; padding: 0.15rem 0.5rem; border-radius: 999px; background: var(--badge); color: var(--text); }
-.pill.live { background: var(--green-fill); color: #fff; }
-.pnl { font-weight: 600; white-space: nowrap; }
+/* the mode pill: the 3D page's .pill, an outline in its colour; live is the solid cyan */
+.pill { display: inline-flex; align-items: center; padding: 1px 8px; border: 1px solid var(--line-strong); background: transparent; color: var(--muted); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
+.pill.live { background: var(--green-fill); border-color: var(--green-fill); color: var(--ink); }
+.pnl { font-weight: 700; white-space: nowrap; font-variant-numeric: tabular-nums; }
 /* the current mode's P&L today, a link to Trading */
-.status .pnl { display: inline-flex; align-items: center; gap: 0.3em; min-height: var(--tap); color: var(--text); text-decoration: none; }
+.status .pnl { display: inline-flex; align-items: center; gap: 0.4em; min-height: var(--tap); color: var(--text); text-decoration: none; }
 .status a.pnl:hover { text-decoration: underline; }
 .pnl.pnl-neg { color: var(--red-fg); }
 .topbar.killed { background: var(--red); color: var(--red-text); border-color: var(--red); }
-.topbar.killed a, .topbar.killed .wordmark, .topbar.killed .pnl, .topbar.killed #updated { color: var(--red-text); }
-.topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(0, 0, 0, 0.2); }
-.killed-text { font-weight: 700; text-decoration: none; }
-.topbar .chip.chip-killed { background: rgba(0, 0, 0, 0.3); color: var(--red-text); font-weight: 700; }
-/* the accent focus ring is not visible on the red bar (or the red bottom nav): white there */
-.topbar.killed :focus-visible { outline-color: #fff; }
+.topbar.killed a, .topbar.killed .wordmark, .topbar.killed .pnl, .topbar.killed #updated, .topbar.killed .pill { color: var(--red-text); }
+.topbar.killed .pill { border-color: var(--red-text); }
+.topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(4, 18, 26, 0.18); box-shadow: inset 0 -2px 0 var(--ink); }
+.killed-text { font-family: var(--font-display); font-weight: 700; letter-spacing: 0.02em; text-decoration: none; }
+.topbar .chip.chip-killed { background: var(--ink); border-color: var(--ink); color: var(--red); font-weight: 700; }
+/* the light ring is not visible on the red bar (or the red bottom nav): ink there */
+.topbar.killed :focus-visible { outline-color: var(--ink); }
 /* the freshness line: always visible under the sticky bar, so a lost connection is never below the fold */
-.topbar-note { display: none; max-width: 1200px; margin: 0 auto; padding: 0 var(--s4) 0.2rem; font-size: var(--fs-meta); text-align: right; }
+.topbar-note { display: none; padding: 0 var(--s4) 0.2rem; font-size: var(--fs-meta); text-align: right; }
 .js .topbar-note { display: block; }
-#updated.lost { color: var(--red-fg); font-weight: 600; }
+#updated.lost { color: var(--red-fg); font-weight: 700; }
 .topbar.killed #updated.lost { text-decoration: underline; }
 /* banners (exchange down, unattended, killed) take a full line of the bar */
-.banner { flex-basis: 100%; text-align: center; font-weight: 700; letter-spacing: 0.04em; padding: 0.25rem 0.6rem; border-radius: 6px; text-decoration: none; }
+.banner { flex-basis: 100%; padding: 0.25rem 0.6rem; font-family: var(--font-display); font-weight: 700; letter-spacing: 0.1em; text-align: center; text-transform: uppercase; text-decoration: none; }
 .banner-down { background: var(--red); color: var(--red-text); }
-.banner-warn { background: var(--amber-fill); color: #fff; }
-.topbar.killed .banner-down { background: rgba(0, 0, 0, 0.3); }
-.topbar.killed .banner { color: var(--red-text); }
+.banner-warn { background: var(--amber-fill); color: var(--ink); }
+.topbar.killed .banner-down { background: var(--ink); color: var(--red); }
+.topbar.killed .banner-warn { color: var(--ink); }
 
-/* ---------------------------------------------------------------- shell: nav (five labels; a bottom bar on a phone) */
-.nav { display: flex; gap: var(--s1); flex: 1; }
-.nav a { display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--tap); padding: 0 0.7rem; border-radius: 6px; text-decoration: none; color: var(--text); }
-.nav a.active, .nav a[aria-current="page"] { background: var(--bg); font-weight: 600; }
-.nav svg, .nav .nav-icon { display: none; width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+/* ---------------------------------------------------------------- shell: nav (five labels; a bottom bar on a phone)
+   Tracked uppercase labels with a cyan marker under the current page, the same as the
+   3D page's header nav. */
+.nav { display: flex; gap: 0; flex: 1; }
+.nav a { position: relative; display: inline-flex; align-items: center; gap: var(--s1); min-height: var(--tap); padding: 0 0.75rem; color: var(--muted); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; text-decoration: none; }
+.nav a:hover { color: var(--text); }
+.nav a.active, .nav a[aria-current="page"] { color: var(--text); box-shadow: inset 0 -2px 0 var(--accent); }
+.nav svg, .nav .nav-icon { display: none; width: 22px; height: 22px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.75; stroke-linecap: square; stroke-linejoin: miter; }
 
 /* ---------------------------------------------------------------- page frame */
 .page { max-width: 1200px; margin: 0 auto; padding: var(--s3) var(--s4) var(--s5); }
-.page > h1:first-child, .page > .flash + h1 { margin-top: var(--s1); }
-.flash { background: var(--card); border: 1px solid var(--accent); border-left-width: 4px; border-radius: 6px; padding: var(--s2) var(--s3); margin-bottom: var(--s3); }
+.page > h1:first-child, .page > .flash + h1 { margin-top: var(--s2); }
+.flash { background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: var(--s2) var(--s3); margin-bottom: var(--s3); }
 /* "What this page is": a details that starts open; app.js remembers a dismissal */
 details.intro { margin: 0 0 var(--s3); }
-details.intro > summary { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--tap); color: var(--muted); font-size: var(--fs-meta); cursor: pointer; list-style: none; }
-details.intro > p, details.intro > div { margin: 0 0 var(--s2); }
-.caption { display: block; margin-top: var(--s1); font-size: var(--fs-meta); line-height: 1.35; color: var(--muted); font-weight: 400; }
+details.intro > summary { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--tap); color: var(--muted); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; cursor: pointer; list-style: none; }
+details.intro > summary:hover { color: var(--text); }
+details.intro > p, details.intro > div { margin: 0 0 var(--s2); max-width: 70ch; }
+.caption { display: block; margin-top: var(--s1); font-size: var(--fs-meta); line-height: 1.4; color: var(--muted); font-weight: 400; }
 .empty { color: var(--muted); grid-column: 1 / -1; }
-.count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; padding: 0 0.45rem; border-radius: 999px; background: var(--badge); color: var(--chip-text); font-size: var(--fs-meta); font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.5; }
+.count { display: inline-flex; align-items: center; justify-content: center; min-width: 1.6rem; padding: 0 0.45rem; border: 1px solid var(--line-strong); background: var(--badge); color: var(--chip-text); font-family: var(--font-data); font-size: var(--fs-meta); font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.5; letter-spacing: 0; text-transform: none; }
 
 /* summary markers: the components draw their own chevron or dots */
 details.intro > summary::-webkit-details-marker, details.disclosure > summary::-webkit-details-marker, details.menu > summary::-webkit-details-marker { display: none; }
-details.intro > summary::after, details.disclosure > summary::after { content: ""; flex: none; width: 7px; height: 7px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: translateY(-2px) rotate(45deg); }
+details.intro > summary::after, details.disclosure > summary::after { content: ""; flex: none; width: 7px; height: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: translateY(-2px) rotate(45deg); }
 details.intro[open] > summary::after, details.disclosure[open] > summary::after { transform: translateY(2px) rotate(-135deg); }
 
 /* ---------------------------------------------------------------- stats: big number + label, 2 columns on a phone, 4 from 700 px */
 .stats:not(p) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2); margin: 0 0 var(--s4); }
-.stat { display: flex; flex-direction: column; min-width: 0; padding: var(--s3); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); text-decoration: none; }
-a.stat:hover { border-color: var(--accent); }
-.stat-label { order: -1; font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; }
-.stat-value { font-size: var(--fs-display); font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: var(--s3); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); color: var(--text); text-decoration: none; }
+a.stat:hover { border-color: var(--line-strong); background: var(--live-bg); color: var(--text); }
+.stat-label { order: -1; font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); line-height: 1.3; }
+.stat-value { font-family: var(--font-display); font-size: var(--fs-display); font-weight: 600; line-height: 1.15; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 /* a note wraps (a range keeps both ends: "90% range -1.0% to +1.4%") and stops at three lines */
-.stat-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; overflow-wrap: anywhere; }
+.stat-note { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; font-size: var(--fs-meta); color: var(--muted); line-height: 1.35; overflow-wrap: anywhere; }
 .stat .chip { align-self: flex-start; margin-top: var(--s1); }
 
 /* ---------------------------------------------------------------- rows: one line on a phone, two at most (88 px) */
 .rows { list-style: none; margin: 0 0 var(--s4); padding: 0 var(--s3); background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); }
 .card .rows, .disclosure .rows { margin: 0; padding: 0; background: none; border: 0; border-radius: 0; }
-.row { position: relative; display: flex; align-items: center; gap: var(--s2); min-height: calc(var(--tap) + var(--s2)); padding: var(--s1) 0; border-top: 1px solid var(--line); }
+.row { position: relative; display: flex; align-items: center; gap: var(--s2); min-height: calc(var(--tap) + var(--s2)); padding: var(--s1) 0; border-top: 1px solid var(--line); font-variant-numeric: tabular-nums; }
 .row:first-child { border-top: 0; }
-.row.is-live { background: var(--live-bg); box-shadow: inset 4px 0 0 var(--green-fill); padding-left: var(--s3); }
+.row.is-live { background: var(--live-bg); box-shadow: inset 3px 0 0 var(--green-fill); padding-left: var(--s3); }
 .row-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; justify-content: center; min-height: var(--tap); color: var(--text); text-decoration: none; }
-a.row-main:hover .row-title { text-decoration: underline; }
+a.row-main:hover { color: var(--text); }
+a.row-main:hover .row-title { text-decoration: underline; text-decoration-color: var(--accent); }
 .row-title, .row-meta { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-title { font-weight: 600; line-height: 1.3; }
+.row-title { font-weight: 700; line-height: 1.35; }
 .row-title .chip { margin-left: var(--s1); vertical-align: 1px; }
 /* A title holding a chip and a text span (the params, an order line) is one flex line
    where the span gives way (ellipsis) and the chips keep their width, so a state word is
    never cut; when the bare name before it still leaves no room, the last chip sticks to
    the right edge. A title of bare text and chips keeps the plain ellipsis (the name
    matters more there). */
-.row-title:has(> .chip):has(> span:not(.chip)) { display: flex; align-items: center; column-gap: 0.3em; }
+.row-title:has(> .chip):has(> span:not(.chip)) { display: flex; align-items: center; column-gap: 0.4em; }
 .row-title:has(> .chip):has(> span:not(.chip)) > span:not(.chip) { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .row-title:has(> .chip):has(> span:not(.chip)) > .chip, .row-title:has(> .chip) > .rank { flex: none; margin: 0; }
 .row-title:has(> .chip):has(> span:not(.chip)) > .chip:last-child { position: sticky; right: 0; }
-.row-meta { font-size: var(--fs-meta); color: var(--muted); line-height: 1.3; }
+.row-meta { font-size: var(--fs-meta); color: var(--muted); line-height: 1.35; }
 /* the in-game models row's second grey line is its status reason, a sentence: it wraps, never cut */
 .ingame-row .row-meta2 { white-space: normal; }
 /* the flag chips under the title (overfit, fragile, beats market, ...): they wrap, never cut */
-.row-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 1px var(--s1); margin: 1px 0 0; }
+.row-flags { display: flex; flex-wrap: wrap; align-items: center; gap: 2px var(--s1); margin: 2px 0 0; }
 .row-title .chip, .row-meta .chip { min-height: 1.25rem; }
 /* flag chips are read, never tapped: shorter, so two wrapped lines keep a row under 88 px */
 .row-flags .chip { min-height: 1.1rem; }
-.row-value { flex: none; max-width: 40%; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.row-value { flex: none; max-width: 40%; font-family: var(--font-display); font-weight: 600; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
 /* a number that is a link (a model's "job e12e5e85") is a 44 px target like the row link */
 a.row-value { line-height: var(--tap); }
 .row > .chip, .row > .bar { flex: none; }
@@ -194,30 +227,32 @@ a.row-value { line-height: var(--tap); }
 .row > form, .row > .btn { flex: none; margin: 0; }
 .row .dot { margin-right: var(--s1); }
 
-/* ---------------------------------------------------------------- chips: a state word on a state colour */
-.chip { display: inline-flex; align-items: center; min-height: 1.5rem; padding: 0 0.55rem; border-radius: 999px; background: var(--badge); color: var(--chip-text); font-size: var(--fs-meta); font-weight: 600; line-height: 1.2; white-space: nowrap; }
-.chip-ok { background: var(--green-fill); color: #fff; }
-.chip-warn { background: var(--amber-fill); color: #fff; }
-.chip-bad { background: var(--red); color: var(--red-text); }
-.chip-muted { background: var(--badge); color: var(--chip-text); }
+/* ---------------------------------------------------------------- chips: a state word on a state colour (the 3D page's .pill) */
+.chip { display: inline-flex; align-items: center; min-height: 1.5rem; padding: 0 0.5rem; border: 1px solid var(--line-strong); border-radius: 0; background: var(--badge); color: var(--chip-text); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.08em; line-height: 1.2; text-transform: uppercase; white-space: nowrap; }
+.chip-ok { background: var(--tint-ok); border-color: var(--green-fill); color: var(--green-text); }
+.chip-warn { background: var(--tint-hot); border-color: var(--amber-fill); color: var(--amber-text); }
+.chip-bad { background: var(--tint-bad); border-color: var(--red); color: var(--red-fg); }
+.chip-muted { background: var(--badge); border-color: var(--line-strong); color: var(--chip-text); }
 
-/* ---------------------------------------------------------------- cards and disclosures */
+/* ---------------------------------------------------------------- cards and disclosures: glass panels with a 1px line */
 .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: var(--s3) var(--s4); }
 .card[data-card], .page > .card { margin-bottom: var(--s4); }
 .cards > .card { margin: 0; }
 .cards { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); margin-bottom: var(--s4); }
 .card-head { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; margin-bottom: var(--s2); }
-.card-head h2 { margin: 0; font-size: var(--fs-body); }
+.card-head h2 { margin: 0; font-size: var(--fs-meta); }
 .card-head .count { margin-left: auto; }
 /* a link in a card header (Home's Recent: "Trading") is a 44 px target */
 .card-head > a { display: inline-flex; align-items: center; min-height: var(--tap); margin-left: auto; }
 .card h2:first-child { margin-top: 0; }
 details.disclosure { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); margin: 0 0 var(--s3); }
+details.disclosure[open] { border-color: var(--line-strong); }
 details.disclosure > summary { position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 0 var(--s2); min-height: var(--tap); padding: var(--s2) calc(var(--s4) + 20px) var(--s2) var(--s4); cursor: pointer; list-style: none; }
+details.disclosure > summary:hover { background: var(--hover); }
 details.disclosure > summary::after { position: absolute; right: var(--s4); top: calc(50% - 4px); }
 details.disclosure[open] > summary::after { top: calc(50% - 1px); }
-.disclosure-title { font-weight: 600; }
-.disclosure-title h2, .disclosure-title h3 { display: inline; margin: 0; font-size: inherit; }
+.disclosure-title { font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; }
+.disclosure-title h2, .disclosure-title h3 { display: inline; margin: 0; font-size: inherit; letter-spacing: inherit; text-transform: inherit; }
 /* the summary wraps rather than cutting a value: a closed group must read at a glance */
 .disclosure-summary { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; font-size: var(--fs-meta); color: var(--muted); }
 .disclosure-body { padding: 0 var(--s4) var(--s4); }
@@ -226,12 +261,13 @@ details.disclosure.is-live { border-color: var(--green-fill); }
 
 /* ---------------------------------------------------------------- menu: a details that opens a short list of actions */
 details.menu { position: relative; flex: none; }
-details.menu > summary { display: flex; align-items: center; justify-content: center; width: var(--tap); height: var(--tap); border-radius: 8px; color: var(--muted); font-weight: 700; letter-spacing: 0.08em; cursor: pointer; list-style: none; user-select: none; }
-details.menu > summary:hover, details.menu[open] > summary { background: var(--badge); color: var(--text); }
-.menu-list { position: absolute; right: 0; top: calc(100% + var(--s1)); z-index: 30; min-width: 12rem; max-width: min(20rem, calc(100vw - 2 * var(--s4))); padding: var(--s1) 0; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+details.menu > summary { display: flex; align-items: center; justify-content: center; width: var(--tap); height: var(--tap); border: 1px solid transparent; color: var(--muted); font-weight: 700; letter-spacing: 0.08em; cursor: pointer; list-style: none; user-select: none; }
+details.menu > summary:hover, details.menu[open] > summary { border-color: var(--line-strong); background: var(--badge); color: var(--text); }
+.menu-list { position: absolute; right: 0; top: calc(100% + var(--s1)); z-index: 30; min-width: 12rem; max-width: min(20rem, calc(100vw - 2 * var(--s4))); padding: var(--s1) 0; background: var(--card); border: 1px solid var(--line-strong); box-shadow: var(--shadow); }
 .menu-list form { display: block; margin: 0; }
-.menu-item { display: flex; align-items: center; gap: var(--s2); width: 100%; min-height: var(--tap); padding: 0 var(--s4); border: 0; border-radius: 0; background: none; color: var(--text); font: inherit; text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; }
-.menu-item:hover, .menu-item:focus-visible { background: var(--bg); }
+.menu-item { display: flex; align-items: center; gap: var(--s2); width: 100%; min-height: var(--tap); padding: 0 var(--s4); border: 0; border-radius: 0; background: none; color: var(--text); font-family: var(--font-display); font-size: var(--fs-body); font-weight: 600; letter-spacing: 0.04em; text-align: left; text-decoration: none; cursor: pointer; white-space: nowrap; }
+.menu-item:hover, .menu-item:focus-visible { background: var(--hover); color: var(--text); }
+.menu-item:focus-visible { outline-offset: -2px; }
 .menu-item.danger { color: var(--red-fg); }
 .menu-item[disabled], .menu-item[aria-disabled="true"] { color: var(--muted); cursor: not-allowed; }
 /* a menu form with an input (Fund: amount) lays out as a small inline form */
@@ -244,56 +280,65 @@ details.menu > summary:hover, details.menu[open] > summary { background: var(--b
 .cards > :has(details.menu[open]), #fleet-grid > :has(details.menu[open]),
 #trading-live > :has(details.menu[open]), #home-live > :has(details.menu[open]) { position: relative; z-index: 31; }
 
-/* ---------------------------------------------------------------- progress bar */
-.bar { position: relative; display: inline-block; vertical-align: middle; flex: 1; min-width: 80px; height: 8px; background: var(--badge); border-radius: 4px; overflow: hidden; }
-.bar > span, .bar-fill { display: block; height: 100%; max-width: 100%; background: var(--accent); border-radius: 4px; }
+/* ---------------------------------------------------------------- progress bar (the 3D page's meter) */
+.bar { position: relative; display: inline-block; vertical-align: middle; flex: 1; min-width: 80px; height: 8px; background: var(--line); overflow: hidden; }
+.bar > span, .bar-fill { display: block; height: 100%; max-width: 100%; background: var(--accent); }
 
 /* ---------------------------------------------------------------- tabs (links with aria-current) */
 .tabs { display: flex; gap: var(--s1); margin: 0 0 var(--s3); border-bottom: 1px solid var(--line); overflow-x: auto; }
-.tabs a { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--tap); padding: 0 var(--s3); color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
-.tabs a[aria-current="page"], .tabs a.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
+.tabs a { display: inline-flex; align-items: center; gap: var(--s2); min-height: var(--tap); padding: 0 var(--s3); color: var(--muted); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+.tabs a:hover { color: var(--text); }
+.tabs a[aria-current="page"], .tabs a.active { color: var(--text); border-bottom-color: var(--accent); }
 /* .tabs scrolls sideways, which clips an outside ring at its top and bottom: draw it inside */
 .tabs a:focus-visible { outline-offset: -2px; }
 
-/* ---------------------------------------------------------------- buttons and forms */
-.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 0.8rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
-.btn.primary { background: var(--accent-fill); border-color: var(--accent-fill); color: var(--accent-text); }
+/* ---------------------------------------------------------------- buttons and forms (the 3D page's .btn; primary is its amber .btn.go) */
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 0.8rem; border: 1px solid var(--line-strong); border-radius: 0; background: transparent; color: var(--text); font-family: var(--font-display); font-size: var(--fs-body); font-weight: 600; letter-spacing: 0.04em; text-decoration: none; cursor: pointer; }
+.btn:hover { border-color: var(--fg); color: var(--text); }
+.btn.primary { background: var(--amber-fill); border-color: var(--amber-fill); color: var(--ink); }
+.btn.primary:hover { border-color: var(--fg); color: var(--ink); }
 .btn.small { min-height: 30px; padding: 0 0.6rem; font-size: var(--fs-meta); }
 .btn.big { min-height: var(--tap); font-size: var(--fs-body); padding: 0 1.2rem; }
-.btn-kill { background: var(--red); border-color: var(--red); color: var(--red-text); font-weight: 700; letter-spacing: 0.04em; }
+.btn-kill { background: var(--red); border-color: var(--red); color: var(--red-text); font-weight: 700; letter-spacing: 0.12em; }
+.btn-kill:hover { border-color: var(--fg); color: var(--red-text); }
 .btn.danger { border-color: var(--red); color: var(--red-fg); }
 .btn[disabled], select[disabled] { opacity: 0.5; cursor: not-allowed; }
 button.link { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; font-size: var(--fs-meta); cursor: pointer; min-height: var(--tap); }
-select, input[type="text"], input[type="number"], input[type="password"], input[type="search"] { font: inherit; min-height: 36px; padding: 0 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); max-width: 100%; }
+select, input[type="text"], input[type="number"], input[type="password"], input[type="search"] { font: inherit; min-height: 36px; padding: 0 0.5rem; border: 1px solid var(--line-strong); border-radius: 0; background: var(--bg); color: var(--text); max-width: 100%; }
+select:hover, input:hover { border-color: var(--dim); }
+/* a select shows choices, labels rather than data: the narrower display face keeps it from crowding a row */
+select { font-family: var(--font-display); font-weight: 500; letter-spacing: 0.02em; }
+input::placeholder, textarea::placeholder { color: var(--muted); opacity: 1; }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--ok); }
 label { display: flex; flex-direction: column; gap: 0.2rem; font-size: var(--fs-meta); }
 label > span { display: block; }
 /* field help: a muted line under the input */
-.help, .field-help { display: block; font-size: var(--fs-meta); color: var(--muted); font-weight: 400; line-height: 1.35; }
+.help, .field-help { display: block; font-size: var(--fs-meta); color: var(--muted); font-weight: 400; line-height: 1.4; }
 [data-field] { min-width: 0; }
 /* the help sits under each input, so the fields align at the top of their labels */
 .fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: var(--s3); margin-bottom: var(--s3); align-items: start; }
 form.inline { display: inline; }
 .form-actions { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; margin-top: var(--s3); }
 .error { color: var(--red-fg); }
-.inline-error { margin: 0 0 0.5rem; font-weight: 600; }
+.inline-error { margin: 0 0 0.5rem; font-weight: 700; }
 .switching { margin: 0.4rem 0 0; color: var(--amber-text); font-size: var(--fs-meta); }
-.stale-age { color: var(--amber-text); font-weight: 600; }
-.reason { color: var(--red-fg); font-size: var(--fs-meta); font-weight: 600; }
+.stale-age { color: var(--amber-text); font-weight: 700; }
+.reason { color: var(--red-fg); font-size: var(--fs-meta); font-weight: 700; }
 
 /* ---------------------------------------------------------------- page pieces: group headings, settings groups, the model verdict, readings */
-.disclosure-body h3 { font-size: var(--fs-meta); font-weight: 600; color: var(--muted); letter-spacing: 0.02em; margin: var(--s4) 0 var(--s2); }
+.disclosure-body h3 { font-size: var(--fs-meta); font-weight: 600; color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; margin: var(--s4) 0 var(--s2); }
 .disclosure-body > h3:first-child, .disclosure-body > .group:first-child > h3:first-child, .disclosure-body > section:first-child > h3:first-child { margin-top: 0; }
 .disclosure-body .group + .group { margin-top: var(--s4); padding-top: var(--s3); border-top: 1px solid var(--line); }
 .disclosure-body .group > .btn { margin-top: var(--s1); }
-.group.live.is-live { background: var(--live-bg); box-shadow: inset 4px 0 0 var(--green-fill); border-radius: 6px; padding: var(--s2) var(--s3) var(--s3) var(--s4); }
-.group.killed { background: var(--bad-bg); box-shadow: inset 4px 0 0 var(--red); border-radius: 6px; padding: var(--s2) var(--s3) var(--s3) var(--s4); }
-/* --muted is 4.4:1 on the light bad-bg; the grey text inside (its heading, notes) uses the chip text grey */
+.group.live.is-live { background: var(--live-bg); box-shadow: inset 3px 0 0 var(--green-fill); padding: var(--s2) var(--s3) var(--s3) var(--s4); }
+.group.killed { background: var(--bad-bg); box-shadow: inset 3px 0 0 var(--red); padding: var(--s2) var(--s3) var(--s3) var(--s4); }
+/* the grey text inside the killed group (its heading, notes) uses the chip text grey */
 .group.killed { --muted: var(--chip-text); }
 .verdict { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--s1) var(--s2); margin: 0 0 var(--s2); }
 .verdict .chip { margin-top: 1px; }
-.verdict-text { flex: 1 1 100%; min-width: 0; font-weight: 600; line-height: 1.35; }
-.reading { margin: 0 0 var(--s2); font-size: var(--fs-meta); color: var(--muted); line-height: 1.35; }
-.chip-live { text-transform: uppercase; letter-spacing: 0.04em; }
+.verdict-text { flex: 1 1 100%; min-width: 0; font-weight: 700; line-height: 1.4; }
+.reading { margin: 0 0 var(--s2); font-size: var(--fs-meta); color: var(--muted); line-height: 1.4; }
+.chip-live { text-transform: uppercase; letter-spacing: 0.08em; }
 .bankroll-lines { font-size: var(--fs-meta); line-height: 1.5; }
 .positions-head { margin: var(--s3) 0 var(--s1); }
 .positions-head:first-child { margin-top: 0; }
@@ -306,9 +351,9 @@ dl.kv[data-list="timing"] dd { overflow-wrap: anywhere; }
 
 /* ---------------------------------------------------------------- step 6C: in-game (paper only)
    The in-game line of an assignment row is a .row-meta (one line, ellipsis); the
-   `in-game` chip keeps its state colours and only adds an accent ring, so it never
-   reads as the filled sell chip. A stale state is the amber chip plus the muted line. */
-.chip.chip-ingame { border: 1px solid var(--accent); }
+   `in-game` chip keeps its state colours and only adds a doubled accent ring, so it never
+   reads as the thin sell outline. A stale state is the amber chip plus the muted line. */
+.chip.chip-ingame { border: 1px solid var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
 .row-ingame .chip { vertical-align: 1px; }
 .game-line, .ingame-p { font-variant-numeric: tabular-nums; }
 /* a stale game state and the probability computed on it are dimmed (grey, italic; no
@@ -325,50 +370,67 @@ dl.kv[data-list="timing"] dd { overflow-wrap: anywhere; }
 .feed-state { margin: 0 0 var(--s2); }
 .ingame-feed.is-suspended > details.disclosure { border-color: var(--red); }
 fieldset.ingame-eras { min-width: 0; margin: 0 0 var(--s3); padding: var(--s2) 0 0; border: 0; border-top: 1px solid var(--line); }
-fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-weight: 600; font-size: var(--fs-meta); }
+fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-family: var(--font-display); font-weight: 600; font-size: var(--fs-meta); letter-spacing: 0.12em; text-transform: uppercase; }
 
 /* ---------------------------------------------------------------- wide screens */
 @media (min-width: 700px) {
   .stats:not(p) { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s3); }
   .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .wordmark { padding-right: var(--s4); border-right: 1px solid var(--line); }
-  .topbar.killed .wordmark { border-color: rgba(255, 255, 255, 0.4); }
+  /* glass from 700 px only: a backdrop filter would hold the phone's fixed bottom nav inside the bar */
+  .topbar:not(.killed) { background: var(--panel); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 }
 
 /* ---------------------------------------------------------------- phone: bottom nav, 44 px targets, nothing hides behind the bar */
 @media (max-width: 699.98px) {
-  .topbar-row { padding: var(--s1) var(--s4); gap: var(--s1) var(--s2); }
+  .topbar-row { padding: var(--s1) var(--s4); gap: 0 var(--s3); }
+  .wordmark { font-size: 1.1rem; }
   .topbar-note { padding: 0 var(--s4) 0.15rem; }
   .killed-text { flex-basis: 100%; text-align: right; font-size: var(--fs-meta); }
   .status .pnl { font-size: var(--fs-meta); }
+  /* the wordmark, the mode pill and KILL take the first line, the P&L the second, then
+     the killed line and the banners */
+  .status > .pill { margin-left: 0; }
+  .status > .btn-kill, .status > .chip-killed { margin-left: auto; }
+  .status > .pnl { order: 1; }
+  .status > .killed-text { order: 2; }
+  .status > .banner { order: 3; }
   .banner { font-size: var(--fs-meta); }
   .nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; gap: 0; background: var(--card); border-top: 1px solid var(--line); padding: 0 env(safe-area-inset-right, 0px) var(--safe-bottom) env(safe-area-inset-left, 0px); }
-  .nav a { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; gap: 2px; min-height: var(--nav-h); padding: var(--s1) 0; border-radius: 0; font-size: var(--fs-meta); line-height: 1.1; color: var(--muted); }
-  .nav a.active, .nav a[aria-current="page"] { background: none; color: var(--accent); font-weight: 600; box-shadow: inset 0 2px 0 var(--accent); }
+  .nav a { flex: 1 1 0; min-width: 0; flex-direction: column; justify-content: center; gap: 3px; min-height: var(--nav-h); padding: var(--s1) 0; font-size: 0.75rem; letter-spacing: 0.06em; line-height: 1.1; color: var(--muted); }
+  .nav a.active, .nav a[aria-current="page"] { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
   .nav svg, .nav .nav-icon { display: block; }
   .topbar.killed .nav { background: var(--red); border-color: var(--red); }
   .topbar.killed .nav a { color: var(--red-text); }
-  .topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(0, 0, 0, 0.2); box-shadow: none; }
+  .topbar.killed .nav a.active, .topbar.killed .nav a[aria-current="page"] { background: rgba(4, 18, 26, 0.18); box-shadow: inset 0 2px 0 var(--ink); }
   .page { padding: var(--s3) var(--s4); padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--s5)); }
-  /* a control scrolled into view (a link to #anchor, a focused field) never lands behind the bottom nav */
-  html { scroll-padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--s2)); }
+  /* a control scrolled into view (a link to #anchor, a focused field) never lands behind the bottom nav;
+     the monospace body is 14 px by default here, so a row title keeps its words beside its chips */
+  html { font-size: 87.5%; scroll-padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--s2)); }
   .btn, .btn.small, select, input[type="text"], input[type="number"], input[type="password"], input[type="search"] { min-height: var(--tap); }
+  /* 16 px fields: a phone browser zooms the page into a smaller one on focus */
+  select, input, textarea { font-size: max(16px, 1rem); }
   .stat { padding: var(--s3); }
   .row-value { max-width: 34%; }
-  /* a .lines-full row (Models): the number sits beside the title line and the lines under
-     the title run under it to the menu, so the flag chips get the full width */
-  .row.lines-full { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0 var(--s2); }
-  .row.lines-full > .row-main { grid-area: 1 / 1 / 2 / 3; }
-  .row.lines-full > .row-value { grid-area: 1 / 2 / 2 / 3; align-self: start; max-width: 5.75rem; line-height: 1.3; }
-  .row.lines-full > details.menu { grid-area: 1 / 3 / 2 / 4; }
-  .row.lines-full .row-title { padding-right: calc(5.75rem + var(--s2)); }
+  /* a .lines-full row (Models) and an in-game model row: the number sits beside the title
+     line and the lines under the title run under it to the menu, so the flag chips and the
+     status reason get the full width (the monospace reason would wrap to a fourth line) */
+  .row.lines-full, .row.ingame-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 0 var(--s2); }
+  .row.lines-full > .row-main, .row.ingame-row > .row-main { grid-area: 1 / 1 / 2 / 3; }
+  .row.lines-full > .row-value, .row.ingame-row > .row-value { grid-area: 1 / 2 / 2 / 3; align-self: start; max-width: 5.75rem; line-height: 1.35; }
+  .row.lines-full > details.menu, .row.ingame-row > details.menu { grid-area: 1 / 3 / 2 / 4; }
+  .row.lines-full .row-title, .row.ingame-row .row-title { padding-right: calc(5.75rem + var(--s2)); }
   .menu-list { min-width: 11rem; }
+  /* chips track less on a phone, so a row title keeps its words beside them */
+  .chip { padding: 0 0.35rem; letter-spacing: 0.04em; }
+  /* the tabs (Jobs, the Fleet sub-nav) fit 390 px with less tracking */
+  .tabs a { padding: 0 var(--s2); letter-spacing: 0.04em; }
   /* step 6C: the probe forms stack as full-width tap targets */
   .probe-row > form, .probe-gamestate label { flex: 1 1 100%; }
   .probe-row .btn, .probe-gamestate input { width: 100%; }
 }
 @media (prefers-reduced-motion: no-preference) {
   details.intro > summary::after, details.disclosure > summary::after { transition: transform 0.15s ease; }
+  .bar-fill { transition: width 0.9s linear; }
 }
 
 /* ================================================================ legacy
@@ -379,32 +441,33 @@ fieldset.ingame-eras legend { padding: 0 var(--s2) 0 0; font-weight: 600; font-s
 .card.confirm { max-width: 560px; margin: 0 0 var(--s4); }
 .chip.st-stale { color: var(--amber-text); }
 
-/* worker cards */
+/* worker cards: the 3D page's dots (a glow when on, a ring when off) */
 .worker.is-disabled { opacity: 0.75; }
 .worker.is-offline { opacity: 0.8; }
-.card-head .name { font-weight: 600; }
+.card-head .name { font-weight: 700; }
 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--grey); flex: none; }
-.dot.online { background: var(--green); }
-.dot.stale { background: var(--amber); }
-.dot.offline { background: var(--grey); }
+.dot.online { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.dot.stale { background: var(--amber); box-shadow: 0 0 8px var(--amber); }
+.dot.offline { background: transparent; border: 1.5px solid var(--grey); }
 /* one row per job: its link, bar and percentage never wrap apart */
 .jobrow { display: flex; align-items: center; gap: 0.5rem; flex-wrap: nowrap; min-width: 0; }
 p.stats, .pnl-line { margin: 0.25rem 0 0; }
 /* stale data is dimmed: each block of a refresh region (so a test or a reader can see it on the list itself) */
 .conn-lost #fleet-grid > *, .conn-lost #trading-live > *, .conn-lost #home-live > * { opacity: 0.55; }
-.conn-lost .dot { background: var(--grey); }
+.conn-lost .dot { background: var(--grey); box-shadow: none; }
 
-/* tables */
+/* tables: uppercase tracked heads, tabular data */
 .table-wrap { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: var(--fs-meta); }
+table { border-collapse: collapse; width: 100%; font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 td code { white-space: pre-wrap; word-break: break-word; }
 th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; font-size: var(--fs-meta); }
-.badge { display: inline-block; font-size: var(--fs-meta); padding: 0.1rem 0.45rem; border-radius: 999px; background: var(--badge); color: var(--text); white-space: nowrap; }
-.badge.st-leased { background: var(--leased-fill); color: #fff; }
-.badge.st-succeeded { background: var(--green-fill); color: #fff; }
-.badge.st-failed { background: var(--red); color: #fff; }
-.badge.st-cancel_requested, .badge.st-waiting { background: var(--amber-fill); color: #fff; }
+th { color: var(--muted); font-family: var(--font-display); font-weight: 600; font-size: var(--fs-meta); letter-spacing: 0.1em; text-transform: uppercase; }
+/* job and order states: outlines in the state colour, like the chips */
+.badge { display: inline-block; padding: 0 0.45rem; border: 1px solid var(--line-strong); background: var(--badge); color: var(--text); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+.badge.st-leased { background: var(--tint-ok); border-color: var(--accent); border-style: dashed; color: var(--accent); }
+.badge.st-succeeded { background: var(--tint-ok); border-color: var(--green-fill); color: var(--green-text); }
+.badge.st-failed { background: var(--tint-bad); border-color: var(--red); color: var(--red-fg); }
+.badge.st-cancel_requested, .badge.st-waiting { background: var(--tint-hot); border-color: var(--amber-fill); color: var(--amber-text); }
 .props { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; margin: 0; }
 .props dt { color: var(--muted); }
 .props dd { margin: 0; }
@@ -425,17 +488,23 @@ th { color: var(--muted); font-weight: 600; font-size: var(--fs-meta); }
   table.stack td.wide { flex-basis: 100%; }
   table.stack td.nowrap { white-space: normal; }
   table.stack .badge.st-waiting { display: inline-block; margin-top: 0.15rem; }
+  /* a table that keeps its columns (the calibration and in-game tables) fits 390 px in the
+     wider monospace: tighter cells and heads */
+  table:not(.stack) th, table:not(.stack) td { padding-inline: 0.25rem; }
+  table:not(.stack) :is(th, td):first-child { padding-left: 0; }
+  table:not(.stack) :is(th, td):last-child { padding-right: 0; }
+  table:not(.stack) th { letter-spacing: 0.04em; }
 }
 
 
 /* step 3: models and the job forms */
-.send textarea, .summary-form textarea { font: inherit; width: 100%; min-height: 36px; padding: 0.3rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); resize: vertical; }
-details.edit > summary, details.raw > summary { cursor: pointer; min-height: var(--tap); display: flex; align-items: center; color: var(--accent); }
+.send textarea, .summary-form textarea { font: inherit; width: 100%; min-height: 36px; padding: 0.3rem 0.5rem; border: 1px solid var(--line-strong); border-radius: 0; background: var(--bg); color: var(--text); resize: vertical; }
+details.edit > summary, details.raw > summary { cursor: pointer; min-height: var(--tap); display: flex; align-items: center; color: var(--accent); font-family: var(--font-display); font-weight: 600; letter-spacing: 0.04em; }
 .rank { font-weight: 700; color: var(--muted); margin-right: 0.3rem; }
 .params { color: var(--muted); font-weight: 400; }
-h1 .params { font-size: var(--fs-body); }
-.badge.st-paper_ok { background: var(--green-fill); color: #fff; }
-.badge.st-live_eligible { background: var(--leased-fill); color: #fff; }
+h1 .params { font-family: var(--font-data); font-size: var(--fs-body); letter-spacing: 0; }
+.badge.st-paper_ok { background: var(--tint-ok); border-color: var(--green-fill); color: var(--green-text); }
+.badge.st-live_eligible { background: var(--green-fill); border-color: var(--green-fill); color: var(--ink); }
 .badge.st-retired { background: var(--badge); color: var(--chip-text); }
 .badge.st-candidate { background: var(--badge); color: var(--text); }
 /* .k labels a value inside a stacked table row; shown only once the table stacks */
@@ -447,8 +516,8 @@ h1 .params { font-size: var(--fs-body); }
 table.metrics td, table.metrics th { white-space: nowrap; }
 /* whole-backtest metrics as labelled pairs: they wrap instead of scrolling sideways */
 .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 0.3rem 0.8rem; margin: 0 0 0.75rem; }
-.kv dt { color: var(--muted); font-size: var(--fs-meta); }
-.kv dd { margin: 0; font-size: var(--fs-body); }
+.kv dt { color: var(--muted); font-family: var(--font-display); font-size: var(--fs-meta); font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; }
+.kv dd { margin: 0; font-size: var(--fs-body); font-variant-numeric: tabular-nums; }
 .empty-models { margin: 0.5rem 0 1rem; }
 .created .btn { margin: 0.15rem 0.25rem 0.15rem 0; }
 .attribution { margin-top: 1.5rem; }
@@ -462,12 +531,12 @@ table.metrics td, table.metrics th { white-space: nowrap; }
 
 /* step 4: trading */
 .chip.mode-paper { background: var(--badge); color: var(--chip-text); }
-.chip.chip-ok { background: var(--green-fill); color: #fff; }
-.chip.chip-bad { background: var(--red); color: var(--red-text); }
-.badge.st-active, .badge.st-open, .badge.st-partial, .badge.st-filled { background: var(--green-fill); color: #fff; }
-.badge.st-approved, .badge.st-submitting, .badge.st-halted { background: var(--amber-fill); color: #fff; }
-.badge.st-rejected, .badge.st-rejected_by_exchange { background: var(--red); color: var(--red-text); }
-.badge.st-settled, .badge.st-resolved { background: var(--leased-fill); color: #fff; }
+.chip.chip-ok { background: var(--tint-ok); color: var(--green-text); }
+.chip.chip-bad { background: var(--tint-bad); color: var(--red-fg); }
+.badge.st-active, .badge.st-open, .badge.st-partial, .badge.st-filled { background: var(--tint-ok); border-color: var(--green-fill); color: var(--green-text); }
+.badge.st-approved, .badge.st-submitting, .badge.st-halted { background: var(--tint-hot); border-color: var(--amber-fill); color: var(--amber-text); }
+.badge.st-rejected, .badge.st-rejected_by_exchange { background: var(--tint-bad); border-color: var(--red); color: var(--red-fg); }
+.badge.st-settled, .badge.st-resolved { background: var(--badge); border-color: var(--accent); color: var(--accent); }
 .badge.st-expired, .badge.st-closed { background: var(--badge); color: var(--chip-text); }
 .exchange.is-down { border-color: var(--red); }
 .activate-all, .cancel-all { display: block; margin-bottom: 0.5rem; }
@@ -478,38 +547,38 @@ table.metrics td, table.metrics th { white-space: nowrap; }
 label.check { flex-direction: row; align-items: center; gap: 0.5rem; min-height: 36px; }
 label.check input { width: 20px; height: 20px; margin: 0; }
 .fields .span-all { grid-column: 1 / -1; }
-.fields textarea { font: inherit; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: var(--fs-meta); width: 100%; padding: 0.3rem 0.5rem; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--text); resize: vertical; }
+.fields textarea { font: inherit; font-family: var(--font-data); font-size: var(--fs-meta); width: 100%; padding: 0.3rem 0.5rem; border: 1px solid var(--line-strong); border-radius: 0; background: var(--bg); color: var(--text); resize: vertical; }
 
 /* step 5: the live switch, live rows and smoke orders */
-.chip.chip-smoke { background: var(--amber-fill); color: #fff; }
+.chip.chip-smoke { background: var(--tint-hot); border-color: var(--amber-fill); color: var(--amber-text); }
 .live-form { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: flex-end; margin: 0.5rem 0 0.75rem; }
 .live-form label { flex: 1 1 280px; min-width: 0; }
 .live-form input { width: 100%; }
 .live-form .btn, .live-off .btn { min-height: var(--tap); }
-.phrase { font-weight: 700; background: var(--bg); padding: 0.05rem 0.3rem; border-radius: 4px; }
+.phrase { font-weight: 700; background: var(--bg); border: 1px solid var(--line); padding: 0.05rem 0.3rem; }
 .live-problems { margin: 0 0 0.5rem; }
 .live-props { margin-top: 0.75rem; }
 .auto-kill strong { text-decoration: underline; }
 .killed-text .auto-reason { text-decoration: underline; }
 
 /* step 6: robustness chips, the 90% ranges and the robustness section */
-.chip.chip-flag { background: var(--amber-fill); color: #fff; }
-.chip.chip-overfit { background: var(--red); color: var(--red-text); }
+.chip.chip-flag { background: var(--tint-hot); border-color: var(--amber-fill); color: var(--amber-text); }
+.chip.chip-overfit { background: var(--tint-bad); border-color: var(--red); color: var(--red-fg); }
 .chip.chip-unvalidated { background: var(--badge); color: var(--chip-text); border: 1px dashed var(--muted); }
-.chip.chip-beats { background: var(--green-fill); color: #fff; }
+.chip.chip-beats { background: var(--tint-ok); border-color: var(--green-fill); color: var(--green-text); }
 .range { color: var(--muted); font-size: var(--fs-meta); white-space: nowrap; }
 .flags-line { margin: 0.25rem 0; }
 .flags-line .chip { margin-right: 0.3rem; }
 .flag-meanings { margin: 0 0 0.75rem; padding-left: 1.2rem; }
-.robustness h3 { font-size: var(--fs-meta); margin: 0.75rem 0 0.4rem; color: var(--muted); }
-.market-line { font-weight: 600; }
+.robustness h3 { font-size: var(--fs-meta); margin: 0.75rem 0 0.4rem; color: var(--muted); letter-spacing: 0.12em; text-transform: uppercase; }
+.market-line { font-weight: 700; }
 .market-line.beats { color: var(--green-text); }
 .validate-form { display: inline; }
 .validate-form .btn { min-height: 36px; }
 
 /* step 6 Part B: sells and positions. The sell chip (orders and fills) and the snapshot
    replay chip (Jobs list, leaderboard rank basis) are outlines in the link colour (the
-   accent on card and on live rows pairs), so they never read as a blue status badge; a
+   accent on card and on live rows pairs), so they never read as a filled status chip; a
    loss is the red text token, a gain only gets its sign. */
 .chip.chip-sell { background: transparent; color: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
 .chip.chip-snapshot { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
@@ -538,6 +607,10 @@ label.check input { width: 20px; height: 20px; margin: 0; }
 .subnav { position: relative; gap: 0; margin: 0 0 var(--s3); }
 .subnav a { padding: 0 var(--s2); }
 .subnav .count { margin-left: var(--s1); }
+@media (max-width: 699.98px) {
+  /* the four sub-nav tabs and the approvals count fit 390 px */
+  .subnav a { padding: 0 6px; }
+}
 .card.machine, .card.secret, .card.outbound { padding: var(--s1) var(--s3) var(--s3); }
 .card.machine > .row, .card.secret > .row, .card.outbound > .row { border-top: 0; }
 .card.machine .row-main, .card.secret .row-main, .card.outbound .row-main { min-width: 0; }

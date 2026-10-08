@@ -37,7 +37,7 @@
   {{ ui.stat('kill', 'Killed' if killed else 'Off', 'Kill switch', href='#kill', note='reset below' if killed else 'trading may run') }}
   {{ ui.stat('max-bet', settings.max_bet_cents | money, 'Max bet', href='#trading', note='per market') }}
   {# stored settings, not `values`: a rejected post re-renders the form with what was typed, but the stat says what is in force #}
-  {{ ui.stat('market-source', settings.market_source or market_sources[0], 'Market source', href='#trade') }}
+  {{ ui.stat('market-source', (settings.market_source or market_sources[0]) | label('source'), 'Market source', href='#trade') }}
 </div>
 
 {% if errors %}
@@ -84,7 +84,7 @@
   <div class="fields">
     <label data-field="market_source"><span>Market source</span>
       <select name="market_source">
-        {% for source in market_sources %}<option value="{{ source }}"{% if values.market_source == source %} selected{% endif %}>{{ source }}</option>{% endfor %}
+        {% for source in market_sources %}<option value="{{ source }}"{% if values.market_source == source %} selected{% endif %}>{{ source | label('source') }}</option>{% endfor %}
       </select>
       <span class="help">where prices come from; sim makes them up</span>
     </label>
@@ -98,7 +98,7 @@
       <span class="help">JSON: endpoints and field names per source</span>
     </label>
   </div>
-  <h3>Paper thresholds: paper_ok to live_eligible</h3>
+  <h3>Paper thresholds: Paper OK to Live Eligible</h3>
   <div class="fields">
     {{ field('paper_min_games', 'Min games', '', 'numeric') }}
     {{ field('paper_min_bets', 'Min bets', '', 'numeric') }}
@@ -124,8 +124,8 @@
 {# ---------------------------------------------------------------- Robustness gates: the backtest gate, the eras, the fee model #}
 {% call ui.disclosure('settings-robustness', 'Robustness gates', summary=values.summary_robustness, open=(errors.thresholds or errors.seasons or errors.fees)) %}
 <form class="group" method="post" action="/settings/thresholds" id="thresholds" data-card="thresholds" data-form="thresholds">
-  <h3>Backtest thresholds: candidate to paper_ok</h3>
-  <p class="help">Candidate to paper_ok, judged on the validation era.</p>
+  <h3>Backtest thresholds: Candidate to Paper OK</h3>
+  <p class="help">Candidate to Paper OK, judged on the validation era.</p>
   {{ form_error('thresholds') }}
   <div class="fields">
     {{ field('min_bets', 'Min bets', 'in the validation era (about 4 seasons)', 'numeric') }}
@@ -260,7 +260,7 @@
   <ul class="rows" data-list="audit">
     {% for a in audit %}
     <li class="row" data-row="audit" data-id="{{ loop.index }}">
-      <span class="row-main"><span class="row-title">{{ a.action }}{% if a.entity %}{{ sep }}{{ a.entity }}{% endif %}</span><span class="row-meta">{{ a.ts | ts }}{{ sep }}{{ a.actor or '-' }}{% if a.confirmation_text %}{{ sep }}{{ a.confirmation_text }}{% endif %}</span></span>
+      <span class="row-main"><span class="row-title">{{ a.action | label('action') }}{% if a.entity %}{{ sep }}{{ a.entity }}{% endif %}</span><span class="row-meta">{{ a.ts | ts }}{{ sep }}{{ a.actor or '-' }}{% if a.confirmation_text %}{{ sep }}{{ a.confirmation_text }}{% endif %}</span></span>
     </li>
     {% else %}
     <li class="empty muted">Nothing yet.</li>

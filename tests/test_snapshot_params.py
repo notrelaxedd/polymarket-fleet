@@ -79,7 +79,7 @@ def test_jobs_page_offers_the_price_source_and_explains_it(client, conn):
     assert source.tag == "select" and source.one("option[selected]").attr("value") == "closing_line"
     assert source.one('option[value="closing_line"]').text == "closing line (every game, CLV 0)"
     assert source.one('option[value="snapshots"]').text == "snapshots (recorded prices, real CLV)"
-    assert "60 minutes before kickoff" in form.text and "the host recorded on sim" in form.text
+    assert "60 minutes before kickoff" in form.text and "the host recorded on Sim" in form.text
     assert any("sim prices are not allowed" in e for e in form.errors()), "sim platform with sim prices off: the form warns"
     set_setting(conn, "allow_sim_prices", True)
     assert not any("sim prices are not allowed" in e for e in page(client.get("/jobs").text).form("backtest").errors())
@@ -90,13 +90,13 @@ def test_jobs_form_sends_a_snapshot_backtest(client, conn):
     r = client.post("/jobs", data={"kind": "backtest", "model_id": str(model["id"]), "family": "elo_blend", "params": "{}",
                                    "seasons_first": "", "seasons_last": "", "price_source": "snapshots", "target": "any_idle"},
                     follow_redirects=False)
-    assert r.status_code == 303 and flash_cookie(r).startswith("backtest job ")
+    assert r.status_code == 303 and flash_cookie(r).startswith("Backtest job ")
     job = conn.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT 1").fetchone()
     assert job["params"]["price_source"] == "snapshots" and job["params"]["price_platform"] == "sim"
     listing = page(client.get("/jobs").text)
-    assert listing.row("job", job["id"]).chip("snapshots").text == "snapshots"
+    assert listing.row("job", job["id"]).chip("snapshots").text == "Snapshots"
     detail = page(client.get(f"/jobs/{job['id']}").text)
-    assert "price source snapshots: recorded sim prices 60 minutes before kickoff, participation 0.5" in detail.text
+    assert "price source snapshots: recorded Sim prices 60 minutes before kickoff, participation 0.5" in detail.text
     r = client.post("/jobs", data={"kind": "backtest", "model_id": str(model["id"]), "price_source": "bogus", "target": "any_idle"})
     assert r.status_code == 400 and "price_source must be one of" in r.text
     rejected = page(r.text).form("backtest")

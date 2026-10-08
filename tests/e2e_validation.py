@@ -235,7 +235,7 @@ def gates_phase(host: Any, child_id: str, root_id: str) -> None:
     set_lineage_metrics(host, root_id, validation_metrics(), stress_metrics())
     recompute(DEFAULT_THRESHOLDS)
     assert statuses() == {"paper_ok"}, "metrics that clear every rule promote the whole lineage"
-    assert model_row(host, root_id).chip("paper_ok").text == "paper ok"
+    assert model_row(host, root_id).chip("paper_ok").text == "Paper OK"
 
     set_lineage_metrics(host, root_id, validation_metrics(flags=["overfit"]), stress_metrics(flags=["regime_dependent"]))
     recompute(DEFAULT_THRESHOLDS)

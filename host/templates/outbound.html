@@ -23,7 +23,7 @@
     <div class="row-main">
       <span class="row-title" title="{{ a.summary }}">{{ a.summary }}</span>
       <span class="row-flags">{{ ui.chip("warn", "pending", key="pending") }}</span>
-      <span class="row-meta">{{ a.workload }} &middot; {{ a.kind }}{% if a.machine_name %} &middot; {{ a.machine_name }}{% endif %} &middot; {{ a.age | ago }}</span>
+      <span class="row-meta">{{ a.workload }} &middot; {{ a.kind | label }}{% if a.machine_name %} &middot; {{ a.machine_name }}{% endif %} &middot; {{ a.age | ago }}</span>
     </div>
     <form method="post" action="/outbound/{{ a.id }}/approve" data-action="approve">
       <button type="submit" class="btn primary">Approve</button>
@@ -49,7 +49,7 @@
 {% for a in done %}
 {% set meta %}{{ a.workload }} &middot; {{ (a.decided_age if a.decided_age is not none else a.age) | ago }}{% if a.decided_by %} &middot; {{ a.decided_by }}{% endif %}{% endset %}
 {% call ui.row("outbound-done", a.id, None, a.summary, meta=meta, meta2=a.error) %}
-  {{ ui.chip(a.tone, a.status, key=a.status) }}
+  {{ ui.chip(a.tone, a.status | label, key=a.status) }}
 {% endcall %}
 {% endfor %}
 </ul>
