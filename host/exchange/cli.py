@@ -10,6 +10,8 @@ probe-account                                the balance call's status and raw p
 auth-check                                   one auth probe written to exchange_state
 probe-gamestate --event ID [--yahoo]         one game-state request: status, payload, parsed ([--url U])
 probe-alpaca [--asset-class N] [--get PATH]  read-only Alpaca checks: keys, account, assets, quotes ([--raw])
+ingest-stock-bars [--symbol S]               fetch the daily stock bars now (all stock_symbols, or the ones named)
+stock-bars-status                            one line per symbol: bars stored, newest bar, last fetch, last error
 
 The live commands load the credentials from the environment (exchange.env) the way
 the exchange process does; the key and secret are never printed. A malformed secret
@@ -193,6 +195,25 @@ def cmd_probe_alpaca(_: Config, args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def cmd_ingest_stock_bars(config: Config, args: argparse.Namespace) -> None:
+    from host.exchange import stock_bars
+
+    feed = stock_bars.StockFeed()
+    with db.connect(config.database_url) as conn:
+        result = feed.run(conn, utcnow(), force=True, only=args.symbol or None)
+    _print(result)
+    if result.get("error") or result.get("skipped"):
+        raise SystemExit(1)
+
+
+def cmd_stock_bars_status(config: Config, _: argparse.Namespace) -> None:
+    from host.exchange import stock_bars
+
+    with db.connect(config.database_url) as conn:
+        rows = stock_bars.status(conn)
+    print_table(rows, ["symbol", "bars_count", "bars_through", "fetched_at", "tradable", "last_error"])
+
+
 def print_probe_gamestate(result: dict[str, Any]) -> None:
     for key in ("source", "event_id", "game_id", "url", "status", "error", "database"):
         if key in result:
@@ -237,6 +258,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--get", action="append", default=[], help="another GET path (/v2/... trading, data:/v2/... market data)")
     p.add_argument("--raw", action="store_true", help="print up to 64 KiB of each answer instead of 2 KiB")
     p.set_defaults(func=cmd_probe_alpaca)
+    p = sub.add_parser("ingest-stock-bars", help="fetch the daily stock bars from Alpaca now")
+    p.add_argument("--symbol", action="append", default=[], help="only this symbol (repeatable); default every stock_symbols entry")
+    p.set_defaults(func=cmd_ingest_stock_bars)
+    sub.add_parser("stock-bars-status", help="the daily bar feed per symbol").set_defaults(func=cmd_stock_bars_status)
     return parser
 
 

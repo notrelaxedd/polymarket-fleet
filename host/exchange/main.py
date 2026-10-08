@@ -9,7 +9,9 @@ probe (`auth_probe_interval_s`, and at start), market discovery (5 min), snapsho
 game-state feed (every second, right after snapshots, with its own per-game cadence
 and rate cap inside: host/exchange/gamestate.py), the scores poll (60 s, through the
 feed's ESPN window and backoff; deferred, it asks again a second later), settlement
-(30 s) and retention (nightly). Every task runs in its own transaction and an
+(30 s), retention (nightly) and the daily stock bars (checked every minute,
+host/exchange/stock_bars.py: new symbols at once, the rest once a day after
+`stock_bars_hour`). Every task runs in its own transaction and an
 exception, or a soft error a task reports, is logged and remembered as `last_error`
 without stopping the loop. With credentials the loop runs
 the auth probe, the reconciliation of `submitting` rows and the open-order audit
@@ -33,7 +35,7 @@ from psycopg_pool import ConnectionPool
 
 from host import db
 from host.config import Config
-from host.exchange import gamestate, live_sync, mapping, paper, retention, scores, settle, snapshots, state
+from host.exchange import gamestate, live_sync, mapping, paper, retention, scores, settle, snapshots, state, stock_bars
 from host.exchange.adapters import make_source
 from host.exchange.adapters.base import MarketSource, OrderGateway, PaperGateway, utcnow
 from host.exchange.adapters.sim import SimSource
@@ -47,9 +49,10 @@ log = logging.getLogger(__name__)
 INTERVALS: dict[str, float] = {
     "heartbeat": 5.0, "auth": 300.0, "discover": 300.0, "snapshots": 1.0, "gamestate": 1.0, "open_orders_audit": 60.0,
     "executor": 0.25, "fills": 1.0, "live_fills": 2.0, "scores": 60.0, "settle": 30.0, "retention": 60.0,
+    "stocks": 60.0,
 }
 ORDER = ("heartbeat", "auth", "discover", "snapshots", "gamestate", "open_orders_audit", "executor", "fills",
-         "live_fills", "scores", "settle", "retention")
+         "live_fills", "scores", "settle", "retention", "stocks")
 LIVE_TASKS = ("open_orders_audit", "live_fills")
 SETTING_INTERVALS = {"auth": "auth_probe_interval_s", "open_orders_audit": "open_orders_audit_s", "live_fills": "live_fills_poll_s"}
 LOOP_SLEEP = 0.25
@@ -80,6 +83,7 @@ class ExchangeLoop:
         self.errors: dict[str, str] = {}
         self.retention_day: Any = None
         self.gamestate_poller = gamestate.PollerState(clock=lambda: self.clock().timestamp())
+        self.stock_feed = stock_bars.StockFeed()
 
     @property
     def last_error(self) -> str | None:
@@ -231,6 +235,9 @@ class ExchangeLoop:
             return None
         self.retention_day = local.date()
         return retention.run(conn, now)
+
+    def task_stocks(self, conn: Any, now: datetime) -> Any:
+        return self.stock_feed.run(conn, now)
 
     # ------------------------------------------------------------------- loop
 

@@ -292,3 +292,8 @@ SCHEMA: dict[str, Validator] = {
 from host.settings_schema_ingame import INGAME_SCHEMA  # noqa: E402
 
 SCHEMA.update(INGAME_SCHEMA)
+
+# step 9: stocks on Alpaca, the daily bar feed (host/settings_schema_stocks.py)
+from host.settings_schema_stocks import STOCKS_SCHEMA  # noqa: E402
+
+SCHEMA.update(STOCKS_SCHEMA)
