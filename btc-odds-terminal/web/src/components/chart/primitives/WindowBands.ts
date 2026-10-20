@@ -25,8 +25,8 @@ export interface ReservedRect {
 export class WindowBandsPrimitive extends BasePrimitive {
   private bands: BandGeom[] = [];
   private boundaries: number[] = [];
-  /** set by the engine each frame so band labels can dodge the NOW label */
-  reserved: ReservedRect | null = null;
+  /** bottom-row rect owned by another label (the NOW pill); band labels dodge it */
+  getReserved: () => ReservedRect | null = () => null;
 
   private readonly view = new FnPaneView(
     new FnRenderer(null, (s) => this.drawBg(s)),
@@ -100,7 +100,7 @@ export class WindowBandsPrimitive extends BasePrimitive {
       if (visR - visL < tw + 8) continue;
       let cx = (visL + visR) / 2;
       let cy = y;
-      const r = this.reserved;
+      const r = this.getReserved();
       if (r && cx + tw / 2 > r.left - 6 && cx - tw / 2 < r.right + 6) {
         // try to slide left/right within the band, otherwise lift it one row up
         const leftFit = r.left - 8 - tw / 2;
