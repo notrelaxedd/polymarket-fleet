@@ -69,6 +69,7 @@ class MockBackend {
   private timer: ReturnType<typeof setInterval> | null = null;
   private subs = new Set<Emit>();
   private staleUntil: Partial<Record<FeedId, number>> = {};
+  private staleSince: Partial<Record<FeedId, number>> = {};
   private nextStaleAt = 0;
   private lastMsg: Record<FeedId, number> = { coinbase: 0, kraken: 0, bitstamp: 0, polymarket: 0 };
   private forceStale: FeedId | null = null;
@@ -289,9 +290,13 @@ class MockBackend {
     return ids.map((id) => {
       const forced = this.forceStale === id;
       const staleEnd = this.staleUntil[id] ?? 0;
-      if (forced || ts < staleEnd) {
-        const age = forced ? 6000 + (ts % 4000) : Math.max(3500, 8000 - (staleEnd - ts));
+      if (forced) {
+        const age = 6000 + (ts % 4000);
         return { id, state: "stale" as const, lastMsgTs: ts - age, ageMs: age };
+      }
+      if (ts < staleEnd) {
+        const age = ts - (this.staleSince[id] ?? ts);
+        return { id, state: age > 3000 ? ("stale" as const) : ("live" as const), lastMsgTs: ts - age, ageMs: age };
       }
       const age = Math.round(60 + Math.random() * 700);
       return { id, state: "live" as const, lastMsgTs: ts - age, ageMs: age };
@@ -368,6 +373,7 @@ class MockBackend {
           // feed health
           if (ts >= this.nextStaleAt && !this.forceStale) {
             const ex = EXCHANGES[Math.floor(Math.random() * EXCHANGES.length)];
+            this.staleSince[ex] = ts;
             this.staleUntil[ex] = ts + 6000 + Math.random() * 5000;
             this.nextStaleAt = ts + 40_000 + Math.random() * 50_000;
           }

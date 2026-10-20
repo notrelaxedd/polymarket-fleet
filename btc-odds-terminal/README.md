@@ -69,7 +69,7 @@ sudo nano /opt/btc-odds-terminal/backend/.env     # HOST, CORS_ORIGIN, TRADING_M
 sudo systemctl restart btc-odds-terminal
 ```
 
-Manual setup, if you would rather not run the script:
+Manual setup, if you would rather not run the script. Run it from the `btc-odds-terminal/` project directory of your checkout:
 
 ```bash
 sudo apt-get install -y curl rsync build-essential python3    # plus Node 22
@@ -176,7 +176,7 @@ WebSocket at `/ws`. The server sends `{ type, data }` messages: `snapshot`, `btc
 
 - **Stale-feeds banner or amber dots.** A feed is `stale` after 3 s without a message, and `down` when its socket is closed or never connected. Check `curl -s http://127.0.0.1:8787/api/state` and read `feeds`. Feeds reconnect with backoff. If one stays down, read the logs: `sudo journalctl -u btc-odds-terminal -n 200 --no-pager`.
 - **Outbound firewall.** The worker needs outbound TCP 443 to the three exchanges' WebSocket endpoints, to `gateway.polymarket.us`, and to `api.polymarket.us` (live only). If a firewall blocks one of them, the matching feed stays `down`. Allow it, then restart the service.
-- **Chart is empty on first load.** Run `npm run seed` in `/opt/btc-odds-terminal/backend` as the service user (`sudo -u btcodds`), or re-run `install.sh` to retry the seed.
+- **Chart is empty on first load.** The seed did not run or failed. Re-run `sudo ./install.sh`; it retries the seed until one succeeds.
 - **Service will not start, with a namespace or read-write path error.** The data directory is missing. Run `sudo install -d -m 0750 -o btcodds -g btcodds /opt/btc-odds-terminal/backend/data`.
 - **Vercel page cannot connect, or shows mixed-content errors.** Check that the URLs are `https://` and `wss://`, that the browser is on the tailnet, and that the Vercel origin is in `CORS_ORIGIN`.
 - **The BRTI proxy and the settlement disagree.** This is expected near the strike. See Data sources.
