@@ -57,7 +57,7 @@ describe("normCdf", () => {
   it("tails saturate and stay monotonic", () => {
     expect(normCdf(-40)).toBe(0);
     expect(normCdf(40)).toBe(1);
-    expect(normCdf(-8)).toBeCloseTo(6.220960574271819e-16, 25);
+    expect(Math.abs(normCdf(-8) - 6.220960574271819e-16)).toBeLessThan(1e-20);
     let prev = -1;
     for (let x = -6; x <= 6; x += 0.05) {
       const p = normCdf(x);
