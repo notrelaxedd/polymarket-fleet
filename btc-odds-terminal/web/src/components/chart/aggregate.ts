@@ -7,6 +7,8 @@
 //  - otherwise re-folds only the LAST output bucket plus anything after it ("tail"), locating the start
 //    of that bucket in the source by binary search (never by stored index — front trims shift indices).
 // Per frame the work is O(log n + items in the last bucket), independent of how much history is loaded.
+// Front trims of the source are mirrored lazily: once more than TRIM_SLACK output buckets precede the
+// source's first bucket, the next sync rebuilds ("full"), so `out` stays bounded by the source window.
 
 import type { Bar, BtcTick, ExchangeId, FairSnap, OddsSnap } from "@shared/protocol";
 
@@ -24,6 +26,9 @@ export type SyncResult =
 const NONE: SyncResult = { kind: "none" };
 const FULL: SyncResult = { kind: "full" };
 
+/** Output buckets allowed to outlive the (front-trimmed) source before a rebuild drops them. */
+export const TRIM_SLACK = 2000;
+
 export class BucketAggregator<S, O extends Bucketed> {
   out: O[] = [];
   private src: readonly S[] | null = null;
@@ -35,6 +40,7 @@ export class BucketAggregator<S, O extends Bucketed> {
     private readonly tsOf: (s: S) => number,
     /** fold one source item into the bucket accumulator (acc is null for the first item of a bucket) */
     private readonly fold: (acc: O | null, s: S, bucketSec: number) => O,
+    private readonly trimSlack = TRIM_SLACK,
   ) {}
 
   get timeframeMs() {
@@ -66,7 +72,9 @@ export class BucketAggregator<S, O extends Bucketed> {
       this.mark();
       return had ? FULL : NONE;
     }
-    if (this.out.length === 0) {
+    if (this.out.length === 0 || this.surplus() > this.trimSlack) {
+      // first data, or the source was trimmed far enough at the front: rebuild from what is left
+      this.out = [];
       this.foldFrom(0);
       this.mark();
       return FULL;
@@ -83,6 +91,13 @@ export class BucketAggregator<S, O extends Bucketed> {
     this.foldFrom(i);
     this.mark();
     return { kind: "tail", from: Math.min(from, this.out.length - 1) };
+  }
+
+  /** number of output buckets older than the source's first bucket (left behind by front trims) */
+  private surplus(): number {
+    const src = this.src!;
+    const firstBucketSec = (Math.floor(this.tsOf(src[0]) / this.tfMs) * this.tfMs) / 1000;
+    return lowerBoundTime(this.out, firstBucketSec);
   }
 
   private mark() {
@@ -141,6 +156,13 @@ export function indexAtOrBefore<T extends Bucketed>(arr: readonly T[], timeSec: 
 export function findAt<T extends Bucketed>(arr: readonly T[], timeSec: number): T | null {
   const i = indexAtOrBefore(arr, timeSec);
   return i >= 0 && arr[i].time === timeSec ? arr[i] : null;
+}
+
+/** Every bucket open time (seconds) from the bucket containing `fromSec` through `toSec`, inclusive. */
+export function bucketTimes(fromSec: number, toSec: number, tfSec: number): number[] {
+  const out: number[] = [];
+  for (let t = Math.floor(fromSec / tfSec) * tfSec; t <= toSec; t += tfSec) out.push(t);
+  return out;
 }
 
 /** First index with time >= timeSec. */

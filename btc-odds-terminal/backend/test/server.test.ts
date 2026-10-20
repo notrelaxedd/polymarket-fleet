@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { AddressInfo } from "node:net";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import type { FeedStatus, ServerMsg, Settings, StateSnapshot } from "../../shared/protocol.ts";
 import { openDb, type TerminalDb } from "../src/db/index.ts";
@@ -209,6 +209,43 @@ describe("WebSocket /ws", () => {
     expect(await errFor(`ws://127.0.0.1:${port}/nope`)).not.toBe("open");
     expect(await errFor(`ws://127.0.0.1:${port}/ws`, "http://evil.test")).not.toBe("open");
     expect(await errFor(`ws://127.0.0.1:${port}/ws`, "http://ok.test")).toBe("open");
+  });
+
+  it("backpressure drops only high-rate messages, then resyncs with a snapshot", async () => {
+    const engine = new FakeEngine();
+    const db = openDb(":memory:");
+    const app = buildServer(engine, db, { corsOrigin: "*" }, { feedsIntervalMs: 60_000, heartbeatMs: 60_000, maxBufferedBytes: 1000 });
+    cleanup = () => app.close();
+    const sent: ServerMsg[] = [];
+    const fake = {
+      readyState: WebSocket.OPEN,
+      bufferedAmount: 5000,
+      send: (d: string) => sent.push(JSON.parse(d)),
+      terminate: vi.fn(),
+      close: vi.fn(),
+    };
+    (app.wsHub.wss.clients as Set<unknown>).add(fake);
+    const win = { id: "w2", title: "t", startTs: 0, endTs: 1, priceToBeat: 1, upInstrument: "u", downInstrument: "d", status: "live", result: null, settlePrice: null } as const;
+
+    engine.emit("msg", { type: "btc", data: { ts: 1, price: 2, sources: {} } } satisfies ServerMsg);
+    engine.emit("msg", { type: "feeds", data: [] } satisfies ServerMsg);
+    engine.emit("msg", { type: "rollover", data: { current: win, next: null } } satisfies ServerMsg);
+    engine.emit("msg", { type: "window", data: win } satisfies ServerMsg);
+    engine.updateSettings({ feeCentsPerContract: 1 });
+    expect(sent.map((m) => m.type)).toEqual(["rollover", "window", "settings"]);
+
+    // drained: the next message is preceded by a fresh snapshot (once)
+    fake.bufferedAmount = 0;
+    engine.emit("msg", { type: "btc", data: { ts: 2, price: 3, sources: {} } } satisfies ServerMsg);
+    engine.emit("msg", { type: "btc", data: { ts: 3, price: 4, sources: {} } } satisfies ServerMsg);
+    expect(sent.map((m) => m.type)).toEqual(["rollover", "window", "settings", "snapshot", "btc", "btc"]);
+
+    // hopelessly behind: terminated so it reconnects (and gets a snapshot on connect)
+    fake.bufferedAmount = 1_000_000;
+    engine.emit("msg", { type: "rollover", data: { current: win, next: null } } satisfies ServerMsg);
+    expect(fake.terminate).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(6);
+    (app.wsHub.wss.clients as Set<unknown>).delete(fake);
   });
 
   it("app.close() terminates clients and detaches from the engine", async () => {

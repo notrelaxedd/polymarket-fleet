@@ -87,10 +87,11 @@ export function edgeCents(fairC: number, upMidC: number | null): number | null {
  *
  * Prices are resampled to `sampleSec` buckets (the last price seen in each
  * bucket wins). Each bucket close yields one log return against the previous
- * bucket close. A return spanning n buckets (a gap) is normalised so it
- * carries the variance of a single sample: its squared value is divided by n.
- * sigma = sqrt(mean(contribution) / sampleSec) over returns whose closing bucket
- * lies within the last `lookbackSec`.
+ * bucket close; a return spanning n buckets (a gap, or a coarser seeded bar)
+ * covers n·sampleSec seconds. Returns are weighted by the time they cover:
+ * sigma = sqrt(Σ r² / Σ Δt) over returns whose closing bucket lies within the
+ * last `lookbackSec`, so mixed-resolution data (60s seeded bars + 1s live bars)
+ * is combined consistently and the lookback is honoured in time, not in count.
  *
  * Because a bucket's return is only known once the bucket closes, the most
  * recent bucket is included after the next bucket starts (one-sample delay).
@@ -113,9 +114,12 @@ export class RealizedVol {
   private cap = 256;
   private times = new Float64Array(this.cap);
   private vals = new Float64Array(this.cap);
+  /** buckets covered by each return */
+  private spans = new Float64Array(this.cap);
   private head = 0;
   private size = 0;
   private sumV = 0;
+  private sumN = 0;
 
   constructor(lookbackSec: number, sampleSec = 1, minSamples = 30) {
     if (!(Number.isFinite(lookbackSec) && lookbackSec > 0)) {
@@ -154,9 +158,13 @@ export class RealizedVol {
 
   /** Realized vol per √second over the lookback window, or null if fewer than minSamples returns. */
   sigma(): number | null {
-    if (this.size < this.minSamples) return null;
-    const meanV = Math.max(0, this.sumV) / this.size;
-    return Math.sqrt(meanV / this.sampleSec);
+    if (this.size < this.minSamples || !(this.sumN > 0)) return null;
+    return Math.sqrt(Math.max(0, this.sumV) / (this.sumN * this.sampleSec));
+  }
+
+  /** Seconds of price history covered by the returns inside the lookback window. */
+  spanSec(): number {
+    return Math.max(0, this.sumN) * this.sampleSec;
   }
 
   setLookback(lookbackSec: number): void {
@@ -176,7 +184,7 @@ export class RealizedVol {
     if (this.prevBucket !== null) {
       const n = bucket - this.prevBucket;
       const r = Math.log(price / this.prevPrice);
-      this.append(bucket * this.sampleMs, (r * r) / n);
+      this.append(bucket * this.sampleMs, r * r, n);
     }
     this.prevBucket = bucket;
     this.prevPrice = price;
@@ -187,35 +195,42 @@ export class RealizedVol {
     const cutoff = latestMs - this.lookbackMs;
     while (this.size > 0 && this.times[this.head]! < cutoff) {
       this.sumV -= this.vals[this.head]!;
+      this.sumN -= this.spans[this.head]!;
       this.head = (this.head + 1) % this.cap;
       this.size--;
     }
     if (this.size === 0) {
       this.sumV = 0;
+      this.sumN = 0;
       this.head = 0;
     }
   }
 
-  private append(timeMs: number, v: number): void {
+  private append(timeMs: number, v: number, n: number): void {
     if (this.size === this.cap) this.grow();
     const idx = (this.head + this.size) % this.cap;
     this.times[idx] = timeMs;
     this.vals[idx] = v;
+    this.spans[idx] = n;
     this.size++;
     this.sumV += v;
+    this.sumN += n;
   }
 
   private grow(): void {
     const newCap = this.cap * 2;
     const times = new Float64Array(newCap);
     const vals = new Float64Array(newCap);
+    const spans = new Float64Array(newCap);
     for (let i = 0; i < this.size; i++) {
       const src = (this.head + i) % this.cap;
       times[i] = this.times[src]!;
       vals[i] = this.vals[src]!;
+      spans[i] = this.spans[src]!;
     }
     this.times = times;
     this.vals = vals;
+    this.spans = spans;
     this.cap = newCap;
     this.head = 0;
   }

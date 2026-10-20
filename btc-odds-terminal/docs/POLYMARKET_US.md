@@ -76,8 +76,22 @@ Settlement: `{ slug, settlement: number }`.
 - The SDK tests use the values `0`, `0.5` and `1`. These are the long side's payout in dollars per contract.
 - Mapping in the terminal: `1` → long won, `0` → long lost, `0.5` → treated as void (no Up/Down result).
 - SDK 2.0 replaced the older `marketSlug, settlementPrice, settledAt` shape. The parser accepts both shapes.
-- **UNVERIFIED:** what an unsettled market returns (404, an error, or `0`). Because of this, the tracker accepts a
-  `0` only once `/book` no longer reports `MARKET_STATE_OPEN` or `MARKET_STATE_PREOPEN`.
+- **UNVERIFIED:** what an unsettled market returns (404, an error, or a proto3-style default `0`; the SDK types
+  `settlement: number` as non-optional). A result cannot be undone once recorded, so the tracker
+  (`tracker.ts: trySettle`) accepts a value (0 **or** 1) only when:
+  1. two reads at least 30 s apart return the same value (a value that changes restarts the clock);
+  2. `/book` is readable and not `MARKET_STATE_OPEN`/`PREOPEN`. A `/book` error (timeout, 5xx) means "unknown,
+     retry later". A 404 or a book without a state does not block;
+  3. the book state is terminal (`EXPIRED`, `TERMINATED`, `CLOSED`) and the BRTI proxy at the window end does not
+     clearly contradict the value (proxy vs PTB gap > 0.05 %). Otherwise the value is held, and is accepted only
+     after it has been stable for 10 minutes (logged with the doubt).
+- A confirmed non-binary value (`0.5`, void) leaves the window without a result and stops polling it.
+- Settlement polling starts at end + 5 s and slows down with time since the end: every 5 s (first 2 min), 15 s
+  (to 10 min), 60 s (to 30 min), then 5 min, until 6 h after the end.
+- **Restart recovery:** `MarketTracker` takes `unsettled: () => MarketWindow[]` (e.g. `db.listWindows(200)`). On
+  `start()` it re-adopts the windows without a result that ended less than 6 h ago (instruments rebuilt with
+  `parseInstrument`) and settles them through the same loop. Discovery never returns ended windows, so without
+  this a window whose settlement was missed by a restart or an outage would stay `result = NULL`.
 - The endpoint does **not** publish the BTC settlement value, so `MarketWindow.settlePrice` stays `null`.
 
 ## How a "BTC Up or Down: 15 min" window is represented — mostly UNVERIFIED
@@ -95,16 +109,31 @@ Settlement: `{ slug, settlement: number }`.
     sides flip.
   - Two markets (outcome Up and outcome Down) in one event: each side = that market's long.
   - Short-side prices are derived: Down bid = 100 − Up ask, and Down ask = 100 − Up bid.
-- **How the series is found:**
-  - `GET /v1/search?query=Bitcoin Up or Down&status=active|upcoming&limit=50`.
-  - Optionally also `GET /v1/events?seriesId=…` (`POLY_SERIES_ID`) or `?tagSlug=…` (`POLY_TAG_SLUG`).
-  - The result is filtered by text: BTC/Bitcoin + "up or down" + "15m/15 min", or explicit 15-minute times.
+- **How the series is found** (`tracker.ts: fetchEvents`):
+  1. Series: `POLY_SERIES_ID`, or else resolved automatically every 30 min from `GET /v1/series?active=true`
+     (paged by `offset`): BTC/Bitcoin in the slug or title and "15m"/"15 min" in the slug/title or 15/fifteen/quarter
+     in `recurrence`; series that also read "up or down" are preferred. The series is then listed with
+     `GET /v1/events?seriesId=…&active=true&closed=false` (and `?tagSlug=` for `POLY_TAG_SLUG`), paged by `offset`
+     (100 per page, at most 5 pages) until a short page.
+  2. Fallback, only when step 1 did not yield both the live and the next window:
+     `GET /v1/search?query=Bitcoin Up or Down&status=active|upcoming&limit=50`, paged. The page base (0 or 1) is
+     UNVERIFIED, so the first request has no `page`, then `page=1, 2, …`, deduplicated by slug. Paging stops at a
+     short page, a page with nothing new, the needed window (live / next), or 5 requests.
+  - Events listed without nested markets are fetched by slug (`/v1/events/slug/{slug}`), at most 8 per cycle,
+    nearest to now first.
+  - The result is filtered by text: BTC/Bitcoin + "up or down" + "15m/15 min", **or** an ET title range spanning
+    15 minutes ("October 20, 10:30AM-10:45AM ET"), or explicit 15-minute `startTime`/`endTime`.
   - `POLY_SLUG_REGEX` replaces the heuristic outright.
+  - Empty or failed discovery backs off (5 s → 60 s with jitter) instead of retrying every 5 s.
 - **Slug pattern:** unknown. The fixtures assume `btc-updown-15m-<startEpochSec>`, which is Polymarket
   international's style. Any slug works as long as the title or slug identifies the market.
 - **Window start and end:** taken from `startTime`/`endTime` (market first, then event) when they are 15 minutes
   apart. Fallbacks, in order:
-  1. An ET range in the title ("October 20, 10:30AM-10:45AM ET").
+  1. An ET range in the title ("October 20, 10:30AM-10:45AM ET"). Without a year in the title, the year is the
+     New York calendar year (±1) that puts the window closest to now, so a "December 31, 11:30PM" window read at
+     04:40Z on January 1 stays in the old year. If the title disagrees by an hour or more with the slug epoch or
+     `endTime − 15m`, those win (the 1:00–2:00 AM ET hour on the fall-back Sunday happens twice; the title
+     parser returns the first, EDT, instant).
   2. A 10-digit epoch in the slug.
   3. `endTime − 15m`.
 - **Price to beat:** read from the first numeric field ≥ 1000 among `POLY_PTB_FIELDS`. The defaults are
@@ -126,12 +155,24 @@ Then save it as `backend/test/fixtures/polymarket/search-active.live.json`.
 `/v1/ws/markets`, and refuses to open the socket without keys. The Go client says the same.
 
 The tracker's behavior depends on `POLY_WS_MODE`:
-- `auto` (the default): uses the WebSocket only when `POLYMARKET_US_KEY_ID` and `POLYMARKET_US_SECRET` are set.
-  Otherwise it polls `/bbo` every `pollMs` (1 s).
+- `auto` (the default): uses the WebSocket as soon as `POLYMARKET_US_KEY_ID` and `POLYMARKET_US_SECRET` are set,
+  **also in paper mode** (the keys are not only for live trading). Otherwise it polls `/bbo` every `pollMs` (1 s).
 - `noauth`: tries the socket without headers.
-- `off`: always polls.
+- `off`: always polls, even with keys set.
 
-REST polling also takes over whenever the WebSocket is down or quiet.
+Quote freshness and liveness (`tracker.ts`):
+- Every WS frame, heartbeats included, counts as liveness. A quote delivered by the socket stays valid while the
+  socket is alive (the stream pushes changes), so a quiet book stays `live`.
+- REST polling takes over for a window whenever one of its sides has had no fresh quote for 1.5 × `pollMs`
+  (WebSocket down, silent, or not delivering that market).
+- A side whose quote is older than max(3 s, 3 × `pollMs`) and not backed by a live socket is published as `null`.
+  A BBO that names the market but has no price keys is an empty book (both sides `null`), not a dropped frame.
+- At a rollover the new window's cached quotes are published at once and a REST poll runs immediately. A poll that
+  was in flight across the boundary is discarded.
+- WS server errors (error frames, `upgrade rejected: HTTP 401`) show in the feed status detail, e.g.
+  `poll (ws: upgrade rejected: HTTP 401)`.
+- BBO polling backs off (2 × `pollMs` → 15 s with jitter) after 3 consecutive failures. A 429, or any response
+  with `Retry-After`, pauses every REST loop for the requested time (default 10 s, at most 5 min).
 
 | Direction | Frame |
 |---|---|
@@ -146,7 +187,10 @@ REST polling also takes over whenever the WebSocket is down or quiet.
 - Subscription types: `SUBSCRIPTION_TYPE_MARKET_DATA`, `SUBSCRIPTION_TYPE_MARKET_DATA_LITE` and `SUBSCRIPTION_TYPE_TRADE`.
 - Subscriptions do not survive a reconnect, so the tracker resubscribes on every open.
 - The SDK's own tests sometimes send bare strings (`"0.55"`) instead of `Amount` objects. The parser accepts both.
-- Reconnect backoff runs 1 s → 30 s with jitter. A socket idle for 20 s is terminated.
+- Reconnect backoff runs 1 s → 30 s with jitter. It resets only after a data frame or 30 s of uptime, so a server
+  that accepts the upgrade and then drops the socket does not cause a reconnect storm. Two or more 401/403 upgrade
+  rejections in a row (bad keys, or clock skew: the timestamp is signed with the local clock) back off to
+  1–10 minutes. A socket idle for 20 s is terminated.
 
 ## Signing (trading and WebSockets) — VERIFIED (SDK `src/auth.ts`)
 
@@ -211,7 +255,7 @@ So:
 | `POLY_GATEWAY_URL` | `https://gateway.polymarket.us` | public REST host |
 | `POLY_WS_URL` | `wss://api.polymarket.us/v1/ws/markets` | markets WebSocket |
 | `POLY_WS_MODE` | `auto` | `auto` (WebSocket if keys are set), `off` or `noauth` |
-| `POLYMARKET_US_KEY_ID`, `POLYMARKET_US_SECRET` | unset | Ed25519 key ID and base64 secret (used only to sign the WebSocket upgrade here) |
+| `POLYMARKET_US_KEY_ID`, `POLYMARKET_US_SECRET` | unset | Ed25519 key ID and base64 secret. Here they only sign the WebSocket upgrade, but setting them switches market data to the WebSocket even in paper mode (`POLY_WS_MODE=off` forces polling) |
 | `POLY_TIMEOUT_MS` | `5000` | REST timeout |
 | `POLY_SEARCH_QUERY` | `Bitcoin Up or Down` | discovery search text |
 | `POLY_SERIES_ID` | unset | comma-separated series IDs for `/v1/events?seriesId=` |
@@ -220,3 +264,14 @@ So:
 | `POLY_PTB_FIELDS` | see above | comma-separated metadata keys for the price to beat |
 
 The poll interval is the tracker's `pollMs` option; `config.ts` maps `POLY_POLL_MS` to it.
+
+### Recovery procedure when the terminal shows "no active window"
+
+Every discovery heuristic above is a guess until checked against a live response. On the worker:
+1. `curl -s 'https://gateway.polymarket.us/v1/series?active=true&limit=100'`. Find the BTC 15-minute series and
+   set `POLY_SERIES_ID=<id>`.
+2. If there is no such series, `curl -s 'https://gateway.polymarket.us/v1/search?query=Bitcoin%20Up%20or%20Down&status=active&limit=50'`.
+   Adjust `POLY_SEARCH_QUERY` until the live window appears, or set `POLY_TAG_SLUG`.
+3. If the windows are returned but not recognised, set `POLY_SLUG_REGEX` to a pattern that matches their slugs.
+4. If the price to beat is missing, add the field name to `POLY_PTB_FIELDS`.
+5. If the feed status shows `ws: upgrade rejected: HTTP 401`, check the keys and the clock, or set `POLY_WS_MODE=off`.

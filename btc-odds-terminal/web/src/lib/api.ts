@@ -2,11 +2,22 @@ import type { Bar, FairSnap, MarketWindow, OddsSnap, Settings, StateSnapshot } f
 import { API_URL, isMock } from "./env";
 import { getMock } from "./mock";
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_URL}/api${path}`, { cache: "no-store" });
-  if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
-  return (await res.json()) as T;
+/** REST calls give up after this long (a hung request must not block history loading forever). */
+export const REQUEST_TIMEOUT_MS = 10_000;
+
+async function request<T>(method: string, path: string, init: RequestInit = {}): Promise<T> {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${API_URL}/api${path}`, { ...init, method, signal: ctl.signal });
+    if (!res.ok) throw new Error(`${method} ${path} -> ${res.status}`);
+    return (await res.json()) as T;
+  } finally {
+    clearTimeout(timer);
+  }
 }
+
+const get = <T>(path: string): Promise<T> => request<T>("GET", path, { cache: "no-store" });
 
 export const api = {
   state: (): Promise<StateSnapshot> => (isMock() ? Promise.resolve(getMock().snapshot()) : get("/state")),
@@ -21,12 +32,9 @@ export const api = {
   settings: (): Promise<Settings> => (isMock() ? Promise.resolve(getMock().settings()) : get("/settings")),
   putSettings: async (patch: Partial<Settings>): Promise<Settings> => {
     if (isMock()) return getMock().putSettings(patch);
-    const res = await fetch(`${API_URL}/api/settings`, {
-      method: "PUT",
+    return request<Settings>("PUT", "/settings", {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(patch),
     });
-    if (!res.ok) throw new Error(`PUT /settings -> ${res.status}`);
-    return (await res.json()) as Settings;
   },
 };

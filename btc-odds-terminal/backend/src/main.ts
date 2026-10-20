@@ -12,6 +12,9 @@ async function main(): Promise<void> {
     { port: config.port, host: config.host, db: config.dbPath, mode: config.tradingMode, cors: config.corsOrigin },
     "BTC Odds Terminal backend starting",
   );
+  if (config.corsOrigin === "*") {
+    log.warn("CORS_ORIGIN=* lets any web page in your browser call this API (including PUT /api/settings); list your frontend origin(s) instead");
+  }
 
   const db = openDb(config.dbPath);
   log.info({ schemaVersion: db.schemaVersion }, "database ready");

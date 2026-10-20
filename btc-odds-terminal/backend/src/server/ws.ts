@@ -17,7 +17,18 @@ export interface WsHubOptions {
 interface Client extends WebSocket {
   isAlive?: boolean;
   dropped?: number;
+  /** a high-rate message was dropped: send a fresh snapshot once the socket drains */
+  needsResync?: boolean;
 }
+
+/**
+ * High-rate, self-superseding message types: safe to drop for a slow consumer (the client
+ * gets a fresh snapshot once it drains). Everything else (snapshot, rollover, window,
+ * settings) is structural and always delivered.
+ */
+const DROPPABLE = new Set<ServerMsg["type"]>(["btc", "odds", "fair", "feeds"]);
+/** A client whose buffer grows past this many × maxBufferedBytes is terminated (it reconnects and resyncs). */
+const HARD_LIMIT_FACTOR = 8;
 
 /**
  * WebSocket fan-out on /ws (noServer mode, attached to the HTTP server's 'upgrade').
@@ -73,20 +84,49 @@ export class WsHub {
   broadcast(msg: ServerMsg): void {
     if (this.wss.clients.size === 0) return;
     const data = JSON.stringify(msg);
-    for (const c of this.wss.clients as Set<Client>) this.send(c, data);
+    for (const c of this.wss.clients as Set<Client>) this.send(c, data, msg.type);
   }
 
-  private send(c: Client, data: string): void {
+  private send(c: Client, data: string, type: ServerMsg["type"]): void {
     if (c.readyState !== WebSocket.OPEN) return;
-    if (c.bufferedAmount > this.opts.maxBufferedBytes) {
-      // slow consumer: drop rather than buffer without bound
-      c.dropped = (c.dropped ?? 0) + 1;
-      if (c.dropped === 1 || c.dropped % 500 === 0) {
-        this.opts.logger?.warn({ dropped: c.dropped, buffered: c.bufferedAmount }, "ws client backpressure, dropping");
-      }
+    const max = this.opts.maxBufferedBytes;
+    if (c.bufferedAmount > max * HARD_LIMIT_FACTOR) {
+      this.opts.logger?.warn({ buffered: c.bufferedAmount }, "ws client hopelessly behind, terminating");
+      c.terminate();
       return;
     }
+    if (c.bufferedAmount > max) {
+      if (DROPPABLE.has(type)) {
+        // slow consumer: drop high-rate updates rather than buffer without bound, resync later
+        c.dropped = (c.dropped ?? 0) + 1;
+        c.needsResync = true;
+        if (c.dropped === 1 || c.dropped % 500 === 0) {
+          this.opts.logger?.warn({ dropped: c.dropped, buffered: c.bufferedAmount }, "ws client backpressure, dropping");
+        }
+        return;
+      }
+      // structural messages (rollover / window / settings / snapshot) are always delivered
+    } else if (c.needsResync && type !== "snapshot") {
+      // drained after dropping updates: bring the client back to the current state first
+      c.needsResync = false;
+      if (!this.sendSnapshot(c)) return;
+    }
     c.send(data);
+  }
+
+  /** Send a fresh snapshot; on failure close the client (it reconnects and gets one). */
+  private sendSnapshot(c: Client): boolean {
+    let data: string;
+    try {
+      data = JSON.stringify({ type: "snapshot", data: this.engine.snapshot() } satisfies ServerMsg);
+    } catch (err) {
+      this.opts.logger?.warn({ err }, "snapshot failed");
+      c.close(1011, "snapshot failed");
+      return false;
+    }
+    c.needsResync = false;
+    c.send(data);
+    return true;
   }
 
   private readonly onEngineMsg = (msg: ServerMsg): void => {
@@ -122,12 +162,7 @@ export class WsHub {
       ws.isAlive = true;
     });
     ws.on("error", (err) => this.opts.logger?.debug({ err }, "ws client error"));
-    try {
-      this.send(ws, JSON.stringify({ type: "snapshot", data: this.engine.snapshot() } satisfies ServerMsg));
-    } catch (err) {
-      this.opts.logger?.warn({ err }, "snapshot failed");
-      ws.close(1011, "snapshot failed");
-    }
+    if (ws.readyState === WebSocket.OPEN) this.sendSnapshot(ws);
   }
 
   private heartbeat(): void {

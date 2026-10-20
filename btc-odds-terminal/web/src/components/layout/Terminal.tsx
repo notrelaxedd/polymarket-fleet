@@ -16,7 +16,9 @@ const MainChart = dynamic(() => import("@/components/chart/MainChart"), {
 
 export function Terminal() {
   return (
-    <div className="flex min-h-screen flex-col lg2:h-screen lg2:overflow-hidden">
+    // Desktop locks the terminal to the viewport, but never below 720px: on short laptop screens the page
+    // scrolls a little instead of crushing the toolbar/legend or clipping the bottom tabs.
+    <div className="flex min-h-screen flex-col lg2:h-screen lg2:min-h-[720px]">
       <Header />
       <div className="grid min-h-0 flex-1 grid-cols-1 sm:grid-cols-[52px_minmax(0,1fr)] lg2:grid-cols-[52px_minmax(0,1fr)_clamp(320px,25vw,360px)]">
         <div className="sm:row-span-2 sm:row-start-1 lg2:row-span-1 sm:bg-surface">
@@ -32,7 +34,7 @@ export function Terminal() {
               <MainChart />
             </div>
           </div>
-          <div className="flex h-[300px] flex-col lg2:h-[250px] lg2:shrink-0">
+          <div className="flex h-[300px] shrink-0 flex-col lg2:h-[clamp(190px,28vh,250px)]">
             <BottomTabs />
           </div>
         </main>

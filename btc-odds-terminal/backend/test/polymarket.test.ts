@@ -5,7 +5,10 @@ import {
   DEFAULT_DISCOVERY,
   extractPriceToBeat,
   extractTimes,
+  isBtc15mEvent,
+  isBtc15mSeries,
   nyWallToUtc,
+  pickBtc15mSeries,
   parseInstrument,
   parseTitleWindow,
   pickCurrentNext,
@@ -25,7 +28,8 @@ import {
   settlementToResult,
   toCents,
 } from "../src/polymarket/normalize.ts";
-import { buildOddsSnap } from "../src/polymarket/tracker.ts";
+import { parseRetryAfter } from "../src/polymarket/client.ts";
+import { buildOddsSnap, settleRetryMs } from "../src/polymarket/tracker.ts";
 import { backoffMs } from "../src/polymarket/ws.ts";
 
 const FIX = path.join(__dirname, "fixtures", "polymarket");
@@ -136,10 +140,65 @@ describe("window times", () => {
     expect(nyWallToUtc(2026, 6, 4, 12, 0)).toBe(Date.parse("2026-07-04T16:00:00Z"));
   });
 
+  it("New Year's Eve: the title's year is the NY year closest to the clock, not the UTC year", () => {
+    // 2027-01-01T04:40Z is still Dec 31, 11:40 PM in New York
+    const nye = Date.parse("2027-01-01T04:40:00Z");
+    expect(parseTitleWindow("Bitcoin Up or Down - December 31, 11:30PM-11:45PM ET", nye)).toEqual({
+      startTs: Date.parse("2027-01-01T04:30:00Z"),
+      endTs: Date.parse("2027-01-01T04:45:00Z"),
+    });
+    // an upcoming Jan 1 window listed on Dec 31 (UTC and NY) belongs to the next year
+    expect(parseTitleWindow("Bitcoin Up or Down - January 1, 12:00AM-12:15AM ET", Date.parse("2026-12-31T23:00:00Z"))?.startTs).toBe(
+      Date.parse("2027-01-01T05:00:00Z"),
+    );
+    // an explicit year wins
+    expect(parseTitleWindow("Bitcoin Up or Down - December 31, 2026, 11:30PM-11:45PM ET", nye)?.startTs).toBe(
+      Date.parse("2027-01-01T04:30:00Z"),
+    );
+  });
+
+  it("the repeated fall-back hour: the slug epoch beats the (first-instant) title time", () => {
+    // Nov 1 2026, 1:30 AM happens twice in New York: 05:30Z (EDT) and 06:30Z (EST)
+    expect(nyWallToUtc(2026, 10, 1, 1, 30)).toBe(Date.parse("2026-11-01T05:30:00Z"));
+    const est = Date.parse("2026-11-01T06:30:00Z");
+    const m = { slug: `btc-updown-15m-${est / 1000}`, title: "Bitcoin Up or Down - November 1, 1:30AM-1:45AM ET" };
+    expect(extractTimes(m, null, DEFAULT_DISCOVERY, est)).toEqual({ startTs: est, endTs: est + 900_000, explicit15: false });
+    // ... and end - 15m does too
+    const e2 = extractTimes({ slug: "x", title: m.title, endTime: new Date(est + 900_000).toISOString() }, null, DEFAULT_DISCOVERY, est);
+    expect(e2?.startTs).toBe(est);
+    // agreeing sources keep the title result
+    const ok = extractTimes({ slug: "btc-updown-15m-1792506600", title: "Bitcoin Up or Down - October 20, 10:30AM-10:45AM ET" }, null, DEFAULT_DISCOVERY, NOW);
+    expect(ok?.startTs).toBe(1792506600_000);
+  });
+
   it("an end time alone implies start = end - 15m", () => {
     const t = extractTimes({ slug: "x", endTime: "2026-10-20T14:45:00Z", startTime: "2026-10-20T10:00:00Z" }, null, DEFAULT_DISCOVERY, NOW);
     expect(t?.startTs).toBe(Date.parse("2026-10-20T14:30:00Z"));
     expect(t?.explicit15).toBe(false);
+  });
+});
+
+describe("event / series recognition", () => {
+  it("accepts an event identified only by its 15-minute ET title range", () => {
+    const ev = fx("event-title-range.json").event;
+    expect(isBtc15mEvent(ev, DEFAULT_DISCOVERY, NOW)).toBe(true);
+    const ws = windowsFromEvents([ev], NOW);
+    expect(ws).toHaveLength(1);
+    expect(ws[0]!.window).toMatchObject({
+      id: "bitcoin-up-or-down-oct-20-1030am-et-up",
+      startTs: Date.parse("2026-10-20T14:30:00Z"),
+      endTs: Date.parse("2026-10-20T14:45:00Z"),
+      downInstrument: "bitcoin-up-or-down-oct-20-1030am-et-down:long",
+    });
+    // an hourly title range is not a 15m window
+    expect(isBtc15mEvent({ ...ev, title: "Bitcoin Up or Down - October 20, 10AM-11AM ET" }, DEFAULT_DISCOVERY, NOW)).toBe(false);
+  });
+
+  it("matches the BTC 15m series by slug/title/recurrence", () => {
+    const all = fx("series.json").series;
+    expect(pickBtc15mSeries(all).map((x) => x.id)).toEqual([77]);
+    expect(isBtc15mSeries({ id: 5, slug: "bitcoin-updown", title: "Bitcoin Up or Down", recurrence: "RECURRENCE_FIFTEEN_MINUTES" })).toBe(true);
+    expect(isBtc15mSeries({ id: 6, slug: "bitcoin-updown-hourly", title: "Bitcoin Up or Down", recurrence: "hourly" })).toBe(false);
   });
 });
 
@@ -186,6 +245,17 @@ describe("settlement", () => {
 });
 
 describe("BBO / book normalization (cents)", () => {
+  it("a BBO that names the market but omits every price key is an empty book", () => {
+    expect(parseBbo({ marketDataLite: { marketSlug: "x" } })).toMatchObject({ slug: "x", bid: null, ask: null, last: null });
+    expect(parseBbo({ marketData: {} }, "y")).toMatchObject({ slug: "y", bid: null, ask: null });
+    expect(parseBbo({ marketSlug: "z" })).toMatchObject({ slug: "z", bid: null, ask: null });
+    expect(parseBbo({}, "w")).toBeNull();
+    expect(parseWsMessage(JSON.stringify({ requestId: "r", marketDataLite: { marketSlug: "x" } }))).toMatchObject({
+      kind: "bbo",
+      bbo: { slug: "x", bid: null, ask: null },
+    });
+  });
+
   it("BBO Amounts -> cents", () => {
     expect(parseBbo(fx("bbo.json"))).toEqual({ slug: CUR, bid: 61, ask: 63, last: 62, bidDepth: 4, askDepth: 5 });
     const empty = parseBbo(fx("bbo-empty.json"))!;
@@ -238,6 +308,22 @@ describe("fees", () => {
   it("rate helper: C x rate x p x (1-p)", () => {
     expect(feeCentsFromRate(50, 100, 0.07)).toBe(175);
     expect(feeCentsFromRate(99, 100, 0.07)).toBeCloseTo(6.93, 2);
+  });
+});
+
+describe("retry pacing", () => {
+  it("Retry-After: seconds or HTTP date", () => {
+    expect(parseRetryAfter("20", 0)).toBe(20_000);
+    expect(parseRetryAfter(new Date(NOW + 5000).toUTCString(), NOW)).toBe(5000);
+    expect(parseRetryAfter(null, NOW)).toBeNull();
+    expect(parseRetryAfter("soon", NOW)).toBeNull();
+  });
+
+  it("settlement retries slow down with time since the window ended", () => {
+    expect(settleRetryMs(10_000)).toBe(5_000);
+    expect(settleRetryMs(5 * 60_000)).toBe(15_000);
+    expect(settleRetryMs(20 * 60_000)).toBe(60_000);
+    expect(settleRetryMs(3 * 3600_000)).toBe(300_000);
   });
 });
 

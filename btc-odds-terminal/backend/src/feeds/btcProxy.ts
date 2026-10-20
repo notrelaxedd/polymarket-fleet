@@ -3,7 +3,7 @@ import { STALE_AFTER_MS } from "../../../shared/protocol.ts";
 import type { BtcTick, ExchangeId, FeedStatus } from "../../../shared/protocol.ts";
 import type { Logger } from "../log.ts";
 import { EXCHANGE_SPECS, ExchangeFeed } from "./exchanges.ts";
-import type { ExchangeTick } from "./exchanges.ts";
+import type { ExchangeSpec, ExchangeTick } from "./exchanges.ts";
 
 export const MAX_EMIT_HZ = 10;
 const MIN_EMIT_GAP_MS = 1000 / MAX_EMIT_HZ;
@@ -12,8 +12,8 @@ const ALL_EXCHANGES: ExchangeId[] = ["coinbase", "kraken", "bitstamp"];
 export interface LatestEntry {
   /** last trade/ticker price */
   price: number;
-  /** last time we heard anything (data or heartbeat) from this exchange, ms */
-  msgTs: number;
+  /** local receive time of that price, ms (heartbeats/pongs do NOT refresh it) */
+  priceTs: number;
 }
 
 export function median(values: number[]): number {
@@ -25,7 +25,10 @@ export function median(values: number[]): number {
 
 /**
  * Pure: median of the LIVE exchanges' latest prices. An exchange is live when it has an entry
- * (callers omit disconnected exchanges) and now - msgTs <= staleAfterMs. 2 live -> mean, 1 -> itself, 0 -> null.
+ * (callers omit disconnected exchanges) and its price itself is fresh: now - priceTs <= staleAfterMs.
+ * Liveness messages never keep a price alive, so a frozen trade stream drops out after staleAfterMs
+ * (in a quiet market a venue with no trades for > 3s simply sits out until its next trade).
+ * 2 live -> mean, 1 -> itself, 0 -> null.
  */
 export function computeProxy(
   latest: Partial<Record<ExchangeId, LatestEntry>>,
@@ -35,7 +38,7 @@ export function computeProxy(
   const sources: Partial<Record<ExchangeId, number>> = {};
   for (const [id, e] of Object.entries(latest) as [ExchangeId, LatestEntry | undefined][]) {
     if (!e || !Number.isFinite(e.price)) continue;
-    if (now - e.msgTs > staleAfterMs) continue;
+    if (now - e.priceTs > staleAfterMs) continue;
     sources[id] = e.price;
   }
   const prices = Object.values(sources) as number[];
@@ -43,12 +46,19 @@ export function computeProxy(
   return { ts: now, price: median(prices), sources };
 }
 
+/** What BtcProxy needs from a feed (ExchangeFeed; tests inject fakes). */
+export interface FeedLike extends EventEmitter {
+  start(): void;
+  stop(): void;
+}
+
 interface FeedState {
-  feed: ExchangeFeed;
+  feed: FeedLike;
   connected: boolean;
   detail?: string;
+  /** last price of the CURRENT connection; cleared on disconnect so a pre-outage price is never reused */
   price: number | null;
-  lastMsgTs: number | null;
+  priceTs: number | null;
 }
 
 export class BtcProxy extends EventEmitter {
@@ -61,24 +71,25 @@ export class BtcProxy extends EventEmitter {
   private housekeeping: NodeJS.Timeout | null = null;
   private running = false;
 
-  constructor(opts: { logger: Logger; exchanges?: ExchangeId[] }) {
+  constructor(opts: { logger: Logger; exchanges?: ExchangeId[]; createFeed?: (spec: ExchangeSpec) => FeedLike }) {
     super();
     this.log = opts.logger.child({ component: "btcProxy" });
+    const createFeed = opts.createFeed ?? ((spec: ExchangeSpec) => new ExchangeFeed(spec, opts.logger));
     for (const id of opts.exchanges ?? ALL_EXCHANGES) {
-      const feed = new ExchangeFeed(EXCHANGE_SPECS[id], opts.logger);
-      const st: FeedState = { feed, connected: false, price: null, lastMsgTs: null };
+      const feed = createFeed(EXCHANGE_SPECS[id]);
+      const st: FeedState = { feed, connected: false, price: null, priceTs: null };
       feed.on("tick", (t: ExchangeTick) => {
         st.price = t.price;
-        st.lastMsgTs = t.ts;
+        st.priceTs = t.ts;
         this.requestEmit();
-      });
-      feed.on("alive", (_id: ExchangeId, ts: number) => {
-        st.lastMsgTs = ts;
       });
       feed.on("state", (_id: ExchangeId, connected: boolean, detail?: string) => {
         st.connected = connected;
         st.detail = detail;
-        if (!connected) this.requestEmit(); // drop it from the median promptly
+        if (!connected) {
+          st.price = st.priceTs = null; // a reconnect must deliver a fresh price before this source counts again
+          this.requestEmit(); // drop it from the median promptly
+        }
       });
       this.feeds.set(id, st);
     }
@@ -100,16 +111,25 @@ export class BtcProxy extends EventEmitter {
     this.housekeeping = this.emitTimer = null;
   }
 
+  /**
+   * Per-exchange health, judged on PRICE data (heartbeats/pongs only prove the socket is up):
+   * live = price within STALE_AFTER_MS (i.e. contributing to the median), stale = connected but the last
+   * price is older, down = disconnected or connected without any price yet (subscription not delivering).
+   */
   status(): FeedStatus[] {
     const now = Date.now();
     const out: FeedStatus[] = [];
     for (const [id, st] of this.feeds) {
-      const ageMs = st.lastMsgTs === null ? null : Math.max(0, now - st.lastMsgTs);
+      const ageMs = st.priceTs === null ? null : Math.max(0, now - st.priceTs);
       let state: FeedStatus["state"];
-      if (!st.connected || st.lastMsgTs === null) state = "down";
-      else state = ageMs! > STALE_AFTER_MS ? "stale" : "live";
-      const s: FeedStatus = { id, state, lastMsgTs: st.lastMsgTs, ageMs };
-      if (st.detail && state === "down") s.detail = st.detail;
+      let detail = st.detail;
+      if (!st.connected) state = "down";
+      else if (ageMs === null) {
+        state = "down";
+        detail = "connected, no price yet";
+      } else state = ageMs > STALE_AFTER_MS ? "stale" : "live";
+      const s: FeedStatus = { id, state, lastMsgTs: st.priceTs, ageMs };
+      if (detail && state === "down") s.detail = detail;
       out.push(s);
     }
     return out;
@@ -122,7 +142,7 @@ export class BtcProxy extends EventEmitter {
   private snapshot(now: number): BtcTick | null {
     const latest: Partial<Record<ExchangeId, LatestEntry>> = {};
     for (const [id, st] of this.feeds) {
-      if (st.connected && st.price !== null && st.lastMsgTs !== null) latest[id] = { price: st.price, msgTs: st.lastMsgTs };
+      if (st.connected && st.price !== null && st.priceTs !== null) latest[id] = { price: st.price, priceTs: st.priceTs };
     }
     return computeProxy(latest, now);
   }

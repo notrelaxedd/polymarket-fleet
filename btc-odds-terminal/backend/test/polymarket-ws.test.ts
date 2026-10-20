@@ -52,6 +52,23 @@ describe("MarketsStream (local server)", () => {
     await waitFor(() => headers.length >= 2 && got.length >= 2);
     expect(stream.connected).toBe(true);
   });
+
+  it("does not reset the backoff when the server accepts and immediately drops the socket", async () => {
+    wss = new WebSocketServer({ port: 0 });
+    const port = (wss.address() as { port: number }).port;
+    let connections = 0;
+    wss.on("connection", (sock) => {
+      connections++;
+      sock.close(1008, "unknown market");
+    });
+    stream = new MarketsStream({ url: `ws://127.0.0.1:${port}/v1/ws/markets`, logger: quiet, auth: null, minBackoffMs: 100, maxBackoffMs: 5000 });
+    stream.setSlugs(["s1"]);
+    stream.start();
+    await new Promise((r) => setTimeout(r, 1500));
+    // reset-on-open would reconnect every 50-100 ms (~15+ times); exponential backoff allows ~5
+    expect(connections).toBeGreaterThanOrEqual(2);
+    expect(connections).toBeLessThan(9);
+  });
 });
 
 async function waitFor(cond: () => boolean, ms = 3000): Promise<void> {

@@ -11,6 +11,9 @@ VERIFIED shapes: `{ events: Event[] }`, `{ marketData: MarketBBO }` with `Amount
 `{ marketData: MarketBook }` (bids/offers of `{ px: Amount, qty: string }`), `{ slug, settlement: number }`,
 WS frames `{ requestId, subscriptionType, marketDataLite: {...} }`, `{ heartbeat: {} }`, `{ error }`.
 
+`series.json` mirrors the SDK `Series` type (`{ id, slug, title, active, closed, archived, recurrence? }`);
+`event-title-range.json` is a BTC 15m event identified only by its ET title range (no "15m" token, no times).
+
 HYPOTHETICAL (UNVERIFIED) content: the BTC 15m event titles/slugs (`btc-updown-15m-<startEpoch>`), the
 market `outcome` values, and where the price to beat appears (description text in search-active.json,
 a `priceToBeat` field in event-two-markets.json). Replace with a live capture when the gateway is reachable:

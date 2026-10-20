@@ -162,8 +162,8 @@ function prepareStatements(db: Database.Database) {
        ORDER BY b.t, b.d`,
     ),
     bars1sSince: db.prepare("SELECT t, d, o, h, l, c FROM bars WHERE d = 1 AND t >= ? ORDER BY t"),
-    nearestBar1s: db.prepare(
-      "SELECT t, d, o, h, l, c FROM bars WHERE d = 1 AND t >= ? AND t <= ? ORDER BY abs(t + 1000 - ?) LIMIT 1",
+    nearestBar: db.prepare(
+      "SELECT t, d, o, h, l, c FROM bars WHERE d = @d AND t >= @lo AND t <= @hi ORDER BY abs(t + d * 1000 - @ts) LIMIT 1",
     ),
     countBars: db.prepare("SELECT count(*) AS n FROM bars WHERE d = ?"),
     ticksRange: db.prepare("SELECT ts, price, coinbase, kraken, bitstamp FROM ticks WHERE ts >= ? AND ts <= ? ORDER BY ts"),
@@ -176,6 +176,9 @@ function prepareStatements(db: Database.Database) {
     recentFinished: db.prepare(
       `SELECT * FROM windows WHERE status IN ('closed', 'settled') OR end_ts <= ?
        ORDER BY end_ts DESC LIMIT ?`,
+    ),
+    unsettledEnded: db.prepare(
+      "SELECT * FROM windows WHERE result IS NULL AND end_ts >= ? AND end_ts <= ? ORDER BY end_ts",
     ),
     getSetting: db.prepare("SELECT value FROM settings WHERE key = ?"),
     setSetting: db.prepare(
@@ -265,7 +268,14 @@ export class TerminalDb {
 
   /** The 1s bar whose close time (t+1s) is nearest ts, within ±tolMs. */
   nearestBar1s(ts: number, tolMs = 10_000): Bar | null {
-    return (this.s.nearestBar1s.get(ts - 1000 - tolMs, ts - 1000 + tolMs, ts) as Bar | undefined) ?? null;
+    return this.nearestBar(ts, 1, tolMs);
+  }
+
+  /** The bar of duration `d` seconds whose close time (t + d·1s) is nearest ts, within ±tolMs. */
+  nearestBar(ts: number, d: number, tolMs = 10_000): Bar | null {
+    const lo = ts - d * 1000 - tolMs;
+    const hi = ts - d * 1000 + tolMs;
+    return (this.s.nearestBar.get({ d, lo, hi, ts }) as Bar | undefined) ?? null;
   }
 
   countBars(d: number): number {
@@ -303,6 +313,11 @@ export class TerminalDb {
   /** Finished windows (closed/settled or past end), newest first. */
   recentFinishedWindows(limit = 20, now = Date.now()): MarketWindow[] {
     return (this.s.recentFinished.all(now, limit) as WindowRow[]).map(rowToWindow);
+  }
+
+  /** Windows without a result whose end lies in [fromEnd, toEnd], oldest first (settlement back-fill). */
+  unsettledWindows(fromEnd: number, toEnd: number): MarketWindow[] {
+    return (this.s.unsettledEnded.all(fromEnd, toEnd) as WindowRow[]).map(rowToWindow);
   }
 
   // ---------------------------------------------------------------- settings

@@ -11,11 +11,16 @@ const optionalString = z.preprocess(
   z.string().optional(),
 );
 
+/** Origins allowed when CORS_ORIGIN is unset or blank: the local Next.js dev/prod server. */
+export const DEFAULT_CORS_ORIGIN = "http://localhost:3000,http://127.0.0.1:3000";
+
 const EnvSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8787),
   HOST: z.string().default("127.0.0.1"),
   DB_PATH: z.string().default("./data/terminal.db"),
-  CORS_ORIGIN: z.string().default("*"),
+  // "*" must be opted into explicitly: with any origin allowed, every web page open in the
+  // operator's browser could PUT /api/settings on a loopback backend.
+  CORS_ORIGIN: z.string().default(DEFAULT_CORS_ORIGIN),
   TRADING_MODE: z.enum(["paper", "live"]).default("paper"),
   VOL_LOOKBACK_MIN: z.coerce.number().positive().max(24 * 60).default(30),
   FEE_CENTS_PER_CONTRACT: optionalNumber,
@@ -51,12 +56,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid environment: ${issues}`);
   }
   const e = parsed.data;
-  const origins = e.CORS_ORIGIN.split(",").map((s) => s.trim()).filter(Boolean);
+  const split = (v: string) => v.split(",").map((s) => s.trim()).filter(Boolean);
+  const listed = split(e.CORS_ORIGIN);
+  const origins = listed.length > 0 ? listed : split(DEFAULT_CORS_ORIGIN);
   return {
     port: e.PORT,
     host: e.HOST,
     dbPath: e.DB_PATH,
-    corsOrigin: origins.length === 0 || origins.includes("*") ? "*" : origins,
+    corsOrigin: origins.includes("*") ? "*" : origins,
     tradingMode: e.TRADING_MODE,
     volLookbackMin: e.VOL_LOOKBACK_MIN,
     feeCentsPerContract: e.FEE_CENTS_PER_CONTRACT ?? null,

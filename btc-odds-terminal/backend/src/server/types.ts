@@ -39,6 +39,6 @@ export interface ServerOptions {
   feedsIntervalMs?: number;
   /** ws heartbeat interval (default 15000 ms) */
   heartbeatMs?: number;
-  /** skip sends to clients whose socket buffer exceeds this (default 1 MB) */
+  /** drop high-rate messages (then resync with a snapshot) for clients whose socket buffer exceeds this (default 1 MB) */
   maxBufferedBytes?: number;
 }

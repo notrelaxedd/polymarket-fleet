@@ -37,6 +37,8 @@ export interface ParseResult {
   alive: boolean;
   /** exchange asked us to reconnect */
   reconnect?: boolean;
+  /** exchange reported an error / rejected our subscription: reconnect (with backoff) to resubscribe */
+  error?: string;
   /** text to send back on the socket (app-level ping reply) */
   reply?: string;
 }
@@ -57,6 +59,11 @@ const NOTHING: ParseResult = { ticks: [], alive: false };
 function toPrice(v: unknown): number | null {
   const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
   return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function errorText(...parts: unknown[]): string {
+  const text = parts.filter((p) => typeof p === "string" && p).join(": ");
+  return text || "unspecified error";
 }
 
 function safeJson(raw: string): any {
@@ -86,8 +93,10 @@ export function parseCoinbase(raw: string, now: number): ParseResult {
     case "heartbeat":
     case "subscriptions":
       return { ticks: [], alive: true };
+    case "error": // {"type":"error","message":"Failed to subscribe","reason":"..."}
+      return { ticks: [], alive: true, error: errorText(m.message, m.reason) };
     default:
-      return NOTHING; // includes {"type":"error",...}
+      return NOTHING;
   }
 }
 
@@ -105,9 +114,11 @@ export const coinbaseSpec: ExchangeSpec = {
 //             "timestamp":"2023-10-06T17:35:55.440295Z"}]}   (type "snapshot" on subscribe, same shape)
 // Heartbeat: {"channel":"heartbeat"} (about 1/s). Ping: {"method":"ping"} -> {"method":"pong",...}
 // Ack:       {"method":"subscribe","result":{"channel":"ticker","symbol":"BTC/USD"},"success":true,...}
+// Rejected:  {"method":"subscribe","error":"Currency pair not supported","success":false,...}
 export function parseKraken(raw: string, now: number): ParseResult {
   const m = safeJson(raw);
   if (!m || typeof m !== "object") return NOTHING;
+  if (m.method === "subscribe" && m.success === false) return { ticks: [], alive: true, error: errorText(m.error) };
   if (m.channel === "heartbeat" || m.method === "pong" || m.channel === "status") return { ticks: [], alive: true };
   if (m.method === "subscribe") return { ticks: [], alive: true };
   if (m.channel === "ticker" && Array.isArray(m.data)) {
@@ -138,6 +149,7 @@ export const krakenSpec: ExchangeSpec = {
 //             "price":19000,"price_str":"19000","type":0,"microtimestamp":"1662629036532000",
 //             "buy_order_id":..,"sell_order_id":..},"channel":"live_trades_btcusd","event":"trade"}
 // Server may send {"event":"bts:request_reconnect",...} -> we must reconnect.
+// Error:     {"event":"bts:error","channel":"","data":{"code":null,"message":"Bad subscription string."}}
 export function parseBitstamp(raw: string, now: number): ParseResult {
   const m = safeJson(raw);
   if (!m || typeof m !== "object") return NOTHING;
@@ -149,6 +161,8 @@ export function parseBitstamp(raw: string, now: number): ParseResult {
     }
     case "bts:request_reconnect":
       return { ticks: [], alive: true, reconnect: true };
+    case "bts:error":
+      return { ticks: [], alive: true, error: errorText(m.data?.message) };
     case "bts:subscription_succeeded":
     case "bts:heartbeat":
       return { ticks: [], alive: true };
@@ -172,9 +186,24 @@ export const EXCHANGE_SPECS: Record<ExchangeId, ExchangeSpec> = {
 
 // ---------------------------------------------------------------- connection manager
 export const WATCHDOG_MS = 10_000;
+/**
+ * Reconnect when the socket stays up (pongs/heartbeats) but no price arrives for this long: catches a
+ * subscription that was silently ignored. Long enough not to churn on a quiet venue between trades.
+ */
+export const NO_PRICE_RECONNECT_MS = 120_000;
 const PING_EVERY_MS = 2_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+
+export interface FeedTimings {
+  /** reconnect after this long without any frame (data, heartbeat, pong) */
+  watchdogMs: number;
+  /** reconnect after this long connected without a price tick */
+  noPriceMs: number;
+  pingEveryMs: number;
+  /** reconnect delay for the given 0-based attempt */
+  backoff(attempt: number): number;
+}
 
 /** Exponential backoff 1s -> 30s with +-25% jitter. attempt is 0-based. */
 export function backoffMs(attempt: number, rand: () => number = Math.random): number {
@@ -188,6 +217,9 @@ export function backoffMs(attempt: number, rand: () => number = Math.random): nu
  *  - "tick"  (ExchangeTick) on each price update
  *  - "alive" (exchange, ts)  on any liveness message (heartbeat/pong/data)
  *  - "state" (exchange, connected:boolean, detail?:string)
+ * Every reconnect (close, watchdog, server request, exchange error) goes through the exponential backoff;
+ * the attempt counter only resets once a price tick proves the subscription works, so a venue that
+ * accepts and then drops us (or rejects the subscribe) is retried 1s, 2s, 4s ... 30s, not every second.
  */
 export class ExchangeFeed extends EventEmitter {
   private ws: WebSocket | null = null;
@@ -197,11 +229,14 @@ export class ExchangeFeed extends EventEmitter {
   private watchdog: NodeJS.Timeout | null = null;
   private pinger: NodeJS.Timeout | null = null;
   private lastActivity = 0;
+  private lastTickAt = 0;
   private readonly log: Logger;
+  private readonly t: FeedTimings;
 
-  constructor(readonly spec: ExchangeSpec, logger: Logger) {
+  constructor(readonly spec: ExchangeSpec, logger: Logger, timings: Partial<FeedTimings> = {}) {
     super();
     this.log = logger.child({ feed: spec.id });
+    this.t = { watchdogMs: WATCHDOG_MS, noPriceMs: NO_PRICE_RECONNECT_MS, pingEveryMs: PING_EVERY_MS, backoff: backoffMs, ...timings };
   }
 
   start(): void {
@@ -250,17 +285,21 @@ export class ExchangeFeed extends EventEmitter {
 
     ws.on("open", () => {
       if (this.ws !== ws) return;
-      this.lastActivity = Date.now();
-      this.attempt = 0;
+      this.lastActivity = this.lastTickAt = Date.now();
       for (const msg of this.spec.subscribe()) ws.send(msg);
       this.emit("state", this.spec.id, true);
       this.log.info("connected, subscribed");
+      const checkEveryMs = Math.min(1000, this.t.watchdogMs / 4, this.t.noPriceMs / 4);
       this.watchdog = setInterval(() => {
-        if (Date.now() - this.lastActivity > WATCHDOG_MS) {
-          this.log.warn({ silentMs: Date.now() - this.lastActivity }, "watchdog: silence, reconnecting");
+        const now = Date.now();
+        if (now - this.lastActivity > this.t.watchdogMs) {
+          this.log.warn({ silentMs: now - this.lastActivity }, "watchdog: silence, reconnecting");
           this.scheduleReconnect("watchdog silence");
+        } else if (now - this.lastTickAt > this.t.noPriceMs) {
+          this.log.warn({ noPriceMs: now - this.lastTickAt }, "watchdog: no price data, resubscribing");
+          this.scheduleReconnect("no price data");
         }
-      }, 1000);
+      }, checkEveryMs);
       // always keep the connection exercised: app-level ping if the exchange has one, else a WS ping frame
       this.pinger = setInterval(() => {
         if (ws.readyState !== WebSocket.OPEN) return;
@@ -270,7 +309,7 @@ export class ExchangeFeed extends EventEmitter {
         } catch {
           /* ignore */
         }
-      }, PING_EVERY_MS);
+      }, this.t.pingEveryMs);
     });
 
     ws.on("pong", () => {
@@ -298,9 +337,14 @@ export class ExchangeFeed extends EventEmitter {
         return;
       }
       if (res.alive || res.ticks.length) this.onAlive(now);
+      if (res.ticks.length) {
+        this.lastTickAt = now;
+        this.attempt = 0; // prices are flowing: the connection is proven, reset the backoff
+      }
       if (res.reply && ws.readyState === WebSocket.OPEN) ws.send(res.reply);
       for (const t of res.ticks) this.emit("tick", t);
-      if (res.reconnect) this.scheduleReconnect("server requested reconnect", true);
+      if (res.error) this.scheduleReconnect(`exchange error: ${res.error}`);
+      else if (res.reconnect) this.scheduleReconnect("server requested reconnect");
     });
 
     ws.on("error", (err) => {
@@ -318,13 +362,13 @@ export class ExchangeFeed extends EventEmitter {
     this.emit("alive", this.spec.id, now);
   }
 
-  private scheduleReconnect(reason: string, immediate = false): void {
+  private scheduleReconnect(reason: string): void {
     if (this.stopped) return;
     this.clearTimers();
     this.teardownSocket();
     this.emit("state", this.spec.id, false, reason);
     if (this.reconnectTimer) return;
-    const delay = immediate ? 0 : backoffMs(this.attempt++);
+    const delay = this.t.backoff(this.attempt++);
     this.log.warn({ reason, delay }, "reconnect scheduled");
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;

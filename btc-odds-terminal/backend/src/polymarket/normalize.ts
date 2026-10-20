@@ -74,11 +74,17 @@ export function toMs(v: unknown): number | null {
   return null;
 }
 
-/** GET /v1/markets/{slug}/bbo -> { marketData: MarketBBO }. Also accepts a bare MarketBBO / marketDataLite. */
+/**
+ * GET /v1/markets/{slug}/bbo -> { marketData: MarketBBO }. Also accepts a bare MarketBBO / marketDataLite.
+ * bestBid / bestAsk / lastTradePx are optional in the SDK types: a payload that identifies the market (wrapper or
+ * marketSlug) but has no price keys is an EMPTY book (both sides null), not an unknown frame.
+ */
 export function parseBbo(raw: unknown, slugHint = ""): NormalizedBbo | null {
   if (!isObj(raw)) return null;
+  const wrapped = isObj(raw.marketData) || isObj(raw.marketDataLite);
   const md = isObj(raw.marketData) ? raw.marketData : isObj(raw.marketDataLite) ? raw.marketDataLite : raw;
-  if (!("bestBid" in md) && !("bestAsk" in md) && !("lastTradePx" in md)) return null;
+  const hasPrices = "bestBid" in md || "bestAsk" in md || "lastTradePx" in md;
+  if (!wrapped && !hasPrices && typeof md.marketSlug !== "string") return null;
   return {
     slug: typeof md.marketSlug === "string" ? md.marketSlug : slugHint,
     bid: toCents(md.bestBid),

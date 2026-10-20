@@ -68,8 +68,15 @@ export class AxisTag implements ISeriesPrimitiveAxisView {
   fg = "#0A0D12";
   bgColor = "#F5B942";
   show = false;
+  tick = true;
+  /** pin the tag at exactly `y`, drawn above other labels (lightweight-charts otherwise stacks overlapping tags) */
+  fixed = false;
   coordinate() {
-    return this.y;
+    // a fixed label must not reserve a slot in the automatic stacking
+    return this.fixed ? -10000 : this.y;
+  }
+  fixedCoordinate() {
+    return this.fixed ? this.y : undefined;
   }
   text() {
     return this.label;
@@ -84,7 +91,7 @@ export class AxisTag implements ISeriesPrimitiveAxisView {
     return this.show;
   }
   tickVisible() {
-    return this.show;
+    return this.show && this.tick;
   }
 }
 

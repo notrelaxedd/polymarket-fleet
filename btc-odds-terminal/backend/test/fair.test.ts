@@ -274,6 +274,44 @@ describe("RealizedVol", () => {
     expect(rv.count()).toBeLessThanOrEqual(101);
   });
 
+  it("weights returns by the time they cover (mixed 60s seeded + 1s live samples)", () => {
+    const rv = new RealizedVol(3600, 1, 1);
+    // 10 seeded 60s returns of 0.006 (variance 3.6e-5 over 60 s = 6e-7/s), then 60 live 1s returns of 0.001 (1e-6/s).
+    let t = 0;
+    let p = 100000;
+    rv.push(t + 59_999, p);
+    for (let i = 0; i < 10; i++) {
+      t += 60_000;
+      p *= Math.exp(i % 2 === 0 ? 0.006 : -0.006);
+      rv.push(t + 59_999, p);
+    }
+    const t1 = t + 60_000; // live data starts right after the last seeded close
+    for (let i = 1; i <= 61; i++) {
+      p *= Math.exp(i % 2 === 0 ? 0.001 : -0.001);
+      rv.push(t1 + i * 1000, p);
+    }
+    // closed: 10 seeded (600 s) + 1 bridging return + 59 live; time-weighted, not count-weighted
+    const span = rv.spanSec();
+    expect(span).toBeGreaterThanOrEqual(600 + 59);
+    const est = rv.sigma()!;
+    const seededVar = 10 * 0.006 ** 2;
+    expect(est ** 2).toBeGreaterThan(seededVar / span); // the seeded hour still counts
+    expect(est).toBeLessThan(0.001); // a count-weighted mean would be ~0.0012
+    expect(est).toBeGreaterThan(Math.sqrt(6e-7));
+  });
+
+  it("spanSec reports the covered history and shrinks with the lookback", () => {
+    const rv = new RealizedVol(3600, 1, 1);
+    expect(rv.spanSec()).toBe(0);
+    for (let i = 0; i <= 120; i++) rv.push(i * 1000, 100 + (i % 2));
+    expect(rv.spanSec()).toBe(119);
+    rv.push(200_000, 100); // closes bucket 120
+    rv.push(201_000, 101); // closes bucket 200: the 80 s gap return covers 80 s
+    expect(rv.spanSec()).toBe(120 + 80);
+    rv.setLookback(50);
+    expect(rv.spanSec()).toBeLessThanOrEqual(80);
+  });
+
   it("ignores invalid and out-of-order points", () => {
     const rv = new RealizedVol(3600, 1, 1);
     rv.push(NaN, 100);

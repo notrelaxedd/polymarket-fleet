@@ -1,5 +1,14 @@
-export { MarketTracker, buildOddsSnap, type TrackerOptions } from "./tracker.ts";
-export { PolymarketClient, PolyHttpError, type MarketDataSource, type Query, type RawEvent, type RawMarket } from "./client.ts";
+export { MarketTracker, buildOddsSnap, settleRetryMs, type QuoteStream, type TrackerOptions } from "./tracker.ts";
+export {
+  PolymarketClient,
+  PolyHttpError,
+  parseRetryAfter,
+  type MarketDataSource,
+  type Query,
+  type RawEvent,
+  type RawMarket,
+  type RawSeries,
+} from "./client.ts";
 export {
   windowsFromEvents,
   pickCurrentNext,
@@ -8,6 +17,8 @@ export {
   extractTimes,
   extractPriceToBeat,
   isBtc15mEvent,
+  isBtc15mSeries,
+  pickBtc15mSeries,
   instrumentOf,
   parseInstrument,
   sidePrices,

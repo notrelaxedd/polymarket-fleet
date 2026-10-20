@@ -20,6 +20,8 @@ export const C = {
   fair: "#C29BFF",
   ptb: "#F5B942",
   ptbFaded: "rgba(245, 185, 66, 0.45)",
+  /** previous window's PTB value text (muted amber, 5.4:1 on surface) */
+  ptbMuted: "#A8843B",
   negEdge: "#F59E0B",
   grid: "rgba(30, 37, 48, 0.55)",
   btcLine: "#E6E9EF",

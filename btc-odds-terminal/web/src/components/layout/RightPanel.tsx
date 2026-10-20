@@ -3,9 +3,9 @@ import * as React from "react";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
 import { useTerminal } from "@/lib/store";
-import { cents, centsNum, signedCents, usd } from "@/lib/format";
+import { quoteCents, signedCents, spreadCents, usd } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { useEdge } from "@/lib/hooks";
+import { useEdge, useOdds } from "@/lib/hooks";
 
 function Card({ title, right, children, className }: { title: string; right?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
@@ -31,7 +31,7 @@ function SumRow({ k, v, color }: { k: string; v: React.ReactNode; color?: string
 }
 
 function OrderTicket() {
-  const odds = useTerminal((s) => s.lastOdds);
+  const odds = useOdds();
   const mode = useTerminal((s) => s.settings?.mode ?? "paper");
   const fee = useTerminal((s) => s.settings?.feeCentsPerContract ?? null);
   const edge = useEdge();
@@ -59,7 +59,7 @@ function OrderTicket() {
         )}
       >
         <span>Buy {s === "up" ? "Up" : "Down"}</span>
-        <span className="num text-[14px]">{a != null ? `${a}¢` : "—"}</span>
+        <span className="num text-[14px]">{quoteCents(a)}</span>
       </button>
     );
   };
@@ -126,7 +126,7 @@ function OrderTicket() {
       </div>
 
       <div className="mt-2.5 rounded-ctl border border-border bg-inset px-2.5 py-1.5">
-        <SumRow k="Est. avg fill" v={cents(ask ?? null)} />
+        <SumRow k="Est. avg fill" v={quoteCents(ask)} />
         <SumRow k="Contracts" v={contracts != null ? contracts.toFixed(1) : "—"} />
         <SumRow k="Fees" v={fee == null ? "[FEE]" : usd((fee * (contracts ?? 0)) / 100)} />
         <SumRow k="Max loss" v={usd(amt)} color="#F87171" />
@@ -153,34 +153,35 @@ function OrderTicket() {
 }
 
 function UpBook() {
-  const odds = useTerminal((s) => s.lastOdds);
+  const odds = useOdds();
   const bid = odds?.upBid ?? null;
   const ask = odds?.upAsk ?? null;
   const mid = odds?.upMid ?? null;
-  const spread = bid != null && ask != null ? ask - bid : null;
-  // Only the best bid/ask are known in step 2; deeper levels are price ticks without size.
-  const asks = ask != null ? [3, 2, 1, 0].map((i) => ask + i).filter((p) => p <= 99) : [];
-  const bids = bid != null ? [0, 1, 2, 3].map((i) => bid - i).filter((p) => p >= 1) : [];
-  const row = (p: number, best: boolean, color: string) => (
-    <div key={p} className="relative flex items-center justify-between px-2 py-[3px] text-[12px]">
-      <span className="num font-medium" style={{ color }}>
-        {p}¢
+  const spread = spreadCents(bid, ask);
+  // Only the best bid/ask are known in step 2 (OddsSnap). Never synthesize deeper levels.
+  const row = (side: "Best ask" | "Best bid", p: number | null, color: string) => (
+    <div className="flex items-center justify-between px-2 py-[3px] text-[12px]">
+      <span className="text-muted">{side}</span>
+      <span className="num font-medium" style={{ color: p != null ? color : undefined }}>
+        {quoteCents(p)}
       </span>
-      <span className="num text-muted">{best ? "best" : "—"}</span>
     </div>
   );
   return (
-    <Card title="Up book" right={<span className="num text-[11px] text-muted">{spread != null ? `spread ${spread}¢` : "—"}</span>}>
-      <div>
-        {asks.map((p, i) => row(p, i === asks.length - 1, "#F87171"))}
-        <div className="my-1 flex items-center justify-between rounded-[6px] bg-inset px-2 py-1">
-          <span className="num text-[13px] font-semibold text-odds-text">{mid != null ? `${centsNum(mid, mid % 1 ? 1 : 0)}¢ mid` : "— mid"}</span>
-          <span className="num text-[11px] text-muted">{spread != null ? `spread ${spread}¢` : ""}</span>
+    <Card title="Up book" right={<span className="num text-[11px] text-muted">{spread != null ? `spread ${spread}` : "—"}</span>}>
+      {odds ? (
+        <div>
+          {row("Best ask", ask, "#F87171")}
+          <div className="my-1 flex items-center justify-between rounded-[6px] bg-inset px-2 py-1">
+            <span className="text-[12px] text-muted">Mid</span>
+            <span className="num text-[13px] font-semibold text-odds-text">{quoteCents(mid)}</span>
+          </div>
+          {row("Best bid", bid, "#34D399")}
         </div>
-        {bids.map((p, i) => row(p, i === 0, "#34D399"))}
-        {!odds && <div className="px-2 py-3 text-center text-[12px] text-muted">Waiting for the Polymarket feed…</div>}
-      </div>
-      <p className="mt-1.5 text-[11px] text-muted">Size depth arrives with paper trading (step 3).</p>
+      ) : (
+        <div className="px-2 py-3 text-center text-[12px] text-muted">Waiting for a quote for this window…</div>
+      )}
+      <p className="mt-1.5 text-[11px] text-muted">Top of book only. Depth and sizes arrive with the order book in step 3.</p>
     </Card>
   );
 }
@@ -244,7 +245,9 @@ export function RightPanel() {
       <UpBook />
       <Positions />
       <Risk />
-      <p className="px-1 pb-1 text-center text-[11px] text-muted">Settlement uses CF Benchmarks BRTI</p>
+      <p className="px-1 pb-1 text-center text-[11px] leading-4 text-muted">
+        Settlement uses CF Benchmarks BRTI. The BRTI proxy shown here can differ when price is near the strike.
+      </p>
     </aside>
   );
 }

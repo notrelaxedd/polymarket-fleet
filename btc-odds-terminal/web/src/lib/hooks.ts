@@ -1,6 +1,12 @@
 "use client";
 import * as React from "react";
-import { serverNow, useTerminal } from "./store";
+import { selectFair, selectOdds, serverNow, useTerminal } from "./store";
+
+/** Current window's top of book (null until a quote for this window arrives). */
+export const useOdds = () => useTerminal(selectOdds);
+
+/** Current window's fair value (null until one for this window arrives). */
+export const useFair = () => useTerminal(selectFair);
 
 /** Re-render on an interval and return the server-corrected now (ms). */
 export function useServerNow(intervalMs = 1000): number {
@@ -32,12 +38,13 @@ export function useCountdownMs(endTs: number | null | undefined, intervalMs = 25
   return ms;
 }
 
-/** Latest odds-derived edge: prefers the fair snapshot's edge, else fair - upMid. */
+/** Current window's edge: prefers the fair snapshot's edge, else fair - upMid (both of this window). */
 export function useEdge(): number | null {
   return useTerminal((s) => {
-    const f = s.lastFair;
+    const f = selectFair(s);
     if (f?.edge != null) return f.edge;
-    if (f && s.lastOdds?.upMid != null) return f.fair - s.lastOdds.upMid;
+    const upMid = selectOdds(s)?.upMid;
+    if (f && upMid != null) return f.fair - upMid;
     return null;
   });
 }

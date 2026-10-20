@@ -23,13 +23,13 @@ export function StaleBanner() {
   if (connected && msgs.length === 0) return null;
   if (!connected) {
     return (
-      <div role="alert" className="flex items-center gap-2 border-b border-down/40 bg-down-tint px-3 py-1.5 text-[12px] font-medium text-down">
+      <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-down/40 bg-down-tint px-3 py-1.5 text-[12px] font-medium text-down">
         <WifiOff size={14} aria-hidden /> Disconnected from backend — reconnecting…
       </div>
     );
   }
   return (
-    <div role="alert" className="flex flex-col gap-0.5 border-b border-neg-edge/40 bg-ptb-tint px-3 py-1.5 text-[12px] font-medium text-ptb">
+    <div role="alert" className="flex shrink-0 flex-col gap-0.5 border-b border-neg-edge/40 bg-ptb-tint px-3 py-1.5 text-[12px] font-medium text-ptb">
       {msgs.map((m) => (
         <div key={m} className="flex items-center gap-2">
           <TriangleAlert size={14} aria-hidden className="shrink-0" /> {m}

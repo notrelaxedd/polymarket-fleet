@@ -26,42 +26,67 @@ export function parseCandles(rows: unknown, durSec = GRANULARITY): Bar[] {
   return [...byT.values()].sort((a, b) => a.t - b.t);
 }
 
+const BUCKET_MS = GRANULARITY * 1000;
+const RETRIES = 3;
+const CHUNK_GAP_MS = 150; // stay well under the public rate limit
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const snippet = (v: unknown) => (typeof v === "string" ? v : String(JSON.stringify(v))).slice(0, 200);
+
+/**
+ * Request windows [start, end] (bucket start times, ms) covering the minute buckets in [startMs, endMs),
+ * newest first. `end` is inclusive on Coinbase's side (ccxt sends end = since + (limit-1)*tf), so each
+ * window spans at most maxRows buckets = maxRows - 1 intervals; Coinbase rejects > 300 with HTTP 400.
+ */
+export function candleWindows(startMs: number, endMs: number, maxRows = MAX_ROWS): Array<[number, number]> {
+  const first = Math.ceil(startMs / BUCKET_MS) * BUCKET_MS;
+  const last = Math.ceil(endMs / BUCKET_MS) * BUCKET_MS - BUCKET_MS; // newest bucket starting before endMs
+  const out: Array<[number, number]> = [];
+  for (let e = last; e >= first; e -= maxRows * BUCKET_MS) out.push([Math.max(first, e - (maxRows - 1) * BUCKET_MS), e]);
+  return out;
+}
+
 async function fetchChunk(startMs: number, endMs: number): Promise<Bar[]> {
   const url = `${BASE}?granularity=${GRANULARITY}&start=${new Date(startMs).toISOString()}&end=${new Date(endMs).toISOString()}`;
-  let lastErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  let lastErr = new Error("coinbase candles: not attempted");
+  for (let attempt = 1; attempt <= RETRIES; attempt++) {
+    let delayMs = 500 * attempt;
     try {
       const res = await fetch(url, {
         headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
         signal: AbortSignal.timeout(TIMEOUT_MS),
       });
-      if (res.status === 429) {
-        lastErr = new Error("coinbase candles: 429 rate limited");
-        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
-        continue;
+      if (res.ok) {
+        const body: unknown = await res.json();
+        if (Array.isArray(body)) return parseCandles(body);
+        lastErr = new Error(`coinbase candles: expected an array, got ${snippet(body)}`);
+      } else {
+        lastErr = new Error(`coinbase candles: HTTP ${res.status} ${snippet(await res.text().catch(() => ""))}`);
+        if (res.status === 429) delayMs = 1000 * attempt;
+        else if (res.status < 500) break; // other 4xx (bad range/params) won't fix themselves on retry
       }
-      if (!res.ok) throw new Error(`coinbase candles: HTTP ${res.status}`);
-      return parseCandles(await res.json());
     } catch (err) {
-      lastErr = err;
-      await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      lastErr = err instanceof Error ? err : new Error(String(err));
     }
+    if (attempt < RETRIES) await sleep(delayMs);
   }
-  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+  throw lastErr;
 }
 
-/** Last `hours` hours of completed 60s bars, ascending, d=60. */
-export async function fetchRecentBars(hours: number): Promise<Bar[]> {
-  const endMs = Math.floor(Date.now() / 60_000) * 60_000;
+/**
+ * Last `hours` hours of completed 60s bars, ascending, d=60. Chunks are fetched newest first and each
+ * chunk's bars are handed to `onChunk` as soon as it arrives, so a caller that stores them per chunk keeps
+ * the most recent history even if a later (older) chunk fails; the failure is still thrown.
+ */
+export async function fetchRecentBars(hours: number, opts: { onChunk?: (bars: Bar[]) => void } = {}): Promise<Bar[]> {
+  const endMs = Math.floor(Date.now() / BUCKET_MS) * BUCKET_MS;
   const startMs = endMs - Math.max(0, hours) * 3_600_000;
-  const span = MAX_ROWS * GRANULARITY * 1000;
   const all = new Map<number, Bar>();
-  for (let s = startMs; s < endMs; s += span) {
-    const e = Math.min(endMs, s + span);
-    for (const b of await fetchChunk(s, e)) {
-      if (b.t >= startMs && b.t < endMs) all.set(b.t, b);
-    }
-    await new Promise((r) => setTimeout(r, 150)); // stay well under the public rate limit
+  for (const [i, [s, e]] of candleWindows(startMs, endMs).entries()) {
+    if (i > 0) await sleep(CHUNK_GAP_MS);
+    const bars = (await fetchChunk(s, e)).filter((b) => b.t >= startMs && b.t < endMs);
+    for (const b of bars) all.set(b.t, b);
+    opts.onChunk?.(bars);
   }
   return [...all.values()].sort((a, b) => a.t - b.t);
 }

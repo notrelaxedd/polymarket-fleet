@@ -27,9 +27,9 @@ export function FeedDots() {
           : !f
             ? "waiting for data"
             : state === "live"
-              ? `live · last msg ${ageLabel(age)} ago`
+              ? `live · last update ${ageLabel(age)} ago`
               : state === "stale"
-                ? `stale · no data for ${ageLabel(age)}`
+                ? `stale · no update for ${ageLabel(age)}`
                 : `down${f.detail ? ` · ${f.detail}` : ""}`;
         return (
           <Tip key={id} label={`${feedLabel(id)}: ${text}`}>

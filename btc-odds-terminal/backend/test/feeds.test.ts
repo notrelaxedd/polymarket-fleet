@@ -1,14 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BarAggregator,
+  BtcProxy,
   backoffMs,
+  candleWindows,
   computeProxy,
+  fetchRecentBars,
   median,
   parseBitstamp,
   parseCandles,
   parseCoinbase,
   parseKraken,
 } from "../src/feeds/index.ts";
+import type { Bar, ExchangeId } from "../../shared/protocol.ts";
+import { log } from "../src/log.ts";
 
 const NOW = 1_700_000_000_000;
 
@@ -25,7 +31,9 @@ describe("exchange parsers", () => {
   it("coinbase heartbeat / subscriptions / error / junk", () => {
     expect(parseCoinbase('{"type":"heartbeat","product_id":"BTC-USD"}', NOW)).toEqual({ ticks: [], alive: true });
     expect(parseCoinbase('{"type":"subscriptions","channels":[]}', NOW).alive).toBe(true);
-    expect(parseCoinbase('{"type":"error","message":"x"}', NOW).alive).toBe(false);
+    expect(parseCoinbase('{"type":"error","message":"Failed to subscribe","reason":"BTC-XYZ is not a valid product"}', NOW).error).toBe(
+      "Failed to subscribe: BTC-XYZ is not a valid product",
+    );
     expect(parseCoinbase("not json", NOW)).toEqual({ ticks: [], alive: false });
     expect(parseCoinbase('{"type":"ticker","product_id":"ETH-USD","price":"1"}', NOW).ticks).toEqual([]);
   });
@@ -42,7 +50,10 @@ describe("exchange parsers", () => {
   it("kraken heartbeat / pong / ack", () => {
     expect(parseKraken('{"channel":"heartbeat"}', NOW)).toEqual({ ticks: [], alive: true });
     expect(parseKraken('{"method":"pong","req_id":1}', NOW).alive).toBe(true);
-    expect(parseKraken('{"method":"subscribe","result":{"channel":"ticker","symbol":"BTC/USD"},"success":true}', NOW).alive).toBe(true);
+    expect(parseKraken('{"method":"subscribe","result":{"channel":"ticker","symbol":"BTC/USD"},"success":true}', NOW)).toEqual({ ticks: [], alive: true });
+  });
+  it("kraken rejected subscribe -> error", () => {
+    expect(parseKraken('{"method":"subscribe","error":"Currency pair not supported","success":false}', NOW).error).toBe("Currency pair not supported");
   });
 
   it("bitstamp trade (price_str)", () => {
@@ -56,6 +67,9 @@ describe("exchange parsers", () => {
   it("bitstamp ack / reconnect request", () => {
     expect(parseBitstamp('{"event":"bts:subscription_succeeded","channel":"live_trades_btcusd","data":{}}', NOW)).toEqual({ ticks: [], alive: true });
     expect(parseBitstamp('{"event":"bts:request_reconnect","channel":"","data":""}', NOW).reconnect).toBe(true);
+    expect(parseBitstamp('{"event":"bts:error","channel":"","data":{"code":null,"message":"Bad subscription string."}}', NOW).error).toBe(
+      "Bad subscription string.",
+    );
   });
 });
 
@@ -75,23 +89,23 @@ describe("computeProxy", () => {
   });
   it("3 live -> median", () => {
     const t = computeProxy({
-      coinbase: { price: 100, msgTs: NOW }, kraken: { price: 110, msgTs: NOW - 500 }, bitstamp: { price: 300, msgTs: NOW - 100 },
+      coinbase: { price: 100, priceTs: NOW }, kraken: { price: 110, priceTs: NOW - 500 }, bitstamp: { price: 300, priceTs: NOW - 100 },
     }, NOW)!;
     expect(t.price).toBe(110);
     expect(t.ts).toBe(NOW);
     expect(Object.keys(t.sources).sort()).toEqual(["bitstamp", "coinbase", "kraken"]);
   });
   it("2 live -> mean, 1 -> itself, 0 -> null; stale excluded", () => {
-    const stale = { price: 999, msgTs: NOW - 3001 };
-    expect(computeProxy({ coinbase: { price: 100, msgTs: NOW }, kraken: { price: 200, msgTs: NOW }, bitstamp: stale }, NOW)!.price).toBe(150);
-    const one = computeProxy({ coinbase: { price: 100, msgTs: NOW }, kraken: stale }, NOW)!;
+    const stale = { price: 999, priceTs: NOW - 3001 };
+    expect(computeProxy({ coinbase: { price: 100, priceTs: NOW }, kraken: { price: 200, priceTs: NOW }, bitstamp: stale }, NOW)!.price).toBe(150);
+    const one = computeProxy({ coinbase: { price: 100, priceTs: NOW }, kraken: stale }, NOW)!;
     expect(one.price).toBe(100);
     expect(one.sources).toEqual({ coinbase: 100 });
     expect(computeProxy({ coinbase: stale }, NOW)).toBeNull();
     expect(computeProxy({}, NOW)).toBeNull();
   });
   it("exactly STALE_AFTER_MS is still live", () => {
-    expect(computeProxy({ coinbase: { price: 5, msgTs: NOW - 3000 } }, NOW)!.price).toBe(5);
+    expect(computeProxy({ coinbase: { price: 5, priceTs: NOW - 3000 } }, NOW)!.price).toBe(5);
   });
 });
 
@@ -136,5 +150,198 @@ describe("parseCandles", () => {
       { t: 1700000060_000, d: 60, o: 100, h: 105, l: 99, c: 104 },
     ]);
     expect(parseCandles({ message: "err" })).toEqual([]);
+  });
+});
+
+class FakeFeed extends EventEmitter {
+  constructor(readonly id: ExchangeId) {
+    super();
+  }
+  start(): void {}
+  stop(): void {}
+  connect(): void {
+    this.emit("state", this.id, true);
+  }
+  drop(): void {
+    this.emit("state", this.id, false, "closed (1006)");
+  }
+  tick(price: number): void {
+    this.emit("tick", { exchange: this.id, ts: Date.now(), price });
+  }
+  heartbeat(): void {
+    this.emit("alive", this.id, Date.now());
+  }
+}
+
+describe("BtcProxy (fake feeds, fake clock)", () => {
+  afterEach(() => vi.useRealTimers());
+
+  function setup(ids: ExchangeId[] = ["coinbase", "kraken", "bitstamp"]) {
+    vi.useFakeTimers({ now: NOW });
+    const fakes = new Map<ExchangeId, FakeFeed>();
+    const proxy = new BtcProxy({
+      logger: log,
+      exchanges: ids,
+      createFeed: (spec) => {
+        const f = new FakeFeed(spec.id);
+        fakes.set(spec.id, f);
+        return f;
+      },
+    });
+    proxy.start();
+    const f = (id: ExchangeId) => fakes.get(id)!;
+    const state = (id: ExchangeId) => proxy.status().find((s) => s.id === id)!;
+    return { proxy, f, state };
+  }
+
+  it("a heartbeat-only feed goes stale after 3s and leaves the median", () => {
+    const { proxy, f, state } = setup(["coinbase", "kraken"]);
+    f("coinbase").connect();
+    f("kraken").connect();
+    f("coinbase").tick(100);
+    f("kraken").tick(110);
+    vi.advanceTimersByTime(200);
+    expect(proxy.last()!.price).toBe(105);
+    for (let i = 0; i < 8; i++) {
+      vi.advanceTimersByTime(500);
+      f("coinbase").heartbeat(); // socket alive, but no trades
+      f("kraken").tick(110);
+    }
+    expect(state("coinbase")).toMatchObject({ state: "stale", lastMsgTs: NOW });
+    expect(state("coinbase").ageMs).toBeGreaterThan(3000);
+    expect(state("kraken").state).toBe("live");
+    vi.advanceTimersByTime(600); // housekeeping re-evaluates the source set
+    expect(proxy.last()!.sources).toEqual({ kraken: 110 });
+    proxy.stop();
+  });
+
+  it("a pre-disconnect price is not reused after reconnect until a new trade arrives", () => {
+    const { proxy, f, state } = setup(["coinbase", "bitstamp"]);
+    f("coinbase").connect();
+    f("bitstamp").connect();
+    f("coinbase").tick(200);
+    f("bitstamp").tick(100);
+    f("bitstamp").drop();
+    vi.advanceTimersByTime(1000);
+    f("bitstamp").connect();
+    f("bitstamp").heartbeat(); // subscription ack after reconnect
+    f("coinbase").tick(201);
+    vi.advanceTimersByTime(200);
+    expect(state("bitstamp")).toMatchObject({ state: "down", lastMsgTs: null, ageMs: null });
+    expect(proxy.last()!.sources).toEqual({ coinbase: 201 });
+    f("bitstamp").tick(150);
+    vi.advanceTimersByTime(200);
+    expect(state("bitstamp").state).toBe("live");
+    expect(proxy.last()!.price).toBe(175.5);
+    proxy.stop();
+  });
+
+  it("connected but never priced (rejected/ignored subscribe) is reported down, not live", () => {
+    const { proxy, f, state } = setup(["kraken"]);
+    f("kraken").connect();
+    for (let i = 0; i < 5; i++) {
+      vi.advanceTimersByTime(1000);
+      f("kraken").heartbeat();
+    }
+    expect(state("kraken")).toMatchObject({ state: "down", detail: "connected, no price yet" });
+    expect(proxy.last()).toBeNull();
+    proxy.stop();
+  });
+
+  it("throttles emits to <= 10/s with a trailing emit of the latest price", () => {
+    const { proxy, f } = setup(["coinbase"]);
+    const seen: number[] = [];
+    proxy.on("tick", (t) => seen.push(t.price));
+    f("coinbase").connect();
+    for (let i = 1; i <= 10; i++) f("coinbase").tick(i); // same instant
+    expect(seen).toEqual([1]);
+    vi.advanceTimersByTime(100);
+    expect(seen).toEqual([1, 10]);
+    proxy.stop();
+  });
+});
+
+describe("candle backfill", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const MIN = 60_000;
+
+  it("windows hold <= 300 inclusive minute buckets, cover the range exactly, newest first", () => {
+    const end = 1_700_000_040_000 - (1_700_000_040_000 % MIN);
+    const start = end - 24 * 3_600_000;
+    const w = candleWindows(start, end);
+    expect(w[0]![1]).toBe(end - MIN);
+    expect(w.at(-1)![0]).toBe(start);
+    let buckets = 0;
+    for (const [i, [s, e]] of w.entries()) {
+      const n = (e - s) / MIN + 1;
+      expect(n).toBeLessThanOrEqual(300);
+      buckets += n;
+      if (i > 0) expect(w[i - 1]![0] - e).toBe(MIN); // contiguous, no overlap
+    }
+    expect(buckets).toBe(24 * 60);
+    expect(candleWindows(start, start)).toEqual([]);
+  });
+
+  function stubCandles(handler: (start: number, end: number, call: number) => Response) {
+    const calls: Array<[number, number]> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        const q = new URL(url).searchParams;
+        const s = Date.parse(q.get("start")!);
+        const e = Date.parse(q.get("end")!);
+        calls.push([s, e]);
+        return handler(s, e, calls.length);
+      }),
+    );
+    return calls;
+  }
+  const rows = (s: number, e: number) => {
+    const out: number[][] = [];
+    for (let t = e; t >= s; t -= MIN) out.push([t / 1000, 1, 3, 2, 2.5, 1]);
+    return out;
+  };
+  /** run with fake setTimeout so retry/chunk sleeps are instant */
+  async function run<T>(p: Promise<T>): Promise<T | Error> {
+    const settled = p.then(
+      (v) => v,
+      (e: Error) => e,
+    );
+    await vi.runAllTimersAsync();
+    return settled;
+  }
+
+  it("fetches 24h in <= 300-candle requests", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const calls = stubCandles((s, e) => Response.json(rows(s, e)));
+    const bars = (await run(fetchRecentBars(24))) as Bar[];
+    expect(calls).toHaveLength(5);
+    for (const [s, e] of calls) expect((e - s) / MIN + 1).toBeLessThanOrEqual(300);
+    expect(bars).toHaveLength(24 * 60);
+    expect(bars.every((b, i) => i === 0 || b.t - bars[i - 1]!.t === MIN)).toBe(true);
+  });
+
+  it("a non-array body is an error, and earlier chunks survive via onChunk", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const calls = stubCandles((s, e, call) => (call === 1 ? Response.json(rows(s, e)) : Response.json({ message: "oops" })));
+    const kept: Bar[] = [];
+    const res = await run(fetchRecentBars(24, { onChunk: (b) => kept.push(...b) }));
+    expect(res).toBeInstanceOf(Error);
+    expect((res as Error).message).toContain("oops");
+    expect(calls).toHaveLength(1 + 3); // second chunk retried 3x
+    expect(kept).toHaveLength(300); // the newest chunk
+    expect(kept.at(-1)!.t).toBe(calls[0]![1]);
+  });
+
+  it("does not retry a 400", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    const calls = stubCandles(() => Response.json({ message: "granularity too small for the requested time range" }, { status: 400 }));
+    const res = await run(fetchRecentBars(1));
+    expect((res as Error).message).toMatch(/HTTP 400 .*granularity too small/);
+    expect(calls).toHaveLength(1);
   });
 });

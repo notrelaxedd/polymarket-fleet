@@ -1,5 +1,6 @@
 // Window bands: previous window slightly darker, current window slightly lighter, strong vertical lines at
 // every 15m boundary, and a label at the bottom of each band ("10:15–10:30 · SETTLED UP", "… · LIVE").
+// Narrow bands (1m/5m timeframes, phones) fall back to shorter labels: status only, then the time range.
 // Drawn in the background layer so grid, series and other primitives sit on top.
 
 import type { MarketWindow } from "@shared/protocol";
@@ -13,7 +14,8 @@ interface BandGeom {
   x1: number;
   x2: number;
   fill: string | null;
-  runs: TextRun[];
+  /** label candidates, longest first */
+  labels: TextRun[][];
 }
 
 /** Rect reserved at the bottom of the pane by other primitives (e.g. the NOW label) — labels avoid it. */
@@ -60,7 +62,7 @@ export class WindowBandsPrimitive extends BasePrimitive {
         x1,
         x2,
         fill: isCur ? C.bandCurrent : isPrev ? C.bandPrevious : null,
-        runs: labelRuns(w, isCur),
+        labels: labelVariants(w, isCur),
       });
       for (const x of [x1, x2]) {
         const k = Math.round(x);
@@ -94,10 +96,12 @@ export class WindowBandsPrimitive extends BasePrimitive {
     const y = height - 14;
     const rowH = 22;
     for (const b of this.bands) {
+      // the label stays inside the visible part of the band (a partly scrolled-off window keeps its label)
       const visL = Math.max(b.x1, 0);
       const visR = Math.min(b.x2, width);
-      const tw = measureRuns(ctx, b.runs) + 14;
-      if (visR - visL < tw + 8) continue;
+      const runs = fitLabel(b.labels, visR - visL - 8, (r) => measureRuns(ctx, r) + 14);
+      if (!runs) continue;
+      const tw = measureRuns(ctx, runs) + 14;
       let cx = (visL + visR) / 2;
       let cy = y;
       const r = this.getReserved();
@@ -109,21 +113,37 @@ export class WindowBandsPrimitive extends BasePrimitive {
         else if (rightFit + tw / 2 <= visR - 4) cx = rightFit;
         else cy = y - rowH;
       }
-      pill(ctx, b.runs, cx, cy, { bg: "rgba(14, 18, 24, 0.88)", border: C.border, align: "center", h: 18, padX: 7 });
+      pill(ctx, runs, cx, cy, { bg: "rgba(14, 18, 24, 0.88)", border: C.border, align: "center", h: 18, padX: 7 });
     }
   }
 }
 
-function labelRuns(w: MarketWindow, isCur: boolean): TextRun[] {
+/** First label candidate whose measured width fits `avail`, else null. */
+export function fitLabel<T>(candidates: readonly T[], avail: number, measure: (c: T) => number): T | null {
+  for (const c of candidates) if (measure(c) <= avail) return c;
+  return null;
+}
+
+/** Band label candidates, longest first: "10:15–10:30 · SETTLED UP" -> "SETTLED UP" -> "10:15–10:30" -> "UP". */
+export function labelVariants(w: MarketWindow, isCur: boolean): TextRun[][] {
   const range: TextRun = { text: rangeLabel(w.startTs, w.endTs), color: C.muted };
   const sep: TextRun = { text: " · ", color: C.label };
-  if (isCur) return [range, sep, { text: "LIVE", color: C.oddsText }];
+  const status = statusRun(w, isCur);
+  if (!status) return [[range]];
+  const out: TextRun[][] = [[range, sep, status], [status], [range]];
+  const short = status.text.replace(/^SETTLED /, "");
+  if (short !== status.text) out.push([{ ...status, text: short }]);
+  return out;
+}
+
+function statusRun(w: MarketWindow, isCur: boolean): TextRun | null {
+  if (isCur) return { text: "LIVE", color: C.oddsText };
   if (w.result) {
     const up = w.result === "up";
     const settled = w.status === "settled" ? "SETTLED " : "";
-    return [range, sep, { text: `${settled}${up ? "UP" : "DOWN"}`, color: up ? C.up : C.down }];
+    return { text: `${settled}${up ? "UP" : "DOWN"}`, color: up ? C.up : C.down };
   }
-  if (w.status === "closed") return [range, sep, { text: "AWAITING SETTLE", color: C.label }];
-  if (w.status === "live") return [range, sep, { text: "LIVE", color: C.oddsText }];
-  return [range];
+  if (w.status === "closed") return { text: "AWAITING SETTLE", color: C.label };
+  if (w.status === "live") return { text: "LIVE", color: C.oddsText };
+  return null;
 }

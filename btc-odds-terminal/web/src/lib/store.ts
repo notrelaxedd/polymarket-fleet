@@ -137,5 +137,16 @@ export const useTerminal = create<TerminalState>()((set) => ({
   setActiveTool: (activeTool) => set({ activeTool }),
 }));
 
+/**
+ * `lastOdds` only when it belongs to the current window. Right after a rollover (or in a snapshot taken
+ * then) the backend may still hold the expired window's quote; never show it against the new window.
+ */
+export const selectOdds = (s: Pick<TerminalState, "lastOdds" | "current">): OddsSnap | null =>
+  s.lastOdds && s.current && s.lastOdds.windowId === s.current.id ? s.lastOdds : null;
+
+/** `lastFair` only when it belongs to the current window (see selectOdds). */
+export const selectFair = (s: Pick<TerminalState, "lastFair" | "current">): FairSnap | null =>
+  s.lastFair && s.current && s.lastFair.windowId === s.current.id ? s.lastFair : null;
+
 /** Server-corrected "now" in ms. */
 export const serverNow = () => Date.now() + useTerminal.getState().serverOffsetMs;

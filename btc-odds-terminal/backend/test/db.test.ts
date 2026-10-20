@@ -113,6 +113,13 @@ describe("repository round-trips", () => {
 
     const defaults = { mode: "paper" as const, volLookbackMin: 30, feeCentsPerContract: null };
     expect(loadSettings(db, defaults)).toEqual(defaults);
+    // env defaults are never persisted: a later .env change applies to keys the user never set
+    expect(Object.keys(db.allSettings())).toEqual(["x"]);
+    expect(loadSettings(db, { ...defaults, feeCentsPerContract: 2, volLookbackMin: 15 })).toEqual({
+      mode: "paper",
+      volLookbackMin: 15,
+      feeCentsPerContract: 2,
+    });
     saveSettings(db, { volLookbackMin: 45, feeCentsPerContract: 1.5 });
     expect(loadSettings(db, { ...defaults, volLookbackMin: 10 })).toEqual({ mode: "paper", volLookbackMin: 45, feeCentsPerContract: 1.5 });
     saveSettings(db, { feeCentsPerContract: null });
@@ -157,6 +164,26 @@ describe("history range queries", () => {
     expect(db.nearestBar1s(T0 + 1000)!.c).toBe(1);
     expect(db.nearestBar1s(T0 + 5900)!.c).toBe(3);
     expect(db.nearestBar1s(T0 + 60_000, 10_000)).toBeNull();
+  });
+
+  it("nearestBar(ts, 60) finds the seeded minute bar closing at ts", () => {
+    const db = openDb(":memory:");
+    db.insertBarsIgnore([bar(T0 - 120_000, 10, 60), bar(T0 - 60_000, 11, 60), bar(T0, 12, 60)]);
+    db.upsertBars([bar(T0 - 1000, 99)]); // a 1s bar is not a 60s bar
+    expect(db.nearestBar(T0, 60)!.c).toBe(11); // minute [T0-60s, T0) closes at T0
+    expect(db.nearestBar(T0 + 4000, 60, 5000)!.c).toBe(11);
+    expect(db.nearestBar(T0 + 30_000, 60, 5000)).toBeNull();
+  });
+
+  it("unsettledWindows lists ended windows without a result inside the horizon, oldest first", () => {
+    const db = openDb(":memory:");
+    const q = 15 * 60_000;
+    db.upsertWindow(win("old", T0 - 40 * q)); // ended long ago
+    db.upsertWindow(win("a", T0 - 3 * q, { status: "closed" }));
+    db.upsertWindow(win("b", T0 - 2 * q));
+    db.upsertWindow(win("done", T0 - 2 * q + 1, { status: "settled", result: "up" }));
+    db.upsertWindow(win("cur", T0 - 60_000)); // still running
+    expect(db.unsettledWindows(T0 - 6 * 3_600_000, T0).map((w) => w.id)).toEqual(["a", "b"]);
   });
 
   it("prune applies retention per table", () => {

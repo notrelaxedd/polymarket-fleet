@@ -74,7 +74,33 @@ export function centsNum(v: number | null | undefined, digits = 0): string {
   return v.toFixed(digits);
 }
 
-const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/**
+ * A contract price at the backend's 0.1¢ resolution, without symbol: 56 -> "56", 55.5 -> "55.5".
+ * Use it wherever the user reads a bid/ask/mid so every surface shows the same number.
+ */
+export function quote(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return NA;
+  const r = Math.round(v * 10) / 10;
+  return Number.isInteger(r) ? r.toFixed(0) : r.toFixed(1);
+}
+
+/** quote() with the cent sign: "55.5¢" */
+export function quoteCents(v: number | null | undefined): string {
+  const s = quote(v);
+  return s === NA ? NA : `${s}¢`;
+}
+
+/** Bid/ask spread in cents, always 1 decimal ("0.3¢"); null when either side is missing. */
+export function spreadCents(bid: number | null | undefined, ask: number | null | undefined): string | null {
+  if (bid == null || ask == null || !Number.isFinite(bid) || !Number.isFinite(ask)) return null;
+  return `${(Math.round((ask - bid) * 10) / 10).toFixed(1)}¢`;
+}
+
+/** Caveat shown wherever the BRTI-proxy series is labelled (SPEC: data source 3). */
+export const BRTI_PROXY_NOTE =
+  "Median of Coinbase/Kraken/Bitstamp. Official settlement uses CF Benchmarks BRTI and can differ when price is near the strike.";
+
+const usd2 =new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const usd0 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
 
 export function usd(v: number | null | undefined, digits = 2): string {

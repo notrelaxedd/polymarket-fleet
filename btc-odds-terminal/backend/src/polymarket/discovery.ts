@@ -109,20 +109,28 @@ export function slugEpochMs(slug: string): number | null {
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
-/** UTC ms for a wall-clock time in America/New_York. */
+const NY_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hourCycle: "h23",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+function nyParts(t: number): Record<string, string> {
+  return Object.fromEntries(NY_FMT.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+}
+
+/**
+ * UTC ms for a wall-clock time in America/New_York. In the repeated fall-back hour (1:00-2:00 AM on the first
+ * Sunday of November) this returns the first (EDT) instant; the title alone cannot tell the two apart.
+ */
 export function nyWallToUtc(y: number, mo: number, d: number, h: number, mi: number): number {
   const guess = Date.UTC(y, mo, d, h, mi);
-  const fmt = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
   const offsetAt = (t: number) => {
-    const p = Object.fromEntries(fmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    const p = nyParts(t);
     const asUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour) % 24, Number(p.minute));
     return asUtc - t; // NY offset (negative)
   };
@@ -133,7 +141,9 @@ export function nyWallToUtc(y: number, mo: number, d: number, h: number, mi: num
 
 /**
  * "Bitcoin Up or Down - October 20, 10:30AM-10:45AM ET" -> { startTs, endTs } (UNVERIFIED title format,
- * modelled on Polymarket's international titles). Year defaults to the reference clock's NY year.
+ * modelled on Polymarket's international titles). Without an explicit year, the year (NY calendar year of the
+ * reference clock, or the one before/after it) that puts the window closest to `refNow` wins, so a
+ * "December 31, 11:30PM" title read at 04:40Z on Jan 1 stays in the old year.
  */
 export function parseTitleWindow(title: string, refNow: number): { startTs: number; endTs: number } | null {
   const re =
@@ -143,7 +153,6 @@ export function parseTitleWindow(title: string, refNow: number): { startTs: numb
   const mo = MONTHS.indexOf(m[1]!.slice(0, 3).toLowerCase());
   if (mo < 0) return null;
   const day = Number(m[2]);
-  const year = m[3] ? Number(m[3]) : new Date(refNow).getUTCFullYear();
   const to24 = (h: number, ap: string | undefined) => {
     const a = (ap ?? "").toUpperCase();
     if (a === "PM" && h < 12) return h + 12;
@@ -153,11 +162,28 @@ export function parseTitleWindow(title: string, refNow: number): { startTs: numb
   const endAp = m[9]!;
   const sh = to24(Number(m[4]), m[6] ?? endAp);
   const eh = to24(Number(m[7]), endAp);
-  const startTs = nyWallToUtc(year, mo, day, sh, Number(m[5] ?? 0));
-  let endTs = nyWallToUtc(year, mo, day, eh, Number(m[8] ?? 0));
-  if (endTs <= startTs) endTs += 24 * 3600_000; // 11:45PM-12:00AM
-  return { startTs, endTs };
+  const at = (year: number) => {
+    const startTs = nyWallToUtc(year, mo, day, sh, Number(m[5] ?? 0));
+    let endTs = nyWallToUtc(year, mo, day, eh, Number(m[8] ?? 0));
+    if (endTs <= startTs) endTs += 24 * 3600_000; // 11:45PM-12:00AM
+    return { startTs, endTs };
+  };
+  if (m[3]) return at(Number(m[3]));
+  const nyYear = Number(nyParts(refNow).year);
+  let best = at(nyYear);
+  for (const y of [nyYear - 1, nyYear + 1]) {
+    const c = at(y);
+    if (Math.abs(c.startTs - refNow) < Math.abs(best.startTs - refNow)) best = c;
+  }
+  return best;
 }
+
+function isSpan15(t: { startTs: number; endTs: number } | null, W: number): boolean {
+  return t !== null && Math.abs(t.endTs - t.startTs - W) <= DURATION_TOLERANCE_MS;
+}
+
+/** The title and the slug epoch / end - W disagree by this much -> trust the latter (wrong year, repeated DST hour). */
+const TITLE_DISAGREE_MS = 3600_000 - DURATION_TOLERANCE_MS;
 
 export interface WindowTimes {
   startTs: number;
@@ -179,16 +205,19 @@ export function extractTimes(
     return { startTs: start, endTs: end, explicit15: true };
   }
   const epoch = slugEpochMs(s(market.slug)) ?? (event ? slugEpochMs(s(event.slug)) : null);
+  // Polymarket's international up/down slugs carry the window START; accept an end-epoch too.
+  let alt: { startTs: number; endTs: number } | null = null;
+  if (epoch !== null) {
+    alt = end !== null && Math.abs(end - epoch) <= DURATION_TOLERANCE_MS ? { startTs: end - W, endTs: end } : { startTs: epoch, endTs: epoch + W };
+  } else if (end !== null) {
+    alt = { startTs: end - W, endTs: end };
+  }
   const titled = parseTitleWindow(s(market.title), refNow) ?? (event ? parseTitleWindow(s(event.title), refNow) : null);
-  if (titled && Math.abs(titled.endTs - titled.startTs - W) <= DURATION_TOLERANCE_MS) {
+  if (titled && isSpan15(titled, W)) {
+    if (alt && Math.abs(titled.startTs - alt.startTs) >= TITLE_DISAGREE_MS) return { ...alt, explicit15: false };
     return { ...titled, explicit15: false };
   }
-  if (epoch !== null) {
-    // Polymarket's international up/down slugs carry the window START; accept an end-epoch too.
-    if (end !== null && Math.abs(end - epoch) <= DURATION_TOLERANCE_MS) return { startTs: end - W, endTs: end, explicit15: false };
-    return { startTs: epoch, endTs: epoch + W, explicit15: false };
-  }
-  if (end !== null) return { startTs: end - W, endTs: end, explicit15: false };
+  if (alt) return { ...alt, explicit15: false };
   if (start !== null) return { startTs: start, endTs: start + W, explicit15: false };
   return null;
 }
@@ -311,10 +340,26 @@ export function isBtc15mEvent(ev: Record<string, unknown>, cfg: DiscoveryConfig 
   const text = textOf(ev, ...mk);
   if (!looksLikeBtcUpDown(text)) return false;
   if (RE_15.test(text)) return true;
-  // no "15m" in the text: accept only when explicit times say it is a 15-minute window
+  // no "15m" in the text: accept an ET title range spanning 15 minutes ("October 20, 10:30AM-10:45AM ET") ...
+  for (const o of [ev, ...mk]) if (isSpan15(parseTitleWindow(s(o.title), now), cfg.windowMs)) return true;
+  // ... or explicit start/end times 15 minutes apart
   const probe = mk[0] ?? ev;
   const t = extractTimes(probe, ev, cfg, now);
   return t?.explicit15 ?? false;
+}
+
+/** True if a GET /v1/series record looks like the BTC 15-minute Up/Down series (title/slug/recurrence). */
+export function isBtc15mSeries(series: Record<string, unknown>): boolean {
+  const text = `${s(series.slug)} ${s(series.title)}`;
+  if (!RE_BTC.test(text)) return false;
+  return RE_15.test(text) || /15|fifteen|quarter/i.test(s(series.recurrence));
+}
+
+/** Prefer series that also read "up or down" when several BTC 15m series match. */
+export function pickBtc15mSeries(series: Record<string, unknown>[]): Record<string, unknown>[] {
+  const all = series.filter(isBtc15mSeries);
+  const updown = all.filter((x) => RE_UPDOWN.test(`${s(x.slug)} ${s(x.title)}`));
+  return updown.length > 0 ? updown : all;
 }
 
 /**

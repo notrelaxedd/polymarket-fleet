@@ -25,8 +25,9 @@ const KEYS = {
 } as const;
 
 /**
- * Load settings from the DB, falling back to (and persisting) `defaults` for any key
- * that is missing or invalid. Values in the DB win over env defaults.
+ * Load settings: a value stored in the DB (only ever written by an explicit user update via
+ * saveSettings) wins; any key that is missing or invalid uses `defaults` (env). Defaults are
+ * NOT persisted, so a later .env change still applies to keys the user never set.
  */
 export function loadSettings(db: TerminalDb, defaults: StoredSettings): StoredSettings {
   const stored = db.allSettings();
@@ -37,7 +38,6 @@ export function loadSettings(db: TerminalDb, defaults: StoredSettings): StoredSe
     const value = parsed.success ? parsed.data[key] : undefined;
     if (value !== undefined) (out as Record<string, unknown>)[key] = value;
   }
-  saveSettings(db, out);
   return out;
 }
 

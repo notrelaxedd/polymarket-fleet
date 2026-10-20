@@ -8,6 +8,9 @@
 //            { marketData: { marketSlug, bids, offers, state, stats, transactTime } }, { trade: {...} },
 //            { heartbeat: {} }, { requestId?, subscriptionType?, error }
 //  - subscriptions do not survive a reconnect: we resubscribe on every open.
+//  - backoff resets only once a connection proved healthy (a data frame, or up for `stableMs`), so a server that
+//    accepts the upgrade and then drops us does not cause a ~1/s reconnect storm; repeated 401/403 upgrade
+//    rejections (bad keys, clock skew) back off to minutes.
 
 import { EventEmitter } from "node:events";
 import WebSocket from "ws";
@@ -25,7 +28,12 @@ export interface StreamOptions {
   maxBackoffMs?: number;
   /** terminate the socket if nothing (data, heartbeat, pong) arrives for this long (default 20s) */
   idleTimeoutMs?: number;
+  /** a connection that stays up this long resets the backoff (default 30s) */
+  stableMs?: number;
 }
+
+const AUTH_BACKOFF_MIN_MS = 60_000;
+const AUTH_BACKOFF_MAX_MS = 10 * 60_000;
 
 /** Exponential backoff with jitter: base * 2^attempt capped at max, then scaled into [50%, 100%]. */
 export function backoffMs(attempt: number, minMs = 1000, maxMs = 30_000, rand: () => number = Math.random): number {
@@ -38,6 +46,8 @@ export class MarketsStream extends EventEmitter {
   private ws: WebSocket | null = null;
   private running = false;
   private attempt = 0;
+  private authFailures = 0;
+  private openedAt: number | null = null;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private pingTimer: NodeJS.Timeout | null = null;
   private slugs: string[] = [];
@@ -121,7 +131,8 @@ export class MarketsStream extends EventEmitter {
     this.ws = ws;
 
     ws.on("open", () => {
-      this.attempt = 0;
+      this.authFailures = 0;
+      this.openedAt = Date.now();
       this._connected = true;
       this.lastMsgTs = Date.now();
       this.activeRequestId = null;
@@ -151,6 +162,7 @@ export class MarketsStream extends EventEmitter {
       this.lastMsgTs = Date.now();
       const msg = parseWsMessage(data.toString());
       this.emit("message");
+      if (msg.kind === "bbo" || msg.kind === "book" || msg.kind === "trade") this.attempt = 0; // healthy: data flows
       if (msg.kind === "bbo") this.emit("bbo", msg.bbo);
       else if (msg.kind === "book") this.emit("bbo", bookToBbo(msg.book));
       else if (msg.kind === "error") {
@@ -160,6 +172,7 @@ export class MarketsStream extends EventEmitter {
     });
     ws.on("unexpected-response", (_req, res) => {
       logger.warn({ status: res.statusCode, auth: !!auth }, "polymarket ws: upgrade rejected");
+      if (res.statusCode === 401 || res.statusCode === 403) this.authFailures++;
       this.emit("serverError", `upgrade rejected: HTTP ${res.statusCode}`);
       ws.terminate();
     });
@@ -170,6 +183,8 @@ export class MarketsStream extends EventEmitter {
       if (this.ws === ws) this.ws = null;
       const was = this._connected;
       this._connected = false;
+      if (this.openedAt !== null && Date.now() - this.openedAt >= (this.opts.stableMs ?? 30_000)) this.attempt = 0;
+      this.openedAt = null;
       if (this.pingTimer) clearInterval(this.pingTimer);
       this.pingTimer = null;
       if (was) this.emit("close");
@@ -179,7 +194,9 @@ export class MarketsStream extends EventEmitter {
 
   private scheduleReconnect(): void {
     if (!this.running || this.reconnectTimer) return;
-    const delay = backoffMs(this.attempt++, this.opts.minBackoffMs ?? 1000, this.opts.maxBackoffMs ?? 30_000);
+    let delay = backoffMs(this.attempt++, this.opts.minBackoffMs ?? 1000, this.opts.maxBackoffMs ?? 30_000);
+    // a repeated 401/403 will not fix itself in a second: back off to minutes
+    if (this.authFailures >= 2) delay = Math.max(delay, backoffMs(this.authFailures - 2, AUTH_BACKOFF_MIN_MS, AUTH_BACKOFF_MAX_MS));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.connect();

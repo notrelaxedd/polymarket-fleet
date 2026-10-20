@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "NODE_OPTIONS=--conditions=import ../backend/node_modules/.bin/tsx --test src/lib/__tests__/*.test.ts src/components/chart/__tests__/*.test.ts"
   },
   "dependencies": {
     "@radix-ui/react-popover": "^1.1.15",

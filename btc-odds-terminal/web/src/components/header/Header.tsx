@@ -1,9 +1,10 @@
 "use client";
 import { Activity } from "lucide-react";
 import { useTerminal } from "@/lib/store";
-import { useEdge } from "@/lib/hooks";
-import { btc, centsNum, signedCents } from "@/lib/format";
+import { useEdge, useFair, useOdds } from "@/lib/hooks";
+import { BRTI_PROXY_NOTE, btc, quote, signedCents } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { InfoTip } from "@/components/ui/info-tip";
 import { StatBlock } from "./StatBlock";
 import { MarketSelector } from "./MarketSelector";
 import { Countdown } from "./Countdown";
@@ -14,7 +15,7 @@ import { ModeBadge, SettingsMenu } from "./SettingsMenu";
 function Pair({ a, b }: { a: number | null | undefined; b: number | null | undefined }) {
   return (
     <>
-      {centsNum(a)} <span className="font-normal text-muted">/</span> {centsNum(b)}
+      {quote(a)} <span className="font-normal text-muted">/</span> {quote(b)}
       <span className="font-normal text-muted">¢</span>
     </>
   );
@@ -23,8 +24,8 @@ function Pair({ a, b }: { a: number | null | undefined; b: number | null | undef
 export function Header() {
   const ptb = useTerminal((s) => s.current?.priceToBeat ?? null);
   const price = useTerminal((s) => s.lastTick?.price ?? null);
-  const odds = useTerminal((s) => s.lastOdds);
-  const fair = useTerminal((s) => s.lastFair);
+  const odds = useOdds();
+  const fair = useFair();
   const edge = useEdge();
   const delta = price != null && ptb != null ? price - ptb : null;
   const edgeNeg = edge != null && edge < 0;
@@ -49,7 +50,13 @@ export function Header() {
           <StatBlock label="Price to beat" className="text-ptb">
             {ptb != null ? `$${btc(ptb)}` : "—"}
           </StatBlock>
-          <StatBlock label="BTC · BRTI proxy">
+          <StatBlock
+            label={
+              <span className="inline-flex items-center gap-1">
+                BTC · BRTI proxy <InfoTip label={BRTI_PROXY_NOTE} />
+              </span>
+            }
+          >
             <span className="text-text">{price != null ? `$${btc(price)}` : "—"}</span>
             {delta != null && (
               <span className={cn("text-[12px]", delta >= 0 ? "text-up" : "text-down")}>

@@ -6,11 +6,15 @@
 #
 # Idempotent: re-run it to upgrade. It re-syncs the code to /opt/btc-odds-terminal, reruns
 # npm ci only when package-lock.json or the Node version changes, keeps backend/.env and the
-# SQLite data, seeds history until the first successful seed, and restarts the service.
+# SQLite data, seeds history until the first successful seed (seed.ts exits non-zero when too
+# few bars come back, so a failed seed is retried), and restarts the service.
 #
 # It opens no firewall ports. HOST and PORT come from backend/.env. Remote access goes over
 # the tailnet (see README, "Frontend: Vercel pointed at the worker").
 set -euo pipefail
+# Fixed regardless of the caller's umask, so files created here (node_modules, stamps) stay
+# readable by the service user.
+umask 022
 
 APP_USER=btcodds
 APP_ROOT=/opt/btc-odds-terminal
@@ -72,10 +76,12 @@ install -d -m 0755 -o root -g root "$APP_ROOT" "$BACKEND_DIR"
 install -d -m 0750 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
 
 log "syncing code to $APP_ROOT (code is root-owned; the service user cannot modify it)"
-rsync -a --delete --chown=root:root \
+# --chmod normalizes modes: a checkout made under umask 077 would otherwise leave the tree
+# unreadable by the service user.
+rsync -a --delete --chown=root:root --chmod=D755,F644 \
   --exclude=/node_modules --exclude=/data --exclude=/.env \
   "$REPO_ROOT/backend/" "$BACKEND_DIR/"
-rsync -a --delete --chown=root:root "$REPO_ROOT/shared/" "$APP_ROOT/shared/"
+rsync -a --delete --chown=root:root --chmod=D755,F644 "$REPO_ROOT/shared/" "$APP_ROOT/shared/"
 
 # Root installs the dependencies (npm ci needs a lockfile match) and re-runs only when the
 # lockfile or Node version changes.
@@ -97,6 +103,10 @@ else
   chown "$APP_USER:$APP_USER" "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
 fi
+CORS_VAL="$(sed -n 's/^CORS_ORIGIN=//p' "$ENV_FILE" | tail -n1 | tr -d '[:space:]')"
+if [ "$CORS_VAL" = "*" ]; then
+  warn "CORS_ORIGIN=* in $ENV_FILE lets any web page in any browser that can reach this host change settings. Set it to your app origin(s)."
+fi
 
 if [ ! -f "$SEED_STAMP" ]; then
   log "seeding BTC history (first install)"
@@ -104,7 +114,7 @@ if [ ! -f "$SEED_STAMP" ]; then
     touch "$SEED_STAMP"
     chown "$APP_USER:$APP_USER" "$SEED_STAMP"
   else
-    warn "seed failed (no network to the exchanges?). The service still starts. Re-run install.sh later to retry the seed."
+    warn "seed failed or returned too few bars (no network to api.exchange.coinbase.com?). The service still starts. Re-run install.sh later to retry the seed."
   fi
 fi
 
@@ -118,7 +128,12 @@ PORT_VAL="$(sed -n 's/^PORT=//p' "$ENV_FILE" | tail -n1 | tr -d '[:space:]')"
 HOST_VAL="$(sed -n 's/^HOST=//p' "$ENV_FILE" | tail -n1 | tr -d '[:space:]')"
 PORT_VAL="${PORT_VAL:-8787}"
 CHECK_HOST="${HOST_VAL:-127.0.0.1}"
-[ "$CHECK_HOST" = 0.0.0.0 ] && CHECK_HOST=127.0.0.1
+case "$CHECK_HOST" in
+  0.0.0.0)       CHECK_HOST=127.0.0.1 ;;
+  ::|'[::]')     CHECK_HOST='[::1]' ;;
+  \[*\])         ;;                          # already bracketed
+  *:*)           CHECK_HOST="[$CHECK_HOST]" ;; # other IPv6 literal
+esac
 HEALTH="http://$CHECK_HOST:$PORT_VAL/api/health"
 
 log "waiting for $HEALTH"

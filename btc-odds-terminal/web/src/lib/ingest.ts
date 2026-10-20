@@ -7,7 +7,10 @@ import { useTerminal, type TerminalState } from "./store";
  *  - latest-value fields (lastTick, lastOdds, ...) are written with a single store update.
  */
 
-const TICK_CAP_MS = 4 * 3600 * 1000;
+/** bars/odds/fair kept in memory (the chart shows at most the 3h history plus live) */
+export const SERIES_CAP_MS = 4 * 3600 * 1000;
+/** raw ticks (up to 10/s, only drawn by the per-exchange overlay) are kept for a much shorter horizon */
+export const TICK_CAP_MS = 30 * 60 * 1000;
 const TRIM_SLACK = 2000; // only trim once we are this many elements over the cut
 const RECENT_CAP = 50;
 
@@ -119,7 +122,17 @@ export function flush(): void {
         const nxt = read("next");
         if (cur && cur.id === w.id) patch.current = w;
         else if (w.status === "live" && (!cur || w.startTs > cur.startTs)) patch.current = w;
-        if (nxt && nxt.id === w.id) patch.next = w;
+        const curEnd = (patch.current ?? cur)?.endTs ?? 0;
+        if (patch.current?.id === w.id && nxt?.id === w.id) patch.next = null; // next just went live
+        else if (nxt && nxt.id === w.id) patch.next = w;
+        else if (
+          // a next window discovered after the last rollover only arrives as a `window` message
+          w.status === "upcoming" &&
+          w.startTs >= curEnd &&
+          (!nxt || nxt.startTs < curEnd || w.startTs < nxt.startTs)
+        ) {
+          patch.next = w;
+        }
         if (w.status === "closed" || w.status === "settled") {
           patch.recent = mergeRecent(read("recent"), w);
         }
@@ -154,8 +167,9 @@ export function flush(): void {
   }
 
   if (seriesDirty) {
-    const cutoff = (patch.lastTick?.ts ?? Date.now()) - TICK_CAP_MS;
-    trimFront(series.ticks, (x) => x.ts, cutoff);
+    const now = patch.lastTick?.ts ?? Date.now();
+    const cutoff = now - SERIES_CAP_MS;
+    trimFront(series.ticks, (x) => x.ts, now - TICK_CAP_MS);
     trimFront(series.bars, (x) => x.t, cutoff);
     trimFront(series.odds, (x) => x.ts, cutoff);
     trimFront(series.fair, (x) => x.ts, cutoff);

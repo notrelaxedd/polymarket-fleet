@@ -32,7 +32,8 @@ export function ChartToolbar() {
   const toggle = useTerminal((s) => s.toggleOverlay);
 
   return (
-    <div className="flex items-center gap-3 overflow-x-auto border-b border-border bg-surface px-3 py-1.5">
+    // phones scroll the row sideways; wider screens wrap so Replay / Per-exchange are never clipped
+    <div className="flex shrink-0 items-center gap-x-3 gap-y-1.5 overflow-x-auto border-b border-border bg-surface px-3 py-1.5 sm:flex-wrap sm:overflow-x-visible">
       <Segmented ariaLabel="Timeframe" value={timeframe} onChange={setTimeframe} options={TF} />
       <Segmented
         ariaLabel="Chart style"
@@ -44,16 +45,15 @@ export function ChartToolbar() {
         ]}
       />
       <div aria-hidden className="h-5 w-px shrink-0 bg-border-strong" />
-      <div className="flex items-center gap-1.5" role="group" aria-label="Overlays">
+      <div className="flex items-center gap-1.5 sm:flex-wrap" role="group" aria-label="Overlays">
         {CHIPS.map((c) => (
           <Chip key={c.key} on={overlays[c.key]} swatch={c.color} dashed={c.dashed} onClick={() => toggle(c.key)}>
             {c.label}
           </Chip>
         ))}
       </div>
-      <div className="min-w-2 flex-1" />
       <Tip label="Step 6">
-        <span tabIndex={0} className="inline-flex shrink-0">
+        <span tabIndex={0} className="ml-auto inline-flex shrink-0">
           <button
             type="button"
             disabled

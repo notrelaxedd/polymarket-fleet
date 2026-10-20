@@ -2,8 +2,10 @@
 import * as React from "react";
 import type { Bar } from "@shared/protocol";
 import { useTerminal, type Timeframe } from "@/lib/store";
-import { btc, cents } from "@/lib/format";
+import { useFair, useOdds } from "@/lib/hooks";
+import { BRTI_PROXY_NOTE, btc, cents } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { InfoTip } from "@/components/ui/info-tip";
 
 const TF_LABEL: Record<Timeframe, string> = { 1: "1s", 5: "5s", 15: "15s", 60: "1m", 300: "5m" };
 
@@ -42,8 +44,8 @@ export function LegendRow() {
   const hover = useTerminal((s) => s.hover);
   useTerminal((s) => s.version); // re-render when series change
   const bars = useTerminal.getState().series.bars;
-  const lastOdds = useTerminal((s) => s.lastOdds);
-  const lastFair = useTerminal((s) => s.lastFair);
+  const lastOdds = useOdds();
+  const lastFair = useFair();
   const ptbCur = useTerminal((s) => s.current?.priceToBeat ?? null);
 
   const candle = hover ? { o: hover.o, h: hover.h, l: hover.l, c: hover.c } : latestCandle(bars, timeframe);
@@ -54,9 +56,12 @@ export function LegendRow() {
   const ptb = hover ? hover.ptb : ptbCur;
 
   return (
-    <div className="flex items-center gap-x-4 overflow-x-auto border-b border-border bg-surface px-3 py-1.5" aria-label="Chart legend">
-      <span className="whitespace-nowrap text-[12px] font-semibold text-text-2">
-        BTC · BRTI proxy <span className="font-normal text-muted">(median CB/KR/BS)</span> · <span className="num">{TF_LABEL[timeframe]}</span>
+    <div className="flex shrink-0 items-center gap-x-4 overflow-x-auto border-b border-border bg-surface px-3 py-1.5" aria-label="Chart legend">
+      <span className="inline-flex items-center gap-1 whitespace-nowrap text-[12px] font-semibold text-text-2">
+        <span>
+          BTC · BRTI proxy <span className="font-normal text-muted">(median CB/KR/BS)</span> · <span className="num">{TF_LABEL[timeframe]}</span>
+        </span>
+        <InfoTip label={BRTI_PROXY_NOTE} />
       </span>
       <span className={cn("flex items-center gap-x-3", !candle && "opacity-60")}>
         <Item k="O" v={candle ? btc(candle.o) : "—"} color={ohlcColor} />

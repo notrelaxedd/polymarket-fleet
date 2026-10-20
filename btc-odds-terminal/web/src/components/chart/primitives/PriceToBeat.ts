@@ -1,13 +1,14 @@
 // Price to beat: amber dashed line across the current window + amber tag on the right axis + a small
-// "Price to beat" label; the previous window's PTB at 45% opacity with its value.
+// "Price to beat" label; the previous window's PTB as a 45%-opacity line with its value.
 // Attached to the right-scale (BTC) anchor series. Also widens BTC autoscale to keep the current PTB visible.
+// The axis tag is pinned (fixedCoordinate) at the exact PTB price so it never gets stacked away from its line.
 
 import { useTerminal } from "@/lib/store";
 import { fmtBtc } from "../fmt";
 import { C, monoFont } from "../theme";
 import { previousWindow, windowList } from "../windows";
 import type { ChartHandle } from "../context";
-import { AxisTag, BasePrimitive, FnPaneView, FnRenderer, pill, type MediaScope } from "./base";
+import { AxisTag, BasePrimitive, FnPaneView, FnRenderer, measureRuns, pill, type MediaScope, type TextRun } from "./base";
 
 interface LineGeom {
   x1: number;
@@ -31,6 +32,12 @@ export class PriceToBeatPrimitive extends BasePrimitive {
     super(h);
     this.tag.bgColor = C.ptb;
     this.tag.fg = "#1A1406";
+    this.tag.fixed = true;
+  }
+
+  /** y of the PTB axis tag when shown (other right-axis tags dodge it) */
+  tagY(): number | null {
+    return this.tag.show ? this.tag.y : null;
   }
 
   paneViews() {
@@ -93,17 +100,26 @@ export class PriceToBeatPrimitive extends BasePrimitive {
   private drawLabels({ ctx, width }: MediaScope) {
     ctx.font = monoFont(10, 600);
     if (this.prev) {
+      // opaque pill right-aligned against the previous window's end (away from the new window's first
+      // candles). Narrow windows (1m/5m) get the bare value, which may extend left past the window start.
       const p = this.prev;
-      const lx = Math.max(p.x1, 0) + 6;
-      if (Math.min(p.x2, width) - lx > 120) {
-        ctx.globalAlpha = 0.45;
-        pill(ctx, [{ text: `PTB ${fmtBtc(p.value)}`, color: C.ptb }], lx, Math.round(p.y) - 10, {
-          bg: "rgba(10, 13, 18, 0.9)",
-          align: "left",
+      const right = Math.min(p.x2, width) - 6;
+      const value = fmtBtc(p.value);
+      const full: TextRun[] = [
+        { text: "PTB ", color: C.label },
+        { text: value, color: C.ptbMuted },
+      ];
+      const bare: TextRun[] = [{ text: value, color: C.ptbMuted }];
+      const fits = (r: TextRun[], left: number) => measureRuns(ctx, r) + 10 <= right - left;
+      const runs = fits(full, Math.max(p.x1, 0) + 4) ? full : fits(bare, 2) ? bare : null;
+      if (runs) {
+        pill(ctx, runs, right, Math.round(p.y) - 10, {
+          bg: C.surface,
+          border: "rgba(245, 185, 66, 0.28)",
+          align: "right",
           h: 16,
           padX: 5,
         });
-        ctx.globalAlpha = 1;
       }
     }
     if (this.cur) {

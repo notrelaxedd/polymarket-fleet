@@ -2,7 +2,8 @@
 // Paths verified against the official SDK (polymarket-us-typescript src/resources/*.ts):
 //   GET /v1/events                 { events: Event[] }
 //   GET /v1/events/slug/{slug}     { event: Event }
-//   GET /v1/search?query=          { events: Event[] }  (events include nested markets)
+//   GET /v1/search?query=&page=    { events: Event[] }  (events include nested markets)
+//   GET /v1/series                 { series: Series[] }  (Series = { id, slug, title, active, closed, recurrence? })
 //   GET /v1/markets                { markets: MarketDetail[] }
 //   GET /v1/market/slug/{slug}     { market: MarketDetail }
 //   GET /v1/markets/{slug}/bbo     { marketData: MarketBBO }
@@ -25,6 +26,8 @@ export class PolyHttpError extends Error {
     readonly status: number,
     readonly path: string,
     message: string,
+    /** server-requested wait (Retry-After on 429/503), ms */
+    readonly retryAfterMs: number | null = null,
   ) {
     super(message);
     this.name = "PolyHttpError";
@@ -42,11 +45,14 @@ export interface ClientOptions {
 /** Raw JSON records as returned by the gateway (fields beyond the SDK types are kept). */
 export type RawEvent = Record<string, unknown>;
 export type RawMarket = Record<string, unknown>;
+export type RawSeries = Record<string, unknown>;
 
 export interface MarketDataSource {
   listEvents(q?: Query): Promise<RawEvent[]>;
   searchEvents(q: Query): Promise<RawEvent[]>;
   getEventBySlug(slug: string): Promise<RawEvent | null>;
+  /** optional: GET /v1/series (used to resolve the BTC 15m series automatically) */
+  listSeries?(q?: Query): Promise<RawSeries[]>;
   getBbo(slug: string): Promise<NormalizedBbo | null>;
   getSettlement(slug: string): Promise<NormalizedSettlement | null>;
 }
@@ -87,7 +93,10 @@ export class PolymarketClient implements MarketDataSource {
     }
     if (res.status === 404) return null;
     const text = await res.text();
-    if (!res.ok) throw new PolyHttpError(res.status, path, `${res.status} ${path}: ${text.slice(0, 200)}`);
+    if (!res.ok) {
+      const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"), Date.now());
+      throw new PolyHttpError(res.status, path, `${res.status} ${path}: ${text.slice(0, 200)}`, retryAfterMs);
+    }
     if (!text) return {};
     try {
       return JSON.parse(text) as unknown;
@@ -109,6 +118,11 @@ export class PolymarketClient implements MarketDataSource {
   async getEventBySlug(slug: string): Promise<RawEvent | null> {
     const j = await this.getJson(`/v1/events/slug/${encodeURIComponent(slug)}`);
     return isObj(j) && isObj(j.event) ? j.event : null;
+  }
+
+  async listSeries(q: Query = {}): Promise<RawSeries[]> {
+    const j = await this.getJson("/v1/series", q);
+    return isObj(j) && Array.isArray(j.series) ? j.series.filter(isObj) : [];
   }
 
   async listMarkets(q: Query = {}): Promise<RawMarket[]> {
@@ -133,4 +147,13 @@ export class PolymarketClient implements MarketDataSource {
   async getSettlement(slug: string): Promise<NormalizedSettlement | null> {
     return parseSettlement(await this.getJson(`/v1/markets/${encodeURIComponent(slug)}/settlement`), slug);
   }
+}
+
+/** Retry-After header (delta-seconds or HTTP date) -> ms, null when absent/invalid. */
+export function parseRetryAfter(v: string | null | undefined, now: number): number | null {
+  if (!v) return null;
+  const t = v.trim();
+  if (/^\d+(\.\d+)?$/.test(t)) return Math.round(Number(t) * 1000);
+  const at = Date.parse(t);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
 }

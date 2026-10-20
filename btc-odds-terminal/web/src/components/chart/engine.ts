@@ -5,6 +5,7 @@
 //   store.series.{bars,odds,fair,ticks} --BucketAggregator.sync(tf)--> "none" | "full" | "tail"
 //   full -> series.setData(all)   (timeframe change or a history load swapped the array identity)
 //   tail -> series.update(item)   for the re-folded last bucket + any new buckets (O(1) per frame)
+//           (a long tail — e.g. catching up after a backgrounded tab — is applied with one setData instead)
 
 import {
   CandlestickSeries,
@@ -32,8 +33,9 @@ import {
   type WhitespaceData,
 } from "lightweight-charts";
 import type { ExchangeId } from "@shared/protocol";
-import { serverNow, useTerminal, type TerminalState } from "@/lib/store";
+import { serverNow, useTerminal, type HoverInfo, type TerminalState } from "@/lib/store";
 import {
+  bucketTimes,
   findAt,
   lowerBoundTime,
   indexAtOrBefore,
@@ -50,6 +52,8 @@ import {
 } from "./aggregate";
 import type { ChartHandle, ScaleKey } from "./context";
 import { fmtBtc, fmtCents, fmtSignedCents, fmtSignedUsd } from "./fmt";
+import { sameHover } from "./hover";
+import { LastValuePrimitive } from "./primitives/LastValue";
 import { NowLinePrimitive } from "./primitives/NowLine";
 import { OddsBandPrimitive } from "./primitives/OddsBand";
 import { PaneLabelPrimitive } from "./primitives/PaneLabel";
@@ -65,13 +69,15 @@ const EXCHANGES: ExchangeId[] = ["coinbase", "kraken", "bitstamp"];
 const RIGHT_PAD_BARS = 4;
 const EDGE_RANGE = 10; // ±10¢ fixed edge axis
 const EDGE_STRETCH = 0.24;
+/** a tail longer than this many buckets is applied with setData instead of per-bucket update() calls */
+export const MAX_TAIL_UPDATES = 50;
 
 const btcFormat: PriceFormatCustom = { type: "custom", minMove: 0.01, formatter: (p) => fmtBtc(p) };
 const centsFormat: PriceFormatCustom = {
   type: "custom",
   minMove: 0.1,
-  formatter: (p) => fmtCents(p),
-  // the fixed 0–100 range plus scale margins would otherwise label -5¢ / 105¢
+  // the fixed 0–100 range plus scale margins would otherwise label -5¢ / 105¢ (crosshair label + ticks)
+  formatter: (p) => fmtCents(Math.min(100, Math.max(0, p))),
   tickmarksFormatter: (ps) => ps.map((p) => (p < -0.01 || p > 100.01 ? "" : `${Math.round(p)}¢`)),
 };
 const edgeFormat: PriceFormatCustom = {
@@ -123,6 +129,8 @@ export class ChartEngine implements ChartHandle {
   private readonly ptb: PriceToBeatPrimitive;
   private readonly now: NowLinePrimitive;
   private readonly edgeLabel: PaneLabelPrimitive;
+  private readonly btcTag: LastValuePrimitive;
+  private readonly oddsTag: LastValuePrimitive;
   private readonly tooltip: Tooltip;
 
   private tf = 0;
@@ -130,7 +138,8 @@ export class ChartEngine implements ChartHandle {
   private timelineKey = "";
   private timelineWinId: string | null = null;
   private needsDefaultView = true;
-  private hoverTime: number | null = null;
+  private perExchange = false;
+  private hover: HoverInfo | null = null;
   private hoverEdge: number | null = null;
   private raf = 0;
   private readonly timer: ReturnType<typeof setInterval>;
@@ -181,6 +190,10 @@ export class ChartEngine implements ChartHandle {
         minBarSpacing: 0.25,
         tickMarkFormatter,
       },
+      // vertical swipes on touch scroll the page; price scales are never dragged (that would silently
+      // switch off autoscale, the fixed 0–100¢ odds range and the PTB autoscale)
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+      handleScale: { axisPressedMouseMove: { time: true, price: false }, axisDoubleClickReset: true },
       localization: { locale: "en-US", timeFormatter: crosshairTimeFormatter },
     });
 
@@ -198,6 +211,8 @@ export class ChartEngine implements ChartHandle {
       priceFormat: btcFormat,
       priceLineStyle: LineStyle.Dotted,
       priceLineWidth: 1,
+      // the built-in tag tracks the last VISIBLE bar; btcTag always shows the live close
+      lastValueVisible: false,
     });
     this.exLines = {} as Record<ExchangeId, ISeriesApi<"Line">>;
     for (const ex of EXCHANGES) {
@@ -243,7 +258,7 @@ export class ChartEngine implements ChartHandle {
       ...leftCommon,
       color: C.odds,
       lineWidth: 2,
-      lastValueVisible: true,
+      lastValueVisible: false, // see oddsTag
       priceLineVisible: false,
       crosshairMarkerVisible: true,
       crosshairMarkerRadius: 3,
@@ -267,11 +282,29 @@ export class ChartEngine implements ChartHandle {
     this.now = new NowLinePrimitive(this);
     this.band = new OddsBandPrimitive(this);
     this.edgeLabel = new PaneLabelPrimitive(this, "EDGE · FAIR − MARKET");
+    this.btcTag = new LastValuePrimitive(this);
+    this.oddsTag = new LastValuePrimitive(this);
     this.bands.getReserved = () => (this.now.isEnabled() ? this.now.reserved : null);
+    this.btcTag.getValue = () => {
+      const out = this.aggs.bars.out;
+      const c = out[out.length - 1];
+      return c ? { price: c.close, label: fmtBtc(c.close), bg: c.close >= c.open ? C.up : C.down } : null;
+    };
+    this.btcTag.getAvoidY = () => (this.ptb.isEnabled() ? this.ptb.tagY() : null);
+    this.oddsTag.getValue = () => {
+      const out = this.aggs.odds.out;
+      for (let i = out.length - 1; i >= 0 && i >= out.length - 3; i--) {
+        const v = out[i].upMid;
+        if (v != null) return { price: v, label: fmtCents(v), bg: C.odds };
+      }
+      return null;
+    };
     this.btcSeries.attachPrimitive(this.bands);
     this.btcSeries.attachPrimitive(this.ptb);
     this.btcSeries.attachPrimitive(this.now);
+    this.btcSeries.attachPrimitive(this.btcTag);
     this.oddsSeries.attachPrimitive(this.band);
+    this.oddsSeries.attachPrimitive(this.oddsTag);
 
     this.tooltip = new Tooltip(host);
     this.chart.subscribeCrosshairMove(this.onCrosshair);
@@ -421,21 +454,30 @@ export class ChartEngine implements ChartHandle {
   private sync() {
     const st = useTerminal.getState();
     const tf = st.timeframe;
-    if (tf !== this.tf) {
+    const tfChanged = tf !== this.tf;
+    if (tfChanged) {
       this.tf = tf;
       this.needsDefaultView = true;
       this.chart.applyOptions({ timeScale: { secondsVisible: tf < 60 } });
     }
     const { bars, odds, fair, ticks } = st.series;
     const a = this.aggs;
+    const hadBars = a.bars.out.length > 0;
     const res: Record<AggKey, SyncResult> = {
       bars: a.bars.sync(bars, tf),
       odds: a.odds.sync(odds, tf),
       fair: a.fair.sync(fair, tf),
-      ticks: a.ticks.sync(ticks, tf),
+      // only aggregated while the per-exchange overlay is on (applyOverlays rebuilds it when toggled on)
+      ticks: this.perExchange ? a.ticks.sync(ticks, tf) : { kind: "none" },
     };
-    // a history load replaces array identities -> the aggregators rebuild and we re-frame the view
-    if (res.bars.kind === "full") this.needsDefaultView = true;
+    // frame the view on first data only; a history swap / reconnect / trim rebuild keeps the user's pan & zoom
+    // (the time scale stays anchored to its right edge, which the timeline series pins to the window end)
+    if (res.bars.kind === "full" && !hadBars) this.needsDefaultView = true;
+    // re-publish the hover after buckets were rebuilt (same bucket time can now mean different values)
+    if (tfChanged || res.bars.kind === "full") {
+      this.hover = null;
+      this.hoverEdge = null;
+    }
     for (const b of this.bindings) this.applyBinding(b, res[b.agg]);
 
     this.updateTimeline(st, tf);
@@ -478,8 +520,8 @@ export class ChartEngine implements ChartHandle {
       b.stale = true; // hidden: catch up with one setData when it becomes visible
       return;
     }
-    if (r.kind === "full" || b.stale) return this.fullSet(b);
     const out = this.aggs[b.agg].out as readonly Bucketed[];
+    if (r.kind === "full" || b.stale || out.length - r.from > MAX_TAIL_UPDATES) return this.fullSet(b);
     try {
       for (let i = r.from; i < out.length; i++) b.series.update(b.map(out[i], i, out) as never);
     } catch {
@@ -489,16 +531,24 @@ export class ChartEngine implements ChartHandle {
   }
 
   private btcLinePoint = (c: CandleAgg, i: number, out: readonly CandleAgg[]): LineData<Time> => {
-    // the last point carries the candle direction so the right-axis tag is green/red in line mode
+    // the last point carries the candle direction so the price line is green/red in line mode
     if (this.lineMode && i === out.length - 1)
       return { time: T(c.time), value: c.close, color: c.close >= c.open ? C.up : C.down };
     return { time: T(c.time), value: c.close };
   };
 
-  /** Extend the time scale to the current window's end with whitespace so "now" has empty space after it. */
+  /**
+   * Hidden whitespace series with one point per bucket from the first loaded bucket to the current window's
+   * end. The time scale is index-based, so this keeps it uniform where the data is sparse (seeded 60s bars at
+   * 1s/5s/15s, feed gaps) and gives "now" empty space until the window ends. Rebuilt only when the window,
+   * the timeframe or the first bucket changes (the aggregators only move their front on a full rebuild).
+   */
   private updateTimeline(st: TerminalState, tf: number) {
     const cur = st.current;
-    const key = cur ? `${cur.id}|${cur.startTs}|${cur.endTs}|${tf}` : `none|${tf}`;
+    const a = this.aggs;
+    const firsts = [a.bars.out[0]?.time, a.odds.out[0]?.time, a.fair.out[0]?.time].filter((t) => t != null);
+    const first = firsts.length ? Math.min(...firsts) : null;
+    const key = `${cur ? `${cur.id}|${cur.startTs}|${cur.endTs}` : "none"}|${first}|${tf}`;
     if (key === this.timelineKey) return;
     const ts = this.chart.timeScale();
     // follow the live edge across a rollover if the user was looking at it
@@ -510,14 +560,12 @@ export class ChartEngine implements ChartHandle {
     }
     this.timelineKey = key;
     this.timelineWinId = cur?.id ?? null;
-    if (!cur) {
+    const start = first ?? (cur ? cur.startTs / 1000 : null);
+    if (start == null || !cur) {
       this.timeline.setData([]);
       return;
     }
-    const pts: WhitespaceData<Time>[] = [];
-    const end = cur.endTs / 1000;
-    for (let t = Math.floor(cur.startTs / 1000 / tf) * tf; t <= end; t += tf) pts.push({ time: T(t) });
-    this.timeline.setData(pts);
+    this.timeline.setData(bucketTimes(start, cur.endTs / 1000, tf).map((t) => ({ time: T(t) })));
     if (follow) this.needsDefaultView = true;
   }
 
@@ -557,7 +605,6 @@ export class ChartEngine implements ChartHandle {
     this.candles.applyOptions({ visible: !line });
     this.btcSeries.applyOptions({
       lineVisible: line,
-      lastValueVisible: line,
       priceLineVisible: line,
       crosshairMarkerVisible: line,
     });
@@ -579,9 +626,9 @@ export class ChartEngine implements ChartHandle {
     const ov = useTerminal.getState().overlays;
     this.oddsSeries.applyOptions({
       lineVisible: ov.upOdds,
-      lastValueVisible: ov.upOdds,
       crosshairMarkerVisible: ov.upOdds,
     });
+    this.oddsTag.setEnabled(ov.upOdds);
     this.setActive(this.oddsSeries, ov.upOdds);
     this.band.setEnabled(ov.upOdds);
     this.downLine.applyOptions({ visible: ov.downOdds });
@@ -590,11 +637,24 @@ export class ChartEngine implements ChartHandle {
     this.setActive(this.fairLine, ov.fair);
     this.ptb.setEnabled(ov.ptb);
     this.bands.setEnabled(ov.windows);
-    for (const ex of EXCHANGES) {
-      this.exLines[ex].applyOptions({ visible: ov.perExchange });
-      this.setActive(this.exLines[ex], ov.perExchange);
-    }
+    this.setPerExchange(ov.perExchange);
     this.setEdgePane(ov.edgePane);
+  }
+
+  /** Per-exchange lines: the tick aggregate is only maintained while they are shown. */
+  private setPerExchange(on: boolean) {
+    if (on === this.perExchange) return;
+    this.perExchange = on;
+    this.aggs.ticks.reset();
+    if (on && this.tf) this.aggs.ticks.sync(useTerminal.getState().series.ticks, this.tf);
+    for (const ex of EXCHANGES) {
+      const s = this.exLines[ex];
+      s.applyOptions({ visible: on });
+      const b = this.bindings.find((x) => x.series === s);
+      if (b) b.stale = true;
+      if (!on) s.setData([]); // drop the hidden points; rebuilt from the ticks when shown again
+      this.setActive(s, on);
+    }
   }
 
   private setEdgePane(on: boolean) {
@@ -671,22 +731,27 @@ export class ChartEngine implements ChartHandle {
     const upMid = o?.upMid ?? null;
     const edge = f && upMid != null ? f.fair - upMid : (f?.edge ?? null);
 
-    if (t !== this.hoverTime) {
-      this.hoverTime = t;
-      st.setHover({
-        time: t * 1000,
-        o: c.open,
-        h: c.high,
-        l: c.low,
-        c: c.close,
-        upMid,
-        upBid: o?.upBid ?? null,
-        upAsk: o?.upAsk ?? null,
-        fair: f?.fair ?? null,
-        edge,
-        ptb,
-        tLeftSec: tLeft,
-      });
+    // compared by value on every call: the crosshair re-fires on each data update, and the hovered
+    // in-progress candle keeps changing under a parked cursor
+    const hover: HoverInfo = {
+      time: t * 1000,
+      o: c.open,
+      h: c.high,
+      l: c.low,
+      c: c.close,
+      upMid,
+      upBid: o?.upBid ?? null,
+      upAsk: o?.upAsk ?? null,
+      fair: f?.fair ?? null,
+      edge,
+      ptb,
+      tLeftSec: tLeft,
+    };
+    if (!sameHover(hover, this.hover)) {
+      this.hover = hover;
+      st.setHover(hover);
+    }
+    if (edge !== this.hoverEdge) {
       this.hoverEdge = edge;
       if (this.edge) {
         this.updateEdgeLabel();
@@ -723,8 +788,8 @@ export class ChartEngine implements ChartHandle {
 
   private clearHover() {
     this.tooltip.hide();
-    if (this.hoverTime == null) return;
-    this.hoverTime = null;
+    if (this.hover == null && this.hoverEdge == null) return;
+    this.hover = null;
     this.hoverEdge = null;
     useTerminal.getState().setHover(null);
     if (this.edge) {
