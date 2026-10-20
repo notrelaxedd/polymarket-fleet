@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0a0d12;
+  color: #e6e9ef;
+  font-size: 13px;
+  line-height: 18px;
+  font-family: var(--font-inter), Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a3442 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a3442;
+  border-radius: 4px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid #5b9cff;
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+::selection {
+  background: #13213a;
+  color: #e6e9ef;
+}
+
+@layer components {
+  .label {
+    color: #8a93a3;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    line-height: 14px;
+    letter-spacing: 0.06em;
+  }
+  .num {
+    @apply font-mono;
+    font-variant-numeric: tabular-nums;
+  }
+  .card {
+    @apply rounded-card border border-border bg-surface;
+  }
+  /* 44px touch targets on coarse pointers */
+  @media (pointer: coarse) {
+    .touch-target {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
+}
+
+/* keep the countdown / pulse subtle */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot { animation: none; }
+}
