@@ -1,5 +1,5 @@
 import type { FairSnap, MarketWindow, OddsSnap, StateSnapshot } from "@shared/protocol";
-import { useTerminal } from "../store";
+import { DEFAULT_TICKET, REPLAY_IDLE, useTerminal } from "../store";
 
 export const MIN = 60_000;
 
@@ -54,5 +54,26 @@ export function resetStore(): void {
     feeds: [],
     series: { bars: [], ticks: [], odds: [], fair: [] },
     version: 0,
+    book: null,
+    orders: {},
+    fills: [],
+    positions: {},
+    brackets: {},
+    risk: null,
+    live: null,
+    drawings: [],
+    drawingUndo: [],
+    drawingRedo: [],
+    selectedDrawingId: null,
+    alerts: [],
+    alertEvents: [],
+    unseenAlertEvents: 0,
+    analysis: {},
+    replay: REPLAY_IDLE,
+    liveConfirmedThisSession: false,
+    liveSession: null,
+    ticket: DEFAULT_TICKET,
+    bracketDrafts: {},
+    notices: [],
   });
 }

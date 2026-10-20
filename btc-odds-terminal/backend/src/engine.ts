@@ -1,11 +1,13 @@
 import { EventEmitter } from "node:events";
 import type {
   Bar,
+  BookLevels,
   BtcTick,
   FairSnap,
   FeedStatus,
   MarketWindow,
   OddsSnap,
+  RiskLimits,
   ServerMsg,
   Settings,
   StateSnapshot,
@@ -13,7 +15,7 @@ import type {
 import { STALE_AFTER_MS } from "../../shared/protocol.ts";
 import type { Config } from "./config.ts";
 import type { TerminalDb } from "./db/index.ts";
-import { loadSettings, saveSettings, SettingsPatchSchema, type StoredSettings } from "./db/settings.ts";
+import { loadRiskLimits, loadSettings, saveSettings, SettingsPatchSchema, type StoredSettings } from "./db/settings.ts";
 import { edgeCents, fairCents, RealizedVol } from "./fair/index.ts";
 import { BarAggregator, BtcProxy, fetchRecentBars } from "./feeds/index.ts";
 import type { Logger } from "./log.ts";
@@ -27,6 +29,36 @@ import {
   type NormalizedSettlement,
 } from "./polymarket/index.ts";
 import type { Recorder } from "./recorder.ts";
+
+/** Up book poll interval (GET /v1/markets/{slug}/book) and its backoff cap after consecutive failures. */
+export const BOOK_POLL_MS = 1000;
+const BOOK_BACKOFF_MAX_MS = 15_000;
+/** Levels kept per side of the Up book. */
+const BOOK_DEPTH = 10;
+
+/**
+ * Typed events the Engine emits besides "msg" (for backend modules: trading watcher, alerts, risk...).
+ *   tick     every BRTI-proxy tick            rollover  at each window boundary
+ *   odds     every top-of-book update         settled   a window got its result
+ *   fair     every fair recompute (<= 4/s)    settings  settings changed
+ *   book     Up book depth (~1/s)             window    any window insert/update
+ */
+export interface EngineEvents {
+  tick: BtcTick;
+  odds: OddsSnap;
+  fair: FairSnap;
+  book: BookLevels;
+  window: MarketWindow;
+  rollover: { current: MarketWindow | null; next: MarketWindow | null };
+  settled: MarketWindow;
+  settings: Settings;
+  msg: ServerMsg;
+}
+
+/** Up book source (PolymarketClient implements it). */
+export interface BookSource {
+  getBook(slug: string): Promise<NormalizedBook | null>;
+}
 
 /** Min gap between fair recomputes. */
 export const FAIR_MIN_GAP_MS = 250;
@@ -102,6 +134,8 @@ export interface EngineDeps {
   fetchBars?: ((hours: number) => Promise<Bar[]>) | null;
   /** settlement back-fill for windows that ended while down; default = PolymarketClient, null = off */
   settlements?: SettlementSource | null;
+  /** Up book depth polling; default = PolymarketClient when the engine builds its own tracker, null = off */
+  books?: BookSource | null;
   feeNote?: string;
 }
 
@@ -119,6 +153,14 @@ export class Engine extends EventEmitter {
   private readonly agg = new BarAggregator(1);
   private vol: RealizedVol;
   private settings: StoredSettings;
+  private riskLimits: RiskLimits;
+  private readonly books: BookSource | null;
+  private lastBook: BookLevels | null = null;
+  private bookTimer: NodeJS.Timeout | null = null;
+  private bookBusy = false;
+  private bookErrors = 0;
+  private nextBookAt = 0;
+  private readonly snapshotParts: (() => Partial<StateSnapshot>)[] = [];
   private readonly feeNote: string;
   private readonly fetchBars: ((hours: number) => Promise<Bar[]>) | null;
   private readonly settlements: SettlementSource | null;
@@ -153,6 +195,7 @@ export class Engine extends EventEmitter {
       volLookbackMin: this.cfg.volLookbackMin,
       feeCentsPerContract: this.cfg.feeCentsPerContract,
     });
+    this.riskLimits = loadRiskLimits(this.db);
     if (this.settings.mode === "live" && !this.hasTradingKeys()) {
       this.log.warn("stored mode is live but POLYMARKET_US_KEY_ID/SECRET are missing: starting in paper");
       this.settings = { ...this.settings, mode: "paper" };
@@ -160,6 +203,8 @@ export class Engine extends EventEmitter {
     this.fetchBars = deps.fetchBars !== undefined ? deps.fetchBars : fetchRecentBars;
     this.settlements =
       deps.settlements !== undefined ? deps.settlements : new PolymarketClient({ baseUrl: this.cfg.polyGatewayUrl });
+    this.books =
+      deps.books !== undefined ? deps.books : !deps.tracker && this.settlements?.getBook ? (this.settlements as BookSource) : null;
     this.vol = newVol(this.settings.volLookbackMin);
     this.btc = deps.btc ?? new BtcProxy({ logger: deps.logger });
     this.trackerRestores = !deps.tracker;
@@ -196,6 +241,7 @@ export class Engine extends EventEmitter {
     this.tracker.start();
     // fair depends on time-left too, so refresh it even when BTC is quiet
     this.clock = setInterval(() => this.requestFair(), 1000);
+    if (this.books) this.bookTimer = setInterval(() => void this.pollBook(), BOOK_POLL_MS);
     void this.backfillBars();
     this.startSettleBackfill();
     this.log.info(
@@ -210,7 +256,8 @@ export class Engine extends EventEmitter {
     if (this.clock) clearInterval(this.clock);
     if (this.fairTimer) clearTimeout(this.fairTimer);
     if (this.settleTimer) clearInterval(this.settleTimer);
-    this.clock = this.fairTimer = this.settleTimer = null;
+    if (this.bookTimer) clearInterval(this.bookTimer);
+    this.clock = this.fairTimer = this.settleTimer = this.bookTimer = null;
     try {
       this.btc.stop();
     } catch (err) {
@@ -240,7 +287,17 @@ export class Engine extends EventEmitter {
   snapshot(): StateSnapshot {
     const current = this.tracker.current();
     const odds = this.lastOdds ?? this.tracker.lastOdds();
+    const extra: Partial<StateSnapshot> = {};
+    for (const part of this.snapshotParts) {
+      try {
+        Object.assign(extra, part());
+      } catch (err) {
+        this.log.warn({ err }, "snapshot extension failed");
+      }
+    }
     return {
+      ...extra,
+      book: this.currentBook(),
       serverTime: Date.now(),
       settings: this.getSettings(),
       current,
@@ -259,7 +316,77 @@ export class Engine extends EventEmitter {
   }
 
   getSettings(): Settings {
-    return { ...this.settings, feeNote: this.feeNote };
+    return { ...this.settings, feeNote: this.feeNote, risk: { ...this.riskLimits }, liveAvailable: this.hasTradingKeys() };
+  }
+
+  // ---- state accessors for backend modules (see modules/types.ts EngineApi) ----
+
+  /** Add fields to every snapshot (orders, positions, risk, alerts, drawings...). Later parts win. */
+  private readonly settingsGuards: ((next: { mode: Settings["mode"] }, prev: Settings) => string | null)[] = [];
+
+  /**
+   * Register a check run before a settings change is applied; returning a message refuses the change (400).
+   * Trading uses it to refuse leaving live mode while live positions could still need the exchange.
+   */
+  addSettingsGuard(fn: (next: { mode: Settings["mode"] }, prev: Settings) => string | null): void {
+    this.settingsGuards.push(fn);
+  }
+
+  extendSnapshot(part: () => Partial<StateSnapshot>): void {
+    this.snapshotParts.push(part);
+  }
+
+  /** Emit a ServerMsg to every WebSocket client. */
+  publish(msg: ServerMsg): void {
+    this.broadcast(msg);
+  }
+
+  currentWindow(): MarketWindow | null {
+    return this.tracker.current();
+  }
+
+  nextWindow(): MarketWindow | null {
+    return this.tracker.next();
+  }
+
+  latestTick(): BtcTick | null {
+    return this.lastTick ?? this.btc.last();
+  }
+
+  /** Top of book of the CURRENT window only, and only while fresh (<= STALE_AFTER_MS old); else null. */
+  latestOdds(now = Date.now()): OddsSnap | null {
+    const o = this.lastOdds ?? this.tracker.lastOdds();
+    const cur = this.tracker.current();
+    return o && cur && o.windowId === cur.id && now - o.ts <= MAX_INPUT_AGE_MS ? o : null;
+  }
+
+  /** Fair of the CURRENT window only (null when stale or another window's). */
+  latestFair(now = Date.now()): FairSnap | null {
+    const f = this.lastFair;
+    const cur = this.tracker.current();
+    return f && cur && f.windowId === cur.id && now - f.ts <= MAX_INPUT_AGE_MS ? f : null;
+  }
+
+  /** Last Up book of the current window (may be up to a few seconds old; check `ts`). */
+  currentBook(): BookLevels | null {
+    const b = this.lastBook;
+    return b && b.windowId === this.tracker.current()?.id ? b : null;
+  }
+
+  /** Fetch the current window's Up book now (paper fills want a fresh one); falls back to the cached book. */
+  async refreshBook(): Promise<BookLevels | null> {
+    if (!this.books) return this.currentBook();
+    try {
+      const b = await this.fetchBook();
+      if (b) this.setBook(b);
+    } catch (err) {
+      this.log.debug({ err: (err as Error).message }, "book refresh failed");
+    }
+    return this.currentBook();
+  }
+
+  liveAvailable(): boolean {
+    return this.hasTradingKeys();
   }
 
   /** Apply a partial settings update. Throws SettingsError (400) on invalid input. */
@@ -269,9 +396,20 @@ export class Engine extends EventEmitter {
       throw new SettingsError(parsed.error.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; "));
     }
     const p = parsed.data;
+    if (p.risk !== undefined) {
+      this.riskLimits = { ...this.riskLimits, ...p.risk };
+      saveSettings(this.db, { risk: this.riskLimits });
+    }
     if (p.mode === "live" && this.settings.mode !== "live") {
       if (!this.hasTradingKeys()) {
         throw new SettingsError("live mode requires POLYMARKET_US_KEY_ID and POLYMARKET_US_SECRET in the backend .env");
+      }
+    }
+    if (p.mode !== undefined && p.mode !== this.settings.mode) {
+      const prev = this.getSettings();
+      for (const g of this.settingsGuards) {
+        const why = g({ mode: p.mode }, prev);
+        if (why) throw new SettingsError(why);
       }
     }
     const next: StoredSettings = { ...this.settings };
@@ -288,6 +426,7 @@ export class Engine extends EventEmitter {
     const s = this.getSettings();
     this.log.info({ settings: s }, "settings updated");
     this.broadcast({ type: "settings", data: s });
+    this.emit("settings", s);
     this.requestFair();
     return s;
   }
@@ -347,6 +486,7 @@ export class Engine extends EventEmitter {
     }
     this.vol.push(tick.ts, tick.price);
     this.broadcast({ type: "btc", data: tick });
+    this.emit("tick", tick);
     this.requestFair();
   };
 
@@ -360,6 +500,7 @@ export class Engine extends EventEmitter {
       this.lastOddsRecord = { windowId: odds.windowId, ts: odds.ts };
     }
     this.broadcast({ type: "odds", data: odds });
+    this.emit("odds", odds);
     this.requestFair();
   };
 
@@ -368,6 +509,8 @@ export class Engine extends EventEmitter {
     if (w.result) this.pendingSettle.delete(w.id);
     this.recorder.addWindow(w);
     this.broadcast({ type: "window", data: w });
+    this.emit("window", w);
+    if (w.result) this.emit("settled", w);
     if (w.id === this.tracker.current()?.id) this.requestFair();
   };
 
@@ -377,6 +520,7 @@ export class Engine extends EventEmitter {
     this.pendingSettle.delete(w.id);
     this.recorder.addWindow(w);
     this.log.info({ id: w.id, result: w.result, settlePrice: w.settlePrice, ptb: w.priceToBeat }, "window settled");
+    // (the tracker's "window" event for the same settlement already emitted "settled")
   };
 
   private readonly onRollover = (r: { current: MarketWindow | null; next: MarketWindow | null }): void => {
@@ -384,9 +528,12 @@ export class Engine extends EventEmitter {
     if (r.next) this.recorder.addWindow(r.next);
     if (this.lastFair && this.lastFair.windowId !== r.current?.id) this.lastFair = null;
     if (this.lastOdds && this.lastOdds.windowId !== r.current?.id) this.lastOdds = null;
+    if (this.lastBook && this.lastBook.windowId !== r.current?.id) this.lastBook = null;
     this.log.info({ current: r.current?.id ?? null, next: r.next?.id ?? null }, "rollover");
     this.broadcast({ type: "rollover", data: { current: r.current, next: r.next } });
+    this.emit("rollover", { current: r.current, next: r.next });
     this.requestFair();
+    if (this.books) void this.pollBook(true);
   };
 
   private readonly onSourceError = (err: unknown): void => {
@@ -436,6 +583,51 @@ export class Engine extends EventEmitter {
       this.lastFairRecord = { windowId: win.id, ts: now };
     }
     this.broadcast({ type: "fair", data: snap });
+    this.emit("fair", snap);
+  }
+
+  // ------------------------------------------------------------------ Up book depth
+
+  /** Current window's Up book from GET /v1/markets/{slug}/book; flipped when Up is the short side. */
+  private async fetchBook(): Promise<BookLevels | null> {
+    const win = this.tracker.current();
+    if (!this.books || !win) return null;
+    const { slug, side } = parseInstrument(win.upInstrument);
+    const raw = await this.books.getBook(slug);
+    if (!raw || this.tracker.current()?.id !== win.id) return null;
+    const lv = (l: { price: number; qty: number }) => ({ price: l.price, size: l.qty });
+    const flip = (l: { price: number; qty: number }) => ({ price: Math.round((100 - l.price) * 10) / 10, size: l.qty });
+    const bids = (side === "long" ? raw.bids.map(lv) : raw.asks.map(flip)).filter((l) => l.size > 0).slice(0, BOOK_DEPTH);
+    const asks = (side === "long" ? raw.asks.map(lv) : raw.bids.map(flip)).filter((l) => l.size > 0).slice(0, BOOK_DEPTH);
+    return { ts: Date.now(), windowId: win.id, instrument: win.upInstrument, bids, asks, state: raw.state };
+  }
+
+  private setBook(b: BookLevels): void {
+    this.lastBook = b;
+    this.broadcast({ type: "book", data: b });
+    this.emit("book", b);
+  }
+
+  private async pollBook(force = false): Promise<void> {
+    if (!this.running || !this.books || this.bookBusy) return;
+    const now = Date.now();
+    if (!force && now < this.nextBookAt) return;
+    const win = this.tracker.current();
+    if (!win || now < win.startTs || now > win.endTs) return;
+    this.bookBusy = true;
+    try {
+      const b = await this.fetchBook();
+      this.bookErrors = 0;
+      this.nextBookAt = 0;
+      if (b && this.running) this.setBook(b);
+    } catch (err) {
+      this.bookErrors++;
+      const wait = Math.min(BOOK_BACKOFF_MAX_MS, BOOK_POLL_MS * 2 ** Math.min(this.bookErrors, 4));
+      this.nextBookAt = Date.now() + (this.bookErrors >= 3 ? wait : 0);
+      if (this.bookErrors === 3) this.log.warn({ err: (err as Error).message }, "Up book polling failing; backing off");
+    } finally {
+      this.bookBusy = false;
+    }
   }
 
   // ------------------------------------------------------------------ helpers
@@ -519,6 +711,8 @@ export class Engine extends EventEmitter {
           const settled: MarketWindow = { ...w, result, status: "settled" };
           this.recorder.addWindow(settled);
           this.broadcast({ type: "window", data: settled });
+          this.emit("window", settled);
+          this.emit("settled", settled);
           this.log.info({ id: w.id, result, value: s.value }, "settlement back-fill: window settled");
         } catch (err) {
           this.log.debug({ id: w.id, err: (err as Error).message }, "settlement back-fill: not available yet");
@@ -571,5 +765,17 @@ export class Engine extends EventEmitter {
 
   private broadcast(msg: ServerMsg): void {
     this.emit("msg", msg);
+  }
+
+  // typed overloads for module listeners (EventEmitter semantics unchanged)
+  override on<K extends keyof EngineEvents>(event: K, listener: (arg: EngineEvents[K]) => void): this;
+  override on(event: string | symbol, listener: (...args: any[]) => void): this;
+  override on(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+  override off<K extends keyof EngineEvents>(event: K, listener: (arg: EngineEvents[K]) => void): this;
+  override off(event: string | symbol, listener: (...args: any[]) => void): this;
+  override off(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.off(event, listener);
   }
 }

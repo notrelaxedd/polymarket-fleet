@@ -2,7 +2,7 @@
 import * as React from "react";
 import type { FeedId, FeedStatus } from "@shared/protocol";
 import { Tip } from "@/components/ui/tooltip";
-import { useTerminal, serverNow } from "@/lib/store";
+import { useTerminal, liveNow } from "@/lib/store";
 import { useServerNow } from "@/lib/hooks";
 import { ageLabel, feedLabel, feedShort } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -13,7 +13,7 @@ export function FeedDots() {
   const feeds = useTerminal((s) => s.feeds);
   const connected = useTerminal((s) => s.connected);
   useServerNow(1000);
-  const now = serverNow();
+  const now = liveNow();
   const byId = new Map(feeds.map((f) => [f.id, f] as const));
   return (
     <div className="flex items-center gap-2" role="group" aria-label="Feed status">

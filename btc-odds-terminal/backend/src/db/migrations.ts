@@ -189,6 +189,144 @@ export const MIGRATIONS: string[] = [
   CREATE INDEX IF NOT EXISTS alert_events_ts ON alert_events (ts);
   CREATE INDEX IF NOT EXISTS alert_events_alert ON alert_events (alert_id, ts);
   `,
+
+  // v2 (steps 3-6): the v1 trading/alert tables were placeholders that no build ever wrote, so they are
+  // rebuilt to match shared/protocol.ts (Order, Fill, Position, Bracket, Alert, AlertEvent) exactly.
+  // drawings keeps its v1 shape (kind + JSON data + locked). New: risk_daily.
+  `
+  DROP TABLE IF EXISTS orders;
+  DROP TABLE IF EXISTS fills;
+  DROP TABLE IF EXISTS positions;
+  DROP TABLE IF EXISTS brackets;
+  DROP TABLE IF EXISTS alerts;
+  DROP TABLE IF EXISTS alert_events;
+
+  CREATE TABLE orders (
+    id TEXT PRIMARY KEY,
+    client_order_id TEXT,
+    external_id TEXT,
+    mode TEXT NOT NULL,              -- paper | live
+    window_id TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    side TEXT NOT NULL,              -- up | down
+    action TEXT NOT NULL,            -- buy | sell
+    type TEXT NOT NULL,              -- limit | marketable
+    limit_cents REAL,
+    max_slippage_cents REAL,
+    qty REAL NOT NULL,               -- contracts
+    notional_usd REAL,
+    filled_qty REAL NOT NULL DEFAULT 0,
+    avg_fill_cents REAL,
+    fees_usd REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,            -- pending | open | partial | filled | cancelled | rejected
+    reason TEXT NOT NULL,            -- manual | close | tp | sl | btc_stop | time_exit | kill
+    bracket_id TEXT,
+    position_id TEXT,
+    error TEXT,
+    created_ts INTEGER NOT NULL,
+    updated_ts INTEGER NOT NULL
+  );
+  CREATE INDEX orders_created ON orders (created_ts);
+  CREATE INDEX orders_window ON orders (window_id);
+  CREATE INDEX orders_status ON orders (status);
+  CREATE UNIQUE INDEX orders_external ON orders (external_id) WHERE external_id IS NOT NULL;
+
+  CREATE TABLE fills (
+    id TEXT PRIMARY KEY,
+    order_id TEXT NOT NULL,
+    external_id TEXT,
+    mode TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    side TEXT NOT NULL,
+    action TEXT NOT NULL,
+    price_cents REAL NOT NULL,
+    qty REAL NOT NULL,
+    fee_usd REAL,                    -- NULL = unknown ([FEE])
+    slippage_cents REAL,
+    ts INTEGER NOT NULL
+  );
+  CREATE INDEX fills_ts ON fills (ts);
+  CREATE INDEX fills_order ON fills (order_id);
+  CREATE INDEX fills_window ON fills (window_id);
+
+  CREATE TABLE positions (
+    id TEXT PRIMARY KEY,
+    mode TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    instrument TEXT NOT NULL,
+    side TEXT NOT NULL,
+    qty REAL NOT NULL,
+    avg_cents REAL NOT NULL,
+    cost_usd REAL NOT NULL DEFAULT 0,
+    realized_pnl_usd REAL NOT NULL DEFAULT 0,
+    fees_usd REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,            -- open | closed | settled
+    bracket_id TEXT,
+    opened_ts INTEGER NOT NULL,
+    updated_ts INTEGER NOT NULL,
+    closed_ts INTEGER
+  );
+  CREATE INDEX positions_status ON positions (status);
+  CREATE INDEX positions_window ON positions (window_id);
+  CREATE INDEX positions_opened ON positions (opened_ts);
+
+  CREATE TABLE brackets (
+    id TEXT PRIMARY KEY,
+    position_id TEXT NOT NULL,
+    window_id TEXT NOT NULL,
+    tp_cents REAL,
+    sl_cents REAL,
+    btc_stop REAL,
+    time_exit_sec REAL,
+    max_slippage_cents REAL,
+    status TEXT NOT NULL,            -- active | triggered | cancelled | done
+    trigger_reason TEXT,
+    triggered_ts INTEGER,
+    exit_order_id TEXT,
+    created_ts INTEGER NOT NULL,
+    updated_ts INTEGER NOT NULL
+  );
+  CREATE INDEX brackets_position ON brackets (position_id);
+  CREATE INDEX brackets_status ON brackets (status);
+
+  -- daily risk counters per America/New_York day and mode
+  CREATE TABLE risk_daily (
+    day TEXT NOT NULL,               -- YYYY-MM-DD (ET)
+    mode TEXT NOT NULL,
+    realized_pnl_usd REAL NOT NULL DEFAULT 0,
+    loss_used_usd REAL NOT NULL DEFAULT 0,
+    disabled_until INTEGER,
+    disabled_reason TEXT,
+    kill_switch INTEGER NOT NULL DEFAULT 0,
+    updated_ts INTEGER NOT NULL,
+    PRIMARY KEY (day, mode)
+  );
+
+  CREATE TABLE alerts (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,              -- AlertKind
+    threshold REAL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    once INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    last_fired_ts INTEGER,
+    created_ts INTEGER NOT NULL,
+    updated_ts INTEGER NOT NULL
+  );
+
+  CREATE TABLE alert_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    alert_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    window_id TEXT,
+    value REAL,
+    message TEXT NOT NULL
+  );
+  CREATE INDEX alert_events_ts ON alert_events (ts);
+  CREATE INDEX alert_events_alert ON alert_events (alert_id, ts);
+  `,
 ];
 
 export const SCHEMA_VERSION = MIGRATIONS.length;

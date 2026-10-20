@@ -3,7 +3,7 @@ import { api } from "./api";
 import { WS_URL, isMock } from "./env";
 import { TICK_CAP_MS, flush, ingest } from "./ingest";
 import { getMock } from "./mock";
-import { serverNow, useTerminal } from "./store";
+import { liveNow, useTerminal } from "./store";
 
 const HISTORY_MS = 3 * 3600 * 1000;
 const BACKOFF_MIN = 500;
@@ -43,6 +43,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  */
 async function loadHistory(connectedAt: number): Promise<void> {
   const token = ++historyToken;
+  // a replay owns the chart's series; its exit installs fresh live history itself (lib/replay.ts)
+  if (useTerminal.getState().replay.active) return;
   const pending = new Set<HistKey>(["bars", "odds", "fair"]);
   const fetchers: { [K in HistKey]: (from: number, to: number) => Promise<HistData[K]> } = {
     bars: api.bars,
@@ -52,11 +54,11 @@ async function loadHistory(connectedAt: number): Promise<void> {
   let first = true;
   let delay = HISTORY_RETRY_MIN;
   for (;;) {
-    const to = serverNow() + 60_000;
+    const to = liveNow() + 60_000;
     const from = to - HISTORY_MS - 60_000;
     const keys = [...pending];
     const res = await Promise.all(keys.map((k) => fetchers[k](from, to).catch(() => null)));
-    if (token !== historyToken) return;
+    if (token !== historyToken || useTerminal.getState().replay.active) return;
     flush(); // make sure queued live messages are in the arrays before we merge
     const since = connectedAt - 1000;
     const live = useTerminal.getState().series;
@@ -87,7 +89,7 @@ function startMock(): () => void {
   const st = useTerminal;
   st.getState().applySnapshot(mock.snapshot());
   st.setState({ connected: true });
-  void loadHistory(serverNow());
+  void loadHistory(liveNow());
   const off = mock.subscribe((m: ServerMsg) => ingest(m));
   return () => {
     off();
@@ -193,6 +195,20 @@ export function startReal(): () => void {
     cancelHistory();
     useTerminal.setState({ connected: false });
   };
+}
+
+/**
+ * Bring market state back to live after a replay: a fresh snapshot + 3h history (mock or REST).
+ * Call AFTER setting replay.active = false (lib/replay.ts does).
+ */
+export async function resyncLive(): Promise<void> {
+  try {
+    const snap = await api.state();
+    useTerminal.getState().applySnapshot(snap);
+  } catch {
+    // the socket's next snapshot (reconnect) heals it
+  }
+  await loadHistory(liveNow());
 }
 
 /** Start the data backend (WebSocket or mock). Returns a stop function. */

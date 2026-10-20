@@ -41,4 +41,6 @@ export interface ServerOptions {
   heartbeatMs?: number;
   /** drop high-rate messages (then resync with a snapshot) for clients whose socket buffer exceeds this (default 1 MB) */
   maxBufferedBytes?: number;
+  /** adds routes before the server is ready (main.ts: modules.register) */
+  register?: (app: import("fastify").FastifyInstance) => void;
 }

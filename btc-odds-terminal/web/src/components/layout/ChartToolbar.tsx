@@ -3,6 +3,7 @@ import { Play } from "lucide-react";
 import { Segmented } from "@/components/ui/segmented";
 import { Chip } from "@/components/ui/chip";
 import { Tip } from "@/components/ui/tooltip";
+import { replayLatest } from "@/lib/replay";
 import { useTerminal, type Overlays, type Timeframe } from "@/lib/store";
 
 const TF: { value: Timeframe; label: string }[] = [
@@ -30,6 +31,8 @@ export function ChartToolbar() {
   const setChartStyle = useTerminal((s) => s.setChartStyle);
   const overlays = useTerminal((s) => s.overlays);
   const toggle = useTerminal((s) => s.toggleOverlay);
+  const replayActive = useTerminal((s) => s.replay.active);
+  const hasRecent = useTerminal((s) => s.recent.length > 0);
 
   return (
     // phones scroll the row sideways; wider screens wrap so Replay / Per-exchange are never clipped
@@ -52,13 +55,14 @@ export function ChartToolbar() {
           </Chip>
         ))}
       </div>
-      <Tip label="Step 6">
-        <span tabIndex={0} className="ml-auto inline-flex shrink-0">
+      <Tip label={replayActive ? "Replay running" : "Replay the last finished window"}>
+        <span className="ml-auto inline-flex shrink-0">
           <button
             type="button"
-            disabled
-            aria-label="Replay window (available in step 6)"
-            className="touch-target inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-ctl border border-border-strong px-2.5 text-[12px] font-medium text-text-2 disabled:opacity-50"
+            disabled={replayActive || !hasRecent}
+            onClick={replayLatest}
+            aria-label="Replay window"
+            className="touch-target inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-ctl border border-border-strong px-2.5 text-[12px] font-medium text-text-2 hover:text-text disabled:opacity-50"
           >
             <Play size={12} /> Replay window
           </button>

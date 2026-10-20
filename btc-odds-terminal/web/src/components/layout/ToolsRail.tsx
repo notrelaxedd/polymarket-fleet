@@ -4,6 +4,9 @@ import { Bell, Lock, LockOpen, MousePointer2, Sticker as StickerIcon, Trash2, Ty
 import { Tip } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sticker, STICKER_IDS, STICKERS, type StickerId } from "@/components/stickers";
+import { addAlertFromSelection, undoDrawings } from "@/components/chart/drawings/actions";
+import { ClearDrawingsDialog, requestClearDrawings } from "@/components/chart/drawings/ClearDrawingsDialog";
+import { useDrawingUi } from "@/components/chart/drawings/ui";
 import { useTerminal } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { FibIcon, HLineIcon, MeasureIcon, RayIcon, RectIcon, TrendLineIcon, VLineIcon } from "./tool-icons";
@@ -25,15 +28,15 @@ const btn =
   "touch-target flex h-9 w-9 shrink-0 items-center justify-center rounded-ctl text-muted transition-colors hover:bg-surface-2 hover:text-text";
 const btnActive = "!bg-odds-tint !text-odds-text shadow-[inset_0_0_0_1px_rgba(91,156,255,0.45)]";
 
-/** Drawing actions are handled by the chart layer (step 4) via this window event. */
-function fire(action: "alert" | "lock" | "undo" | "clear", extra?: Record<string, unknown>) {
-  window.dispatchEvent(new CustomEvent("terminal:drawing", { detail: { action, ...extra } }));
-}
-
 export function ToolsRail() {
   const activeTool = useTerminal((s) => s.activeTool);
   const setActiveTool = useTerminal((s) => s.setActiveTool);
-  const [locked, setLocked] = React.useState(false);
+  const locked = useTerminal((s) => s.drawingsLocked);
+  const setLocked = useTerminal((s) => s.setDrawingsLocked);
+  const canUndo = useDrawingUi((s) => s.canUndo);
+  const alertBusy = useDrawingUi((s) => s.alertBusy);
+  const hasDrawings = useTerminal((s) => s.drawings.length > 0);
+  const selectedHline = useTerminal((s) => s.drawings.find((d) => d.id === s.selectedDrawingId)?.kind === "hline");
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const stickerActive = activeTool.startsWith("sticker");
   const [side, setSide] = React.useState<"right" | "bottom">("right");
@@ -107,8 +110,14 @@ export function ToolsRail() {
 
       <div aria-hidden className="mx-1 h-6 w-px shrink-0 bg-border-strong sm:mx-0 sm:my-1 sm:h-px sm:w-6" />
 
-      <Tip label="Add alert" side={tipSide}>
-        <button type="button" aria-label="Add alert" className={btn} onClick={() => fire("alert")}>
+      <Tip label={selectedHline ? "Add alert at the selected line" : "Add alert"} side={tipSide}>
+        <button
+          type="button"
+          aria-label="Add alert"
+          disabled={alertBusy}
+          className={cn(btn, alertBusy && "opacity-40")}
+          onClick={() => void addAlertFromSelection()}
+        >
           <Bell size={18} />
         </button>
       </Tip>
@@ -118,24 +127,34 @@ export function ToolsRail() {
           aria-label="Lock drawings"
           aria-pressed={locked}
           className={cn(btn, locked && btnActive)}
-          onClick={() => {
-            setLocked((v) => !v);
-            fire("lock", { locked: !locked });
-          }}
+          onClick={() => setLocked(!locked)}
         >
           {locked ? <Lock size={18} /> : <LockOpen size={18} />}
         </button>
       </Tip>
-      <Tip label="Undo" side={tipSide}>
-        <button type="button" aria-label="Undo" className={btn} onClick={() => fire("undo")}>
+      <Tip label="Undo (Ctrl/Cmd+Z)" side={tipSide}>
+        <button
+          type="button"
+          aria-label="Undo"
+          aria-disabled={!canUndo}
+          className={cn(btn, !canUndo && "opacity-40 hover:bg-transparent hover:text-muted")}
+          onClick={() => undoDrawings()}
+        >
           <Undo2 size={18} />
         </button>
       </Tip>
       <Tip label="Delete all drawings" side={tipSide}>
-        <button type="button" aria-label="Delete all drawings" className={cn(btn, "hover:!text-down")} onClick={() => fire("clear")}>
+        <button
+          type="button"
+          aria-label="Delete all drawings"
+          aria-disabled={!hasDrawings}
+          className={cn(btn, hasDrawings ? "hover:!text-down" : "opacity-40 hover:bg-transparent hover:text-muted")}
+          onClick={requestClearDrawings}
+        >
           <Trash2 size={18} />
         </button>
       </Tip>
+      <ClearDrawingsDialog />
     </nav>
   );
 }

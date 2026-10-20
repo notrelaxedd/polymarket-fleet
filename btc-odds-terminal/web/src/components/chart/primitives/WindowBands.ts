@@ -62,7 +62,7 @@ export class WindowBandsPrimitive extends BasePrimitive {
         x1,
         x2,
         fill: isCur ? C.bandCurrent : isPrev ? C.bandPrevious : null,
-        labels: labelVariants(w, isCur),
+        labels: labelVariants(w, isCur, st.replay.active),
       });
       for (const x of [x1, x2]) {
         const k = Math.round(x);
@@ -125,10 +125,11 @@ export function fitLabel<T>(candidates: readonly T[], avail: number, measure: (c
 }
 
 /** Band label candidates, longest first: "10:15–10:30 · SETTLED UP" -> "SETTLED UP" -> "10:15–10:30" -> "UP". */
-export function labelVariants(w: MarketWindow, isCur: boolean): TextRun[][] {
+export function labelVariants(w: MarketWindow, isCur: boolean, replay = false): TextRun[][] {
   const range: TextRun = { text: rangeLabel(w.startTs, w.endTs), color: C.muted };
   const sep: TextRun = { text: " · ", color: C.label };
-  const status = statusRun(w, isCur);
+  // during a replay the "current" window is the replayed one: never call it LIVE
+  const status: TextRun | null = isCur && replay ? { text: "REPLAY", color: C.ptb } : statusRun(w, isCur);
   if (!status) return [[range]];
   const out: TextRun[][] = [[range, sep, status], [status], [range]];
   const short = status.text.replace(/^SETTLED /, "");

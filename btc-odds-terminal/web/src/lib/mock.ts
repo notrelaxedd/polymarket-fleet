@@ -1,5 +1,7 @@
 import type {
   Bar,
+  BookLevel,
+  BookLevels,
   BtcTick,
   ExchangeId,
   FairSnap,
@@ -9,8 +11,13 @@ import type {
   OddsSnap,
   ServerMsg,
   Settings,
+  SettingsPatch,
   StateSnapshot,
 } from "@shared/protocol";
+import { DEFAULT_RISK_LIMITS } from "@shared/protocol";
+import { createMockModules, type MockCoreCtx } from "./mock/index";
+import { setMockRoutes } from "./mock/router";
+import type { MockCtx, MockModule, MockModules } from "./mock/types";
 
 /**
  * Synthetic backend used when NEXT_PUBLIC_MOCK=1 or ?mock=1. It generates 3h of 1s history and then
@@ -19,6 +26,10 @@ import type {
  *   - Windows: 15-minute, wall-clock aligned, PTB = proxy price at window start.
  *   - Up odds: track fair = Phi(ln(S/K)/(sigma*sqrt(t))) with 1-4s lag, AR(1) noise, 1-3c spread.
  *   - Feeds: occasionally one exchange goes stale for ~8s. `?stale=polymarket` (or an exchange) forces one stale.
+ *   - Up book: 5 levels a side around the quote, sizes 40-900 (emitted as `book` every second).
+ *   - Steps 3-6 features live in lib/mock/* modules (trading, risk, live, alerts, drawings, analysis, replay):
+ *     built once with a MockCtx, driven by onStep / onSecond / onRollover, merged into the snapshot, and
+ *     serving every REST call api.ts makes in mock mode (lib/mock/router.ts).
  */
 
 const SIGMA = 0.00012; // per sqrt(second)
@@ -54,7 +65,18 @@ class MockBackend {
   private odds_: OddsSnap[] = [];
   private fair_: FairSnap[] = [];
   private wins = new Map<string, MarketWindow>();
-  private settings_: Settings = { mode: "paper", volLookbackMin: 30, feeCentsPerContract: null, feeNote: "Fee schedule unconfirmed (mock)" };
+  private settings_: Settings = {
+    mode: "paper",
+    volLookbackMin: 30,
+    feeCentsPerContract: null,
+    feeNote: "Fee schedule unconfirmed (mock)",
+    risk: { ...DEFAULT_RISK_LIMITS },
+    // mock "live" is simulated (no exchange) so the live toggle + confirm dialog are demoable
+    liveAvailable: true,
+  };
+  private book_: BookLevels | null = null;
+  private mods: MockModules | null = null;
+  private modList: MockModule[] = [];
 
   private secClose: number[] = []; // proxy price per second, index = sec - baseSec
   private baseSec = 0;
@@ -242,6 +264,59 @@ class MockBackend {
     if (this.init) return;
     this.init = true;
     this.buildHistory();
+    if (this.lastOdds) this.book_ = this.makeBook(this.lastOdds);
+    const core: MockCoreCtx = {
+      emit: (m) => this.emit(m),
+      now: () => this.nowMs,
+      current: () => this.wins.get(this.current.id) ?? this.current,
+      next: () => this.wins.get(this.next.id) ?? this.next,
+      getWindow: (id) => this.wins.get(id) ?? null,
+      windows: (limit) => this.windows(limit),
+      lastTick: () => this.lastTick,
+      lastOdds: () => this.lastOdds,
+      lastFair: () => this.lastFair,
+      book: () => this.book_,
+      settings: () => this.settings(),
+      putSettings: (p) => this.putSettings(p),
+      bars: (f, t) => this.bars(f, t),
+      odds: (f, t) => this.odds(f, t),
+      fair: (f, t) => this.fair(f, t),
+      ticks: (f, t) => this.ticks(f, t),
+      priceAt: (ms) => this.priceAt(ms),
+    };
+    const { modules, list } = createMockModules(core);
+    this.mods = modules;
+    this.modList = list;
+  }
+
+  /** the feature modules (trading, risk, live, alerts, drawings, analysis, replay) */
+  modules(): MockModules {
+    this.ensureBuilt();
+    return this.mods!;
+  }
+
+  private hook(f: (m: MockModule) => void) {
+    for (const m of this.modList) {
+      try {
+        f(m);
+      } catch (err) {
+        console.error(`mock module ${m.name} failed`, err);
+      }
+    }
+  }
+
+  /** Up book around the quote: 5 levels a side, 1c apart, sizes 40-900, best first. */
+  private makeBook(o: OddsSnap): BookLevels | null {
+    if (o.upBid == null || o.upAsk == null) return null;
+    const size = () => Math.round(40 + Math.random() * Math.random() * 860);
+    const bids: BookLevel[] = [];
+    const asks: BookLevel[] = [];
+    for (let i = 0; i < 5; i++) {
+      if (o.upBid - i >= 1) bids.push({ price: o.upBid - i, size: size() });
+      if (o.upAsk + i <= 99) asks.push({ price: o.upAsk + i, size: size() });
+    }
+    const w = this.wins.get(o.windowId);
+    return { ts: o.ts, windowId: o.windowId, instrument: w?.upInstrument ?? `${o.windowId}:up`, bids, asks, state: "MARKET_STATE_OPEN" };
   }
 
   // ---- REST-like accessors ----
@@ -270,11 +345,14 @@ class MockBackend {
     return [...this.wins.values()].sort((a, b) => b.startTs - a.startTs).slice(0, limit);
   }
   settings(): Settings {
-    return { ...this.settings_ };
+    return { ...this.settings_, risk: { ...(this.settings_.risk ?? DEFAULT_RISK_LIMITS) } };
   }
-  putSettings(p: Partial<Settings>): Settings {
-    this.settings_ = { ...this.settings_, ...p };
-    this.subs.forEach((e) => e({ type: "settings", data: this.settings() }));
+  putSettings(p: SettingsPatch & Partial<Pick<Settings, "feeNote" | "liveAvailable">>): Settings {
+    const { risk, feeNote: _n, liveAvailable: _l, ...rest } = p;
+    this.settings_ = { ...this.settings_, ...rest, risk: { ...(this.settings_.risk ?? DEFAULT_RISK_LIMITS), ...(risk ?? {}) } };
+    const s = this.settings();
+    this.subs.forEach((e) => e({ type: "settings", data: s }));
+    this.hook((m) => m.onSettings?.(s));
     return this.settings();
   }
 
@@ -305,7 +383,11 @@ class MockBackend {
 
   snapshot(): StateSnapshot {
     this.ensureBuilt();
+    const extra: Partial<StateSnapshot> = {};
+    this.hook((m) => Object.assign(extra, m.snapshot?.()));
     return {
+      ...extra,
+      book: this.book_,
       serverTime: Date.now(),
       settings: this.settings(),
       current: this.wins.get(this.current.id) ?? this.current,
@@ -345,6 +427,7 @@ class MockBackend {
         const { tick, secondBoundary } = this.advance(true);
         const ts = this.nowMs;
         this.emit({ type: "btc", data: tick });
+        this.hook((m) => m.onStep?.(ts));
 
         // window boundary
         if (ts >= this.current.endTs) {
@@ -357,6 +440,8 @@ class MockBackend {
           this.next = upcoming;
           this.emit({ type: "window", data: { ...settled, status: "closed", result: null, settlePrice: null } });
           this.emit({ type: "rollover", data: { current: startedLive, next: upcoming } });
+          this.book_ = null;
+          this.hook((m) => m.onRollover?.(settled, startedLive));
           setTimeout(() => this.emit({ type: "window", data: settled }), 2500);
         }
 
@@ -369,6 +454,9 @@ class MockBackend {
           this.lastFair = fair;
           this.emit({ type: "odds", data: odds });
           this.emit({ type: "fair", data: fair });
+          this.book_ = this.makeBook(odds);
+          if (this.book_) this.emit({ type: "book", data: this.book_ });
+          this.hook((m) => m.onSecond?.(ts));
           this.lastMsg.polymarket = ts;
           // feed health
           if (ts >= this.nextStaleAt && !this.forceStale) {

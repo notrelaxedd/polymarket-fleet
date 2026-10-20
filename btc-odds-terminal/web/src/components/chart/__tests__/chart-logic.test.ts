@@ -125,5 +125,6 @@ test("band labels fall back from full label to status, range, then compact statu
   assert.equal(text(fitLabel(v, 30, w)), "UP");
   assert.equal(fitLabel(v, 5, w), null);
   assert.deepEqual(labelVariants(win({}), true).map(text), ["10:15–10:30 · LIVE", "LIVE", "10:15–10:30"]);
+  assert.deepEqual(labelVariants(win({}), true, true).map(text), ["10:15–10:30 · REPLAY", "REPLAY", "10:15–10:30"]);
   assert.deepEqual(labelVariants(win({ status: "upcoming", result: null }), false).map(text), ["10:15–10:30"]);
 });

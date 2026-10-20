@@ -7,6 +7,8 @@ import { LegendRow } from "./LegendRow";
 import { StaleBanner } from "./StaleBanner";
 import { BottomTabs } from "./BottomTabs";
 import { RightPanel } from "./RightPanel";
+import { Notices } from "./Notices";
+import { ReplayBar } from "@/components/replay/ReplayBar";
 
 // lightweight-charts is client-only
 const MainChart = dynamic(() => import("@/components/chart/MainChart"), {
@@ -28,6 +30,7 @@ export function Terminal() {
         <main className="flex min-h-0 min-w-0 flex-col sm:col-start-2 sm:row-start-1">
           <StaleBanner />
           <ChartToolbar />
+          <ReplayBar />
           <LegendRow />
           <div className="relative h-[420px] min-h-[320px] border-b border-border bg-bg sm:h-[520px] lg2:h-auto lg2:flex-1">
             <div className="absolute inset-0">
@@ -43,6 +46,7 @@ export function Terminal() {
           <RightPanel />
         </div>
       </div>
+      <Notices />
     </div>
   );
 }

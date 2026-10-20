@@ -1,8 +1,11 @@
 import cors from "@fastify/cors";
 import Fastify, { LogController, type FastifyBaseLogger, type FastifyInstance } from "fastify";
 import type { HistoryQuery } from "../../../shared/protocol.ts";
+import { ApiError } from "./errors.ts";
 import type { EngineLike, HistoryStore, ServerConfig, ServerOptions } from "./types.ts";
 import { WsHub } from "./ws.ts";
+
+export { ApiError, badRequest, notFound, zodError } from "./errors.ts";
 
 export type { EngineLike, HistoryStore, ServerConfig, ServerOptions } from "./types.ts";
 export { WsHub } from "./ws.ts";
@@ -77,7 +80,11 @@ export function buildServer(
 
   app.setErrorHandler((err: Error & { statusCode?: number; validation?: unknown }, req, reply) => {
     const status = err.statusCode && err.statusCode >= 400 && err.statusCode < 600 ? err.statusCode : 500;
-    if (status >= 500) req.log.error({ err, url: req.url }, "request failed");
+    if (status >= 500 && !(err instanceof ApiError)) req.log.error({ err, url: req.url }, "request failed");
+    if (err instanceof ApiError) {
+      reply.code(status).send({ error: err.message, code: err.code });
+      return;
+    }
     reply.code(status).send({ error: status >= 500 ? "internal error" : err.message });
   });
 
@@ -115,6 +122,9 @@ export function buildServer(
     }
     return engine.updateSettings(body);
   });
+
+  // ---- steps 3-6: backend modules (trading, risk, live, alerts, drawings, analysis, replay) ----
+  opts.register?.(app);
 
   // ---- WebSocket /ws ----
   const hub = new WsHub(engine, {

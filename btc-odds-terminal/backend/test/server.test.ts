@@ -38,7 +38,7 @@ class FakeEngine extends EventEmitter implements EngineLike {
   updateSettings(patch: unknown): Settings {
     const p = SettingsPatchSchema.safeParse(patch);
     if (!p.success) throw Object.assign(new Error("invalid settings"), { statusCode: 400 });
-    const { feeNote: _ignored, ...rest } = p.data;
+    const { feeNote: _ignored, risk: _risk, liveAvailable: _live, ...rest } = p.data;
     this.settings = { ...this.settings, ...rest };
     this.emit("msg", { type: "settings", data: this.settings } satisfies ServerMsg);
     return this.settings;

@@ -1,6 +1,7 @@
 "use client";
 import * as React from "react";
-import { selectFair, selectOdds, serverNow, useTerminal } from "./store";
+import { useShallow } from "zustand/react/shallow";
+import { selectFair, selectOdds, selectOpenPositions, selectOrders, serverNow, useTerminal } from "./store";
 
 /** Current window's top of book (null until a quote for this window arrives). */
 export const useOdds = () => useTerminal(selectOdds);
@@ -48,3 +49,11 @@ export function useEdge(): number | null {
     return null;
   });
 }
+
+// Selectors that build arrays MUST go through useShallow (a new array every render loops zustand v5).
+
+/** Open positions, newest first (stable while nothing changed). */
+export const useOpenPositions = () => useTerminal(useShallow(selectOpenPositions));
+
+/** All known orders, newest first. */
+export const useOrders = () => useTerminal(useShallow(selectOrders));

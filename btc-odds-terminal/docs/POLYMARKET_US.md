@@ -275,3 +275,40 @@ Every discovery heuristic above is a guess until checked against a live response
 3. If the windows are returned but not recognised, set `POLY_SLUG_REGEX` to a pattern that matches their slugs.
 4. If the price to beat is missing, add the field name to `POLY_PTB_FIELDS`.
 5. If the feed status shows `ws: upgrade rejected: HTTP 401`, check the keys and the clock, or set `POLY_WS_MODE=off`.
+
+## Live trading (`backend/src/live/`) — env vars and routes
+
+How the terminal uses the trading endpoints above (step 6). Nothing in this section has been exercised against the
+real exchange yet: every live HTTP call in the tests goes through an injected fetch, and the private WebSocket
+tests use a local server. Treat the first live session as a test with a small amount.
+
+| Var | Default | Meaning |
+|---|---|---|
+| `POLY_API_URL` | `https://api.polymarket.us` | signed trading REST host (VERIFIED: SDK `API_BASE_URL`) |
+| `POLY_PRIVATE_WS_URL` | `wss://api.polymarket.us/v1/ws/private` | private WebSocket (orders, positions, balances) |
+| `LIVE_RECONCILE_MS` | `15000` (min 2000) | how often positions + balances are re-read and reconciled while live |
+| `POLY_SHORT_PRICE_QUOTE` | `short` | **UNVERIFIED.** `short` = a SHORT-intent (Down) price is the Down instrument's own price; `long` = it is quoted as the Up price (100 − Down). If this is wrong, Down orders go out at the wrong price: check it with a tiny Down order (or the order preview endpoint) before trading Down |
+| `POLY_QTY_STEP` | `1` | **UNVERIFIED.** order quantity step in contracts (quantities round down to it) |
+| `POLY_TICK_CENTS` | `1` | **UNVERIFIED.** price tick in cents (buys round down, sells round up: never worse than asked) |
+
+Routes (all under `/api`):
+- `GET /live/status` → `LiveStatus` (keys present, live mode on, private WS connected, last reconcile, balance).
+- `POST /live/confirm` → `{ session, expiresTs }`. Checks the key with a signed balance read first; 409
+  `live_unavailable` unless settings mode is live and both keys are set. Every live order and close must carry the
+  session as `liveSession` (else 409 `live_confirm_required`; the UI then shows its confirm dialog again).
+- `POST /live/reconcile` → `LiveStatus & { deferred }`: reconcile with the exchange now (`deferred: true` when it had
+  to wait, e.g. an order was in flight).
+
+Behaviour worth knowing before going live:
+- A failed or ambiguous submit (timeout, network error, 5xx, unparseable 2xx) is never resent. The order stays
+  `pending` under `externalId: "unconfirmed:<id>"` (the UI shows "confirming…") for up to ~30 s while the executor
+  looks for it in the socket, `GET /v1/orders/open` and the positions delta.
+- "Marketable" orders are limit orders at the slippage cap with `IMMEDIATE_OR_CANCEL`. TP / SL / BTC stop / time
+  exit are enforced by the backend watcher (no native bracket orders exist).
+- Leaving live mode cancels our resting live orders one by one. It is refused (400) while a live position of the
+  current window is still open, because its bracket, Close and the kill switch need the live executor.
+- The kill switch also calls the exchange's cancel-all (`POST /v1/orders/open/cancel`) for the current and next
+  market, as a backstop for orders the terminal never tracked. This cancels every open order in those markets,
+  including ones placed from other clients.
+- Fees: the execution's `commissionNotionalCollected` when the exchange reports it, else the settings override,
+  else `[FEE]` (null).

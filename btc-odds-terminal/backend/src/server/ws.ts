@@ -24,9 +24,9 @@ interface Client extends WebSocket {
 /**
  * High-rate, self-superseding message types: safe to drop for a slow consumer (the client
  * gets a fresh snapshot once it drains). Everything else (snapshot, rollover, window,
- * settings) is structural and always delivered.
+ * settings, orders, fills, positions, risk, alerts, drawings...) is structural and always delivered.
  */
-const DROPPABLE = new Set<ServerMsg["type"]>(["btc", "odds", "fair", "feeds"]);
+const DROPPABLE = new Set<ServerMsg["type"]>(["btc", "odds", "fair", "feeds", "book"]);
 /** A client whose buffer grows past this many × maxBufferedBytes is terminated (it reconnects and resyncs). */
 const HARD_LIMIT_FACTOR = 8;
 

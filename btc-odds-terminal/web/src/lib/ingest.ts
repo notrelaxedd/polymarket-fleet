@@ -1,11 +1,24 @@
 import type { Bar, FairSnap, MarketWindow, OddsSnap, ServerMsg } from "@shared/protocol";
+import { notifyAlert } from "./notify";
 import { useTerminal, type TerminalState } from "./store";
 
 /**
  * Applies ServerMsgs to the store. Messages are queued and applied in ONE pass per animation frame:
  *  - series arrays (ticks/bars/odds/fair) are mutated in place (push / replace-last), `version` bumps once.
  *  - latest-value fields (lastTick, lastOdds, ...) are written with a single store update.
+ *  - while a replay is active, live MARKET data (btc/odds/fair/window/rollover/book) is skipped (the replay owns
+ *    series/current/lastOdds); `liveDirty` tells lib/replay.ts to resync on exit. Trading/alert msgs still apply.
  */
+
+const REPLAY_MUTED = new Set<ServerMsg["type"]>(["btc", "odds", "fair", "window", "rollover", "book"]);
+let liveDirty = false;
+
+/** True when live market data was skipped during a replay (ws.resyncLive() needed); reading resets it. */
+export function takeLiveDirty(): boolean {
+  const d = liveDirty;
+  liveDirty = false;
+  return d;
+}
 
 /** bars/odds/fair kept in memory (the chart shows at most the 3h history plus live) */
 export const SERIES_CAP_MS = 4 * 3600 * 1000;
@@ -74,7 +87,12 @@ export function flush(): void {
     patch = {};
   };
 
+  const replaying = store.getState().replay.active;
   for (const m of msgs) {
+    if (replaying && REPLAY_MUTED.has(m.type)) {
+      liveDirty = true;
+      continue;
+    }
     switch (m.type) {
       case "snapshot": {
         commit();
@@ -155,6 +173,8 @@ export function flush(): void {
         patch.next = next;
         patch.windows = windows;
         patch.recent = recent;
+        const book = read("book");
+        if (book && book.windowId !== current?.id) patch.book = null;
         break;
       }
       case "feeds":
@@ -162,6 +182,48 @@ export function flush(): void {
         break;
       case "settings":
         patch.settings = m.data;
+        break;
+      // ---- steps 3-6 ----
+      case "book":
+        patch.book = m.data;
+        break;
+      case "orders":
+        commit();
+        store.getState().upsertOrders(m.data);
+        break;
+      case "fills":
+        commit();
+        store.getState().addFills(m.data);
+        break;
+      case "positions":
+        commit();
+        store.getState().upsertPositions(m.data);
+        break;
+      case "brackets":
+        commit();
+        store.getState().upsertBrackets(m.data);
+        break;
+      case "risk":
+        patch.risk = m.data;
+        break;
+      case "live":
+        patch.live = m.data;
+        break;
+      case "alerts":
+        patch.alerts = m.data;
+        break;
+      case "alertFired":
+        commit();
+        store.getState().addAlertEvent(m.data);
+        notifyAlert(m.data);
+        break;
+      case "drawings":
+        commit();
+        store.getState().setDrawings(m.data);
+        break;
+      case "notice":
+        commit();
+        store.getState().pushNotice(m.data);
         break;
     }
   }

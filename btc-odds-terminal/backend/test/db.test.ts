@@ -33,7 +33,7 @@ describe("migrations", () => {
     );
     for (const t of [
       "bars", "ticks", "odds", "fair", "windows", "settings",
-      "orders", "fills", "positions", "brackets", "drawings", "alerts", "alert_events",
+      "orders", "fills", "positions", "brackets", "drawings", "alerts", "alert_events", "risk_daily",
     ]) {
       expect(tables).toContain(t);
     }

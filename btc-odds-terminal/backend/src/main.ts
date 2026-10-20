@@ -2,6 +2,7 @@ import { loadConfig } from "./config.ts";
 import { openDb } from "./db/index.ts";
 import { Engine } from "./engine.ts";
 import { log } from "./log.ts";
+import { createModules } from "./modules/index.ts";
 import { Recorder } from "./recorder.ts";
 import { buildServer } from "./server/index.ts";
 
@@ -21,7 +22,13 @@ async function main(): Promise<void> {
 
   const recorder = new Recorder(db, { logger: log.child({ component: "recorder" }) });
   const engine = new Engine({ config, db, recorder, logger: log });
-  const app = buildServer(engine, db, config, { logger: log.child({ component: "http" }) });
+  // steps 3-6: trading, risk, live, alerts, drawings, analysis, replay (one shared deps object)
+  const modules = createModules({ config, db, engine, logger: log });
+  engine.extendSnapshot(() => modules.snapshot());
+  const app = buildServer(engine, db, config, {
+    logger: log.child({ component: "http" }),
+    register: (a) => modules.register(a),
+  });
 
   let shuttingDown = false;
   const shutdown = async (signal: string, code = 0): Promise<void> => {
@@ -40,6 +47,11 @@ async function main(): Promise<void> {
       await app.close();
     } catch (err) {
       log.error({ err }, "http close failed");
+    }
+    try {
+      await modules.stop();
+    } catch (err) {
+      log.error({ err }, "modules stop failed");
     }
     try {
       engine.stop(); // stops feeds and flushes the recorder buffer
@@ -64,6 +76,7 @@ async function main(): Promise<void> {
   });
 
   engine.start();
+  modules.start();
   await app.listen({ port: config.port, host: config.host });
   log.info({ url: `http://${config.host}:${config.port}`, ws: "/ws" }, "listening");
 }
