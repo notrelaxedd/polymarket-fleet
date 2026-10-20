@@ -29,7 +29,7 @@ A TradingView-style terminal for Polymarket US "BTC Up or Down: 15 min" markets.
 - **BTC price, labeled "BTC · BRTI proxy".** The markets settle on CF Benchmarks BRTI, which is not freely streamable. The proxy is the median of the last trade or mid from the Coinbase BTC-USD, Kraken and Bitstamp WebSockets. It is not BRTI. Settlement can differ from the proxy, especially when price sits right at the strike.
 - **Odds, Polymarket US market data.** Public, no key. BBO, book and settlement come from `POLY_GATEWAY_URL` (default `https://gateway.polymarket.us`), polled every `POLY_POLL_MS`. Discovery reads the active 15m BTC market and the next one, including price to beat, window start and end, and the Up and Down instruments, from market metadata. API reference: https://docs.polymarket.us/api-reference/introduction
 - **Trading, Polymarket US authenticated API.** `api.polymarket.us` with an Ed25519 key pair from polymarket.us/developer. Used only in live mode (step 6). Keys live in `backend/.env` and nowhere else.
-- **Fees are unconfirmed.** `FEE_CENTS_PER_CONTRACT` stays blank, and the UI shows **[FEE]** instead of a number until the Polymarket US fee schedule is confirmed. Once it is, record the source in `docs/POLYMARKET_US.md` (not written yet).
+- **Fees are unconfirmed.** `FEE_CENTS_PER_CONTRACT` stays blank, and the UI shows **[FEE]** instead of a number until the Polymarket US fee schedule is confirmed. Once it is, record the source in [`docs/POLYMARKET_US.md`](docs/POLYMARKET_US.md), which also lists what was verified against the official SDKs and what is still unverified.
 
 ## Fair value
 

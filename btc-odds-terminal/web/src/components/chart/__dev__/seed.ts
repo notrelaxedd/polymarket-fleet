@@ -122,7 +122,7 @@ export function seedChartDev(opts: SeedOptions = {}): () => void {
     noise = noise * 0.9 + randn() * 0.7;
     bias = bias * 0.995 + randn() * 0.08;
     const mkt = Math.min(98.5, Math.max(1.5, lagged + noise + bias * 2));
-    const spread = mkt > 8 && mkt < 92 ? (rnd() < 0.3 ? 2 : 1) : 1;
+    const spread = mkt > 10 && mkt < 90 ? (rnd() < 0.35 ? 3 : 2) : 1;
     const upBid = Math.max(1, Math.min(98, Math.round(mkt - spread / 2)));
     const upAsk = Math.min(99, upBid + spread);
     const upMid = (upBid + upAsk) / 2;
@@ -151,6 +151,7 @@ export function seedChartDev(opts: SeedOptions = {}): () => void {
     if (!w || w.startTs !== ws) {
       w = makeWindow(ws, ws === curStart ? "live" : "settled", r2(priceAt.get(ws) ?? S));
       windows[w.id] = w;
+      fairHist.length = 0;
     }
     const o = S;
     let h = o;

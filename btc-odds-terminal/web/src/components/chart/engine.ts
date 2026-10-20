@@ -35,6 +35,7 @@ import type { ExchangeId } from "@shared/protocol";
 import { serverNow, useTerminal, type TerminalState } from "@/lib/store";
 import {
   findAt,
+  lowerBoundTime,
   indexAtOrBefore,
   makeBarAgg,
   makeFairAgg,
@@ -70,7 +71,8 @@ const centsFormat: PriceFormatCustom = {
   type: "custom",
   minMove: 0.1,
   formatter: (p) => fmtCents(p),
-  tickmarksFormatter: (ps) => ps.map((p) => `${Math.round(p)}¢`),
+  // the fixed 0–100 range plus scale margins would otherwise label -5¢ / 105¢
+  tickmarksFormatter: (ps) => ps.map((p) => (p < -0.01 || p > 100.01 ? "" : `${Math.round(p)}¢`)),
 };
 const edgeFormat: PriceFormatCustom = {
   type: "custom",
@@ -82,6 +84,18 @@ const fixedCents = (): AutoscaleInfo => ({ priceRange: { minValue: 0, maxValue: 
 const fixedEdge = (): AutoscaleInfo => ({ priceRange: { minValue: -EDGE_RANGE, maxValue: EDGE_RANGE } });
 
 type LinePoint = LineData<Time> | WhitespaceData<Time>;
+type AggKey = "bars" | "odds" | "fair" | "ticks";
+
+/** One series fed from one aggregate. Hidden series skip per-frame updates and are re-set when shown. */
+interface Binding {
+  series: ISeriesApi<SeriesType>;
+  agg: AggKey;
+  map: (o: Bucketed, i: number, out: readonly Bucketed[]) => unknown;
+  /** anchors back primitives' coordinate conversion, so they always receive full data sets */
+  anchor: boolean;
+  active: boolean;
+  stale: boolean;
+}
 const T = (sec: number) => sec as UTCTimestamp;
 
 /** Default amount of history shown left of "now", per timeframe (seconds). */
@@ -103,6 +117,7 @@ export class ChartEngine implements ChartHandle {
   private edgeZero: IPriceLine | null = null;
 
   private readonly aggs = { bars: makeBarAgg(), odds: makeOddsAgg(), fair: makeFairAgg(), ticks: makeTickAgg() };
+  private readonly bindings: Binding[] = [];
   private readonly bands: WindowBandsPrimitive;
   private readonly band: OddsBandPrimitive;
   private readonly ptb: PriceToBeatPrimitive;
@@ -238,6 +253,13 @@ export class ChartEngine implements ChartHandle {
 
     // --- time-scale extender (own invisible overlay scale so it never affects autoscale)
     this.timeline = this.chart.addSeries(LineSeries, { ...noMarkers, priceScaleId: "timeline", lineVisible: false });
+
+    this.bind(this.candles, "bars", candlePoint);
+    this.bind(this.btcSeries, "bars", this.btcLinePoint, true);
+    this.bind(this.oddsSeries, "odds", (o: OddsAgg, i, out) => breakLine(o, out[i + 1], o.upMid), true);
+    this.bind(this.downLine, "odds", (o: OddsAgg, i, out) => breakLine(o, out[i + 1], o.downMid));
+    this.bind(this.fairLine, "fair", (f: FairAgg, i, out) => breakLine(f, out[i + 1], f.fair));
+    for (const ex of EXCHANGES) this.bind(this.exLines[ex], "ticks", (t: TickAgg) => exPoint(t, ex));
 
     // --- primitives
     this.bands = new WindowBandsPrimitive(this);
@@ -406,45 +428,63 @@ export class ChartEngine implements ChartHandle {
     }
     const { bars, odds, fair, ticks } = st.series;
     const a = this.aggs;
+    const res: Record<AggKey, SyncResult> = {
+      bars: a.bars.sync(bars, tf),
+      odds: a.odds.sync(odds, tf),
+      fair: a.fair.sync(fair, tf),
+      ticks: a.ticks.sync(ticks, tf),
+    };
     // a history load replaces array identities -> the aggregators rebuild and we re-frame the view
-    const rb = a.bars.sync(bars, tf);
-    if (rb.kind === "full") this.needsDefaultView = true;
-    this.apply(rb, a.bars.out, this.candles, candlePoint);
-    this.apply(rb, a.bars.out, this.btcSeries, this.btcLinePoint);
-
-    const ro = a.odds.sync(odds, tf);
-    this.apply(ro, a.odds.out, this.oddsSeries, (o, i, out) => breakLine(o, out[i + 1], o.upMid));
-    this.apply(ro, a.odds.out, this.downLine, (o, i, out) => breakLine(o, out[i + 1], o.downMid));
-
-    const rf = a.fair.sync(fair, tf);
-    this.apply(rf, a.fair.out, this.fairLine, (f, i, out) => breakLine(f, out[i + 1], f.fair));
-    if (this.edge) this.apply(rf, a.fair.out, this.edge, edgePoint);
-
-    const rt = a.ticks.sync(ticks, tf);
-    for (const ex of EXCHANGES) this.apply(rt, a.ticks.out, this.exLines[ex], (t) => exPoint(t, ex));
+    if (res.bars.kind === "full") this.needsDefaultView = true;
+    for (const b of this.bindings) this.applyBinding(b, res[b.agg]);
 
     this.updateTimeline(st, tf);
     if (this.needsDefaultView) this.applyDefaultView();
     this.updateEdgeLabel();
   }
 
-  private apply<O extends Bucketed, S extends SeriesType>(
-    r: SyncResult,
-    out: readonly O[],
-    series: ISeriesApi<S>,
+  private bind<O extends Bucketed>(
+    series: ISeriesApi<SeriesType>,
+    agg: AggKey,
     map: (o: O, i: number, out: readonly O[]) => unknown,
-  ) {
-    type D = Parameters<ISeriesApi<S>["update"]>[0];
+    anchor = false,
+  ): Binding {
+    const b: Binding = { series, agg, map: map as Binding["map"], anchor, active: true, stale: false };
+    this.bindings.push(b);
+    return b;
+  }
+
+  private unbind(series: ISeriesApi<SeriesType>) {
+    const i = this.bindings.findIndex((b) => b.series === series);
+    if (i >= 0) this.bindings.splice(i, 1);
+  }
+
+  private setActive(series: ISeriesApi<SeriesType>, on: boolean) {
+    const b = this.bindings.find((x) => x.series === series);
+    if (!b) return;
+    b.active = on;
+    if (on && b.stale) this.fullSet(b);
+  }
+
+  private fullSet(b: Binding) {
+    const out = this.aggs[b.agg].out as readonly Bucketed[];
+    b.series.setData(out.map((o, i) => b.map(o, i, out)) as never[]);
+    b.stale = false;
+  }
+
+  private applyBinding(b: Binding, r: SyncResult) {
     if (r.kind === "none") return;
-    if (r.kind === "full") {
-      series.setData(out.map((o, i) => map(o, i, out)) as D[]);
+    if (!b.active && !(b.anchor && r.kind === "full")) {
+      b.stale = true; // hidden: catch up with one setData when it becomes visible
       return;
     }
+    if (r.kind === "full" || b.stale) return this.fullSet(b);
+    const out = this.aggs[b.agg].out as readonly Bucketed[];
     try {
-      for (let i = r.from; i < out.length; i++) series.update(map(out[i], i, out) as D);
+      for (let i = r.from; i < out.length; i++) b.series.update(b.map(out[i], i, out) as never);
     } catch {
       // out-of-order update (should not happen) — fall back to a full reset of this series
-      series.setData(out.map((o, i) => map(o, i, out)) as D[]);
+      this.fullSet(b);
     }
   }
 
@@ -495,14 +535,18 @@ export class ChartEngine implements ChartHandle {
     let from = Math.min(nowS, last) - (HISTORY_SPAN[tf] ?? tf * 120);
     if (tf === 15 && cur) from = Math.min(from, cur.startTs / 1000 - 900);
     from = Math.max(from, bars[0].time);
-    try {
-      ts.setVisibleRange({ from: T(from), to: T(end) });
-      const lr = ts.getVisibleLogicalRange();
-      if (lr) ts.setVisibleLogicalRange({ from: lr.from, to: lr.to + RIGHT_PAD_BARS });
-      this.needsDefaultView = false;
-    } catch {
-      /* time scale not ready yet; retry on the next sync/size change */
-    }
+    // setVisibleRange() applies lazily, so derive logical indices ourselves (time -> x -> logical)
+    const fromBar = bars[Math.min(bars.length - 1, lowerBoundTime(bars, from))].time;
+    const logicalAt = (sec: number) => {
+      const x = ts.timeToCoordinate(T(sec));
+      return x == null ? null : ts.coordinateToLogical(x);
+    };
+    const lFrom = logicalAt(fromBar);
+    const endX = this.timeToX(end * 1000);
+    const lEnd = endX == null ? logicalAt(last) : ts.coordinateToLogical(endX);
+    if (lFrom == null || lEnd == null) return;
+    ts.setVisibleLogicalRange({ from: lFrom, to: lEnd + RIGHT_PAD_BARS });
+    this.needsDefaultView = false;
   }
 
   // ---- overlays / style -------------------------------------------------------------------------
@@ -517,9 +561,18 @@ export class ChartEngine implements ChartHandle {
       priceLineVisible: line,
       crosshairMarkerVisible: line,
     });
+    this.setActive(this.candles, !line);
+    // in candle mode the BTC line is only a coordinate anchor: its tail may lag (closes ⊂ candle range)
+    this.setActive(this.btcSeries, line);
     // re-emit the last point so its direction color is set/cleared
     const out = this.aggs.bars.out;
-    if (out.length) this.btcSeries.update(this.btcLinePoint(out[out.length - 1], out.length - 1, out));
+    if (out.length) {
+      try {
+        this.btcSeries.update(this.btcLinePoint(out[out.length - 1], out.length - 1, out));
+      } catch {
+        /* anchor was stale and behind; setActive already resynced in line mode */
+      }
+    }
   }
 
   private applyOverlays() {
@@ -529,12 +582,18 @@ export class ChartEngine implements ChartHandle {
       lastValueVisible: ov.upOdds,
       crosshairMarkerVisible: ov.upOdds,
     });
+    this.setActive(this.oddsSeries, ov.upOdds);
     this.band.setEnabled(ov.upOdds);
     this.downLine.applyOptions({ visible: ov.downOdds });
+    this.setActive(this.downLine, ov.downOdds);
     this.fairLine.applyOptions({ visible: ov.fair });
+    this.setActive(this.fairLine, ov.fair);
     this.ptb.setEnabled(ov.ptb);
     this.bands.setEnabled(ov.windows);
-    for (const ex of EXCHANGES) this.exLines[ex].applyOptions({ visible: ov.perExchange });
+    for (const ex of EXCHANGES) {
+      this.exLines[ex].applyOptions({ visible: ov.perExchange });
+      this.setActive(this.exLines[ex], ov.perExchange);
+    }
     this.setEdgePane(ov.edgePane);
   }
 
@@ -562,8 +621,8 @@ export class ChartEngine implements ChartHandle {
         title: "",
       });
       edge.attachPrimitive(this.edgeLabel);
-      edge.setData(this.aggs.fair.out.map(edgePoint));
       this.edge = edge;
+      this.fullSet(this.bind(edge, "fair", edgePoint));
       const panes = this.chart.panes();
       panes[0]?.setStretchFactor(1);
       panes[1]?.setStretchFactor(EDGE_STRETCH);
@@ -571,6 +630,7 @@ export class ChartEngine implements ChartHandle {
     } else if (!on && this.edge) {
       this.edge.detachPrimitive(this.edgeLabel);
       if (this.edgeZero) this.edge.removePriceLine(this.edgeZero);
+      this.unbind(this.edge);
       this.chart.removeSeries(this.edge);
       this.edge = null;
       this.edgeZero = null;

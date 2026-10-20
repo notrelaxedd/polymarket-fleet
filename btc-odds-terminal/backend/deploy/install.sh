@@ -117,7 +117,7 @@ systemctl restart "$UNIT.service"
 PORT_VAL="$(sed -n 's/^PORT=//p' "$ENV_FILE" | tail -n1 | tr -d '[:space:]')"
 HOST_VAL="$(sed -n 's/^HOST=//p' "$ENV_FILE" | tail -n1 | tr -d '[:space:]')"
 PORT_VAL="${PORT_VAL:-8787}"
-CHECK_HOST="${HOST_VAL:-0.0.0.0}"
+CHECK_HOST="${HOST_VAL:-127.0.0.1}"
 [ "$CHECK_HOST" = 0.0.0.0 ] && CHECK_HOST=127.0.0.1
 HEALTH="http://$CHECK_HOST:$PORT_VAL/api/health"
 

@@ -6,6 +6,7 @@ import { useTerminal } from "@/lib/store";
 import { fmtBtc } from "../fmt";
 import { C, monoFont } from "../theme";
 import { previousWindow, windowList } from "../windows";
+import type { ChartHandle } from "../context";
 import { AxisTag, BasePrimitive, FnPaneView, FnRenderer, pill, type MediaScope } from "./base";
 
 interface LineGeom {
@@ -21,10 +22,13 @@ export class PriceToBeatPrimitive extends BasePrimitive {
   private ptb: number | null = null;
   private readonly tag = new AxisTag();
   private readonly tags = [this.tag];
-  private readonly views = [new FnPaneView(new FnRenderer((s) => this.draw(s)), "normal")];
+  private readonly views = [
+    new FnPaneView(new FnRenderer((s) => this.drawLines(s)), "normal"),
+    new FnPaneView(new FnRenderer((s) => this.drawLabels(s)), "top"),
+  ];
 
-  constructor(...args: ConstructorParameters<typeof BasePrimitive>) {
-    super(...args);
+  constructor(h: ChartHandle) {
+    super(h);
     this.tag.bgColor = C.ptb;
     this.tag.fg = "#1A1406";
   }
@@ -70,43 +74,44 @@ export class PriceToBeatPrimitive extends BasePrimitive {
     }
   }
 
-  private draw({ ctx, width }: MediaScope) {
+  private drawLines({ ctx, width }: MediaScope) {
+    const line = (g: LineGeom, color: string, w: number, dash: number[]) => {
+      const y = Math.round(g.y) + 0.5;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = w;
+      ctx.setLineDash(dash);
+      ctx.beginPath();
+      ctx.moveTo(Math.max(g.x1, 0), y);
+      ctx.lineTo(Math.min(g.x2, width), y);
+      ctx.stroke();
+    };
+    if (this.prev) line(this.prev, C.ptbFaded, 1, [5, 4]);
+    if (this.cur) line(this.cur, C.ptb, 1.25, [6, 4]);
+    ctx.setLineDash([]);
+  }
+
+  private drawLabels({ ctx, width }: MediaScope) {
     ctx.font = monoFont(10, 600);
     if (this.prev) {
       const p = this.prev;
-      ctx.strokeStyle = C.ptbFaded;
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath();
-      ctx.moveTo(Math.max(p.x1, 0), Math.round(p.y) + 0.5);
-      ctx.lineTo(Math.min(p.x2, width), Math.round(p.y) + 0.5);
-      ctx.stroke();
-      ctx.setLineDash([]);
       const lx = Math.max(p.x1, 0) + 6;
       if (Math.min(p.x2, width) - lx > 120) {
         ctx.globalAlpha = 0.45;
-        ctx.textBaseline = "bottom";
-        ctx.fillStyle = C.ptb;
-        ctx.fillText(`PTB ${fmtBtc(p.value)}`, lx, Math.round(p.y) - 3);
+        pill(ctx, [{ text: `PTB ${fmtBtc(p.value)}`, color: C.ptb }], lx, Math.round(p.y) - 10, {
+          bg: "rgba(10, 13, 18, 0.9)",
+          align: "left",
+          h: 16,
+          padX: 5,
+        });
         ctx.globalAlpha = 1;
       }
     }
     if (this.cur) {
       const c = this.cur;
-      const y = Math.round(c.y) + 0.5;
       const x1 = Math.max(c.x1, 0);
-      const x2 = Math.min(c.x2, width);
-      ctx.strokeStyle = C.ptb;
-      ctx.lineWidth = 1.25;
-      ctx.setLineDash([6, 4]);
-      ctx.beginPath();
-      ctx.moveTo(x1, y);
-      ctx.lineTo(x2, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      if (x2 - x1 > 110) {
-        pill(ctx, [{ text: "Price to beat", color: C.ptb }], x1 + 6, y - 11, {
-          bg: "rgba(42, 33, 17, 0.92)",
+      if (Math.min(c.x2, width) - x1 > 110) {
+        pill(ctx, [{ text: "Price to beat", color: C.ptb }], x1 + 6, Math.round(c.y) - 10, {
+          bg: "rgba(42, 33, 17, 0.95)",
           align: "left",
           h: 16,
           padX: 5,

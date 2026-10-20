@@ -13,7 +13,7 @@ const optionalString = z.preprocess(
 
 const EnvSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8787),
-  HOST: z.string().default("0.0.0.0"),
+  HOST: z.string().default("127.0.0.1"),
   DB_PATH: z.string().default("./data/terminal.db"),
   CORS_ORIGIN: z.string().default("*"),
   TRADING_MODE: z.enum(["paper", "live"]).default("paper"),
