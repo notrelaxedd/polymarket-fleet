@@ -1,0 +1,12 @@
+{
+  "marketData": {
+    "marketSlug": "btc-updown-15m-1792506600",
+    "bestBid": { "value": "0.61", "currency": "USD" },
+    "bestAsk": { "value": "0.63", "currency": "USD" },
+    "bidDepth": 4,
+    "askDepth": 5,
+    "lastTradePx": { "value": "0.62", "currency": "USD" },
+    "sharesTraded": "12840",
+    "openInterest": "6210"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "event": {
+    "id": 90300,
+    "slug": "bitcoin-up-or-down-15m-oct-20-1030am",
+    "title": "Bitcoin Up or Down 15m",
+    "startTime": "2026-10-20T14:30:00Z",
+    "endTime": "2026-10-20T14:45:00Z",
+    "priceToBeat": "108412.37",
+    "active": true,
+    "closed": false,
+    "archived": false,
+    "featured": false,
+    "markets": [
+      { "id": 601, "slug": "btc-15m-oct-20-1030am-up", "title": "Up", "outcome": "Up", "active": true, "closed": false },
+      { "id": 602, "slug": "btc-15m-oct-20-1030am-down", "title": "Down", "outcome": "Down", "active": true, "closed": false }
+    ]
+  }
+}

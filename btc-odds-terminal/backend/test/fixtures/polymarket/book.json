@@ -1,0 +1,16 @@
+{
+  "marketData": {
+    "marketSlug": "btc-updown-15m-1792506600",
+    "bids": [
+      { "px": { "value": "0.60", "currency": "USD" }, "qty": "250" },
+      { "px": { "value": "0.61", "currency": "USD" }, "qty": "120" }
+    ],
+    "offers": [
+      { "px": { "value": "0.64", "currency": "USD" }, "qty": "300" },
+      { "px": { "value": "0.63", "currency": "USD" }, "qty": "80" }
+    ],
+    "state": "MARKET_STATE_OPEN",
+    "stats": { "lastTradePx": { "value": "0.62", "currency": "USD" }, "sharesTraded": "12840", "openInterest": "6210" },
+    "transactTime": "2026-10-20T14:36:59.412Z"
+  }
+}

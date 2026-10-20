@@ -1,0 +1,33 @@
+{
+  "events": [
+    {
+      "id": 90213,
+      "slug": "btc-updown-15m-1792507500",
+      "title": "Bitcoin Up or Down - October 20, 10:45AM-11:00AM ET",
+      "description": "This market resolves to Up if the BRTI at the end of the window is greater than or equal to the BRTI at the start of the window.",
+      "startTime": "2026-10-20T14:45:00Z",
+      "endTime": "2026-10-20T15:00:00Z",
+      "active": false,
+      "closed": false,
+      "archived": false,
+      "featured": false,
+      "markets": [
+        { "id": 501130, "slug": "btc-updown-15m-1792507500", "title": "Bitcoin Up or Down - October 20, 10:45AM-11:00AM ET", "outcome": "Up", "active": false, "closed": false }
+      ]
+    },
+    {
+      "id": 90214,
+      "slug": "btc-updown-15m-1792508400",
+      "title": "Bitcoin Up or Down - October 20, 11:00AM-11:15AM ET",
+      "startTime": "2026-10-20T15:00:00Z",
+      "endTime": "2026-10-20T15:15:00Z",
+      "active": false,
+      "closed": false,
+      "archived": false,
+      "featured": false,
+      "markets": [
+        { "id": 501131, "slug": "btc-updown-15m-1792508400", "title": "Bitcoin Up or Down - October 20, 11:00AM-11:15AM ET", "outcome": "Up", "active": false, "closed": false }
+      ]
+    }
+  ]
+}

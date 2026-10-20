@@ -1,0 +1,58 @@
+{
+  "events": [
+    {
+      "id": 90211,
+      "slug": "btc-updown-15m-1792506600",
+      "title": "Bitcoin Up or Down - October 20, 10:30AM-10:45AM ET",
+      "description": "This market resolves to Up if the CF Benchmarks Bitcoin Real-Time Index (BRTI) at the end of the window is greater than or equal to the price to beat. Price to beat: $108,412.37.",
+      "startTime": "2026-10-20T14:30:00Z",
+      "endTime": "2026-10-20T14:45:00Z",
+      "active": true,
+      "closed": false,
+      "archived": false,
+      "featured": false,
+      "volume": 18233.5,
+      "series": { "id": 77, "slug": "btc-up-or-down-15m", "title": "BTC Up or Down 15m" },
+      "markets": [
+        {
+          "id": 501122,
+          "slug": "btc-updown-15m-1792506600",
+          "title": "Bitcoin Up or Down - October 20, 10:30AM-10:45AM ET",
+          "outcome": "Up",
+          "active": true,
+          "closed": false,
+          "liquidity": 5120.25,
+          "volume": 18233.5
+        }
+      ]
+    },
+    {
+      "id": 90212,
+      "slug": "eth-updown-15m-1792506600",
+      "title": "Ethereum Up or Down - October 20, 10:30AM-10:45AM ET",
+      "startTime": "2026-10-20T14:30:00Z",
+      "endTime": "2026-10-20T14:45:00Z",
+      "active": true,
+      "closed": false,
+      "archived": false,
+      "featured": false,
+      "markets": [
+        { "id": 501123, "slug": "eth-updown-15m-1792506600", "title": "Ethereum Up or Down", "outcome": "Up", "active": true, "closed": false }
+      ]
+    },
+    {
+      "id": 88001,
+      "slug": "bitcoin-above-120k-on-october-20",
+      "title": "Bitcoin above $120,000 on October 20?",
+      "startTime": "2026-10-19T16:00:00Z",
+      "endTime": "2026-10-20T16:00:00Z",
+      "active": true,
+      "closed": false,
+      "archived": false,
+      "featured": true,
+      "markets": [
+        { "id": 499001, "slug": "bitcoin-above-120k-on-october-20", "title": "Bitcoin above $120,000 on October 20?", "outcome": "Yes", "active": true, "closed": false }
+      ]
+    }
+  ]
+}

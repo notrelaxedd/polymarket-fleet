@@ -1,0 +1,7 @@
+[
+  { "requestId": "bot-bbo-1", "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA_LITE", "marketDataLite": { "marketSlug": "btc-updown-15m-1792506600", "bestBid": { "value": "0.58", "currency": "USD" }, "bestAsk": { "value": "0.60", "currency": "USD" }, "lastTradePx": { "value": "0.59", "currency": "USD" } } },
+  { "requestId": "bot-bbo-1", "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA_LITE", "marketDataLite": { "marketSlug": "btc-updown-15m-1792506600", "bestBid": "0.55", "bestAsk": "0.56" } },
+  { "heartbeat": {} },
+  { "requestId": "bot-bbo-2", "subscriptionType": "SUBSCRIPTION_TYPE_MARKET_DATA_LITE", "error": "unknown market slug" },
+  { "requestId": "t-1", "subscriptionType": "SUBSCRIPTION_TYPE_TRADE", "trade": { "marketSlug": "btc-updown-15m-1792506600", "price": { "value": "0.59", "currency": "USD" }, "quantity": { "value": "25", "currency": "USD" }, "tradeTime": "2026-10-20T14:36:58Z", "maker": { "side": "ORDER_SIDE_BUY", "intent": "ORDER_INTENT_BUY_LONG" }, "taker": { "side": "ORDER_SIDE_SELL", "intent": "ORDER_INTENT_SELL_LONG" } } }
+]
