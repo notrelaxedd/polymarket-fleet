@@ -89,6 +89,24 @@ export function looksLikeBtcUpDown(text: string): boolean {
 
 // ---------------------------------------------------------------- times
 
+/**
+ * Polymarket US crypto up/down markets carry an `assetPriceTerms` block (seen live 2026-10-21):
+ * { marketType: "ASSET_PRICE_MARKET_TYPE_UP_DOWN", asset: { symbol: "btc" }, indexSymbol: "BRTI",
+ *   horizon: "15m", windowStart, windowEnd, priceToBeat: { value: "84422.25", currency: "USD" }, strike }.
+ * priceToBeat is the official strike (null before the window starts).
+ */
+function assetTerms(o: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
+  return o && isObj(o.assetPriceTerms) ? o.assetPriceTerms : null;
+}
+
+/** True when the market's assetPriceTerms say: BTC, up/down, 15-minute horizon. */
+function isBtc15mByTerms(o: Record<string, unknown>): boolean {
+  const t = assetTerms(o);
+  if (!t) return false;
+  const sym = isObj(t.asset) ? s(t.asset.symbol) : "";
+  return /up_?down/i.test(s(t.marketType)) && /^(btc|bitcoin)$/i.test(sym) && /^15\s*m(in)?$/i.test(s(t.horizon));
+}
+
 const START_KEYS = ["startTime", "startDate", "openTime", "windowStart", "startTs"];
 const END_KEYS = ["endTime", "endDate", "closeTime", "expirationTime", "expirationDate", "windowEnd", "endTs"];
 
@@ -226,6 +244,14 @@ export function extractTimes(
   refNow: number,
 ): WindowTimes | null {
   const W = cfg.windowMs;
+  const terms = assetTerms(market);
+  if (terms) {
+    const ts = toMs(terms.windowStart);
+    const te = toMs(terms.windowEnd);
+    if (ts !== null && te !== null && Math.abs(te - ts - W) <= DURATION_TOLERANCE_MS) {
+      return { startTs: ts, endTs: te, explicit15: true };
+    }
+  }
   let start = firstTime(market, START_KEYS) ?? firstTime(event, START_KEYS);
   let end = firstTime(market, END_KEYS) ?? firstTime(event, END_KEYS);
   if (start !== null && end !== null && Math.abs(end - start - W) <= DURATION_TOLERANCE_MS) {
@@ -300,6 +326,8 @@ export function extractPriceToBeat(
   event: Record<string, unknown> | null,
   fields: string[] = DEFAULT_PTB_FIELDS,
 ): number | null {
+  const official = num(assetTerms(market)?.priceToBeat) ?? num(assetTerms(event)?.priceToBeat);
+  if (official !== null && official >= MIN_BTC_PRICE) return official;
   return (
     ptbFromFields(market, fields) ??
     ptbFromFields(event, fields) ??
@@ -373,6 +401,7 @@ export function isBtc15mEvent(ev: Record<string, unknown>, cfg: DiscoveryConfig 
   if (cfg.slugRegex) {
     return cfg.slugRegex.test(s(ev.slug)) || mk.some((m) => cfg.slugRegex!.test(s(m.slug)));
   }
+  if (mk.some(isBtc15mByTerms)) return true;
   const text = textOf(ev, ...mk);
   if (!looksLikeBtcUpDown(text)) return false;
   if (RE_15.test(text)) return true;

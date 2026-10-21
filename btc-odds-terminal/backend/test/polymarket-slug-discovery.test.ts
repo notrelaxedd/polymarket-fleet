@@ -14,6 +14,10 @@ const bbo = JSON.parse(readFileSync(path.join(FIX, "bbo.json"), "utf8"));
 const W = 15 * 60_000;
 const quiet = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {}, child: () => quiet } as unknown as Logger;
 
+/** Official price to beat Polymarket publishes for a window (seen live: shortly after the window starts). */
+const officialPtb = (start: number) => 84000 + (start / 60_000) % 1000;
+const PUBLISH_DELAY_MS = 3000;
+
 /** The live event shape, re-dated to the window that starts at `start` (as Polymarket US names it). */
 function liveEventAt(start: number): Record<string, unknown> {
   const iso = (t: number) => new Date(t).toISOString().replace(".000Z", "Z");
@@ -32,6 +36,17 @@ function liveEventAt(start: number): Record<string, unknown> {
         startDate: iso(start - 12 * 3600_000), // creation time, like the real data
         endDate: iso(start + W + 30 * 60_000), // window end + 30 min, like the real data
         gameStartTime: iso(start),
+        // seen live 2026-10-21 (event.markets[0].assetPriceTerms); priceToBeat is null until published
+        assetPriceTerms: {
+          marketType: "ASSET_PRICE_MARKET_TYPE_UP_DOWN",
+          asset: { assetClass: "ASSET_CLASS_CRYPTO", symbol: "btc" },
+          indexSymbol: "BRTI",
+          horizon: "15m",
+          windowStart: iso(start),
+          windowEnd: iso(start + W),
+          priceToBeat: Date.now() >= start + PUBLISH_DELAY_MS ? { value: officialPtb(start).toFixed(2), currency: "USD" } : null,
+          strike: null,
+        },
       },
     ],
   };
@@ -76,7 +91,7 @@ describe("discovery by predictable event slug", () => {
     ]);
   });
 
-  it("finds the live window and rolls over to the next one when search returns nothing", async () => {
+  it("finds the live window, rolls over, and takes the official price to beat (search returns nothing)", async () => {
     vi.useFakeTimers({ now: Date.parse("2026-10-21T14:28:30Z") });
     const src = new SlugOnlySource();
     tracker = new MarketTracker({ logger: quiet, pollMs: 1000, client: src, config: { wsMode: "off" }, priceAt: () => 67000 });
@@ -90,13 +105,16 @@ describe("discovery by predictable event slug", () => {
     await vi.advanceTimersByTimeAsync(Date.parse("2026-10-21T14:30:00Z") - Date.now() + 2000);
     expect(tracker.current()?.id).toBe("cpc-btc-updown-15m-2026-10-21-1430z");
     expect(tracker.lastOdds()?.windowId).toBe("cpc-btc-updown-15m-2026-10-21-1430z");
-    expect(tracker.current()?.priceToBeat).toBe(67000);
+    // the official priceToBeat replaces the proxy estimate once Polymarket publishes it
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(tracker.current()?.priceToBeat).toBe(Number(officialPtb(Date.parse("2026-10-21T14:30:00Z")).toFixed(2)));
 
     // two windows later it is still tracking (discovery keeps looking ahead by slug)
     await vi.advanceTimersByTimeAsync(2 * W);
     expect(tracker.current()?.id).toBe("cpc-btc-updown-15m-2026-10-21-1500z");
     expect(tracker.status().state).toBe("live");
     // fetched events are reused: ~1 lookup per new window, not 4 per 30 s discovery run (rate limit)
-    expect(src.slugCalls.length).toBeLessThan(12);
+    expect(tracker.current()?.priceToBeat).toBe(Number(officialPtb(Date.parse("2026-10-21T15:00:00Z")).toFixed(2)));
+    expect(src.slugCalls.length).toBeLessThan(20);
   });
 });

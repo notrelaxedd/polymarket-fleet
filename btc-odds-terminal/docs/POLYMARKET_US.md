@@ -9,8 +9,13 @@ Status as of 2026-10-20. Code: `backend/src/polymarket/`.
   `btc-updown-15m`; one market per event, slug `cpc-<event slug>`.
 - The window is on the EVENT (`startTime`/`startDate` .. `endDate`) and in the market's `gameStartTime`.
   The market's own `startDate` is its creation time (~12 h earlier) and its `endDate` is window end + 30 min.
-- No price-to-beat field: the market description defines it as the simple average of the 60 BRTI prices
-  in the minute before the window start (same rule at the end).
+- The official price to beat is `event.markets[].assetPriceTerms.priceToBeat` (Amount), next to
+  `marketType: ASSET_PRICE_MARKET_TYPE_UP_DOWN`, `asset.symbol: btc`, `indexSymbol: BRTI`, `horizon: 15m`,
+  `windowStart`, `windowEnd`, `strike: null`. Discovery reads all of these; it re-fetches a started window
+  for 2 min until priceToBeat is published, and only falls back to the proxy estimate (the description's
+  rule: average of the 60 BRTI prices in the minute before the start) if it never appears.
+- Sides: `marketSides[]` has `description: "Yes"` with `long: true` and "No" with `long: false`; the
+  market settles "Up" on the Yes condition, so Up = long.
 - `GET /v1/series` lists no BTC series (sports and awards only), so discovery goes by slug, then search.
 - The public gateway is behind Cloudflare and rate-limits: ~2 req/s gets HTTP 429 "Error 1015".
 - The markets WebSocket works with an Ed25519 API key (feed status `live`, detail `ws`, ~60 ms age).

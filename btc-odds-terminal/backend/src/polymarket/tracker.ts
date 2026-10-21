@@ -87,6 +87,8 @@ const MAX_LIST_PAGES = 5;
 const SERIES_RESOLVE_MS = 30 * 60_000;
 const SERIES_RETRY_MS = 5 * 60_000;
 const MAX_EVENT_EXPANSIONS = 8;
+/** after a window starts, re-fetch its event (every DISCOVERY_RETRY_MS) this long for the official priceToBeat */
+const PTB_REFRESH_MS = 120_000;
 
 /** Settlement poll interval by time since the window ended: 5s, 15s, 60s, then 5 min. */
 export function settleRetryMs(sinceEndMs: number): number {
@@ -143,7 +145,7 @@ export class MarketTracker extends EventEmitter {
   private nextPollAt = 0;
   private restBlockedUntil = 0; // 429 / Retry-After
   /** events fetched by slug for the windows around now (see fetchEvents) */
-  private readonly eventCache = new Map<string, RawEvent>();
+  private readonly eventCache = new Map<string, { ev: RawEvent; hasPtb: boolean; startTs: number }>();
   private settleTries = new Map<string, number>(); // window id -> last try ts
   private settleSeen = new Map<string, { value: number; firstTs: number }>(); // first read of the current value
   private voided = new Set<string>(); // confirmed non-binary settlement: nothing more to poll
@@ -395,13 +397,20 @@ export class MarketTracker extends EventEmitter {
     if (this.cfg.eventSlugTemplate) {
       const slugs = eventSlugsAround(this.cfg.eventSlugTemplate, now, this.cfg.windowMs);
       for (const k of this.eventCache.keys()) if (!slugs.includes(k)) this.eventCache.delete(k);
-      const direct = await Promise.allSettled(
-        slugs.map(async (sl) => this.eventCache.get(sl) ?? (await c.getEventBySlug(sl))),
-      );
+      // A cached event is reused unless its window has started without the official priceToBeat, which
+      // Polymarket fills in at the window start: those are fetched again for PTB_REFRESH_MS after it.
+      const cached = (sl: string): RawEvent | null => {
+        const e = this.eventCache.get(sl);
+        if (!e) return null;
+        const stillMissing = !e.hasPtb && now >= e.startTs && now < e.startTs + PTB_REFRESH_MS;
+        return stillMissing ? null : e.ev;
+      };
+      const direct = await Promise.allSettled(slugs.map(async (sl) => cached(sl) ?? (await c.getEventBySlug(sl))));
       direct.forEach((r, i) => {
         if (r.status === "fulfilled" && r.value) {
           events.push(r.value);
-          if (Array.isArray(r.value.markets) && r.value.markets.length > 0) this.eventCache.set(slugs[i]!, r.value);
+          const w = windowsFromEvents([r.value], now, this.cfg)[0];
+          if (w) this.eventCache.set(slugs[i]!, { ev: r.value, hasPtb: w.ptbFromMetadata, startTs: w.window.startTs });
         } else if (r.status === "rejected") {
           firstErr ??= r.reason;
           errors.push((r.reason as Error)?.message ?? String(r.reason));
@@ -553,7 +562,10 @@ export class MarketTracker extends EventEmitter {
 
     // discover eagerly near/after a boundary when the next window is unknown (backs off while it keeps missing)
     const cur = this.current();
-    const needSoon = !cur || (!this.nextId && cur.endTs - now < 120_000);
+    // ... and every few seconds while the live window still lacks the official price to beat
+    const curD = this.currentId ? this.windows.get(this.currentId) : undefined;
+    const needPtb = !!curD && !curD.ptbFromMetadata && now >= curD.window.startTs && now < curD.window.startTs + PTB_REFRESH_MS;
+    const needSoon = !cur || (!this.nextId && cur.endTs - now < 120_000) || needPtb;
     if (needSoon && now - this.lastDiscoveryAt > DISCOVERY_RETRY_MS && now >= this.nextDiscoveryAt) void this.discover();
 
     this.fillPtb(now);
