@@ -12,6 +12,7 @@ import {
   parseCandles,
   parseCoinbase,
   parseKraken,
+  midPrice,
 } from "../src/feeds/index.ts";
 import type { Bar, ExchangeId } from "../../shared/protocol.ts";
 import { log } from "../src/log.ts";
@@ -26,7 +27,10 @@ describe("exchange parsers", () => {
       best_bid: "21934.0", best_bid_size: "0.1", best_ask: "21934.5", best_ask_size: "0.2",
       side: "buy", time: "2022-10-19T23:28:22.061769Z", trade_id: 1, last_size: "0.01",
     });
-    expect(parseCoinbase(raw, NOW)).toEqual({ ticks: [{ exchange: "coinbase", ts: NOW, price: 21934.5 }], alive: true });
+    // top-of-book mid, not the last trade
+    expect(parseCoinbase(raw, NOW)).toEqual({ ticks: [{ exchange: "coinbase", ts: NOW, price: 21934.25 }], alive: true });
+    const noBook = raw.replace('"best_bid":"21934.0"', '"best_bid":""');
+    expect(parseCoinbase(noBook, NOW).ticks[0]!.price).toBe(21934.5); // falls back to the last trade
   });
   it("coinbase heartbeat / subscriptions / error / junk", () => {
     expect(parseCoinbase('{"type":"heartbeat","product_id":"BTC-USD"}', NOW)).toEqual({ ticks: [], alive: true });
@@ -44,8 +48,20 @@ describe("exchange parsers", () => {
       data: [{ symbol: "BTC/USD", bid: 21933.9, bid_qty: 1, ask: 21934.1, ask_qty: 1, last: 21934.0, volume: 10,
         vwap: 21900, low: 1, high: 2, change: 3, change_pct: 0.1, timestamp: "2023-10-06T17:35:55.440295Z" }],
     });
-    expect(parseKraken(raw, NOW).ticks).toEqual([{ exchange: "kraken", ts: NOW, price: 21934 }]);
+    expect(parseKraken(raw, NOW).ticks).toEqual([{ exchange: "kraken", ts: NOW, price: 21934 }]); // (21933.9+21934.1)/2
+    const wide = raw.replace('"ask":21934.1', '"ask":21936.1');
+    expect(parseKraken(wide, NOW).ticks[0]!.price).toBeCloseTo(21935, 6); // mid, not last (21934)
     expect(parseKraken(raw.replace("update", "snapshot"), NOW).ticks).toHaveLength(1);
+  });
+  it("bitstamp order book -> top-of-book mid", () => {
+    const raw = JSON.stringify({
+      data: { timestamp: "1662629036", microtimestamp: "1662629036532000", bids: [["19000.00", "0.5"], ["18999", "1"]], asks: [["19001.00", "0.3"]] },
+      channel: "order_book_btcusd", event: "data",
+    });
+    expect(parseBitstamp(raw, NOW).ticks).toEqual([{ exchange: "bitstamp", ts: NOW, price: 19000.5 }]);
+    expect(parseBitstamp(raw.replace('"asks":[["19001.00","0.3"]]', '"asks":[]'), NOW).ticks).toEqual([]);
+    expect(midPrice("100", "99")).toBeNull(); // crossed
+    expect(midPrice("100", "200")).toBeNull(); // broken (spread > 1%)
   });
   it("kraken heartbeat / pong / ack", () => {
     expect(parseKraken('{"channel":"heartbeat"}', NOW)).toEqual({ ticks: [], alive: true });

@@ -61,6 +61,19 @@ function toPrice(v: unknown): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+/**
+ * Top-of-book mid, or null when either side is missing or the book looks crossed/broken. The BRTI is built
+ * from order books, not trades, so the mid tracks it more closely (and moves between trades) than the last
+ * trade, which bounces between bid and ask.
+ */
+export function midPrice(bid: unknown, ask: unknown): number | null {
+  const b = toPrice(bid);
+  const a = toPrice(ask);
+  if (b === null || a === null || a < b) return null;
+  const m = (a + b) / 2;
+  return (a - b) / m > 0.01 ? null : m;
+}
+
 function errorText(...parts: unknown[]): string {
   const text = parts.filter((p) => typeof p === "string" && p).join(": ");
   return text || "unspecified error";
@@ -87,7 +100,7 @@ export function parseCoinbase(raw: string, now: number): ParseResult {
   switch (m.type) {
     case "ticker": {
       if (m.product_id !== "BTC-USD") return { ticks: [], alive: true };
-      const price = toPrice(m.price);
+      const price = midPrice(m.best_bid, m.best_ask) ?? toPrice(m.price);
       return { ticks: price === null ? [] : [{ exchange: "coinbase", ts: now, price }], alive: true };
     }
     case "heartbeat":
@@ -125,7 +138,7 @@ export function parseKraken(raw: string, now: number): ParseResult {
     const ticks: ExchangeTick[] = [];
     for (const d of m.data) {
       if (d && d.symbol === "BTC/USD") {
-        const price = toPrice(d.last);
+        const price = midPrice(d.bid, d.ask) ?? toPrice(d.last);
         if (price !== null) ticks.push({ exchange: "kraken", ts: now, price });
       }
     }
@@ -143,6 +156,10 @@ export const krakenSpec: ExchangeSpec = {
 };
 
 // ---------------------------------------------------------------- Bitstamp v2
+// Subscribes to the order book (top 100 levels, pushed on every change) for a top-of-book mid; trades
+// on live_trades_btcusd are still parsed if they arrive.
+// Book:      {"data":{"timestamp":"..","microtimestamp":"..","bids":[["19000.00","0.5"],..],
+//             "asks":[["19001.00","0.3"],..]},"channel":"order_book_btcusd","event":"data"}
 // Subscribe: {"event":"bts:subscribe","data":{"channel":"live_trades_btcusd"}}
 // Ack:       {"event":"bts:subscription_succeeded","channel":"live_trades_btcusd","data":{}}
 // Trade:     {"data":{"id":..,"timestamp":"1662629036","amount":0.01,"amount_str":"0.01000000",
@@ -154,6 +171,13 @@ export function parseBitstamp(raw: string, now: number): ParseResult {
   const m = safeJson(raw);
   if (!m || typeof m !== "object") return NOTHING;
   switch (m.event) {
+    case "data": {
+      if (m.channel !== "order_book_btcusd") return { ticks: [], alive: true };
+      const bid = Array.isArray(m.data?.bids) && Array.isArray(m.data.bids[0]) ? m.data.bids[0][0] : null;
+      const ask = Array.isArray(m.data?.asks) && Array.isArray(m.data.asks[0]) ? m.data.asks[0][0] : null;
+      const price = midPrice(bid, ask);
+      return { ticks: price === null ? [] : [{ exchange: "bitstamp", ts: now, price }], alive: true };
+    }
     case "trade": {
       if (m.channel !== "live_trades_btcusd") return { ticks: [], alive: true };
       const price = toPrice(m.data?.price_str ?? m.data?.price);
@@ -175,7 +199,7 @@ export const bitstampSpec: ExchangeSpec = {
   id: "bitstamp",
   url: "wss://ws.bitstamp.net",
   parse: parseBitstamp,
-  subscribe: () => [JSON.stringify({ event: "bts:subscribe", data: { channel: "live_trades_btcusd" } })],
+  subscribe: () => [JSON.stringify({ event: "bts:subscribe", data: { channel: "order_book_btcusd" } })],
 };
 
 export const EXCHANGE_SPECS: Record<ExchangeId, ExchangeSpec> = {
