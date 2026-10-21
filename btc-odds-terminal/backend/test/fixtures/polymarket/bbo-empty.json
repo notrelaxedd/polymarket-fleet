@@ -1,0 +1,12 @@
+{
+  "marketData": {
+    "marketSlug": "btc-updown-15m-1792507500",
+    "bestBid": null,
+    "bestAsk": null,
+    "bidDepth": 0,
+    "askDepth": 0,
+    "lastTradePx": null,
+    "sharesTraded": "",
+    "openInterest": ""
+  }
+}

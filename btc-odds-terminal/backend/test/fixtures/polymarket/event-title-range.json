@@ -1,0 +1,16 @@
+{
+  "event": {
+    "id": 90400,
+    "slug": "bitcoin-up-or-down-oct-20-1030am-et",
+    "title": "Bitcoin Up or Down - October 20, 10:30AM-10:45AM ET",
+    "description": "Resolves Up if the CF Benchmarks BRTI at the end of the window is greater than or equal to the price at the start.",
+    "active": true,
+    "closed": false,
+    "archived": false,
+    "featured": false,
+    "markets": [
+      { "id": 701, "slug": "bitcoin-up-or-down-oct-20-1030am-et-up", "title": "Up", "outcome": "Up", "active": true, "closed": false },
+      { "id": 702, "slug": "bitcoin-up-or-down-oct-20-1030am-et-down", "title": "Down", "outcome": "Down", "active": true, "closed": false }
+    ]
+  }
+}

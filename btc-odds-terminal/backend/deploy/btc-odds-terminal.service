@@ -1,0 +1,38 @@
+[Unit]
+Description=BTC Odds Terminal backend (Fastify + WebSocket, SQLite)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=btcodds
+Group=btcodds
+WorkingDirectory=/opt/btc-odds-terminal/backend
+# Read as root by systemd before the service drops to btcodds. Keep backend/.env chmod 600.
+EnvironmentFile=/opt/btc-odds-terminal/backend/.env
+Environment=NODE_ENV=production
+ExecStart=/opt/btc-odds-terminal/backend/node_modules/.bin/tsx /opt/btc-odds-terminal/backend/src/main.ts
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+
+# Hardening. The only writable path is the SQLite data dir. systemd refuses to start the
+# unit if ReadWritePaths does not exist, so install.sh creates it first.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/btc-odds-terminal/backend/data
+PrivateTmp=yes
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+UMask=0027
+# MemoryDenyWriteExecute is deliberately not set: V8's JIT needs writable+executable memory.
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+{
+  "series": [
+    { "id": 12, "slug": "bitcoin-daily-close", "title": "Bitcoin daily close", "active": true, "closed": false, "archived": false, "recurrence": "daily" },
+    { "id": 77, "slug": "btc-up-or-down-15m", "title": "BTC Up or Down 15m", "active": true, "closed": false, "archived": false, "recurrence": "15m" },
+    { "id": 78, "slug": "eth-up-or-down-15m", "title": "ETH Up or Down 15m", "active": true, "closed": false, "archived": false, "recurrence": "15m" }
+  ]
+}
