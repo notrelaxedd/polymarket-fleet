@@ -117,7 +117,8 @@ export class PolymarketClient implements MarketDataSource {
 
   async getEventBySlug(slug: string): Promise<RawEvent | null> {
     const j = await this.getJson(`/v1/events/slug/${encodeURIComponent(slug)}`);
-    return isObj(j) && isObj(j.event) ? j.event : null;
+    if (isObj(j) && isObj(j.event)) return j.event;
+    return isObj(j) && typeof j.slug === "string" ? j : null; // tolerate an unwrapped event
   }
 
   async listSeries(q: Query = {}): Promise<RawSeries[]> {

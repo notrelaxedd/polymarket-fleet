@@ -26,9 +26,14 @@ export interface PolyConfig {
   slugRegex: RegExp | null;
   /** metadata keys searched (market first, then event) for the price to beat (UNVERIFIED names) */
   ptbFields: string[];
+  /** discovery: event slug of a window, from its UTC start. Tokens {YYYY} {MM} {DD} {HH} {mm}.
+   *  Seen live 2026-10-21: "btc-updown-15m-2026-10-21-1415z". Set POLY_EVENT_SLUG_TEMPLATE=off to disable. */
+  eventSlugTemplate: string | null;
   /** window length, ms (15 minutes) */
   windowMs: number;
 }
+
+export const DEFAULT_EVENT_SLUG_TEMPLATE = "btc-updown-15m-{YYYY}-{MM}-{DD}-{HH}{mm}z";
 
 function str(v: string | undefined): string | null {
   return v !== undefined && v.trim() !== "" ? v.trim() : null;
@@ -78,6 +83,11 @@ export function loadPolyConfig(env: NodeJS.ProcessEnv = process.env): PolyConfig
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean),
+    eventSlugTemplate: (() => {
+      const t = str(env.POLY_EVENT_SLUG_TEMPLATE);
+      if (t === null) return DEFAULT_EVENT_SLUG_TEMPLATE;
+      return t.toLowerCase() === "off" ? null : t;
+    })(),
     windowMs: 15 * 60 * 1000,
   };
 }

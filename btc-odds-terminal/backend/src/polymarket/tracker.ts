@@ -11,6 +11,7 @@ import type { Logger } from "../log.ts";
 import { PolyHttpError, PolymarketClient, type MarketDataSource, type Query, type RawEvent } from "./client.ts";
 import { loadPolyConfig, type PolyConfig } from "./config.ts";
 import {
+  eventSlugsAround,
   extractTimes,
   isBtc15mEvent,
   mergeWindow,
@@ -384,6 +385,22 @@ export class MarketTracker extends EventEmitter {
         errors.push((err as Error)?.message ?? String(err));
       }
     };
+    // Direct: the event slugs are predictable from the window start (seen live 2026-10-21). This is
+    // the reliable path; the text search below returns dozens of BTC 15m events (they are created
+    // ~12h ahead) in an unknown order, and can miss the live or next window.
+    if (this.cfg.eventSlugTemplate) {
+      const direct = await Promise.allSettled(
+        eventSlugsAround(this.cfg.eventSlugTemplate, now, this.cfg.windowMs).map((sl) => c.getEventBySlug(sl)),
+      );
+      for (const r of direct) {
+        if (r.status === "fulfilled" && r.value) events.push(r.value);
+        else if (r.status === "rejected") {
+          firstErr ??= r.reason;
+          errors.push((r.reason as Error)?.message ?? String(r.reason));
+        }
+      }
+      if (this.hasNeeded(events, now, true)) return events;
+    }
     const seriesIds = await this.resolveSeries(now);
     const listings: Promise<void>[] = [];
     if (seriesIds.length > 0) listings.push(collect(() => this.listPaged({ seriesId: seriesIds, active: true, closed: false })));

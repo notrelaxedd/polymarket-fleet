@@ -116,6 +116,24 @@ export function slugEpochMs(slug: string): number | null {
   return m ? Number(m[1]) * 1000 : null;
 }
 
+/** Event slug for the window starting at `startTs` (UTC), from a template like DEFAULT_EVENT_SLUG_TEMPLATE. */
+export function eventSlugFor(template: string, startTs: number): string {
+  const d = new Date(startTs);
+  const p2 = (n: number) => String(n).padStart(2, "0");
+  return template
+    .replace(/\{YYYY\}/g, String(d.getUTCFullYear()))
+    .replace(/\{MM\}/g, p2(d.getUTCMonth() + 1))
+    .replace(/\{DD\}/g, p2(d.getUTCDate()))
+    .replace(/\{HH\}/g, p2(d.getUTCHours()))
+    .replace(/\{mm\}/g, p2(d.getUTCMinutes()));
+}
+
+/** Slugs of the previous, current, next and following window around `now` (windows aligned to W in UTC). */
+export function eventSlugsAround(template: string, now: number, W: number): string[] {
+  const cur = Math.floor(now / W) * W;
+  return [cur - W, cur, cur + W, cur + 2 * W].map((t) => eventSlugFor(template, t));
+}
+
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 
 const NY_FMT = new Intl.DateTimeFormat("en-US", {
