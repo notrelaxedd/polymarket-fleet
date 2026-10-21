@@ -96,7 +96,7 @@ describe("computeProxy", () => {
     expect(Object.keys(t.sources).sort()).toEqual(["bitstamp", "coinbase", "kraken"]);
   });
   it("2 live -> mean, 1 -> itself, 0 -> null; stale excluded", () => {
-    const stale = { price: 999, priceTs: NOW - 3001 };
+    const stale = { price: 999, priceTs: NOW - 30_001 };
     expect(computeProxy({ coinbase: { price: 100, priceTs: NOW }, kraken: { price: 200, priceTs: NOW }, bitstamp: stale }, NOW)!.price).toBe(150);
     const one = computeProxy({ coinbase: { price: 100, priceTs: NOW }, kraken: stale }, NOW)!;
     expect(one.price).toBe(100);
@@ -104,8 +104,12 @@ describe("computeProxy", () => {
     expect(computeProxy({ coinbase: stale }, NOW)).toBeNull();
     expect(computeProxy({}, NOW)).toBeNull();
   });
-  it("exactly STALE_AFTER_MS is still live", () => {
-    expect(computeProxy({ coinbase: { price: 5, priceTs: NOW - 3000 } }, NOW)!.price).toBe(5);
+  it("a quiet but connected venue keeps counting for PROXY_PRICE_MAX_AGE_MS (trade-driven feeds)", () => {
+    expect(computeProxy({ coinbase: { price: 5, priceTs: NOW - 30_000 } }, NOW)!.price).toBe(5);
+    // seen live: Kraken printing every ~1s, Bitstamp every ~5s -> both must count, not one at a time
+    const t = computeProxy({ kraken: { price: 84478.4, priceTs: NOW - 400 }, bitstamp: { price: 84468.31, priceTs: NOW - 5000 } }, NOW)!;
+    expect(Object.keys(t.sources).sort()).toEqual(["bitstamp", "kraken"]);
+    expect(t.price).toBeCloseTo(84473.355, 3);
   });
 });
 
@@ -194,7 +198,7 @@ describe("BtcProxy (fake feeds, fake clock)", () => {
     return { proxy, f, state };
   }
 
-  it("a heartbeat-only feed goes stale after 3s and leaves the median", () => {
+  it("a heartbeat-only feed goes stale after PROXY_PRICE_MAX_AGE_MS and leaves the median", () => {
     const { proxy, f, state } = setup(["coinbase", "kraken"]);
     f("coinbase").connect();
     f("kraken").connect();
@@ -207,8 +211,16 @@ describe("BtcProxy (fake feeds, fake clock)", () => {
       f("coinbase").heartbeat(); // socket alive, but no trades
       f("kraken").tick(110);
     }
+    // a few seconds without a trade is normal for a trade-driven feed: still counted
+    expect(state("coinbase").state).toBe("live");
+    expect(proxy.last()!.sources).toEqual({ coinbase: 100, kraken: 110 });
+    for (let i = 0; i < 54; i++) {
+      vi.advanceTimersByTime(500);
+      f("coinbase").heartbeat();
+      f("kraken").tick(110);
+    }
     expect(state("coinbase")).toMatchObject({ state: "stale", lastMsgTs: NOW });
-    expect(state("coinbase").ageMs).toBeGreaterThan(3000);
+    expect(state("coinbase").ageMs).toBeGreaterThan(30_000);
     expect(state("kraken").state).toBe("live");
     vi.advanceTimersByTime(600); // housekeeping re-evaluates the source set
     expect(proxy.last()!.sources).toEqual({ kraken: 110 });

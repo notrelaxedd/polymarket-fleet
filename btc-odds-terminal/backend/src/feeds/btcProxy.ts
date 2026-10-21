@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:events";
-import { STALE_AFTER_MS } from "../../../shared/protocol.ts";
 import type { BtcTick, ExchangeId, FeedStatus } from "../../../shared/protocol.ts";
 import type { Logger } from "../log.ts";
 import { EXCHANGE_SPECS, ExchangeFeed } from "./exchanges.ts";
@@ -24,21 +23,29 @@ export function median(values: number[]): number {
 }
 
 /**
+ * How long a CONNECTED exchange's last trade/ticker price keeps counting in the median. Not 3 s: Kraken
+ * and Bitstamp only publish on a trade/ticker change, often less than every 3 s. With a 3 s cutoff the
+ * live proxy (seen 2026-10-21) was usually ONE exchange at a time, flipping between venues a few dollars
+ * apart. A disconnect still drops the venue at once (its price is cleared), so this only bounds how long
+ * a quiet-but-connected venue's last print is trusted.
+ */
+export const PROXY_PRICE_MAX_AGE_MS = 30_000;
+
+/**
  * Pure: median of the LIVE exchanges' latest prices. An exchange is live when it has an entry
- * (callers omit disconnected exchanges) and its price itself is fresh: now - priceTs <= staleAfterMs.
- * Liveness messages never keep a price alive, so a frozen trade stream drops out after staleAfterMs
- * (in a quiet market a venue with no trades for > 3s simply sits out until its next trade).
+ * (callers omit disconnected exchanges) and its price is recent: now - priceTs <= maxAgeMs.
+ * Liveness messages never keep a price alive, so a frozen trade stream drops out after maxAgeMs.
  * 2 live -> mean, 1 -> itself, 0 -> null.
  */
 export function computeProxy(
   latest: Partial<Record<ExchangeId, LatestEntry>>,
   now: number,
-  staleAfterMs = STALE_AFTER_MS,
+  maxAgeMs = PROXY_PRICE_MAX_AGE_MS,
 ): BtcTick | null {
   const sources: Partial<Record<ExchangeId, number>> = {};
   for (const [id, e] of Object.entries(latest) as [ExchangeId, LatestEntry | undefined][]) {
     if (!e || !Number.isFinite(e.price)) continue;
-    if (now - e.priceTs > staleAfterMs) continue;
+    if (now - e.priceTs > maxAgeMs) continue;
     sources[id] = e.price;
   }
   const prices = Object.values(sources) as number[];
@@ -113,8 +120,8 @@ export class BtcProxy extends EventEmitter {
 
   /**
    * Per-exchange health, judged on PRICE data (heartbeats/pongs only prove the socket is up):
-   * live = price within STALE_AFTER_MS (i.e. contributing to the median), stale = connected but the last
-   * price is older, down = disconnected or connected without any price yet (subscription not delivering).
+   * live = price within PROXY_PRICE_MAX_AGE_MS (i.e. contributing to the median), stale = connected but the
+   * last price is older, down = disconnected or connected without any price yet (subscription not delivering).
    */
   status(): FeedStatus[] {
     const now = Date.now();
@@ -127,7 +134,7 @@ export class BtcProxy extends EventEmitter {
       else if (ageMs === null) {
         state = "down";
         detail = "connected, no price yet";
-      } else state = ageMs > STALE_AFTER_MS ? "stale" : "live";
+      } else state = ageMs > PROXY_PRICE_MAX_AGE_MS ? "stale" : "live";
       const s: FeedStatus = { id, state, lastMsgTs: st.priceTs, ageMs };
       if (detail && state === "down") s.detail = detail;
       out.push(s);
