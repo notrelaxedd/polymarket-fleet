@@ -2,6 +2,19 @@
 
 Status as of 2026-10-20. Code: `backend/src/polymarket/`.
 
+## Confirmed live (2026-10-21, on a user's machine)
+
+- `GET /v1/search?query=Bitcoin%20Up%20or%20Down&status=active` returns the BTC 15m events. Event slug
+  `btc-updown-15m-YYYY-MM-DD-HHMMz` (UTC window start), title "BTC Up or Down 15m", `seriesSlug`
+  `btc-updown-15m`; one market per event, slug `cpc-<event slug>`.
+- The window is on the EVENT (`startTime`/`startDate` .. `endDate`) and in the market's `gameStartTime`.
+  The market's own `startDate` is its creation time (~12 h earlier) and its `endDate` is window end + 30 min.
+- No price-to-beat field: the market description defines it as the simple average of the 60 BRTI prices
+  in the minute before the window start (same rule at the end).
+- `GET /v1/series` lists no BTC series (sports and awards only), so discovery goes by slug, then search.
+- The public gateway is behind Cloudflare and rate-limits: ~2 req/s gets HTTP 429 "Error 1015".
+- The markets WebSocket works with an Ed25519 API key (feed status `live`, detail `ws`, ~60 ms age).
+
 ## How this was verified
 
 - **docs.polymarket.us could not be reached** from the build sandbox. WebFetch got `ENOTFOUND` for
