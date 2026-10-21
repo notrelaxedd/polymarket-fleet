@@ -31,7 +31,8 @@ import {
 import type { Recorder } from "./recorder.ts";
 
 /** Up book poll interval (GET /v1/markets/{slug}/book) and its backoff cap after consecutive failures. */
-export const BOOK_POLL_MS = 1000;
+/** Up book depth refresh. Not 1 Hz: the public gateway rate-limits (429 seen live), and the BBO poll has priority. */
+export const BOOK_POLL_MS = 3000;
 const BOOK_BACKOFF_MAX_MS = 15_000;
 /** Levels kept per side of the Up book. */
 const BOOK_DEPTH = 10;

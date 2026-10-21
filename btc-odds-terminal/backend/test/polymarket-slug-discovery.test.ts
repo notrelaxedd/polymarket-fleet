@@ -96,5 +96,7 @@ describe("discovery by predictable event slug", () => {
     await vi.advanceTimersByTimeAsync(2 * W);
     expect(tracker.current()?.id).toBe("cpc-btc-updown-15m-2026-10-21-1500z");
     expect(tracker.status().state).toBe("live");
+    // fetched events are reused: ~1 lookup per new window, not 4 per 30 s discovery run (rate limit)
+    expect(src.slugCalls.length).toBeLessThan(12);
   });
 });

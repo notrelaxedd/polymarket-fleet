@@ -11,6 +11,7 @@
 //   GET /v1/markets/{slug}/settlement  { slug, settlement: number }
 
 import { loadPolyConfig } from "./config.ts";
+import { gatewayLimiter, type Priority, type RateLimiter } from "./ratelimit.ts";
 import {
   isObj,
   parseBbo,
@@ -40,6 +41,9 @@ export interface ClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** shared request budget; default: the process-wide limiter for real network use, none when fetchImpl
+   *  is injected (tests). Pass null to disable. */
+  limiter?: RateLimiter | null;
 }
 
 /** Raw JSON records as returned by the gateway (fields beyond the SDK types are kept). */
@@ -61,16 +65,20 @@ export class PolymarketClient implements MarketDataSource {
   readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly limiter: RateLimiter | null;
 
   constructor(opts: ClientOptions = {}) {
     const cfg = loadPolyConfig();
     this.baseUrl = (opts.baseUrl ?? cfg.gatewayUrl).replace(/\/+$/, "");
     this.timeoutMs = opts.timeoutMs ?? cfg.timeoutMs;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.limiter =
+      opts.limiter !== undefined ? opts.limiter : opts.fetchImpl ? null : gatewayLimiter(this.baseUrl, cfg.minGapMs);
   }
 
   /** GET JSON; 404 -> null; other non-2xx -> PolyHttpError; timeout -> PolyHttpError(408). */
-  async getJson(path: string, query?: Query): Promise<unknown> {
+  async getJson(path: string, query?: Query, priority: Priority = "low"): Promise<unknown> {
+    if (this.limiter) await this.limiter.acquire(priority);
     const url = new URL(path, this.baseUrl + "/");
     if (query) {
       for (const [k, v] of Object.entries(query)) {
@@ -91,12 +99,20 @@ export class PolymarketClient implements MarketDataSource {
       const timedOut = e?.name === "TimeoutError" || e?.name === "AbortError";
       throw new PolyHttpError(timedOut ? 408 : 0, path, timedOut ? `timeout ${path}` : `${path}: ${e?.message ?? e}`);
     }
-    if (res.status === 404) return null;
+    if (res.status === 404) {
+      this.limiter?.relax();
+      return null;
+    }
     const text = await res.text();
     if (!res.ok) {
       const retryAfterMs = parseRetryAfter(res.headers.get("retry-after"), Date.now());
+      if (res.status === 429) {
+        this.limiter?.penalize(retryAfterMs);
+        throw new PolyHttpError(429, path, `rate limited by Polymarket (429) on ${path}; slowing down`, retryAfterMs);
+      }
       throw new PolyHttpError(res.status, path, `${res.status} ${path}: ${text.slice(0, 200)}`, retryAfterMs);
     }
+    this.limiter?.relax();
     if (!text) return {};
     try {
       return JSON.parse(text) as unknown;
@@ -137,7 +153,7 @@ export class PolymarketClient implements MarketDataSource {
   }
 
   async getBbo(slug: string): Promise<NormalizedBbo | null> {
-    return parseBbo(await this.getJson(`/v1/markets/${encodeURIComponent(slug)}/bbo`), slug);
+    return parseBbo(await this.getJson(`/v1/markets/${encodeURIComponent(slug)}/bbo`, undefined, "high"), slug);
   }
 
   async getBook(slug: string): Promise<NormalizedBook | null> {

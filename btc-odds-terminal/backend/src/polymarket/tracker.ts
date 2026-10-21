@@ -142,6 +142,8 @@ export class MarketTracker extends EventEmitter {
   private pollErrors = 0;
   private nextPollAt = 0;
   private restBlockedUntil = 0; // 429 / Retry-After
+  /** events fetched by slug for the windows around now (see fetchEvents) */
+  private readonly eventCache = new Map<string, RawEvent>();
   private settleTries = new Map<string, number>(); // window id -> last try ts
   private settleSeen = new Map<string, { value: number; firstTs: number }>(); // first read of the current value
   private voided = new Set<string>(); // confirmed non-binary settlement: nothing more to poll
@@ -388,17 +390,23 @@ export class MarketTracker extends EventEmitter {
     // Direct: the event slugs are predictable from the window start (seen live 2026-10-21). This is
     // the reliable path; the text search below returns dozens of BTC 15m events (they are created
     // ~12h ahead) in an unknown order, and can miss the live or next window.
+    // Events already fetched are reused (window times never change), so steady state costs about one
+    // request per window instead of four per discovery run: the public gateway rate-limits hard.
     if (this.cfg.eventSlugTemplate) {
+      const slugs = eventSlugsAround(this.cfg.eventSlugTemplate, now, this.cfg.windowMs);
+      for (const k of this.eventCache.keys()) if (!slugs.includes(k)) this.eventCache.delete(k);
       const direct = await Promise.allSettled(
-        eventSlugsAround(this.cfg.eventSlugTemplate, now, this.cfg.windowMs).map((sl) => c.getEventBySlug(sl)),
+        slugs.map(async (sl) => this.eventCache.get(sl) ?? (await c.getEventBySlug(sl))),
       );
-      for (const r of direct) {
-        if (r.status === "fulfilled" && r.value) events.push(r.value);
-        else if (r.status === "rejected") {
+      direct.forEach((r, i) => {
+        if (r.status === "fulfilled" && r.value) {
+          events.push(r.value);
+          if (Array.isArray(r.value.markets) && r.value.markets.length > 0) this.eventCache.set(slugs[i]!, r.value);
+        } else if (r.status === "rejected") {
           firstErr ??= r.reason;
           errors.push((r.reason as Error)?.message ?? String(r.reason));
         }
-      }
+      });
       if (this.hasNeeded(events, now, true)) return events;
     }
     const seriesIds = await this.resolveSeries(now);

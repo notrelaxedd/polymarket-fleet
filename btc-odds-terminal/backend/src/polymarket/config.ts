@@ -16,6 +16,8 @@ export interface PolyConfig {
   secretKey: string | null;
   /** request timeout, ms */
   timeoutMs: number;
+  /** minimum gap between public-gateway requests, all callers combined (rate limit seen live: 429/1015) */
+  minGapMs: number;
   /** discovery: free-text query for GET /v1/search (UNVERIFIED that this finds the series) */
   searchQuery: string;
   /** discovery: optional series id(s) for GET /v1/events?seriesId= (UNVERIFIED id) */
@@ -72,6 +74,10 @@ export function loadPolyConfig(env: NodeJS.ProcessEnv = process.env): PolyConfig
     keyId: str(env.POLYMARKET_US_KEY_ID),
     secretKey: str(env.POLYMARKET_US_SECRET),
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 5000,
+    minGapMs: (() => {
+      const g = Number(env.POLY_MIN_GAP_MS);
+      return Number.isFinite(g) && g >= 0 ? g : 1000;
+    })(),
     searchQuery: str(env.POLY_SEARCH_QUERY) ?? "Bitcoin Up or Down",
     seriesIds: (str(env.POLY_SERIES_ID) ?? "")
       .split(",")
