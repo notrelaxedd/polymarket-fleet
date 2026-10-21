@@ -30,6 +30,9 @@ export interface StreamOptions {
   idleTimeoutMs?: number;
   /** a connection that stays up this long resets the backoff (default 30s) */
   stableMs?: number;
+  /** SUBSCRIPTION_TYPE_MARKET_DATA (full book: the BBO and the Up book for paper fills, no REST polling;
+   *  the default) or SUBSCRIPTION_TYPE_MARKET_DATA_LITE (top of book only) */
+  subscriptionType?: string;
 }
 
 const AUTH_BACKOFF_MIN_MS = 60_000;
@@ -41,7 +44,8 @@ export function backoffMs(attempt: number, minMs = 1000, maxMs = 30_000, rand: (
   return Math.max(minMs / 2, Math.round(raw * (0.5 + 0.5 * rand())));
 }
 
-/** Events: "bbo" (NormalizedBbo), "open", "close", "message" (any frame: liveness), "serverError" (string). */
+/** Events: "bbo" (NormalizedBbo), "book" (NormalizedBook, full-book frames), "open", "close", "message" (any frame:
+ *  liveness), "serverError" (string). */
 export class MarketsStream extends EventEmitter {
   private ws: WebSocket | null = null;
   private running = false;
@@ -109,7 +113,7 @@ export class MarketsStream extends EventEmitter {
     const requestId = `bot-bbo-${++this.requestSeq}`;
     this.activeRequestId = requestId;
     this.send({
-      subscribe: { requestId, subscriptionType: "SUBSCRIPTION_TYPE_MARKET_DATA_LITE", marketSlugs: this.slugs },
+      subscribe: { requestId, subscriptionType: this.opts.subscriptionType ?? "SUBSCRIPTION_TYPE_MARKET_DATA", marketSlugs: this.slugs },
     });
   }
 
@@ -164,7 +168,14 @@ export class MarketsStream extends EventEmitter {
       this.emit("message");
       if (msg.kind === "bbo" || msg.kind === "book" || msg.kind === "trade") this.attempt = 0; // healthy: data flows
       if (msg.kind === "bbo") this.emit("bbo", msg.bbo);
-      else if (msg.kind === "book") this.emit("bbo", bookToBbo(msg.book));
+      else if (msg.kind === "book") {
+        const b = msg.book;
+        const crossed = b.bids[0] && b.asks[0] && b.bids[0].price >= b.asks[0].price;
+        if (!crossed) {
+          this.emit("book", b);
+          this.emit("bbo", bookToBbo(b));
+        }
+      }
       else if (msg.kind === "error") {
         logger.warn({ error: msg.error, requestId: msg.requestId }, "polymarket ws: server error frame");
         this.emit("serverError", msg.error);

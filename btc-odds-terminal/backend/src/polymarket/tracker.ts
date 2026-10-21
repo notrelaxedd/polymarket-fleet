@@ -89,6 +89,8 @@ const SERIES_RETRY_MS = 5 * 60_000;
 const MAX_EVENT_EXPANSIONS = 8;
 /** after a window starts, re-fetch its event (every DISCOVERY_RETRY_MS) this long for the official priceToBeat */
 const PTB_REFRESH_MS = 120_000;
+/** a stream book counts while the socket delivered any frame (data/heartbeat) within this long */
+const STREAM_BOOK_MAX_SILENCE_MS = 10_000;
 
 /** Settlement poll interval by time since the window ended: 5s, 15s, 60s, then 5 min. */
 export function settleRetryMs(sinceEndMs: number): number {
@@ -146,6 +148,8 @@ export class MarketTracker extends EventEmitter {
   private restBlockedUntil = 0; // 429 / Retry-After
   /** events fetched by slug for the windows around now (see fetchEvents) */
   private readonly eventCache = new Map<string, { ev: RawEvent; hasPtb: boolean; startTs: number }>();
+  /** latest full book per market slug from the stream (SUBSCRIPTION_TYPE_MARKET_DATA) */
+  private readonly books = new Map<string, { book: NormalizedBook; ts: number }>();
   private settleTries = new Map<string, number>(); // window id -> last try ts
   private settleSeen = new Map<string, { value: number; firstTs: number }>(); // first read of the current value
   private voided = new Set<string>(); // confirmed non-binary settlement: nothing more to poll
@@ -184,9 +188,12 @@ export class MarketTracker extends EventEmitter {
     this.timers.push(setInterval(() => this.housekeep(), HOUSEKEEP_MS));
     if (this.streamOverride || this.wsEnabled()) {
       const auth = this.cfg.wsMode === "noauth" ? null : { keyId: this.cfg.keyId!, secretKey: this.cfg.secretKey! };
-      const stream = this.streamOverride ?? new MarketsStream({ url: this.cfg.wsUrl, logger: this.log, auth });
+      const stream =
+        this.streamOverride ??
+        new MarketsStream({ url: this.cfg.wsUrl, logger: this.log, auth, subscriptionType: this.cfg.wsSubscription });
       this.stream = stream;
       stream.on("bbo", this.onStreamBbo);
+      stream.on("book", this.onStreamBook);
       stream.on("message", this.onStreamMessage);
       stream.on("serverError", this.onStreamError);
       stream.on("open", this.onStreamOpen);
@@ -803,6 +810,28 @@ export class MarketTracker extends EventEmitter {
     }
   };
 
+  private readonly onStreamBook = (b: NormalizedBook): void => {
+    if (!b.slug) return;
+    this.books.set(b.slug, { book: b, ts: this.now() });
+    if (this.books.size > 8) {
+      const keep = new Set(this.streamSlugs());
+      for (const k of this.books.keys()) if (!keep.has(k)) this.books.delete(k);
+    }
+  };
+
+  /**
+   * The market's full book from the stream, or null when the stream has not delivered one since it (re)opened
+   * or has gone quiet (then the engine falls back to GET /book). A quiet book is still current while the socket
+   * is alive: the stream pushes every change.
+   */
+  streamBook(slug: string): NormalizedBook | null {
+    const e = this.books.get(slug);
+    if (!e || !this.stream?.connected) return null;
+    const now = this.now();
+    const alive = this.lastWsTs !== null && now - this.lastWsTs <= STREAM_BOOK_MAX_SILENCE_MS;
+    return alive ? e.book : null;
+  }
+
   private readonly onStreamMessage = (): void => {
     this.lastWsTs = this.now();
   };
@@ -814,6 +843,7 @@ export class MarketTracker extends EventEmitter {
 
   private readonly onStreamOpen = (): void => {
     this.lastWsTs = this.now();
+    this.books.clear(); // a reconnect may have missed changes: wait for fresh full-book frames
     // anything cached before the reconnect may have missed changes: it must be refreshed to count as fresh
     for (const q of this.quotes.values()) q.ws = false;
     this.emitStatus(false);

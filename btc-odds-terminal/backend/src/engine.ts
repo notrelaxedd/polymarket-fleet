@@ -33,6 +33,8 @@ import type { Recorder } from "./recorder.ts";
 /** Up book poll interval (GET /v1/markets/{slug}/book) and its backoff cap after consecutive failures. */
 /** Up book depth refresh. Not 1 Hz: the public gateway rate-limits (429 seen live), and the BBO poll has priority. */
 export const BOOK_POLL_MS = 3000;
+/** how often the Up book is refreshed from the markets stream (free) / considered for a REST poll */
+const BOOK_TICK_MS = 1000;
 const BOOK_BACKOFF_MAX_MS = 15_000;
 /** Levels kept per side of the Up book. */
 const BOOK_DEPTH = 10;
@@ -110,6 +112,8 @@ export interface WindowSource extends EventEmitter {
   next(): MarketWindow | null;
   lastOdds(): OddsSnap | null;
   status(): FeedStatus;
+  /** the market's full book from the markets stream, when it has a live one (MarketTracker) */
+  streamBook?(slug: string): NormalizedBook | null;
 }
 
 /** Settlement lookups (PolymarketClient implements it). */
@@ -161,6 +165,7 @@ export class Engine extends EventEmitter {
   private bookBusy = false;
   private bookErrors = 0;
   private nextBookAt = 0;
+  private lastRestBookAt = 0;
   private readonly snapshotParts: (() => Partial<StateSnapshot>)[] = [];
   private readonly feeNote: string;
   private readonly fetchBars: ((hours: number) => Promise<Bar[]>) | null;
@@ -207,7 +212,7 @@ export class Engine extends EventEmitter {
     this.books =
       deps.books !== undefined ? deps.books : !deps.tracker && this.settlements?.getBook ? (this.settlements as BookSource) : null;
     this.vol = newVol(this.settings.volLookbackMin);
-    this.btc = deps.btc ?? new BtcProxy({ logger: deps.logger });
+    this.btc = deps.btc ?? new BtcProxy({ logger: deps.logger, exchanges: this.cfg.btcExchanges });
     this.trackerRestores = !deps.tracker;
     this.tracker =
       deps.tracker ??
@@ -242,7 +247,7 @@ export class Engine extends EventEmitter {
     this.tracker.start();
     // fair depends on time-left too, so refresh it even when BTC is quiet
     this.clock = setInterval(() => this.requestFair(), 1000);
-    if (this.books) this.bookTimer = setInterval(() => void this.pollBook(), BOOK_POLL_MS);
+    if (this.books || this.tracker.streamBook) this.bookTimer = setInterval(() => void this.pollBook(), BOOK_TICK_MS);
     void this.backfillBars();
     this.startSettleBackfill();
     this.log.info(
@@ -376,7 +381,7 @@ export class Engine extends EventEmitter {
 
   /** Fetch the current window's Up book now (paper fills want a fresh one); falls back to the cached book. */
   async refreshBook(): Promise<BookLevels | null> {
-    if (!this.books) return this.currentBook();
+    if (!this.books && !this.tracker.streamBook) return this.currentBook();
     try {
       const b = await this.fetchBook();
       if (b) this.setBook(b);
@@ -589,12 +594,20 @@ export class Engine extends EventEmitter {
 
   // ------------------------------------------------------------------ Up book depth
 
-  /** Current window's Up book from GET /v1/markets/{slug}/book; flipped when Up is the short side. */
-  private async fetchBook(): Promise<BookLevels | null> {
+  /**
+   * Current window's Up book, flipped when Up is the short side: from the markets stream when it has a live book
+   * (no request), else GET /v1/markets/{slug}/book. `restAllowed` false = stream only.
+   */
+  private async fetchBook(restAllowed = true): Promise<BookLevels | null> {
     const win = this.tracker.current();
-    if (!this.books || !win) return null;
+    if (!win) return null;
     const { slug, side } = parseInstrument(win.upInstrument);
-    const raw = await this.books.getBook(slug);
+    let raw = this.tracker.streamBook?.(slug) ?? null;
+    if (!raw) {
+      if (!this.books || !restAllowed) return null;
+      this.lastRestBookAt = Date.now();
+      raw = await this.books.getBook(slug);
+    }
     if (!raw || this.tracker.current()?.id !== win.id) return null;
     const lv = (l: { price: number; qty: number }) => ({ price: l.price, size: l.qty });
     const flip = (l: { price: number; qty: number }) => ({ price: Math.round((100 - l.price) * 10) / 10, size: l.qty });
@@ -610,14 +623,15 @@ export class Engine extends EventEmitter {
   }
 
   private async pollBook(force = false): Promise<void> {
-    if (!this.running || !this.books || this.bookBusy) return;
+    if (!this.running || this.bookBusy) return;
     const now = Date.now();
     if (!force && now < this.nextBookAt) return;
     const win = this.tracker.current();
     if (!win || now < win.startTs || now > win.endTs) return;
     this.bookBusy = true;
     try {
-      const b = await this.fetchBook();
+      // runs every second: the stream's book costs nothing; REST at most every BOOK_POLL_MS (rate limit)
+      const b = await this.fetchBook(force || now - this.lastRestBookAt >= BOOK_POLL_MS);
       this.bookErrors = 0;
       this.nextBookAt = 0;
       if (b && this.running) this.setBook(b);

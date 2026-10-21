@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import type { ExchangeId } from "../../shared/protocol.ts";
 
 const optionalNumber = z.preprocess(
   (v) => (v === undefined || v === null || (typeof v === "string" && v.trim() === "") ? undefined : v),
@@ -29,6 +30,7 @@ const EnvSchema = z.object({
   POLYMARKET_US_KEY_ID: optionalString,
   POLYMARKET_US_SECRET: optionalString,
   SEED_HOURS: z.coerce.number().positive().max(24 * 7).default(6),
+  BTC_EXCHANGES: z.string().default("coinbase,kraken,bitstamp"),
   LOG_LEVEL: z.enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"]).default("info"),
 });
 
@@ -46,6 +48,8 @@ export interface Config {
   polymarketUsKeyId: string | null;
   polymarketUsSecret: string | null;
   seedHours: number;
+  /** exchanges in the BRTI proxy (BTC_EXCHANGES); drop one your network blocks */
+  btcExchanges: ExchangeId[];
   logLevel: string;
 }
 
@@ -72,6 +76,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     polymarketUsKeyId: e.POLYMARKET_US_KEY_ID ?? null,
     polymarketUsSecret: e.POLYMARKET_US_SECRET ?? null,
     seedHours: e.SEED_HOURS,
+    btcExchanges: (() => {
+      const known: ExchangeId[] = ["coinbase", "kraken", "bitstamp"];
+      const picked = split(e.BTC_EXCHANGES.toLowerCase()).filter((x): x is ExchangeId => (known as string[]).includes(x));
+      return picked.length > 0 ? picked : known;
+    })(),
     logLevel: e.LOG_LEVEL,
   };
 }

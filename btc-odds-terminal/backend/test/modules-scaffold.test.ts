@@ -43,6 +43,11 @@ class FakeTracker extends EventEmitter implements WindowSource {
   status(): FeedStatus {
     return { id: "polymarket", state: "live", lastMsgTs: null, ageMs: null };
   }
+  /** set to simulate a full book from the markets stream */
+  wsBook: NormalizedBook | null = null;
+  streamBook(): NormalizedBook | null {
+    return this.wsBook;
+  }
 }
 
 const now = Date.now();
@@ -78,20 +83,21 @@ afterEach(async () => {
   for (const f of cleanup.splice(0)) await f();
 });
 
-function setup(upInstrument = "m:long") {
+function setup(upInstrument = "m:long", getBook: () => Promise<NormalizedBook | null> = async () => rawBook) {
   const db = openDb(":memory:");
   const config = loadConfig({ DB_PATH: ":memory:" } as NodeJS.ProcessEnv);
   const logger = pino({ level: "silent" });
+  const tracker = new FakeTracker(win(upInstrument));
   const engine = new Engine({
     config,
     db,
     recorder: new Recorder(db),
     logger,
     btc: new FakeBtc(),
-    tracker: new FakeTracker(win(upInstrument)),
+    tracker,
     fetchBars: null,
     settlements: null,
-    books: { getBook: async () => rawBook },
+    books: { getBook },
   });
   const msgs: ServerMsg[] = [];
   engine.on("msg", (m: ServerMsg) => msgs.push(m));
@@ -106,7 +112,7 @@ function setup(upInstrument = "m:long") {
     engine.stop();
     db.close();
   });
-  return { db, engine, modules, app, msgs };
+  return { db, engine, modules, app, msgs, tracker };
 }
 
 describe("steps 3-6 scaffold", () => {
@@ -164,5 +170,23 @@ describe("steps 3-6 scaffold", () => {
     expect(b2.asks).toEqual([{ price: 60, size: 10 }, { price: 61, size: 5 }]);
     // Down book derived from the Up book
     expect(sideBook(b1, "down").asks[0]).toEqual({ price: 60, size: 10 });
+  });
+
+  it("takes the Up book from the markets stream when it has one (no REST request: rate limit)", async () => {
+    let restCalls = 0;
+    const t = setup("m:long", async () => {
+      restCalls++;
+      return rawBook;
+    });
+    t.tracker.wsBook = { ...rawBook, bids: [{ price: 50, qty: 3 }], asks: [{ price: 52, qty: 4 }] };
+    const b = (await t.engine.refreshBook()) as BookLevels;
+    expect(b.bids).toEqual([{ price: 50, size: 3 }]);
+    expect(b.asks).toEqual([{ price: 52, size: 4 }]);
+    expect(restCalls).toBe(0);
+    // stream drops its book -> REST fallback
+    t.tracker.wsBook = null;
+    const b2 = (await t.engine.refreshBook()) as BookLevels;
+    expect(b2.bids[0]).toEqual({ price: 40, size: 10 });
+    expect(restCalls).toBe(1);
   });
 });

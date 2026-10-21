@@ -16,6 +16,8 @@ export interface PolyConfig {
   secretKey: string | null;
   /** request timeout, ms */
   timeoutMs: number;
+  /** markets WS subscription: full book (default) or MARKET_DATA_LITE (POLY_WS_SUBSCRIPTION=lite) */
+  wsSubscription: string;
   /** minimum gap between public-gateway requests, all callers combined (rate limit seen live: 429/1015) */
   minGapMs: number;
   /** discovery: free-text query for GET /v1/search (UNVERIFIED that this finds the series) */
@@ -74,6 +76,10 @@ export function loadPolyConfig(env: NodeJS.ProcessEnv = process.env): PolyConfig
     keyId: str(env.POLYMARKET_US_KEY_ID),
     secretKey: str(env.POLYMARKET_US_SECRET),
     timeoutMs: Number.isFinite(timeout) && timeout > 0 ? timeout : 5000,
+    wsSubscription:
+      (str(env.POLY_WS_SUBSCRIPTION) ?? "").toLowerCase() === "lite"
+        ? "SUBSCRIPTION_TYPE_MARKET_DATA_LITE"
+        : "SUBSCRIPTION_TYPE_MARKET_DATA",
     minGapMs: (() => {
       const g = Number(env.POLY_MIN_GAP_MS);
       return Number.isFinite(g) && g >= 0 ? g : 1000;
