@@ -21,3 +21,8 @@ a `priceToBeat` field in event-two-markets.json). Replace with a live capture wh
     curl -s 'https://gateway.polymarket.us/v1/search?query=Bitcoin%20Up%20or%20Down&status=active&limit=50' > search-active.live.json
 
 Fixed clock used by the tests: 2026-10-20T14:37:00Z (10:37 AM ET) -> current window 14:30–14:45Z, next 14:45–15:00Z.
+
+`search-live-2026-10-21.json` is different: it is a REAL `GET /v1/search?query=Bitcoin%20Up%20or%20Down&status=active`
+response captured on a user's machine on 2026-10-21 (trimmed: image/chatChannel fields dropped, `marketSides`
+cut where the capture was truncated). It shows the market's own startDate/endDate are NOT the window
+(creation time; window end + 30 min); the event's startTime/endDate and the market's gameStartTime are.

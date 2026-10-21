@@ -543,7 +543,7 @@ export class MarketTracker extends EventEmitter {
       const w = d.window;
       if (w.priceToBeat !== null || d.ptbFromMetadata) continue;
       if (now < w.startTs + PTB_FALLBACK_DELAY_MS || now > w.endTs + 3600_000) continue;
-      const p = this.proxyAt(w.startTs);
+      const p = this.proxyMinuteAvg(w.startTs);
       if (p !== null) {
         d.window = { ...w, priceToBeat: p };
         this.log.info({ id: w.id, ptb: p }, "polymarket: PTB from BRTI proxy (metadata lacked it)");
@@ -563,9 +563,28 @@ export class MarketTracker extends EventEmitter {
     return p !== null && Number.isFinite(p) && p > 0 ? p : null;
   }
 
+  /**
+   * The settlement rule from the market description: "in the last minute before each of those two times,
+   * 60 BRTI prices are collected; the official value is their simple average". Mirrors it on the proxy
+   * (one sample per second over [ts-60s, ts)); falls back to the price at ts with too few samples.
+   */
+  private proxyMinuteAvg(ts: number): number | null {
+    let sum = 0;
+    let n = 0;
+    for (let i = 60; i >= 1; i--) {
+      const p = this.proxyAt(ts - i * 1000);
+      if (p !== null) {
+        sum += p;
+        n++;
+      }
+    }
+    if (n >= 30) return Math.round((sum / n) * 100) / 100;
+    return this.proxyAt(ts);
+  }
+
   /** What the BRTI proxy at the window end says, or null when it is unknown or too close to the PTB to call. */
   private proxyResult(w: MarketWindow): "up" | "down" | null {
-    const p = this.proxyAt(w.endTs);
+    const p = this.proxyMinuteAvg(w.endTs);
     const ptb = w.priceToBeat;
     if (p === null || ptb === null || ptb <= 0) return null;
     if (Math.abs(p - ptb) / ptb < SETTLE_PROXY_MARGIN) return null;

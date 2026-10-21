@@ -101,8 +101,17 @@ function firstTime(o: Record<string, unknown> | null | undefined, keys: string[]
   return null;
 }
 
-/** 10-digit epoch-seconds token in a slug (e.g. "btc-updown-15m-1760970600"). UNVERIFIED pattern. */
+/**
+ * Window start encoded in a slug: Polymarket US uses a UTC date-time token
+ * ("btc-updown-15m-2026-10-21-1415z", seen live 2026-10-21); a 10-digit epoch-seconds token
+ * ("btc-updown-15m-1760970600") is also accepted.
+ */
 export function slugEpochMs(slug: string): number | null {
+  const dt = /(?:^|[-_])(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})z(?:[-_]|$)/i.exec(slug);
+  if (dt) {
+    const t = Date.UTC(Number(dt[1]), Number(dt[2]) - 1, Number(dt[3]), Number(dt[4]), Number(dt[5]));
+    return Number.isFinite(t) ? t : null;
+  }
   const m = /(?:^|[-_])(\d{10})(?:[-_]|$)/.exec(slug);
   return m ? Number(m[1]) * 1000 : null;
 }
@@ -204,6 +213,15 @@ export function extractTimes(
   if (start !== null && end !== null && Math.abs(end - start - W) <= DURATION_TOLERANCE_MS) {
     return { startTs: start, endTs: end, explicit15: true };
   }
+  // Polymarket US (seen live 2026-10-21): the market's startDate is its creation time and its endDate is
+  // 30 min after the window, while the EVENT carries the window (startTime/startDate .. endDate).
+  const evStart = firstTime(event, START_KEYS);
+  const evEnd = firstTime(event, END_KEYS);
+  if (evStart !== null && evEnd !== null && Math.abs(evEnd - evStart - W) <= DURATION_TOLERANCE_MS) {
+    return { startTs: evStart, endTs: evEnd, explicit15: true };
+  }
+  const gameStart = firstTime(market, ["gameStartTime"]);
+  if (gameStart !== null) return { startTs: gameStart, endTs: gameStart + W, explicit15: false };
   const epoch = slugEpochMs(s(market.slug)) ?? (event ? slugEpochMs(s(event.slug)) : null);
   // Polymarket's international up/down slugs carry the window START; accept an end-epoch too.
   let alt: { startTs: number; endTs: number } | null = null;

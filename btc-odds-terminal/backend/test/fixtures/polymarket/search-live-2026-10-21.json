@@ -1,0 +1,46 @@
+{
+  "events": [
+    {
+      "id": "175316",
+      "ticker": "btc-updown-15m-2026-10-21-1415z",
+      "slug": "btc-updown-15m-2026-10-21-1415z",
+      "title": "BTC Up or Down 15m",
+      "description": "BTC Up or Down 15m",
+      "startDate": "2026-10-21T14:15:00Z",
+      "endDate": "2026-10-21T14:30:00Z",
+      "active": true,
+      "closed": false,
+      "archived": false,
+      "category": "crypto",
+      "createdAt": "2026-10-21T02:22:02Z",
+      "updatedAt": "2026-10-21T14:28:02Z",
+      "startTime": "2026-10-21T14:15:00Z",
+      "seriesSlug": "btc-updown-15m",
+      "period": "NS",
+      "live": true,
+      "ended": false,
+      "markets": [
+        {
+          "id": "1639011",
+          "question": "BTC Up or Down 15m",
+          "slug": "cpc-btc-updown-15m-2026-10-21-1415z",
+          "endDate": "2026-10-21T15:00:00Z",
+          "category": "crypto",
+          "startDate": "2026-10-21T02:15:10Z",
+          "description": "This market will settle to Up if the Bitcoin price at 10:30AM ET on Oct 21, 2026 is greater than or equal to the price at 10:15AM ET on Oct 21, 2026. Otherwise, this market will settle to Down. Outcome sourced from CF Benchmarks' Bitcoin Real-Time Index (BRTI), available at https://www.cfbenchmarks.com/data/indices/BRTI. The price at the beginning and at the end of the time range is determined the same way: in the last minute before each of those two times, 60 BRTI prices are collected. The official value for that time is the simple average of these prices, rounded to the nearest 2 decimal places. Please note that this market is about the price according to CF Benchmarks' BRTI, not according to other sources or spot markets.",
+          "active": true,
+          "marketType": "",
+          "closed": false,
+          "createdAt": "2026-10-21T02:22:02Z",
+          "updatedAt": "2026-10-21T14:28:02Z",
+          "archived": false,
+          "orderPriceMinTickSize": 0.01,
+          "gameStartTime": "2026-10-21T14:15:00Z",
+          "manualActivation": false,
+          "sportsMarketType": "",
+          "marketSides": [{ "id": "3277496", "marketSideType": "MARKET_SIDE_TYPE_INSTRUMENT" }]
+        }
+      ]
+    }
+  ]
+}
